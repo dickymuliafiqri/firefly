@@ -17,9 +17,12 @@ func TestExampleConfigsLoad(t *testing.T) {
 	_, thisFile, _, _ := runtime.Caller(0)
 	// internal/registry -> repo root is two levels up.
 	root := filepath.Join(filepath.Dir(thisFile), "..", "..")
-	dir := filepath.Join(root, "configs")
-	if _, err := os.Stat(dir); err != nil {
-		t.Skipf("configs dir not found: %v", err)
+	dir := filepath.Join(root, "configs.example")
+	if _, err := os.Stat(filepath.Join(dir, "models.json")); err != nil {
+		dir = filepath.Join(root, "configs")
+		if _, err := os.Stat(filepath.Join(dir, "models.json")); err != nil {
+			t.Skipf("example configs not found: %v", err)
+		}
 	}
 
 	// The example references OPENAI_API_KEY; inject it for the check.

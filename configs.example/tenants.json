@@ -1,0 +1,17 @@
+{
+  "tenants": [
+    {
+      "key_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "name": "default-dev",
+      "status": "active",
+      "allowed_models": [
+        "*"
+      ],
+      "rate_limit": {
+        "rps": 50,
+        "burst": 100,
+        "max_concurrent": 20
+      }
+    }
+  ]
+}

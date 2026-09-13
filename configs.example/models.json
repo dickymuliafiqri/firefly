@@ -1,0 +1,10 @@
+{
+  "models": [
+    {
+      "public_name": "gpt-4o-mini",
+      "upstream": "openai-primary",
+      "upstream_model": "gpt-4o-mini",
+      "enabled": true
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "upstreams": [
+    {
+      "name": "openai-primary",
+      "protocol": "openai",
+      "base_url": "https://api.openai.com/v1",
+      "credential_ref": "OPENAI_API_KEY",
+      "key_strategy": "round_robin",
+      "enabled": true
+    }
+  ]
+}

@@ -152,10 +152,7 @@ func TestDefaultConfigsWithoutEnvStartsCleanly(t *testing.T) {
 	}
 
 	bin := buildBinary(t)
-	// configs dir in repo root
-	_, thisFile, _, _ := runtime.Caller(0)
-	root := filepath.Join(filepath.Dir(thisFile), "..", "..")
-	dir := filepath.Join(root, "configs")
+	dir := writeMinimalConfig(t)
 	dataAddr := freeAddr(t)
 
 	cmd := exec.Command(bin,

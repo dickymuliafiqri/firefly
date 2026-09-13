@@ -1,0 +1,12 @@
+{
+  "combos": [
+    {
+      "name": "smart-combo",
+      "strategy": "least_inflight",
+      "models": [
+        "gpt-4o-mini"
+      ],
+      "enabled": true
+    }
+  ]
+}
