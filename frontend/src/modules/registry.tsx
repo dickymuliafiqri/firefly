@@ -89,4 +89,4 @@ export const MODULE_REGISTRY: Record<string, FireflyModuleDefinition> = {
   },
 };
 
-export const ORDERED_MODULES = Object.values(MODULE_REGISTRY).sort((a, b) => a.order - b.order);
+export const ORDERED_MODULES = Object.values(MODULE_REGISTRY).toSorted((a, b) => a.order - b.order);

@@ -13,8 +13,9 @@
   - Layer 2: Per-tenant token-bucket rate limiter and concurrency limit (`httpx.AdmissionMiddleware`).
   - Layer 3: Per-credential atomic CAS concurrency ticket gate (`Limiter.AcquireKeySlot`).
 - **Virtual Combos**: Model-level load balancing grouping multiple upstream models into a single public model route using `least_inflight`, `round_robin`, or `failover` chain strategies.
-- **Single Binary Distribution**: Frontend built with Vite/React is embedded into the standalone executable via `//go:embed all:dist` in `frontend/embed.go`.
-- **Security & Navigation Authentication**: Dashboard navigation requires password authentication (default: `12345678`), configurable in Settings, with public access to the Overview page.
+- **Single Binary Distribution**: Frontend built with Vite/React 19 is embedded into the standalone executable via `//go:embed all:dist` in `frontend/embed.go`.
+- **Responsive Architecture**: Fully responsive across mobile and desktop with a nocturnal bioluminescent mobile burger menu and adaptive viewports (`min-h-[100dvh]`).
+- **Security & Navigation Authentication**: Dashboard navigation requires password authentication (default: `12345678`), validated and managed via backend credential vault (`configs/auth.json`), with public access to the Overview page.
 
 ## Key CLI Commands
 - `firefly -config-dir=/etc/firefly -addr=0.0.0.0:8080`: Run the gateway.

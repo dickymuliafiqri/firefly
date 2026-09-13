@@ -101,3 +101,50 @@ func TestBreakerRegistryPerUpstream(t *testing.T) {
 		t.Fatal("b should be unaffected")
 	}
 }
+
+func TestBreakerForceStateAndRegistry(t *testing.T) {
+	r := NewBreakerRegistry(BreakerConfig{})
+	r.For("upstream-1")
+	r.For("upstream-2")
+
+	// Verify initial closed states
+	if r.StateFor("upstream-1") != StateClosed {
+		t.Fatalf("expected closed, got %v", r.StateFor("upstream-1"))
+	}
+
+	// Force state to OPEN
+	r.SetState("upstream-1", StateOpen)
+	if r.StateFor("upstream-1") != StateOpen {
+		t.Fatalf("expected open, got %v", r.StateFor("upstream-1"))
+	}
+	if r.BreakerStateString("upstream-1") != "open" {
+		t.Fatalf("expected 'open', got %s", r.BreakerStateString("upstream-1"))
+	}
+
+	// Force state back to CLOSED
+	r.SetState("upstream-1", StateClosed)
+	if r.StateFor("upstream-1") != StateClosed {
+		t.Fatalf("expected closed, got %v", r.StateFor("upstream-1"))
+	}
+
+	// Force state to HALF-OPEN
+	r.SetState("upstream-2", StateHalfOpen)
+	all := r.AllStates()
+	if all["upstream-2"] != StateHalfOpen || all["upstream-1"] != StateClosed {
+		t.Fatalf("unexpected AllStates: %+v", all)
+	}
+
+	// Test ParseBreakerState
+	if st, ok := ParseBreakerState("open"); !ok || st != StateOpen {
+		t.Fatalf("expected open, got %v", st)
+	}
+	if st, ok := ParseBreakerState("CLOSED"); !ok || st != StateClosed {
+		t.Fatalf("expected closed, got %v", st)
+	}
+	if st, ok := ParseBreakerState("half-open"); !ok || st != StateHalfOpen {
+		t.Fatalf("expected half-open, got %v", st)
+	}
+	if _, ok := ParseBreakerState("invalid"); ok {
+		t.Fatal("expected false for invalid state")
+	}
+}

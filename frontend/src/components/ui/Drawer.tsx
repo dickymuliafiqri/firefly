@@ -60,7 +60,7 @@ export const Drawer = React.memo(function Drawer({
       />
 
       {/* Drawer Slide-in Panel */}
-      <div className="fixed inset-y-0 right-0 flex max-w-full pl-10 z-[101]">
+      <div className="fixed inset-y-0 right-0 flex max-w-full pl-0 sm:pl-10 z-[101]">
         <div
           role="dialog"
           aria-modal="true"
@@ -70,7 +70,7 @@ export const Drawer = React.memo(function Drawer({
           )}
         >
           {/* Header */}
-          <div className="flex items-center justify-between p-6 border-b border-white/[0.04]">
+          <div className="flex items-center justify-between p-4 sm:p-6 border-b border-white/[0.04]">
             <div>
               {title ? (
                 <h3 className="text-sm font-semibold text-white tracking-tight">
@@ -92,7 +92,7 @@ export const Drawer = React.memo(function Drawer({
           </div>
 
           {/* Scrollable Content Body */}
-          <div className="flex-1 overflow-y-auto p-6">{children}</div>
+          <div className="flex-1 overflow-y-auto p-4 sm:p-6">{children}</div>
         </div>
       </div>
     </div>,

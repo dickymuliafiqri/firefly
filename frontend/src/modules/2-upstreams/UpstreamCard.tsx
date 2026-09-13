@@ -14,7 +14,7 @@ export interface UpstreamCardProps {
 
 export const UpstreamCard = React.memo(function UpstreamCard({
   upstream,
-  breakerState = 'OPEN',
+  breakerState = 'CLOSED',
   onToggleBreaker,
   onEdit,
   onDelete,
@@ -24,7 +24,7 @@ export const UpstreamCard = React.memo(function UpstreamCard({
   const timeoutSec = Math.round((upstream.timeout_ms || 30000) / 1000);
   const streamTimeoutSec = Math.round((upstream.stream_idle_timeout_ms || 120000) / 1000);
 
-  const isEnabled = upstream.enabled !== false && breakerState !== 'CLOSED';
+  const isEnabled = upstream.enabled !== false && breakerState === 'CLOSED';
   const isHalfOpen = breakerState === 'HALF-OPEN';
   const keyCount =
     upstream.credential_pool?.length ||
@@ -99,11 +99,11 @@ export const UpstreamCard = React.memo(function UpstreamCard({
         <span className="text-neutral-200 font-medium truncate" title={baseUrl}>
           {baseUrl || 'Default Provider Endpoint'}
         </span>
-        {upstream.base_urls && upstream.base_urls.length > 1 && (
+        {upstream.base_urls && upstream.base_urls.length > 1 ? (
           <span className="text-neutral-500 text-[11px] flex-shrink-0">
             (+{upstream.base_urls.length - 1} failover)
           </span>
-        )}
+        ) : null}
       </div>
 
       {/* KeyRing Credential Pool Preview */}

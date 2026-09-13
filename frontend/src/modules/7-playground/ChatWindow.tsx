@@ -14,6 +14,7 @@ import {
   RotateCcw,
 } from 'lucide-react';
 import {
+  useAdminToken,
   useModels,
   useCombos,
   useTenants,
@@ -76,6 +77,7 @@ export const ChatWindow = React.memo(function ChatWindow({
   onRawPacket,
   onClearDiagnostics,
 }: ChatWindowProps) {
+  const adminToken = useAdminToken();
   const models = useModels();
   const combos = useCombos();
   const tenants = useTenants();
@@ -125,7 +127,8 @@ export const ChatWindow = React.memo(function ChatWindow({
     (name: string) => {
       const u = upstreams.find((up) => up.name === name);
       if (u && u.enabled === false) return false;
-      return (upstreamBreakers[name] || 'OPEN') !== 'CLOSED';
+      const st = upstreamBreakers[name] || 'CLOSED';
+      return st !== 'OPEN';
     },
     [upstreams, upstreamBreakers]
   );
@@ -191,15 +194,12 @@ export const ChatWindow = React.memo(function ChatWindow({
     }
   }, [enabledCombos, enabledModels, selectedModel, setPlaygroundSelectedModel, isComboAvailable, isModelAvailable]);
 
-  // Auto-pick tenant key if empty
+  // Auto-pick tenant key or admin session token if empty
   useEffect(() => {
     if (!apiKey) {
-      if (typeof window !== 'undefined') {
-        const stored = localStorage.getItem('firefly_tenant_key');
-        if (stored) {
-          setPlaygroundApiKey(stored);
-          return;
-        }
+      if (adminToken) {
+        setPlaygroundApiKey(adminToken);
+        return;
       }
       const hasDemo = tenants.some(
         (t) =>
@@ -210,7 +210,7 @@ export const ChatWindow = React.memo(function ChatWindow({
         setPlaygroundApiKey('sk-gw-demo-000000000000000000000000');
       }
     }
-  }, [tenants, apiKey, setPlaygroundApiKey]);
+  }, [adminToken, tenants, apiKey, setPlaygroundApiKey]);
 
   // Cleanup animFrame on unmount
   useEffect(() => {
@@ -524,7 +524,7 @@ export const ChatWindow = React.memo(function ChatWindow({
                 value={selectedModel}
                 onChange={(e) => setPlaygroundSelectedModel(e.target.value)}
                 disabled={isGenerating}
-                className="px-2 py-1 rounded bg-transparent border border-white/[0.08] text-neutral-200 font-mono text-xs focus:outline-none focus:border-white/20"
+                className="px-2 py-1 rounded bg-transparent border border-white/[0.08] text-neutral-200 font-mono text-xs focus:outline-none focus:border-white/20 max-w-[140px] sm:max-w-xs truncate"
               >
                 {enabledCombos.length > 0 ? (
                   <optgroup label="Virtual Combos (Load Balanced)" className="bg-[#0a0d14] text-neutral-400 font-semibold">
@@ -551,7 +551,7 @@ export const ChatWindow = React.memo(function ChatWindow({
               </select>
             </div>
 
-            <div className="flex items-center gap-1.5 text-[11px]">
+            <div className="flex items-center gap-1.5 text-[11px] shrink-0">
               {isCurrentModelClosed ? (
                 <>
                   <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
@@ -595,16 +595,16 @@ export const ChatWindow = React.memo(function ChatWindow({
         </div>
 
         {/* Row 2: API Key - Prominently Visible by Default (NOT hidden in Parameters) */}
-        <div className="flex items-center gap-2 pt-2 border-t border-white/[0.04]">
+        <div className="flex items-center gap-2 pt-2 border-t border-white/[0.04] min-w-0">
           <Key className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
           <span className="text-neutral-500 shrink-0">API Key:</span>
-          <div className="flex-1 flex items-center gap-1.5 px-2.5 py-1 rounded bg-transparent border border-white/[0.08] focus-within:border-white/20 transition-colors">
+          <div className="flex-1 min-w-0 flex items-center gap-1.5 px-2.5 py-1 rounded bg-transparent border border-white/[0.08] focus-within:border-white/20 transition-colors">
             <input
               type={showApiKey ? 'text' : 'password'}
               value={apiKey}
               onChange={(e) => setPlaygroundApiKey(e.target.value)}
               placeholder="sk-gw-... (Tenant API key required)"
-              className="flex-1 bg-transparent text-neutral-200 font-mono text-xs placeholder:text-neutral-600 focus:outline-none"
+              className="flex-1 min-w-0 bg-transparent text-neutral-200 font-mono text-xs placeholder:text-neutral-600 focus:outline-none"
               title="Tenant API Key"
             />
             <button
@@ -678,7 +678,7 @@ export const ChatWindow = React.memo(function ChatWindow({
       ) : null}
 
       {/* Preset Prompts Pill Bar */}
-      <div className="flex items-center gap-2 overflow-x-auto pb-1">
+      <div className="flex items-center gap-2 overflow-x-auto pb-1 custom-scrollbar">
         <span className="text-[11px] font-mono text-neutral-500 shrink-0">Try prompt:</span>
         {PRESETS.map((p) => (
           <button
@@ -778,7 +778,7 @@ export const ChatWindow = React.memo(function ChatWindow({
           }
           rows={2}
           className={cn(
-            "flex-1 px-3.5 py-2.5 rounded-xl bg-transparent border border-white/[0.08] text-white font-mono text-xs focus:outline-none focus:border-white/20 resize-none",
+            "flex-1 min-w-0 px-3.5 py-2.5 rounded-xl bg-transparent border border-white/[0.08] text-white font-mono text-xs focus:outline-none focus:border-white/20 resize-none",
             isCurrentModelClosed && "opacity-50 cursor-not-allowed border-rose-500/20"
           )}
         />

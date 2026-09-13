@@ -1,28 +1,15 @@
 package server
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
+
+	"github.com/dickymuliafiqri/firefly/internal/analytics"
 )
 
 // LiveLog represents a single inbound API request / upstream proxy transaction.
-type LiveLog struct {
-	ID            string  `json:"id"`
-	Timestamp     int64   `json:"timestamp"`
-	Method        string  `json:"method"`
-	Path          string  `json:"path"`
-	Status        int     `json:"status"`
-	DurationMs    int64   `json:"durationMs"`
-	Model         string  `json:"model"`
-	Upstream      string  `json:"upstream"`
-	Tenant        string  `json:"tenant"`
-	Stream        bool    `json:"stream"`
-	TokensIn      int     `json:"tokensIn"`
-	TokensOut     int     `json:"tokensOut"`
-	Tokens        int     `json:"tokens"`
-	EstimatedCost float64 `json:"estimatedCost"`
-	Error         string  `json:"error,omitempty"`
-}
+type LiveLog = analytics.RequestLog
 
 const maxLiveLogHistory = 100
 
@@ -35,6 +22,7 @@ type LiveLogHub struct {
 	totalInTokens  atomic.Int64
 	totalOutTokens atomic.Int64
 	totalReqs      atomic.Int64
+	store          *analytics.Store
 }
 
 // NewLiveLogHub creates an initialized LiveLogHub.
@@ -45,18 +33,54 @@ func NewLiveLogHub() *LiveLogHub {
 	}
 }
 
+// AttachStore binds an analytics persistent store to the hub and loads initial state.
+func (h *LiveLogHub) AttachStore(store *analytics.Store) {
+	if h == nil || store == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.store = store
+
+	ctx := context.Background()
+	if hist, err := store.History(ctx, maxLiveLogHistory); err == nil && len(hist) > 0 {
+		h.history = hist
+	}
+	if sum, err := store.Summary(ctx); err == nil {
+		h.totalInTokens.Store(sum.InputTokens)
+		h.totalOutTokens.Store(sum.OutputTokens)
+		h.totalReqs.Store(sum.TotalRequests)
+	}
+}
+
+// Clear flushes history from memory and persistent storage.
+func (h *LiveLogHub) Clear() {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.history = make([]LiveLog, 0, maxLiveLogHistory)
+	store := h.store
+	h.mu.Unlock()
+
+	if store != nil {
+		_ = store.ClearHistory(context.Background())
+	}
+}
+
 // Publish adds or updates a log entry in history and notifies all active subscribers.
 func (h *LiveLogHub) Publish(log LiveLog) {
 	if h == nil {
 		return
 	}
 	h.mu.Lock()
-	defer h.mu.Unlock()
 
 	// If entry already exists (e.g. updating in-flight log upon completion), update in-place
 	found := false
+	prevStatus := 0
 	for i := range h.history {
 		if h.history[i].ID == log.ID {
+			prevStatus = h.history[i].Status
 			h.history[i] = log
 			found = true
 			break
@@ -71,8 +95,8 @@ func (h *LiveLogHub) Publish(log LiveLog) {
 		}
 	}
 
-	// Track cumulative metrics upon request completion (Status > 0)
-	if log.Status > 0 {
+	// Track cumulative metrics upon request completion (Status > 0) only if not already counted
+	if log.Status > 0 && (!found || prevStatus == 0) {
 		h.totalReqs.Add(1)
 		if log.TokensIn > 0 {
 			h.totalInTokens.Add(int64(log.TokensIn))
@@ -89,6 +113,13 @@ func (h *LiveLogHub) Publish(log LiveLog) {
 		default:
 			// Slow consumer: skip to prevent blocking the request path
 		}
+	}
+
+	store := h.store
+	h.mu.Unlock()
+
+	if store != nil {
+		_ = store.Record(context.Background(), log)
 	}
 }
 

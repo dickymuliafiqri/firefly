@@ -51,8 +51,6 @@ export interface PlaygroundSlice {
   clearPlaygroundChat: () => void;
 }
 
-const TENANT_KEY_STORAGE = 'firefly_tenant_key';
-
 const INITIAL_MESSAGES: ChatMessage[] = [
   {
     role: 'system',
@@ -69,10 +67,7 @@ export const createPlaygroundSlice: StateCreator<
   playgroundMessages: INITIAL_MESSAGES,
   playgroundPrompt: '',
   playgroundSelectedModel: '',
-  playgroundApiKey:
-    typeof window !== 'undefined'
-      ? localStorage.getItem(TENANT_KEY_STORAGE) || 'sk-gw-demo-000000000000000000000000'
-      : 'sk-gw-demo-000000000000000000000000',
+  playgroundApiKey: '',
   playgroundTemperature: 0.7,
   playgroundMaxTokens: 1024,
   playgroundIsStreamMode: true,
@@ -100,13 +95,6 @@ export const createPlaygroundSlice: StateCreator<
     set(() => ({ playgroundSelectedModel: model })),
 
   setPlaygroundApiKey: (key) => {
-    if (typeof window !== 'undefined') {
-      if (key.trim()) {
-        localStorage.setItem(TENANT_KEY_STORAGE, key.trim());
-      } else {
-        localStorage.removeItem(TENANT_KEY_STORAGE);
-      }
-    }
     set(() => ({ playgroundApiKey: key }));
   },
 

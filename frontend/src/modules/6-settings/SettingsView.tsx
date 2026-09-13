@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useTransition } from 'react';
 import { Button } from '@/components/ui/Button';
 import {
   Sliders,
@@ -16,8 +16,6 @@ import {
 import {
   useAdminToken,
   useSetAdminToken,
-  useDashboardPassword,
-  useSetDashboardPassword,
   useUpstreams,
   useModels,
   useCombos,
@@ -45,13 +43,11 @@ import { cn } from '@/lib/utils';
 export default React.memo(function SettingsView() {
   const adminToken = useAdminToken();
   const setAdminToken = useSetAdminToken();
-  const dashboardPassword = useDashboardPassword();
-  const setDashboardPassword = useSetDashboardPassword();
   const upstreams = useUpstreams();
   const models = useModels();
   const combos = useCombos();
   const tenants = useTenants();
-  const { logout, addToast } = useStoreActions();
+  const { logout, addToast, updatePassword } = useStoreActions();
 
   const { data: serverSettings, refetch, isFetching } = useSettingsQuery();
   const saveMutation = useSaveSettingsMutation();
@@ -60,12 +56,11 @@ export default React.memo(function SettingsView() {
   const [tokenInput, setTokenInput] = useState(adminToken || '');
   const [isTokenMasked, setIsTokenMasked] = useState(true);
 
-  const [passwordInput, setPasswordInput] = useState(dashboardPassword || '12345678');
-  const [isPasswordMasked, setIsPasswordMasked] = useState(true);
-
-  useEffect(() => {
-    setPasswordInput(dashboardPassword || '12345678');
-  }, [dashboardPassword]);
+  const [currentPasswordInput, setCurrentPasswordInput] = useState('');
+  const [newPasswordInput, setNewPasswordInput] = useState('');
+  const [isCurrentPasswordMasked, setIsCurrentPasswordMasked] = useState(true);
+  const [isNewPasswordMasked, setIsNewPasswordMasked] = useState(true);
+  const [isUpdatingPassword, startPasswordTransition] = useTransition();
 
   // Generate baseline JSON from current state
   const serverJson = useMemo(() => {
@@ -87,45 +82,77 @@ export default React.memo(function SettingsView() {
     setRawJsonText(serverJson);
   }, [serverJson]);
 
-  // Save admin token to store & localStorage
+  // Save admin token to store & session storage
   const handleSaveToken = useCallback(() => {
     setAdminToken(tokenInput.trim());
     addToast({
       title: 'Admin Token Updated',
-      message: 'Token saved to browser storage and attached to management requests.',
+      message: 'Token saved to session storage and attached to management requests.',
       type: 'success',
     });
   }, [tokenInput, setAdminToken, addToast]);
 
-  // Save dashboard access password
+  // Update dashboard access password on backend
   const handleSavePassword = useCallback(() => {
-    const trimmed = passwordInput.trim();
-    if (!trimmed) {
+    const trimmedNew = newPasswordInput.trim();
+    if (!trimmedNew) {
       addToast({
         title: 'Validation Error',
-        message: 'Dashboard access password cannot be empty.',
+        message: 'New password cannot be empty.',
         type: 'error',
       });
       return;
     }
-    setDashboardPassword(trimmed);
-    addToast({
-      title: 'Password Updated',
-      message: 'Dashboard access password successfully saved.',
-      type: 'success',
-    });
-  }, [passwordInput, setDashboardPassword, addToast]);
+    if (trimmedNew.length < 4) {
+      addToast({
+        title: 'Validation Error',
+        message: 'New password must be at least 4 characters long.',
+        type: 'error',
+      });
+      return;
+    }
 
-  // Reset dashboard password to default
-  const handleResetDefaultPassword = useCallback(() => {
-    setDashboardPassword('12345678');
-    setPasswordInput('12345678');
-    addToast({
-      title: 'Password Reset',
-      message: 'Dashboard password reset to default: 12345678',
-      type: 'info',
+    startPasswordTransition(async () => {
+      const res = await updatePassword(currentPasswordInput.trim(), trimmedNew);
+      if (res.ok) {
+        addToast({
+          title: 'Password Updated',
+          message: res.message || 'Dashboard access password successfully updated on backend.',
+          type: 'success',
+        });
+        setCurrentPasswordInput('');
+        setNewPasswordInput('');
+      } else {
+        addToast({
+          title: 'Update Failed',
+          message: res.message || 'Failed to update dashboard password.',
+          type: 'error',
+        });
+      }
     });
-  }, [setDashboardPassword, addToast]);
+  }, [currentPasswordInput, newPasswordInput, updatePassword, addToast, startPasswordTransition]);
+
+  // Reset dashboard password to default on backend
+  const handleResetDefaultPassword = useCallback(() => {
+    startPasswordTransition(async () => {
+      const res = await updatePassword(currentPasswordInput.trim(), '12345678');
+      if (res.ok) {
+        addToast({
+          title: 'Password Reset',
+          message: 'Dashboard password reset to default: 12345678',
+          type: 'info',
+        });
+        setCurrentPasswordInput('');
+        setNewPasswordInput('');
+      } else {
+        addToast({
+          title: 'Reset Failed',
+          message: res.message || 'Incorrect current password or server error.',
+          type: 'error',
+        });
+      }
+    });
+  }, [currentPasswordInput, updatePassword, addToast, startPasswordTransition]);
 
   // Lock session immediately
   const handleLockSession = useCallback(() => {
@@ -175,7 +202,7 @@ export default React.memo(function SettingsView() {
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
       {/* Top Action Bar */}
-      <div className="flex items-center justify-end gap-2.5">
+      <div className="flex flex-wrap items-center justify-between sm:justify-end gap-2.5">
           <div className="inline-flex p-0.5 rounded-lg border border-white/[0.08] bg-transparent font-mono text-xs">
             <button
               onClick={() => setActiveTab('visual')}
@@ -262,41 +289,72 @@ export default React.memo(function SettingsView() {
               </div>
 
               <div className="space-y-3">
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
                     <label className="text-xs font-mono text-neutral-400 block">
-                      Access Password
+                      Current Password
                     </label>
-                    <span className="text-[10px] text-neutral-500">
-                      Default: <code className="text-neutral-300">12345678</code>
-                    </span>
-                  </div>
-                  <div className="flex gap-2">
-                    <div className="relative flex-1">
+                    <div className="relative">
                       <input
-                        type={isPasswordMasked ? 'password' : 'text'}
-                        value={passwordInput}
-                        onChange={(e) => setPasswordInput(e.target.value)}
-                        placeholder="Enter dashboard access password..."
+                        type={isCurrentPasswordMasked ? 'password' : 'text'}
+                        value={currentPasswordInput}
+                        onChange={(e) => setCurrentPasswordInput(e.target.value)}
+                        placeholder="Current password (default: 12345678)"
                         className="w-full px-3 py-1.5 pr-9 rounded-lg bg-transparent border border-white/[0.08] text-white font-mono text-xs focus:outline-none focus:border-white/20"
                       />
                       <button
                         type="button"
-                        onClick={() => setIsPasswordMasked((m) => !m)}
+                        onClick={() => setIsCurrentPasswordMasked((m) => !m)}
                         className="absolute right-2.5 top-2 text-neutral-500 hover:text-white transition-colors cursor-pointer"
-                        title={isPasswordMasked ? 'Show password' : 'Hide password'}
+                        title={isCurrentPasswordMasked ? 'Show password' : 'Hide password'}
                       >
-                        {isPasswordMasked ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                        {isCurrentPasswordMasked ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
                       </button>
                     </div>
-
-                    <Button variant="minimal" size="sm" onClick={handleSavePassword}>
-                      Save Password
-                    </Button>
-                    <Button variant="minimal" size="sm" onClick={handleResetDefaultPassword}>
-                      Reset (12345678)
-                    </Button>
                   </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-mono text-neutral-400 block">
+                      New Password
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={isNewPasswordMasked ? 'password' : 'text'}
+                        value={newPasswordInput}
+                        onChange={(e) => setNewPasswordInput(e.target.value)}
+                        placeholder="Enter new master password..."
+                        className="w-full px-3 py-1.5 pr-9 rounded-lg bg-transparent border border-white/[0.08] text-white font-mono text-xs focus:outline-none focus:border-white/20"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setIsNewPasswordMasked((m) => !m)}
+                        className="absolute right-2.5 top-2 text-neutral-500 hover:text-white transition-colors cursor-pointer"
+                        title={isNewPasswordMasked ? 'Show password' : 'Hide password'}
+                      >
+                        {isNewPasswordMasked ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 pt-1">
+                  <Button
+                    variant="minimal"
+                    size="sm"
+                    onClick={handleSavePassword}
+                    isLoading={isUpdatingPassword}
+                    disabled={isUpdatingPassword}
+                  >
+                    Update Password
+                  </Button>
+                  <Button
+                    variant="minimal"
+                    size="sm"
+                    onClick={handleResetDefaultPassword}
+                    disabled={isUpdatingPassword}
+                  >
+                    Reset (12345678)
+                  </Button>
                 </div>
 
                 <div className="p-3 rounded-lg bg-transparent border border-white/[0.04] space-y-1 text-[11px] text-neutral-400">

@@ -1,13 +1,15 @@
 package server
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
-
 	"log/slog"
 	"net/http"
 	"time"
 
+	"github.com/dickymuliafiqri/firefly/internal/analytics"
+	"github.com/dickymuliafiqri/firefly/internal/auth"
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/httpx"
 	"github.com/dickymuliafiqri/firefly/internal/limits"
@@ -23,15 +25,16 @@ type RouterDeps struct {
 	Registry    *registry.Registry
 	ConfigDir   string
 	AdminToken  string
+	Auth        *auth.Manager
 	TenantStore ports.TenantStore
 	Limiter     *limits.Limiter
 	Adapters    ports.AdapterRegistry
 	Adapter     ports.UpstreamAdapter
 	Breakers    openai.BreakerLookup
+	Analytics   *analytics.Store
 
-	Usage       ports.UsageRecorder
-	Logger      *slog.Logger
-	// Metrics is optional; a nil receiver is a safe no-op, so tests can omit it.
+	Usage    ports.UsageRecorder
+	Logger   *slog.Logger
 	Metrics  *metrics.Metrics
 	LiveLogs *LiveLogHub
 
@@ -93,6 +96,27 @@ func (deps RouterDeps) protected(h http.Handler) http.Handler {
 	return h
 }
 
+// authorizeAdmin checks if the incoming HTTP request carries a valid admin token
+// or active dashboard session token.
+func (deps RouterDeps) authorizeAdmin(r *http.Request) bool {
+	ctx := r.Context()
+	token, ok := auth.ExtractBearer(r.Header.Get("Authorization"))
+	if deps.Auth != nil {
+		if !ok {
+			return false
+		}
+		return deps.Auth.ValidateToken(ctx, token)
+	}
+	if deps.AdminToken != "" {
+		if !ok {
+			return false
+		}
+		return subtle.ConstantTimeCompare([]byte(token), []byte(deps.AdminToken)) == 1
+	}
+	// If neither Auth manager nor AdminToken is configured (e.g. bare unit tests), allow
+	return true
+}
+
 // buildHandler assembles the middleware chain and routes.
 func (s *Server) buildHandler(deps RouterDeps) http.Handler {
 	mux := http.NewServeMux()
@@ -105,7 +129,19 @@ func (s *Server) buildHandler(deps RouterDeps) http.Handler {
 	// Root dashboard & static frontend assets (embedded SPA)
 	deps.registerFrontendRoutes(mux)
 
-	// Frontend Settings API (bypasses tenant auth so UI can manage configuration)
+	// Authentication & Backend Credential Authorization Endpoints
+	mux.HandleFunc("OPTIONS /api/auth/login", deps.handleOptionsAuth)
+	mux.HandleFunc("POST /api/auth/login", deps.handleAuthLogin)
+	mux.HandleFunc("OPTIONS /api/auth/verify", deps.handleOptionsAuth)
+	mux.HandleFunc("GET /api/auth/verify", deps.handleAuthVerify)
+	mux.HandleFunc("POST /api/auth/verify", deps.handleAuthVerify)
+	mux.HandleFunc("OPTIONS /api/auth/logout", deps.handleOptionsAuth)
+	mux.HandleFunc("POST /api/auth/logout", deps.handleAuthLogout)
+	mux.HandleFunc("OPTIONS /api/auth/password", deps.handleOptionsAuth)
+	mux.HandleFunc("PUT /api/auth/password", deps.handleAuthPassword)
+	mux.HandleFunc("POST /api/auth/password", deps.handleAuthPassword)
+
+	// Frontend Settings API (authorization-guarded)
 	mux.HandleFunc("OPTIONS /api/settings", deps.handleOptionsSettings)
 	mux.HandleFunc("GET /api/settings", deps.handleGetSettings)
 	mux.HandleFunc("POST /api/settings", deps.handleUpdateSettings)
@@ -120,6 +156,17 @@ func (s *Server) buildHandler(deps RouterDeps) http.Handler {
 	mux.HandleFunc("GET /api/telemetry", deps.handleGetTelemetry)
 	mux.HandleFunc("OPTIONS /api/telemetry/events", deps.handleOptionsTelemetry)
 	mux.HandleFunc("GET /api/telemetry/events", deps.handleTelemetryEvents)
+
+	// Upstream Circuit Breakers Management API
+	mux.HandleFunc("OPTIONS /api/breakers", deps.handleOptionsBreakers)
+	mux.HandleFunc("GET /api/breakers", deps.handleGetBreakers)
+	mux.HandleFunc("POST /api/breakers", deps.handleUpdateBreaker)
+	mux.HandleFunc("PUT /api/breakers", deps.handleUpdateBreaker)
+
+	// Request History API (Persistent logs & token analytics)
+	mux.HandleFunc("OPTIONS /api/history", deps.handleOptionsHistory)
+	mux.HandleFunc("GET /api/history", deps.handleGetHistory)
+	mux.HandleFunc("DELETE /api/history", deps.handleDeleteHistory)
 
 
 	// /v1/models is auth-protected but needs no upstream.

@@ -1,16 +1,53 @@
-import React, { useRef, useImperativeHandle, forwardRef } from 'react';
-import type { FireflyCanvasProps, FireflyCanvasHandle } from './types';
+import React, { useRef, useImperativeHandle, useMemo } from 'react';
+import type { FireflyCanvasProps } from './types';
 import { useFireflyPhysics } from './useFireflyPhysics';
+import { useUpstreams, useUpstreamBreakers, useRecentLogs, useIsAuthenticated, useAppStore } from '@/core/state/store';
 import { cn } from '@/lib/utils';
 
-export const FireflyCanvas = React.memo(
-  forwardRef<FireflyCanvasHandle, FireflyCanvasProps>(function FireflyCanvas(
-    { upstreams = [], onToggleUpstream, className, height = 560, isPaused = false, reducedMotion = false },
-    ref
-  ) {
+export const FireflyCanvas = React.memo(function FireflyCanvas({
+  upstreams: propUpstreams,
+  onToggleUpstream: propOnToggle,
+  className,
+  height,
+  isPaused = false,
+  reducedMotion = false,
+  ref,
+}: FireflyCanvasProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const tooltipRef = useRef<HTMLDivElement>(null);
+
+    // Direct subscription to Zustand store
+    const isAuthenticated = useIsAuthenticated();
+    const storeUpstreams = useUpstreams();
+    const storeBreakers = useUpstreamBreakers();
+    const recentLogs = useRecentLogs();
+    const toggleUpstreamBreaker = useAppStore((state) => state.toggleUpstreamBreaker);
+
+    const onToggleUpstream = propOnToggle || toggleUpstreamBreaker;
+
+    // Synchronize upstreams: if propUpstreams is explicitly provided and non-empty, use it; otherwise compute directly from store
+    const upstreams = useMemo(() => {
+      if (propUpstreams && propUpstreams.length > 0) {
+        return propUpstreams;
+      }
+      return storeUpstreams.map((u) => {
+        const breakerState = storeBreakers[u.name] || (u.enabled === false ? 'OPEN' : 'CLOSED');
+        const isConnected = u.enabled !== false && breakerState === 'CLOSED';
+        const inflightCount = recentLogs.filter(
+          (l) => l.status === 0 && l.upstream?.toLowerCase() === u.name.toLowerCase()
+        ).length;
+        return {
+          name: u.name,
+          protocol: u.protocol || 'openai',
+          base_url: u.base_url || (u.base_urls && u.base_urls[0]) || 'https://api.openai.com/v1',
+          connected: isConnected,
+          breaker_state: breakerState,
+          latency_ms: 184,
+          inflight: inflightCount,
+        };
+      });
+    }, [propUpstreams, storeUpstreams, storeBreakers, recentLogs]);
 
     const { triggerBurst } = useFireflyPhysics({
       canvasRef,
@@ -20,6 +57,7 @@ export const FireflyCanvas = React.memo(
       onToggleUpstream,
       isPaused,
       reducedMotion,
+      canToggle: isAuthenticated,
     });
 
     useImperativeHandle(
@@ -34,8 +72,13 @@ export const FireflyCanvas = React.memo(
       <div
         ref={containerRef}
         id="fireflyContainer"
-        className={cn('relative w-full overflow-hidden select-none flex-shrink-0 bg-transparent', className)}
-        style={{ minHeight: 520, height, position: 'relative', background: 'transparent', margin: 0 }}
+        className={cn('relative w-full h-[360px] sm:h-[460px] lg:h-[560px] overflow-hidden select-none flex-shrink-0 bg-transparent', className)}
+        style={{
+          position: 'relative',
+          background: 'transparent',
+          margin: 0,
+          ...(height ? { height } : {}),
+        }}
       >
         {/* Living Canvas 2D */}
         <canvas
@@ -54,5 +97,4 @@ export const FireflyCanvas = React.memo(
         />
       </div>
     );
-  })
-);
+});

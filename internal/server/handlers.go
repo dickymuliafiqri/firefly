@@ -42,16 +42,42 @@ var (
 	}
 )
 
+const (
+	maxTrackerBodyCap = 64 * 1024 // 64 KiB
+	maxTrackerTailCap = 8 * 1024  // 8 KiB rolling window
+)
+
 type responseTracker struct {
 	http.ResponseWriter
 	bytesWritten int64
 	linesWritten int64
+	bodyBuf      []byte
+	tailBuf      []byte
 }
 
 func (t *responseTracker) Write(p []byte) (int, error) {
 	n, err := t.ResponseWriter.Write(p)
 	t.bytesWritten += int64(n)
 	t.linesWritten += int64(bytes.Count(p, []byte("\n")))
+
+	if len(t.bodyBuf) < maxTrackerBodyCap {
+		rem := maxTrackerBodyCap - len(t.bodyBuf)
+		if len(p) <= rem {
+			t.bodyBuf = append(t.bodyBuf, p...)
+		} else {
+			t.bodyBuf = append(t.bodyBuf, p[:rem]...)
+		}
+	}
+
+	if len(p) >= maxTrackerTailCap {
+		t.tailBuf = append(t.tailBuf[:0], p[len(p)-maxTrackerTailCap:]...)
+	} else {
+		t.tailBuf = append(t.tailBuf, p...)
+		if len(t.tailBuf) > maxTrackerTailCap {
+			t.tailBuf = t.tailBuf[len(t.tailBuf)-maxTrackerTailCap:]
+		}
+	}
+
 	return n, err
 }
 
@@ -59,6 +85,96 @@ func (t *responseTracker) Flush() {
 	if f, ok := t.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+func parseUsageFromBytes(data []byte) (promptToks int, compToks int, ok bool) {
+	if len(data) == 0 {
+		return 0, 0, false
+	}
+	// Case 1: Standard JSON object with top-level "usage"
+	if gjson.GetBytes(data, "usage").Exists() {
+		usage := gjson.GetBytes(data, "usage")
+		pt := usage.Get("prompt_tokens")
+		if !pt.Exists() {
+			pt = usage.Get("input_tokens")
+		}
+		ct := usage.Get("completion_tokens")
+		if !ct.Exists() {
+			ct = usage.Get("output_tokens")
+		}
+		pVal := int(pt.Int())
+		cVal := int(ct.Int())
+		if pVal > 0 || cVal > 0 {
+			return pVal, cVal, true
+		}
+	}
+
+	// Case 2: SSE stream chunks with data: {...}
+	lines := bytes.Split(data, []byte("\n"))
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := bytes.TrimSpace(lines[i])
+		if !bytes.HasPrefix(line, []byte("data:")) {
+			continue
+		}
+		payload := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
+		if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+			continue
+		}
+		if gjson.GetBytes(payload, "usage").Exists() {
+			usage := gjson.GetBytes(payload, "usage")
+			pt := usage.Get("prompt_tokens")
+			if !pt.Exists() {
+				pt = usage.Get("input_tokens")
+			}
+			ct := usage.Get("completion_tokens")
+			if !ct.Exists() {
+				ct = usage.Get("output_tokens")
+			}
+			pVal := int(pt.Int())
+			cVal := int(ct.Int())
+			if pVal > 0 || cVal > 0 {
+				return pVal, cVal, true
+			}
+		}
+	}
+
+	// Case 3: Embedded "usage" substring anywhere in chunk (e.g. Anthropic message_delta)
+	idx := bytes.LastIndex(data, []byte(`"usage"`))
+	if idx >= 0 {
+		sub := data[idx:]
+		usageBlock := append([]byte("{"), sub...)
+		if gjson.GetBytes(usageBlock, "usage").Exists() {
+			usage := gjson.GetBytes(usageBlock, "usage")
+			pt := usage.Get("prompt_tokens")
+			if !pt.Exists() {
+				pt = usage.Get("input_tokens")
+			}
+			ct := usage.Get("completion_tokens")
+			if !ct.Exists() {
+				ct = usage.Get("output_tokens")
+			}
+			pVal := int(pt.Int())
+			cVal := int(ct.Int())
+			if pVal > 0 || cVal > 0 {
+				return pVal, cVal, true
+			}
+		}
+	}
+
+	return 0, 0, false
+}
+
+func (t *responseTracker) extractUsage() (promptToks int, compToks int, ok bool) {
+	if t == nil {
+		return 0, 0, false
+	}
+	if pIn, pOut, found := parseUsageFromBytes(t.tailBuf); found {
+		return pIn, pOut, true
+	}
+	if pIn, pOut, found := parseUsageFromBytes(t.bodyBuf); found {
+		return pIn, pOut, true
+	}
+	return 0, 0, false
 }
 
 func estimateInputTokens(body []byte) int {
@@ -96,8 +212,27 @@ func estimateInputTokens(body []byte) int {
 		}
 		return toks
 	}
+	input := gjson.GetBytes(body, "input")
+	if input.Exists() {
+		totalChars := 0
+		if input.Type == gjson.String {
+			totalChars = len(input.Str)
+		} else if input.IsArray() {
+			input.ForEach(func(_, part gjson.Result) bool {
+				totalChars += len(part.String())
+				return true
+			})
+		}
+		if totalChars > 0 {
+			toks := totalChars / 4
+			if toks < 1 {
+				toks = 1
+			}
+			return toks
+		}
+	}
 	toks := len(body) / 6
-	if toks < 1 {
+	if toks < 1 && len(body) > 0 {
 		toks = 1
 	}
 	return toks
@@ -160,6 +295,7 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 			return
 		}
 		stream := gjson.GetBytes(body, "stream").Bool()
+		tokensIn := estimateInputTokens(body)
 
 		// 3. Resolve the routing target (model -> upstream + credential).
 		var canUseUpstream func(string) bool
@@ -170,37 +306,39 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 		}
 		target, fallbackUsed, err := snap.ResolveTargetWithBreaker(tenant, model, canUseUpstream)
 		if err != nil {
-			if deps.LiveLogs != nil {
-				status := http.StatusInternalServerError
-				var re *domain.ResolveError
-				if errors.As(err, &re) {
-					switch re.Kind {
-					case domain.ResolveModelNotFound:
-						status = http.StatusNotFound
-					case domain.ResolveModelForbidden:
-						status = http.StatusForbidden
-					case domain.ResolveTenantInvalid:
-						status = http.StatusUnauthorized
-					case domain.ResolveUpstreamUnavailable:
-						status = http.StatusServiceUnavailable
-					}
-				} else if errors.Is(err, domain.ErrAllKeysExhausted) {
-					status = http.StatusTooManyRequests
+			status := http.StatusInternalServerError
+			var re *domain.ResolveError
+			if errors.As(err, &re) {
+				switch re.Kind {
+				case domain.ResolveModelNotFound:
+					status = http.StatusNotFound
+				case domain.ResolveModelForbidden:
+					status = http.StatusForbidden
+				case domain.ResolveTenantInvalid:
+					status = http.StatusUnauthorized
+				case domain.ResolveUpstreamUnavailable:
+					status = http.StatusServiceUnavailable
 				}
-				deps.LiveLogs.Publish(LiveLog{
-					ID:         httpx.RequestIDFrom(r.Context()),
-					Timestamp:  time.Now().UnixMilli(),
-					Method:     r.Method,
-					Path:       r.URL.Path,
-					Status:     status,
-					DurationMs: 0,
-					Model:      model,
-					Upstream:   "",
-					Tenant:     tenant.Name,
-					Stream:     stream,
-					Error:      err.Error(),
-				})
+			} else if errors.Is(err, domain.ErrAllKeysExhausted) {
+				status = http.StatusTooManyRequests
 			}
+			deps.recordLog(LiveLog{
+				ID:            httpx.RequestIDFrom(r.Context()),
+				Timestamp:     time.Now().UnixMilli(),
+				Method:        r.Method,
+				Path:          r.URL.Path,
+				Status:        status,
+				DurationMs:    0,
+				Model:         model,
+				Upstream:      "",
+				Tenant:        tenant.Name,
+				Stream:        stream,
+				TokensIn:      tokensIn,
+				TokensOut:     0,
+				Tokens:        tokensIn,
+				EstimatedCost: float64(tokensIn) * 0.0000025,
+				Error:         err.Error(),
+			})
 			writeResolveError(w, err)
 			return
 		}
@@ -241,21 +379,23 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 		if err != nil {
 			if errors.Is(err, limits.ErrRateLimited) {
 				deps.Metrics.ObserveKeyCooldown(target.Upstream.Name, keyRef)
-				if deps.LiveLogs != nil {
-					deps.LiveLogs.Publish(LiveLog{
-						ID:         httpx.RequestIDFrom(r.Context()),
-						Timestamp:  time.Now().UnixMilli(),
-						Method:     r.Method,
-						Path:       r.URL.Path,
-						Status:     http.StatusTooManyRequests,
-						DurationMs: 0,
-						Model:      model,
-						Upstream:   target.Upstream.Name,
-						Tenant:     tenant.Name,
-						Stream:     stream,
-						Error:      "upstream credential capacity exhausted",
-					})
-				}
+				deps.recordLog(LiveLog{
+					ID:            httpx.RequestIDFrom(r.Context()),
+					Timestamp:     time.Now().UnixMilli(),
+					Method:        r.Method,
+					Path:          r.URL.Path,
+					Status:        http.StatusTooManyRequests,
+					DurationMs:    0,
+					Model:         model,
+					Upstream:      target.Upstream.Name,
+					Tenant:        tenant.Name,
+					Stream:        stream,
+					TokensIn:      tokensIn,
+					TokensOut:     0,
+					Tokens:        tokensIn,
+					EstimatedCost: float64(tokensIn) * 0.0000025,
+					Error:         "upstream credential capacity exhausted",
+				})
 				w.Header().Set("Retry-After", "1")
 				openai.WriteError(w, http.StatusTooManyRequests, openai.TypeRateLimit,
 					"upstream credential capacity exhausted; retry shortly")
@@ -292,25 +432,22 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 		if target.Upstream != nil {
 			upstreamName = target.Upstream.Name
 		}
-		tokensIn := estimateInputTokens(body)
-		if deps.LiveLogs != nil {
-			deps.LiveLogs.Publish(LiveLog{
-				ID:            reqID,
-				Timestamp:     start.UnixMilli(),
-				Method:        r.Method,
-				Path:          r.URL.Path,
-				Status:        0, // In-flight / Active
-				DurationMs:    0,
-				Model:         model,
-				Upstream:      upstreamName,
-				Tenant:        tenant.Name,
-				Stream:        stream,
-				TokensIn:      tokensIn,
-				TokensOut:     0,
-				Tokens:        tokensIn,
-				EstimatedCost: float64(tokensIn) * 0.0000025,
-			})
-		}
+		deps.recordLog(LiveLog{
+			ID:            reqID,
+			Timestamp:     start.UnixMilli(),
+			Method:        r.Method,
+			Path:          r.URL.Path,
+			Status:        0, // In-flight / Active
+			DurationMs:    0,
+			Model:         model,
+			Upstream:      upstreamName,
+			Tenant:        tenant.Name,
+			Stream:        stream,
+			TokensIn:      tokensIn,
+			TokensOut:     0,
+			Tokens:        tokensIn,
+			EstimatedCost: float64(tokensIn) * 0.0000025,
+		})
 
 		tracker := &responseTracker{ResponseWriter: w}
 		fwdErr := adapter.Forward(r.Context(), target, fwdReq, tracker)
@@ -337,46 +474,52 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 		}
 		deps.Metrics.ObserveKeyRequest(target.Upstream.Name, keyRef, keyStatus)
 
-		if deps.LiveLogs != nil {
-			var errStr string
-			if fwdErr != nil {
-				errStr = fwdErr.Error()
-			}
-			tokensOut := 0
-			if keyStatus == http.StatusOK && tracker.bytesWritten > 0 {
-				if stream {
-					tokensOut = int(tracker.linesWritten / 2)
-					if tokensOut <= 0 {
-						tokensOut = int(tracker.bytesWritten / 60)
-					}
-				} else {
-					tokensOut = int(tracker.bytesWritten / 4)
-				}
-				if tokensOut < 1 {
-					tokensOut = 1
-				}
-			}
-			totTokens := tokensIn + tokensOut
-			totCost := (float64(tokensIn) * 0.0000025) + (float64(tokensOut) * 0.0000100)
-
-			deps.LiveLogs.Publish(LiveLog{
-				ID:            reqID,
-				Timestamp:     start.UnixMilli(),
-				Method:        r.Method,
-				Path:          r.URL.Path,
-				Status:        keyStatus,
-				DurationMs:    elapsed.Milliseconds(),
-				Model:         model,
-				Upstream:      upstreamName,
-				Tenant:        tenant.Name,
-				Stream:        stream,
-				TokensIn:      tokensIn,
-				TokensOut:     tokensOut,
-				Tokens:        totTokens,
-				EstimatedCost: totCost,
-				Error:         errStr,
-			})
+		var errStr string
+		if fwdErr != nil {
+			errStr = fwdErr.Error()
 		}
+		tokensOut := 0
+		if pIn, pOut, ok := tracker.extractUsage(); ok {
+			if pIn > 0 {
+				tokensIn = pIn
+			}
+			if pOut > 0 {
+				tokensOut = pOut
+			}
+		}
+		if tokensOut <= 0 && keyStatus == http.StatusOK && tracker.bytesWritten > 0 {
+			if stream {
+				tokensOut = int(tracker.linesWritten / 2)
+				if tokensOut <= 0 {
+					tokensOut = int(tracker.bytesWritten / 60)
+				}
+			} else {
+				tokensOut = int(tracker.bytesWritten / 4)
+			}
+			if tokensOut < 1 {
+				tokensOut = 1
+			}
+		}
+		totTokens := tokensIn + tokensOut
+		totCost := (float64(tokensIn) * 0.0000025) + (float64(tokensOut) * 0.0000100)
+
+		deps.recordLog(LiveLog{
+			ID:            reqID,
+			Timestamp:     start.UnixMilli(),
+			Method:        r.Method,
+			Path:          r.URL.Path,
+			Status:        keyStatus,
+			DurationMs:    elapsed.Milliseconds(),
+			Model:         model,
+			Upstream:      upstreamName,
+			Tenant:        tenant.Name,
+			Stream:        stream,
+			TokensIn:      tokensIn,
+			TokensOut:     tokensOut,
+			Tokens:        totTokens,
+			EstimatedCost: totCost,
+			Error:         errStr,
+		})
 
 		if fwdErr != nil {
 			deps.logForwardFailure(r.Context(), target, fwdErr, elapsed)
@@ -387,6 +530,17 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 				writeUpstreamFailure(w, fwdErr)
 			}
 		}
+	}
+}
+
+// recordLog dispatches the request log to LiveLogs (and persistent storage) or directly to Analytics.
+func (deps RouterDeps) recordLog(log LiveLog) {
+	if deps.LiveLogs != nil {
+		deps.LiveLogs.Publish(log)
+		return
+	}
+	if deps.Analytics != nil {
+		_ = deps.Analytics.Record(context.Background(), log)
 	}
 }
 

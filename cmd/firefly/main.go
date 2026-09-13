@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/dickymuliafiqri/firefly/internal/analytics"
 	"github.com/dickymuliafiqri/firefly/internal/anthropic"
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 
@@ -55,9 +56,10 @@ func run() error {
 		adminAddr      = flag.String("admin-addr", "", "admin listen address for /metrics and guarded /debug/* (empty disables)")
 		logLevel       = flag.String("log-level", "info", "log level: debug|info|warn|error")
 		graceSecs      = flag.Int("shutdown-grace-seconds", 30, "max seconds to drain in-flight requests on shutdown")
-		adminToken     = flag.String("admin-token", "", "bearer token guarding /debug/* endpoints (defaults to $FIREFLY_ADMIN_TOKEN; empty disables them)")
-		healthInterval = flag.Duration("health-check-interval", upstream.DefaultHealthCheckInterval, "interval between background upstream health checks (0 to disable)")
-		showVersion    = flag.Bool("version", false, "print version information and exit")
+		adminToken        = flag.String("admin-token", "", "bearer token guarding /debug/* endpoints (defaults to $FIREFLY_ADMIN_TOKEN; empty disables them)")
+		dashboardPassword = flag.String("dashboard-password", "", "master password for dashboard access (defaults to $FIREFLY_DASHBOARD_PASSWORD or 12345678)")
+		healthInterval    = flag.Duration("health-check-interval", upstream.DefaultHealthCheckInterval, "interval between background upstream health checks (0 to disable)")
+		showVersion       = flag.Bool("version", false, "print version information and exit")
 	)
 	flag.Parse()
 
@@ -200,19 +202,47 @@ func run() error {
 	}
 
 
-	// 4. HTTP server with the full middleware chain.
+	// 4. Analytics, Token Ledger, and Request History Persistent Storage.
+	analyticsStore, err := analytics.NewStore(*configDir)
+	if err != nil {
+		return fmt.Errorf("init analytics store: %w", err)
+	}
+	// Restore persisted circuit breaker states
+	if overrides, err := analyticsStore.GetBreakerOverrides(ctx); err == nil {
+		for upName, stateStr := range overrides {
+			if state, ok := upstream.ParseBreakerState(stateStr); ok {
+				breakers.SetState(upName, state)
+			}
+		}
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		analyticsStore.Start(ctx, 3*time.Second)
+	}()
+
+	// 5. Authentication and HTTP server with the full middleware chain.
+	authMgr := auth.NewManager(*configDir, *adminToken, *dashboardPassword)
+	tenantStore := auth.NewStore(reg)
+	tenantStore.SetAuthManager(authMgr)
+
+	liveLogs := server.NewLiveLogHub()
+	liveLogs.AttachStore(analyticsStore)
+
 	deps := server.RouterDeps{
 		Snapshots:   reg,
 		Registry:    reg,
 		ConfigDir:   *configDir,
 		AdminToken:  *adminToken,
-		TenantStore: auth.NewStore(reg),
+		Auth:        authMgr,
+		TenantStore: tenantStore,
 		Limiter:     limits.New(),
 		Adapters:    adapterRegistry,
 		Adapter:     openAIAdapter,
 		Usage:       counters,
 		Breakers:    breakers,
-
+		Analytics:   analyticsStore,
+		LiveLogs:    liveLogs,
 		Logger:      logger,
 		Metrics:     mx,
 	}
@@ -249,6 +279,9 @@ func run() error {
 	//    join them. JoinWithTimeout bounds the wait so a wedged worker cannot
 	//    hang shutdown forever.
 	wg.Wait()
+	flushCtx, flushCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	_ = analyticsStore.Flush(flushCtx)
+	flushCancel()
 	logger.Info("bye")
 	return nil
 }

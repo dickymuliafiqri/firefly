@@ -48,9 +48,9 @@ class FireflyParticle {
   }
 
   update(w: number, h: number, dt: number, now: number) {
-    const isOnline = this.upstream.connected !== false && this.upstream.breaker_state !== 'CLOSED';
+    const isOnline = this.upstream.connected !== false && this.upstream.breaker_state !== 'OPEN';
 
-    // Dormant State: restful slow hovering drift without glow (CLOSED)
+    // Dormant State: restful slow hovering drift without glow (OPEN/DISABLED)
     if (!isOnline) {
       this.glow = 0;
       this.activeBurst = 0;
@@ -148,9 +148,9 @@ class FireflyParticle {
   }
 
   draw(c: CanvasRenderingContext2D) {
-    const isOnline = this.upstream.connected !== false && this.upstream.breaker_state !== 'CLOSED';
+    const isOnline = this.upstream.connected !== false && this.upstream.breaker_state !== 'OPEN';
 
-    // Disconnected / Dormant Rendering (Gray silhouette, no glow when CLOSED)
+    // Disconnected / Dormant Rendering (Gray silhouette, no glow when OPEN/DISABLED)
     if (!isOnline) {
       c.save();
       c.translate(this.x, this.y);
@@ -175,8 +175,8 @@ class FireflyParticle {
       c.save();
       c.font = '11px "JetBrains Mono", monospace';
       c.textAlign = 'center';
-      c.fillStyle = '#ef4444';
-      c.fillText(`${this.upstream.name} [CLOSED]`, this.x, this.y + 20);
+      c.fillStyle = '#9ca3af';
+      c.fillText(`${this.upstream.name} [DISABLED]`, this.x, this.y + 20);
       c.restore();
       return;
     }
@@ -291,6 +291,10 @@ function drawConstellationLines(ctx: CanvasRenderingContext2D, fireflies: Firefl
     for (let j = i + 1; j < fireflies.length; j++) {
       const f1 = fireflies[i];
       const f2 = fireflies[j];
+      const isOnline1 = f1.upstream.connected !== false && f1.upstream.breaker_state !== 'OPEN';
+      const isOnline2 = f2.upstream.connected !== false && f2.upstream.breaker_state !== 'OPEN';
+      if (!isOnline1 || !isOnline2) continue;
+
       const dist = Math.hypot(f2.x - f1.x, f2.y - f1.y);
 
       if (dist < maxDistance) {
@@ -307,13 +311,14 @@ function drawConstellationLines(ctx: CanvasRenderingContext2D, fireflies: Firefl
 }
 
 interface UseFireflyPhysicsOptions {
-  canvasRef: React.RefObject<HTMLCanvasElement>;
-  containerRef: React.RefObject<HTMLDivElement>;
-  tooltipRef: React.RefObject<HTMLDivElement>;
+  canvasRef: React.RefObject<HTMLCanvasElement | null>;
+  containerRef: React.RefObject<HTMLDivElement | null>;
+  tooltipRef: React.RefObject<HTMLDivElement | null>;
   upstreams?: FireflyUpstream[];
   onToggleUpstream?: (name: string) => void;
   isPaused?: boolean;
   reducedMotion?: boolean;
+  canToggle?: boolean;
 }
 
 /**
@@ -330,6 +335,7 @@ export function useFireflyPhysics({
   onToggleUpstream,
   isPaused = false,
   reducedMotion = false,
+  canToggle = true,
 }: UseFireflyPhysicsOptions) {
   const firefliesRef = useRef<FireflyParticle[]>([]);
   const animFrameIdRef = useRef<number>(0);
@@ -341,10 +347,11 @@ export function useFireflyPhysics({
   const latestOnToggle = useLatest(onToggleUpstream);
   const latestIsPaused = useLatest(isPaused);
   const latestReducedMotion = useLatest(reducedMotion);
+  const latestCanToggle = useLatest(canToggle);
 
   // Sync fireflies array strictly with real upstreams (zero dummy fallbacks)
-  const syncFireflies = (w: number, h: number) => {
-    const currentList = latestUpstreams.current || [];
+  const syncFireflies = (w: number, h: number, list?: FireflyUpstream[]) => {
+    const currentList = list || latestUpstreams.current || [];
 
     const currentMap = new Map<string, FireflyParticle>();
     for (const f of firefliesRef.current) {
@@ -442,11 +449,18 @@ export function useFireflyPhysics({
       if (hit && tooltip) {
         hoveredFireflyRef.current = hit;
         container.style.cursor = 'pointer';
-        const isOnline = hit.upstream.connected !== false && hit.upstream.breaker_state !== 'CLOSED';
+        const isOnline = hit.upstream.connected !== false && hit.upstream.breaker_state !== 'OPEN';
+        const isHalfOpen = hit.upstream.breaker_state === 'HALF-OPEN';
         const ep = hit.upstream.base_url || (hit.upstream.base_urls && hit.upstream.base_urls[0]) || '';
+        const canMutate = latestCanToggle.current ?? true;
+        const actionHint = canMutate
+          ? (isOnline ? 'Click to disable' : 'Click to activate')
+          : 'Login required to toggle';
         const details = isOnline
-          ? `${(hit.upstream.protocol || 'OPENAI').toUpperCase()} · ${ep} · ${hit.upstream.latency_ms || 180}ms (Status: OPEN · Click to toggle CLOSED)`
-          : `Status: CLOSED · Dormant Firefly (Click to toggle OPEN)`;
+          ? `${(hit.upstream.protocol || 'OPENAI').toUpperCase()} · ${ep} · ${hit.upstream.latency_ms || 180}ms (Status: ACTIVE · ${actionHint})`
+          : isHalfOpen
+          ? `${(hit.upstream.protocol || 'OPENAI').toUpperCase()} · ${ep} · Status: HALF-OPEN (${actionHint})`
+          : `Status: DISABLED (Circuit Open) · ${actionHint}`;
 
         tooltip.innerHTML = `<span class="font-bold">${hit.upstream.name}</span><span class="ml-1 text-[10px] opacity-80">${details}</span>`;
         tooltip.style.left = `${hit.x}px`;
@@ -478,14 +492,42 @@ export function useFireflyPhysics({
       const clickX = e.clientX - rect.left;
       const clickY = e.clientY - rect.top;
 
-      for (const f of firefliesRef.current) {
-        const d = Math.hypot(f.x - clickX, f.y - clickY);
-        if (d < 30) {
-          f.triggerBurst();
-          if (latestOnToggle.current) {
-            latestOnToggle.current(f.upstream.name);
+      let hit: FireflyParticle | null = hoveredFireflyRef.current;
+      if (!hit) {
+        for (const f of firefliesRef.current) {
+          const d = Math.hypot(f.x - clickX, f.y - clickY);
+          if (d < 35) {
+            hit = f;
+            break;
           }
-          break;
+        }
+      }
+
+      if (hit) {
+        hit.triggerBurst();
+
+        const canMutate = latestCanToggle.current ?? true;
+        if (canMutate) {
+          // Instant optimistic toggle on the particle only if authorized
+          const currentBreaker = hit.upstream.breaker_state || 'CLOSED';
+          const nextBreaker: 'OPEN' | 'CLOSED' = currentBreaker === 'OPEN' ? 'CLOSED' : 'OPEN';
+          hit.upstream.breaker_state = nextBreaker;
+          hit.upstream.connected = nextBreaker === 'CLOSED';
+
+          // Immediately update tooltip to match new state
+          if (tooltip) {
+            const isOnline = nextBreaker === 'CLOSED';
+            const ep = hit.upstream.base_url || (hit.upstream.base_urls && hit.upstream.base_urls[0]) || '';
+            const details = isOnline
+              ? `${(hit.upstream.protocol || 'OPENAI').toUpperCase()} · ${ep} · ${hit.upstream.latency_ms || 180}ms (Status: ACTIVE · Click to disable)`
+              : `Status: DISABLED (Circuit Open) · Click to activate`;
+
+            tooltip.innerHTML = `<span class="font-bold">${hit.upstream.name}</span><span class="ml-1 text-[10px] opacity-80">${details}</span>`;
+          }
+        }
+
+        if (latestOnToggle.current) {
+          latestOnToggle.current(hit.upstream.name);
         }
       }
     };
@@ -569,7 +611,7 @@ export function useFireflyPhysics({
   useEffect(() => {
     if (canvasRef.current && containerRef.current) {
       const rect = containerRef.current.getBoundingClientRect();
-      syncFireflies(rect.width || 800, rect.height || 320);
+      syncFireflies(rect.width || 800, rect.height || 320, upstreams);
     }
   }, [upstreams]);
 

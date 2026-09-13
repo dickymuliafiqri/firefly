@@ -1,5 +1,5 @@
 import { cn } from './lib/utils';
-import { Suspense, useEffect, useTransition, useState } from 'react';
+import React, { Suspense, useEffect, useTransition, useState } from 'react';
 import { Shell } from './core/layout/Shell';
 import type { TabId } from './core/layout/Header';
 import { MODULE_REGISTRY } from './modules/registry';
@@ -26,6 +26,47 @@ import { RefreshCw } from 'lucide-react';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { AudioManager } from './core/audio/AudioManager';
 
+const CircuitBreakerStatusBadge = React.memo(function CircuitBreakerStatusBadge({
+  upstreamName,
+  breakers,
+}: {
+  upstreamName: string;
+  breakers: Record<string, 'OPEN' | 'CLOSED' | 'HALF-OPEN'>;
+}) {
+  const st = (upstreamName ? breakers[upstreamName] : null) || 'CLOSED';
+  const isClosed = st === 'CLOSED';
+  const isHalfOpen = st === 'HALF-OPEN';
+  return (
+    <div className="flex items-center gap-2">
+      <span
+        className={cn(
+          'w-1.5 h-1.5 rounded-full',
+          isClosed
+            ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.8)]'
+            : isHalfOpen
+            ? 'bg-amber-400'
+            : 'bg-neutral-600'
+        )}
+      />
+      <span
+        className={cn(
+          'font-medium',
+          isClosed ? 'text-emerald-400/90' : isHalfOpen ? 'text-amber-400/90' : 'text-neutral-400'
+        )}
+      >
+        STATE: {st}
+      </span>
+      <span className="text-neutral-500 text-[11px]">
+        {isClosed
+          ? '(Circuit Healthy / Passing Traffic)'
+          : isHalfOpen
+          ? '(Trial Recovery / Half-Open)'
+          : '(Circuit Tripped / Open)'}
+      </span>
+    </div>
+  );
+});
+
 export default function App() {
   useLiveTelemetryStream();
   useTelemetryQuery();
@@ -44,7 +85,12 @@ export default function App() {
   const activeDrawer = useActiveDrawer();
   const drawerPayload = useDrawerPayload() as Record<string, unknown> | null;
   const upstreamBreakers = useUpstreamBreakers();
-  const { setSettings, closeModal, closeDrawer, addToast, login } = useStoreActions();
+  const { setSettings, closeModal, closeDrawer, addToast, login, verifySession } = useStoreActions();
+
+  // Verify existing session against backend on mount
+  useEffect(() => {
+    verifySession();
+  }, [verifySession]);
 
   // Tab transition wrapper with Auth Guard for non-overview routes
   const handleTabChange = (tab: TabId) => {
@@ -127,19 +173,23 @@ export default function App() {
 
       {/* Navigation Login Authentication Modal */}
       <LoginModal
-        isOpen={isLoginModalOpen}
+        isOpen={isLoginModalOpen || activeModal === 'login'}
         onClose={() => {
           setIsLoginModalOpen(false);
+          closeModal();
           setPendingTab(null);
         }}
         targetTab={pendingTab}
         onLogin={login}
         onSuccess={(target) => {
           setIsLoginModalOpen(false);
+          closeModal();
           setPendingTab(null);
-          startTransition(() => {
-            rawSetActiveTab(target);
-          });
+          if (target) {
+            startTransition(() => {
+              rawSetActiveTab(target);
+            });
+          }
           addToast({
             title: 'Authentication Successful',
             message: 'Dashboard access unlocked.',
@@ -220,32 +270,10 @@ export default function App() {
 
           <div className="p-3.5 rounded-xl bg-transparent border border-white/[0.06] flex flex-col gap-1.5">
             <span className="text-[10px] text-neutral-500 uppercase tracking-wider">Circuit Breaker</span>
-            {(() => {
-              const uName = String(drawerPayload?.name || '');
-              const st = (uName ? upstreamBreakers[uName] : null) || 'OPEN';
-              const isOpen = st === 'OPEN';
-              const isHalfOpen = st === 'HALF-OPEN';
-              return (
-                <div className="flex items-center gap-2">
-                  <span
-                    className={cn(
-                      'w-1.5 h-1.5 rounded-full',
-                      isOpen
-                        ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.8)]'
-                        : isHalfOpen
-                        ? 'bg-amber-400'
-                        : 'bg-neutral-600'
-                    )}
-                  />
-                  <span className={cn('font-medium', isOpen ? 'text-emerald-400/90' : isHalfOpen ? 'text-amber-400/90' : 'text-neutral-400')}>
-                    STATE: {st}
-                  </span>
-                  <span className="text-neutral-500 text-[11px]">
-                    {isOpen ? '(Active Network)' : '(Dormant Network)'}
-                  </span>
-                </div>
-              );
-            })()}
+            <CircuitBreakerStatusBadge
+              upstreamName={String(drawerPayload?.name || '')}
+              breakers={upstreamBreakers}
+            />
           </div>
 
           <div className="p-3.5 rounded-xl bg-transparent border border-white/[0.06] flex flex-col gap-1.5">

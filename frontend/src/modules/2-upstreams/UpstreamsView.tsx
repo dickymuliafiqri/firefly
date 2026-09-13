@@ -61,20 +61,11 @@ export default function UpstreamsView() {
 
   const handleToggleBreaker = useCallback(
     (name: string) => {
-      const currentState = upstreamBreakers[name] || 'OPEN';
+      const currentState = upstreamBreakers[name] || 'CLOSED';
       const nextState = currentState === 'OPEN' ? 'CLOSED' : 'OPEN';
       toggleUpstreamBreaker(name);
 
-      // Persist to Go backend
-      const currentSettings = {
-        upstreams: useAppStore.getState().upstreams,
-        models: useAppStore.getState().models,
-        tenants: useAppStore.getState().tenants,
-        combos: useAppStore.getState().combos,
-      };
-      saveMutation.mutate(currentSettings);
-
-      if (nextState === 'OPEN') {
+      if (nextState === 'CLOSED') {
         addToast({
           title: name,
           message: 'Upstream activated.',
@@ -88,7 +79,7 @@ export default function UpstreamsView() {
         });
       }
     },
-    [upstreamBreakers, toggleUpstreamBreaker, saveMutation, addToast]
+    [upstreamBreakers, toggleUpstreamBreaker, addToast]
   );
 
   return (
@@ -112,7 +103,7 @@ export default function UpstreamsView() {
             <UpstreamCard
               key={u.name}
               upstream={u}
-              breakerState={upstreamBreakers[u.name] || 'OPEN'}
+              breakerState={upstreamBreakers[u.name] || (u.enabled === false ? 'OPEN' : 'CLOSED')}
               onToggleBreaker={handleToggleBreaker}
               onEdit={handleEdit}
               onDelete={handleDeleteRequest}

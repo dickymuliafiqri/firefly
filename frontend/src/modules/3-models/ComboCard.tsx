@@ -101,13 +101,13 @@ export const ComboCard = React.memo(function ComboCard({
         </span>
         {combo.models.map((modName, idx) => (
           <React.Fragment key={modName}>
-            {idx > 0 && (
+            {idx > 0 ? (
               strategy === 'failover' ? (
                 <ArrowRight className="w-3 h-3 text-neutral-600 flex-shrink-0" />
               ) : (
                 <span className="text-neutral-600 text-[11px]">/</span>
               )
-            )}
+            ) : null}
             <span className={idx === 0 && strategy === 'failover' ? 'text-neutral-200 font-medium' : 'text-neutral-300'}>
               {modName}
             </span>

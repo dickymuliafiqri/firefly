@@ -196,10 +196,11 @@ Virtual Combos aggregate multiple models across different upstreams into a singl
 
 ## Embedded Web Dashboard & Navigation Security
 
-Firefly ships with a nocturnal React 18 Single Page Application embedded directly into the standalone binary (`//go:embed all:dist`):
-- **Public Overview**: Real-time traffic pulse, latency graphs, active connection counters, and ambient procedural lo-fi player.
-- **Protected Route Navigation**: Accessing configuration and diagnostic modules (*Upstreams, Models, Combos, Tenants, Telemetry, Settings, Playground*) is gated behind a dashboard password dialog (default: `12345678`).
-- **Dashboard Security Management**: Configure, test, and reset access credentials directly from the Settings visual panel.
+Firefly ships with a nocturnal React 19 Single Page Application embedded directly into the standalone binary (`//go:embed all:dist`):
+- **Responsive Mobile & Desktop**: Clean, unified navigation across all viewports with a nocturnal bioluminescent mobile burger menu, adaptive viewport stability (`min-h-[100dvh]`), and touch-friendly controls.
+- **Public Overview**: Real-time traffic pulse, particle canvas physics, latency graphs, active connection counters, and ambient procedural lo-fi player.
+- **Protected Route Navigation**: Accessing configuration and diagnostic modules (*Upstreams, Models, Combos, Tenants, Telemetry, Settings, Playground*) is gated behind backend session token authentication (default: `12345678`).
+- **Backend Credential Vault**: Passwords and session tokens are stored and verified exclusively on the backend (`configs/auth.json`), eliminating sensitive credential storage in browser `localStorage`.
 - **In-Browser LLM Playground**: Test model endpoints, inspect token streaming waterfalls, and review raw SSE packet diagnostics.
 
 ---
@@ -229,7 +230,7 @@ Once installed, Firefly immediately runs as a managed `systemd` background daemo
 
 ### Prerequisites
 - Go 1.22 or higher.
-- Node.js 18+ (optional, only required if rebuilding the embedded React frontend).
+- Bun 1.0+ or Node.js 18+ (optional, only required if rebuilding the embedded React frontend).
 
 ### Building & Running
 ```bash

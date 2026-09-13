@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"time"
 )
@@ -152,6 +153,18 @@ func (b *Breaker) State() BreakerState {
 	return b.state
 }
 
+// ForceState forcibly sets the breaker into a target state, resetting failure counters.
+func (b *Breaker) ForceState(state BreakerState) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.state = state
+	b.failures = 0
+	b.successes = 0
+	if state == StateOpen {
+		b.openedAt = b.cfg.Now()
+	}
+}
+
 // BreakerRegistry holds one breaker per upstream name.
 type BreakerRegistry struct {
 	cfg BreakerConfig
@@ -200,5 +213,41 @@ func (r *BreakerRegistry) StateFor(name string) BreakerState {
 // BreakerStateString returns "closed", "open", or "half-open" for the named upstream.
 func (r *BreakerRegistry) BreakerStateString(name string) string {
 	return r.StateFor(name).String()
+}
+
+// SetState forces the named breaker into the target state.
+func (r *BreakerRegistry) SetState(name string, state BreakerState) {
+	if r == nil {
+		return
+	}
+	r.For(name).ForceState(state)
+}
+
+// AllStates returns a snapshot map of all tracked breaker states.
+func (r *BreakerRegistry) AllStates() map[string]BreakerState {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string]BreakerState, len(r.breakers))
+	for name, b := range r.breakers {
+		out[name] = b.State()
+	}
+	return out
+}
+
+// ParseBreakerState parses a string into a BreakerState.
+func ParseBreakerState(s string) (BreakerState, bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "closed":
+		return StateClosed, true
+	case "open":
+		return StateOpen, true
+	case "half-open", "halfopen", "half_open":
+		return StateHalfOpen, true
+	default:
+		return StateClosed, false
+	}
 }
 

@@ -1,5 +1,6 @@
 import type { StateCreator } from 'zustand';
 import type { UpstreamDTO, ModelDTO, TenantDTO, ComboDTO, SettingsDTO } from '@/services/schema';
+import { loginApi, verifyAuthApi, logoutApi, updatePasswordApi, updateBreakerApi } from '@/services/api';
 
 export interface SettingsSlice {
   upstreams: UpstreamDTO[];
@@ -7,7 +8,6 @@ export interface SettingsSlice {
   tenants: TenantDTO[];
   combos: ComboDTO[];
   adminToken: string;
-  dashboardPassword: string;
   isAuthenticated: boolean;
   isSettingsLoading: boolean;
   settingsError: string | null;
@@ -15,6 +15,7 @@ export interface SettingsSlice {
   upstreamBreakers: Record<string, 'OPEN' | 'CLOSED' | 'HALF-OPEN'>;
 
   setSettings: (settings: SettingsDTO) => void;
+  setUpstreamBreakers: (breakers: Record<string, 'OPEN' | 'CLOSED' | 'HALF-OPEN'>) => void;
   setUpstreams: (upstreams: UpstreamDTO[]) => void;
   addOrUpdateUpstream: (upstream: UpstreamDTO) => void;
   removeUpstream: (name: string) => void;
@@ -34,26 +35,23 @@ export interface SettingsSlice {
   removeTenant: (keyHashOrName: string) => void;
 
   setAdminToken: (token: string) => void;
-  setDashboardPassword: (password: string) => void;
-  login: (password: string) => boolean;
-  logout: () => void;
+  login: (password: string) => Promise<boolean>;
+  verifySession: () => Promise<boolean>;
+  logout: () => Promise<void>;
+  updatePassword: (currentPassword: string, newPassword: string) => Promise<{ ok: boolean; message?: string }>;
   setSettingsLoading: (loading: boolean) => void;
   setSettingsError: (error: string | null) => void;
 }
 
-const ADMIN_TOKEN_KEY = 'firefly_admin_token_v1';
-const BREAKER_STATES_KEY = 'firefly_upstream_breakers_v1';
-const DASHBOARD_PASSWORD_KEY = 'firefly_dashboard_password_v1';
+const SESSION_TOKEN_KEY = 'firefly_session_token_v1';
 const AUTH_SESSION_KEY = 'firefly_auth_session_v1';
-export const DEFAULT_DASHBOARD_PASSWORD = '12345678';
 
-function loadPersistedPassword(): string {
-  if (typeof window === 'undefined') return DEFAULT_DASHBOARD_PASSWORD;
+function loadPersistedSessionToken(): string {
+  if (typeof window === 'undefined') return '';
   try {
-    const val = localStorage.getItem(DASHBOARD_PASSWORD_KEY);
-    return val && val.length > 0 ? val : DEFAULT_DASHBOARD_PASSWORD;
+    return sessionStorage.getItem(SESSION_TOKEN_KEY) || '';
   } catch {
-    return DEFAULT_DASHBOARD_PASSWORD;
+    return '';
   }
 }
 
@@ -66,72 +64,41 @@ function loadPersistedAuthSession(): boolean {
   }
 }
 
-function loadPersistedBreakers(): Record<string, 'OPEN' | 'CLOSED' | 'HALF-OPEN'> {
-  if (typeof window === 'undefined') return {};
-  try {
-    const raw = localStorage.getItem(BREAKER_STATES_KEY);
-    return raw ? JSON.parse(raw) : {};
-  } catch {
-    return {};
-  }
-}
-
-function savePersistedBreakers(breakers: Record<string, 'OPEN' | 'CLOSED' | 'HALF-OPEN'>) {
-  if (typeof window === 'undefined') return;
-  try {
-    localStorage.setItem(BREAKER_STATES_KEY, JSON.stringify(breakers));
-  } catch {
-    // ignore
-  }
-}
-
 export const createSettingsSlice: StateCreator<SettingsSlice, [], [], SettingsSlice> = (set, get) => ({
   upstreams: [],
   models: [],
   tenants: [],
   combos: [],
-  adminToken:
-    typeof window !== 'undefined'
-      ? localStorage.getItem(ADMIN_TOKEN_KEY) || ''
-      : '',
-  dashboardPassword: loadPersistedPassword(),
-  isAuthenticated: loadPersistedAuthSession(),
+  adminToken: loadPersistedSessionToken(),
+  isAuthenticated: loadPersistedAuthSession() && !!loadPersistedSessionToken(),
   isSettingsLoading: false,
   settingsError: null,
   lastSavedAt: null,
-  upstreamBreakers: loadPersistedBreakers(),
+  upstreamBreakers: {},
+
+  setUpstreamBreakers: (breakers) => set(() => ({ upstreamBreakers: breakers })),
 
   setSettings: (settings) =>
     set((state) => {
-      const persisted = loadPersistedBreakers();
+      const serverUpstreams = settings.upstreams || [];
       const updatedBreakers: Record<string, 'OPEN' | 'CLOSED' | 'HALF-OPEN'> = {
-        ...persisted,
         ...state.upstreamBreakers,
       };
 
-      const serverUpstreams = settings.upstreams || [];
       for (const u of serverUpstreams) {
-        if (u.enabled === false) {
-          updatedBreakers[u.name] = 'CLOSED';
-        } else if (u.enabled === true && !updatedBreakers[u.name]) {
-          updatedBreakers[u.name] = 'OPEN';
+        if (!updatedBreakers[u.name]) {
+          updatedBreakers[u.name] = u.enabled === false ? 'OPEN' : 'CLOSED';
         }
       }
-      savePersistedBreakers(updatedBreakers);
-
-      const resolvedUpstreams = serverUpstreams.map((u) => ({
-        ...u,
-        enabled: updatedBreakers[u.name] !== 'CLOSED' && u.enabled !== false,
-      }));
 
       return {
-        upstreams: resolvedUpstreams,
+        upstreams: serverUpstreams,
         models: settings.models || [],
         tenants: settings.tenants || [],
         combos: settings.combos || [],
         upstreamBreakers: updatedBreakers,
-        settingsError: null,
         lastSavedAt: Date.now(),
+        settingsError: null,
       };
     }),
 
@@ -149,53 +116,56 @@ export const createSettingsSlice: StateCreator<SettingsSlice, [], [], SettingsSl
     }),
 
   removeUpstream: (name) =>
+    set((state) => ({
+      upstreams: state.upstreams.filter((u) => u.name !== name),
+      combos: state.combos.map((c) => ({
+        ...c,
+        models: c.models.filter((m) => {
+          const modelDef = state.models.find((mod) => mod.public_name === m);
+          return modelDef ? modelDef.upstream !== name : true;
+        }),
+      })),
+    })),
+
+  setBreakerState: (name, breakerState) => {
+    set((state) => ({
+      upstreamBreakers: { ...state.upstreamBreakers, [name]: breakerState },
+    }));
+    updateBreakerApi(name, breakerState, get().adminToken).catch(() => {});
+  },
+
+  toggleUpstreamBreaker: (name) => {
+    const current = get().upstreamBreakers[name] || 'CLOSED';
+    const nextState: 'OPEN' | 'CLOSED' = current === 'OPEN' ? 'CLOSED' : 'OPEN';
     set((state) => {
-      const nextBreakers = { ...state.upstreamBreakers };
-      delete nextBreakers[name];
-      savePersistedBreakers(nextBreakers);
-      return {
-        upstreams: state.upstreams.filter((u) => u.name !== name),
-        upstreamBreakers: nextBreakers,
-      };
-    }),
-
-  setBreakerState: (name, breakerState) =>
-    set((state) => {
-      const nextBreakers: Record<string, 'OPEN' | 'CLOSED' | 'HALF-OPEN'> = {
-        ...state.upstreamBreakers,
-        [name]: breakerState,
-      };
-      savePersistedBreakers(nextBreakers);
-
-      const nextUpstreams = state.upstreams.map((u) =>
-        u.name === name ? { ...u, enabled: breakerState === 'OPEN' } : u
-      );
-
-      return {
-        upstreamBreakers: nextBreakers,
-        upstreams: nextUpstreams,
-      };
-    }),
-
-  toggleUpstreamBreaker: (name) =>
-    set((state) => {
-      const current = state.upstreamBreakers[name] || 'OPEN';
-      const nextState: 'OPEN' | 'CLOSED' = current === 'OPEN' ? 'CLOSED' : 'OPEN';
       const nextBreakers: Record<string, 'OPEN' | 'CLOSED' | 'HALF-OPEN'> = {
         ...state.upstreamBreakers,
         [name]: nextState,
       };
-      savePersistedBreakers(nextBreakers);
-
-      const nextUpstreams = state.upstreams.map((u) =>
-        u.name === name ? { ...u, enabled: nextState === 'OPEN' } : u
-      );
-
+      const nextUpstreams = state.upstreams.map((u) => {
+        if (u.name === name) {
+          return { ...u, enabled: nextState === 'CLOSED' };
+        }
+        return u;
+      });
       return {
         upstreamBreakers: nextBreakers,
         upstreams: nextUpstreams,
       };
-    }),
+    });
+    updateBreakerApi(name, nextState, get().adminToken).catch(() => {
+      // Revert optimistic update if API call failed (e.g. 401 Unauthorized)
+      set((state) => ({
+        upstreamBreakers: {
+          ...state.upstreamBreakers,
+          [name]: current,
+        },
+        upstreams: state.upstreams.map((u) =>
+          u.name === name ? { ...u, enabled: current === 'CLOSED' } : u
+        ),
+      }));
+    });
+  },
 
   setModels: (models) => set(() => ({ models })),
 
@@ -213,6 +183,10 @@ export const createSettingsSlice: StateCreator<SettingsSlice, [], [], SettingsSl
   removeModel: (publicName) =>
     set((state) => ({
       models: state.models.filter((m) => m.public_name !== publicName),
+      combos: state.combos.map((c) => ({
+        ...c,
+        models: c.models.filter((m) => m !== publicName),
+      })),
     })),
 
   setCombos: (combos) => set(() => ({ combos })),
@@ -254,53 +228,92 @@ export const createSettingsSlice: StateCreator<SettingsSlice, [], [], SettingsSl
 
   setAdminToken: (token) => {
     if (typeof window !== 'undefined') {
-      if (token) {
-        localStorage.setItem(ADMIN_TOKEN_KEY, token);
-      } else {
-        localStorage.removeItem(ADMIN_TOKEN_KEY);
-      }
+      try {
+        if (token) {
+          sessionStorage.setItem(SESSION_TOKEN_KEY, token);
+        } else {
+          sessionStorage.removeItem(SESSION_TOKEN_KEY);
+        }
+      } catch {}
     }
     set(() => ({ adminToken: token }));
   },
 
-  setDashboardPassword: (password) => {
-    const trimmed = password.trim() || DEFAULT_DASHBOARD_PASSWORD;
-    if (typeof window !== 'undefined') {
-      try {
-        localStorage.setItem(DASHBOARD_PASSWORD_KEY, trimmed);
-      } catch {
-        // ignore
+  login: async (password: string) => {
+    try {
+      const res = await loginApi(password);
+      if (res && res.token) {
+        if (typeof window !== 'undefined') {
+          try {
+            sessionStorage.setItem(SESSION_TOKEN_KEY, res.token);
+            sessionStorage.setItem(AUTH_SESSION_KEY, 'true');
+          } catch {}
+        }
+        set(() => ({
+          adminToken: res.token,
+          isAuthenticated: true,
+        }));
+        return true;
       }
+      return false;
+    } catch {
+      return false;
     }
-    set(() => ({ dashboardPassword: trimmed }));
   },
 
-  login: (password) => {
-    const state = get();
-    const targetPassword = state.dashboardPassword || DEFAULT_DASHBOARD_PASSWORD;
-    if (password === targetPassword) {
-      if (typeof window !== 'undefined') {
-        try {
-          sessionStorage.setItem(AUTH_SESSION_KEY, 'true');
-        } catch {
-          // ignore
-        }
+  verifySession: async () => {
+    const token = get().adminToken;
+    if (!token) {
+      if (get().isAuthenticated) {
+        set(() => ({ isAuthenticated: false }));
       }
-      set(() => ({ isAuthenticated: true }));
-      return true;
+      return false;
+    }
+    try {
+      const res = await verifyAuthApi(token);
+      if (res && res.authenticated) {
+        if (!get().isAuthenticated) {
+          set(() => ({ isAuthenticated: true }));
+        }
+        return true;
+      }
+    } catch {}
+    if (typeof window !== 'undefined') {
+      try {
+        sessionStorage.removeItem(SESSION_TOKEN_KEY);
+        sessionStorage.removeItem(AUTH_SESSION_KEY);
+      } catch {}
+    }
+    if (get().isAuthenticated || get().adminToken !== '') {
+      set(() => ({ adminToken: '', isAuthenticated: false }));
     }
     return false;
   },
 
-  logout: () => {
+  logout: async () => {
+    const token = get().adminToken;
+    if (token) {
+      try {
+        await logoutApi(token);
+      } catch {}
+    }
     if (typeof window !== 'undefined') {
       try {
+        sessionStorage.removeItem(SESSION_TOKEN_KEY);
         sessionStorage.removeItem(AUTH_SESSION_KEY);
-      } catch {
-        // ignore
-      }
+      } catch {}
     }
-    set(() => ({ isAuthenticated: false }));
+    set(() => ({ adminToken: '', isAuthenticated: false }));
+  },
+
+  updatePassword: async (currentPassword: string, newPassword: string) => {
+    const token = get().adminToken;
+    try {
+      const res = await updatePasswordApi(currentPassword, newPassword, token);
+      return { ok: true, message: res.message || 'Password successfully updated' };
+    } catch (err: any) {
+      return { ok: false, message: err.message || 'Failed to update password' };
+    }
   },
 
   setSettingsLoading: (loading) => set(() => ({ isSettingsLoading: loading })),

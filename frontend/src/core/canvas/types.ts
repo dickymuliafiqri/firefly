@@ -37,4 +37,5 @@ export interface FireflyCanvasProps {
   height?: number | string;
   isPaused?: boolean;
   reducedMotion?: boolean;
+  ref?: React.Ref<FireflyCanvasHandle>;
 }

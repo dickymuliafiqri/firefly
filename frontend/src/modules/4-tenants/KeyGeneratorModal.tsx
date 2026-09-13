@@ -103,9 +103,6 @@ export const KeyGeneratorModal = React.memo(function KeyGeneratorModal({
 
     setGeneratedKey(rawKey);
     setGeneratedHash(keyHash);
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('firefly_tenant_key', rawKey);
-    }
     setStep('revealed');
   };
 

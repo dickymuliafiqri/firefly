@@ -66,7 +66,7 @@ export const Modal = React.memo(function Modal({
         role="dialog"
         aria-modal="true"
         className={cn(
-          'relative z-10 w-full rounded-2xl bg-[#090b10] border border-white/[0.08] p-6 shadow-2xl transition-all duration-150 animate-in zoom-in-95',
+          'relative z-10 w-full rounded-2xl bg-[#090b10] border border-white/[0.08] p-4 sm:p-6 shadow-2xl transition-all duration-150 animate-in zoom-in-95',
           SIZE_CLASSES[size]
         )}
       >

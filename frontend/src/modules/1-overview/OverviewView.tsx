@@ -2,8 +2,7 @@ import { useRef, useCallback, useMemo, useEffect } from 'react';
 import { FireflyCanvas } from '@/core/canvas/FireflyCanvas';
 import type { FireflyCanvasHandle, FireflyUpstream } from '@/core/canvas/types';
 import { LiveHistoryPanel } from './LiveHistoryPanel';
-import { useUpstreams, useUpstreamBreakers, useRecentLogs, useTelemetryStats, useStoreActions, useAppStore } from '@/core/state/store';
-import { useSaveSettingsMutation } from '@/services/api';
+import { useUpstreams, useUpstreamBreakers, useRecentLogs, useTelemetryStats, useIsAuthenticated, useStoreActions } from '@/core/state/store';
 import type { LiveConnectionLog } from '@/services/schema';
 import { AnimatedCountUp } from '@/components/ui/AnimatedCountUp';
 
@@ -14,40 +13,31 @@ export default function OverviewView() {
   const upstreamBreakers = useUpstreamBreakers();
   const recentLogs = useRecentLogs();
   const stats = useTelemetryStats();
-  const { openDrawer, toggleUpstreamBreaker, addToast } = useStoreActions();
-  const saveMutation = useSaveSettingsMutation();
+  const isAuthenticated = useIsAuthenticated();
+  const { openDrawer, openModal, toggleUpstreamBreaker, addToast } = useStoreActions();
 
   const canvasRef = useRef<FireflyCanvasHandle>(null);
   const lastLogIdRef = useRef<string | null>(null);
 
   // Base upstream definitions strictly from real backend configuration (zero dummy fallbacks)
-  const rawUpstreams = useMemo(() => {
-    return upstreams.map((u) => ({
-      name: u.name,
-      protocol: u.protocol || 'openai',
-      base_url: u.base_url || (u.base_urls && u.base_urls[0]) || 'https://api.openai.com/v1',
-      latency_ms: 184,
-    }));
-  }, [upstreams]);
-
   const fireflyUpstreams: FireflyUpstream[] = useMemo(() => {
-    return rawUpstreams.map((u) => {
-      const breakerState = upstreamBreakers[u.name] || 'OPEN';
-      const isClosed = breakerState === 'CLOSED';
+    return upstreams.map((u) => {
+      const breakerState = upstreamBreakers[u.name] || (u.enabled === false ? 'OPEN' : 'CLOSED');
+      const isConnected = u.enabled !== false && breakerState === 'CLOSED';
       const inflightCount = recentLogs.filter(
         (l) => l.status === 0 && l.upstream?.toLowerCase() === u.name.toLowerCase()
       ).length;
       return {
         name: u.name,
-        protocol: u.protocol,
-        base_url: u.base_url,
-        connected: !isClosed,
+        protocol: u.protocol || 'openai',
+        base_url: u.base_url || (u.base_urls && u.base_urls[0]) || 'https://api.openai.com/v1',
+        connected: isConnected,
         breaker_state: breakerState,
-        latency_ms: u.latency_ms,
+        latency_ms: 184,
         inflight: inflightCount,
       };
     });
-  }, [rawUpstreams, upstreamBreakers, recentLogs]);
+  }, [upstreams, upstreamBreakers, recentLogs]);
 
   // Pulse firefly whenever a new real request log arrives
   useEffect(() => {
@@ -77,38 +67,41 @@ export default function OverviewView() {
     }
   }, [recentLogs]);
 
-  // Toggle upstream state in sync with Upstreams page
+  // Toggle upstream state in sync with Upstreams page (protected: requires admin auth)
   const handleToggleUpstream = useCallback(
     (name: string) => {
-      const currentState = upstreamBreakers[name] || 'OPEN';
+      if (!isAuthenticated) {
+        addToast({
+          title: 'Authentication Required',
+          message: 'Please log in with dashboard credentials to manage upstream circuits.',
+          type: 'warning',
+        });
+        openModal('login');
+        return;
+      }
+
+      const u = upstreams.find((item) => item.name === name);
+      const defaultState = u?.enabled === false ? 'OPEN' : 'CLOSED';
+      const currentState = upstreamBreakers[name] || defaultState;
       const nextState = currentState === 'OPEN' ? 'CLOSED' : 'OPEN';
       toggleUpstreamBreaker(name);
 
-      // Persist to Go backend
-      const currentSettings = {
-        upstreams: useAppStore.getState().upstreams,
-        models: useAppStore.getState().models,
-        tenants: useAppStore.getState().tenants,
-        combos: useAppStore.getState().combos,
-      };
-      saveMutation.mutate(currentSettings);
-
-      if (nextState === 'OPEN') {
+      if (nextState === 'CLOSED') {
         canvasRef.current?.triggerBurst(name);
         addToast({
           title: name,
-          message: 'Upstream open. Bioluminescent network active.',
+          message: 'Upstream activated. Network active.',
           type: 'success',
         });
       } else {
         addToast({
           title: name,
-          message: 'Upstream closed. Bioluminescent network dormant.',
+          message: 'Upstream disabled. Network dormant.',
           type: 'info',
         });
       }
     },
-    [upstreamBreakers, toggleUpstreamBreaker, saveMutation, addToast]
+    [isAuthenticated, upstreams, upstreamBreakers, toggleUpstreamBreaker, addToast, openModal]
   );
 
   const handleInspectLog = useCallback(
@@ -119,26 +112,18 @@ export default function OverviewView() {
   );
 
   return (
-    <div id="tab-overview" className="tab-pane flex flex-col justify-between min-h-[calc(100vh-140px)]">
+    <div id="tab-overview" className="tab-pane flex flex-col justify-between min-h-[calc(100dvh-140px)]">
       {/* 70% Fireflies Viewport & 30% Connection History */}
       <div className="flex flex-col lg:flex-row items-stretch gap-6 lg:gap-8 w-full">
-        {/* Live Fireflies Sky Viewport (70% Screen Width, Aligned Left, Extended Height Downwards) */}
+        {/* Live Fireflies Sky Viewport (70% Screen Width on desktop, full width on mobile) */}
         <div
           className="relative w-full lg:w-[calc(70%-1.5rem)] overflow-hidden select-none flex-shrink-0"
           id="fireflyContainer"
-          style={{
-            minHeight: 520,
-            height: 560,
-            position: 'relative',
-            background: 'transparent',
-            margin: 0,
-          }}
         >
           <FireflyCanvas
             ref={canvasRef}
             upstreams={fireflyUpstreams}
             onToggleUpstream={handleToggleUpstream}
-            height={560}
           />
 
           {fireflyUpstreams.length === 0 ? (
@@ -148,19 +133,23 @@ export default function OverviewView() {
           ) : null}
         </div>
 
-        {/* Minimalist Elegant Vertical Divider */}
+        {/* Minimalist Divider: Vertical on lg, horizontal subtle gradient on mobile */}
         <div
           className="hidden lg:block w-px h-[560px] bg-gradient-to-b from-transparent via-white/10 to-transparent flex-shrink-0"
           aria-hidden="true"
         />
+        <div
+          className="block lg:hidden w-full h-px bg-gradient-to-r from-transparent via-white/10 to-transparent my-1 flex-shrink-0"
+          aria-hidden="true"
+        />
 
-        {/* Connection History (Right Side, Transparent Minimalist Panel) */}
+        {/* Connection History (Right Side on desktop, below on mobile) */}
         <LiveHistoryPanel onInspectLog={handleInspectLog} />
       </div>
 
-      {/* Minimalist Subtle Telemetry Statistics (Positioned Far Down, No Border, Discreet) */}
-      <div className="w-full mt-24 sm:mt-32 pb-4 select-none">
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-6 sm:gap-8">
+      {/* Minimalist Subtle Telemetry Statistics (Responsive Spacing & Grid) */}
+      <div className="w-full mt-10 sm:mt-20 lg:mt-28 pb-4 select-none">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 sm:gap-6 lg:gap-8">
           {/* 1. Token Input */}
           <div className="flex flex-col">
             <AnimatedCountUp

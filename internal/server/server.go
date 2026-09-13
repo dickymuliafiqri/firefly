@@ -67,6 +67,9 @@ func New(cfg Config, deps RouterDeps, baseCtx context.Context, logger *slog.Logg
 	if deps.LiveLogs == nil {
 		deps.LiveLogs = NewLiveLogHub()
 	}
+	if deps.Analytics != nil {
+		deps.LiveLogs.AttachStore(deps.Analytics)
+	}
 	s := newServer(cfg, baseCtx, logger)
 	s.http.Handler = s.buildHandler(deps)
 	return s

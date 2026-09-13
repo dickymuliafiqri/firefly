@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { QueryClient, useQuery, useMutation } from '@tanstack/react-query';
-import type { SettingsDTO, HealthStatus, TelemetryDTO, LiveConnectionLog } from './schema';
+import type { SettingsDTO, HealthStatus, TelemetryDTO, LiveConnectionLog, Protocol } from './schema';
 import { useAdminToken, useAppStore } from '@/core/state/store';
 
 export const queryClient = new QueryClient({
@@ -111,23 +111,211 @@ export async function fetchHealth(): Promise<HealthStatus> {
 }
 
 /**
+ * Authenticate with backend dashboard password: POST /api/auth/login
+ */
+export async function loginApi(
+  password: string
+): Promise<{ status: string; token: string; expires_at: string }> {
+  const res = await fetch(`${BASE_URL}/api/auth/login`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    },
+    body: JSON.stringify({ password }),
+  });
+
+  if (res.status === 401) {
+    throw new ApiError(401, 'Incorrect dashboard access password');
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const message = body?.error?.message || `Authentication failed: ${res.statusText}`;
+    throw new ApiError(res.status, message, body?.error?.type);
+  }
+
+  return res.json();
+}
+
+/**
+ * Verify whether active session token is authorized: GET /api/auth/verify
+ */
+export async function verifyAuthApi(
+  token: string
+): Promise<{ status: string; authenticated: boolean }> {
+  if (!token) {
+    return { status: 'unauthenticated', authenticated: false };
+  }
+
+  const res = await fetch(`${BASE_URL}/api/auth/verify`, {
+    headers: {
+      'Accept': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+  });
+
+  if (!res.ok) {
+    return { status: 'unauthenticated', authenticated: false };
+  }
+
+  return res.json();
+}
+
+/**
+ * Revoke session token: POST /api/auth/logout
+ */
+export async function logoutApi(token: string): Promise<{ status: string }> {
+  const res = await fetch(`${BASE_URL}/api/auth/logout`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+    },
+  });
+  return res.json().catch(() => ({ status: 'ok' }));
+}
+
+/**
+ * Update master dashboard password on backend: PUT /api/auth/password
+ */
+export async function updatePasswordApi(
+  currentPassword: string,
+  newPassword: string,
+  token?: string
+): Promise<{ status: string; message?: string }> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+  };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
+  const res = await fetch(`${BASE_URL}/api/auth/password`, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify({
+      current_password: currentPassword,
+      new_password: newPassword,
+    }),
+  });
+
+  if (res.status === 401) {
+    throw new ApiError(401, 'Incorrect current password or session expired');
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const message = body?.error?.message || `Failed to update password: ${res.statusText}`;
+    throw new ApiError(res.status, message, body?.error?.type);
+  }
+
+  return res.json();
+}
+
+/**
+ * Fetch circuit breaker states from backend: GET /api/breakers
+ */
+export async function fetchBreakersApi(): Promise<Record<string, 'OPEN' | 'CLOSED' | 'HALF-OPEN'>> {
+  const res = await fetch(`${BASE_URL}/api/breakers`, {
+    headers: { 'Accept': 'application/json' },
+  });
+  if (!res.ok) {
+    return {};
+  }
+  const data = await res.json().catch(() => ({}));
+  return data?.breakers || {};
+}
+
+/**
+ * Update circuit breaker state on backend: PUT /api/breakers
+ */
+export async function updateBreakerApi(
+  name: string,
+  state: 'OPEN' | 'CLOSED' | 'HALF-OPEN',
+  token?: string
+): Promise<{ status: string; name: string; state: string }> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+  };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
+  const res = await fetch(`${BASE_URL}/api/breakers`, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify({ name, state }),
+  });
+
+  if (res.status === 401) {
+    throw new ApiError(401, 'Unauthorized: Valid session or admin token required');
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const message = body?.error?.message || `Failed to update breaker: ${res.statusText}`;
+    throw new ApiError(res.status, message, body?.error?.type);
+  }
+
+  return res.json();
+}
+
+/**
+ * Fetch persistent request history from backend: GET /api/history
+ */
+export async function fetchHistoryApi(limit: number = 50): Promise<LiveConnectionLog[]> {
+  const res = await fetch(`${BASE_URL}/api/history?limit=${limit}`, {
+    headers: { 'Accept': 'application/json' },
+  });
+  if (!res.ok) {
+    return [];
+  }
+  const data = await res.json().catch(() => ({}));
+  return data?.history || [];
+}
+
+/**
+ * Clear request history on backend: DELETE /api/history
+ */
+export async function deleteHistoryApi(token?: string): Promise<{ status: string }> {
+  const headers: Record<string, string> = {
+    'Accept': 'application/json',
+  };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
+  const res = await fetch(`${BASE_URL}/api/history`, {
+    method: 'DELETE',
+    headers,
+  });
+  if (!res.ok) {
+    throw new ApiError(res.status, 'Failed to clear history');
+  }
+  return res.json();
+}
+
+/**
  * Parallel initialization loader (Vercel Best Practice: async-parallel)
  * Fetches settings and health status simultaneously without waterfalls.
  */
 export async function prefetchInitialData(adminToken?: string) {
-  const [settings, health] = await Promise.all([
+  const [settings, health, breakers] = await Promise.all([
     fetchSettings(adminToken).catch((err) => {
       console.warn('Initial settings fetch failed (might need token or server offline):', err);
       return null;
     }),
     fetchHealth().catch(() => ({ status: 'error' as const })),
+    fetchBreakersApi().catch(() => ({})),
   ]);
 
   if (settings) {
     useAppStore.getState().setSettings(settings);
   }
+  if (breakers && Object.keys(breakers).length > 0) {
+    useAppStore.getState().setUpstreamBreakers(breakers);
+  }
 
-  return { settings, health };
+  return { settings, health, breakers };
 }
 
 // ================= TANSTACK QUERY HOOKS =================
@@ -298,6 +486,7 @@ export function useTelemetryQuery() {
   const adminToken = useAdminToken();
   const setRecentLogs = useAppStore((state) => state.setRecentLogs);
   const updateStats = useAppStore((state) => state.updateStats);
+  const setUpstreamBreakers = useAppStore((state) => state.setUpstreamBreakers);
 
   const query = useQuery({
     queryKey: ['telemetry', adminToken],
@@ -310,6 +499,28 @@ export function useTelemetryQuery() {
     if (query.data) {
       if (query.data.recent_logs && query.data.recent_logs.length > 0) {
         setRecentLogs(query.data.recent_logs);
+      }
+      if (query.data.upstreams && query.data.upstreams.length > 0) {
+        const breakers: Record<string, 'OPEN' | 'CLOSED' | 'HALF-OPEN'> = {};
+        for (const u of query.data.upstreams) {
+          const rawState = (u.breaker_state || 'CLOSED').toUpperCase();
+          const state: 'OPEN' | 'CLOSED' | 'HALF-OPEN' =
+            rawState === 'OPEN' || rawState === 'HALF-OPEN' ? rawState : 'CLOSED';
+          breakers[u.name] = state;
+        }
+        setUpstreamBreakers(breakers);
+
+        const currentStoreUpstreams = useAppStore.getState().upstreams;
+        if (currentStoreUpstreams.length === 0) {
+          useAppStore.getState().setUpstreams(
+            query.data.upstreams.map((u) => ({
+              name: u.name,
+              protocol: (u.protocol as Protocol) || 'openai',
+              base_url: u.base_url || '',
+              enabled: breakers[u.name] !== 'OPEN',
+            }))
+          );
+        }
       }
       if (query.data.summary) {
         const s = query.data.summary;
@@ -324,7 +535,7 @@ export function useTelemetryQuery() {
         });
       }
     }
-  }, [query.data, setRecentLogs, updateStats]);
+  }, [query.data, setRecentLogs, updateStats, setUpstreamBreakers]);
 
   return query;
 }

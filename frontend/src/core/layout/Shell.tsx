@@ -43,7 +43,7 @@ export function Shell({
   }, []);
 
   return (
-    <div className="min-h-screen flex flex-col font-sans transition-colors duration-200 antialiased relative selection:bg-lime-400/20 selection:text-lime-200">
+    <div className="min-h-[100dvh] flex flex-col font-sans transition-colors duration-200 antialiased relative selection:bg-lime-400/20 selection:text-lime-200">
       {/* Top Minimalist Transparent Header */}
       <Header
         activeTab={activeTab}
@@ -53,7 +53,7 @@ export function Shell({
       />
 
       {/* Main Container matching index.html line 282 */}
-      <main className="flex-1 w-full px-6 sm:px-10 lg:px-16 py-6 space-y-6 sm:space-y-8 relative z-10">
+      <main className="flex-1 w-full px-4 sm:px-10 lg:px-16 py-4 sm:py-6 space-y-6 sm:space-y-8 relative z-10">
         {children}
       </main>
 

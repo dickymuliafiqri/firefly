@@ -189,9 +189,9 @@ export default function ModelsView() {
   return (
     <div className="flex flex-col gap-6 w-full animate-in fade-in duration-300">
       {/* Top Header: SubTab Switcher & Actions */}
-      <div className="flex flex-wrap items-center justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         {/* Left: View Mode Tabs (Models vs Combos) */}
-        <div className="flex items-center p-1 rounded-xl bg-white/[0.02] border border-white/[0.06] font-mono text-xs">
+        <div className="flex items-center p-1 rounded-xl bg-white/[0.02] border border-white/[0.06] font-mono text-xs self-start">
           <button
             type="button"
             onClick={() => setActiveSubTab('models')}
@@ -228,15 +228,15 @@ export default function ModelsView() {
         </div>
 
         {/* Right: Search Input & Create Button */}
-        <div className="flex items-center gap-3">
-          <div className="relative">
+        <div className="flex items-center gap-2.5 w-full sm:w-auto">
+          <div className="relative flex-1 sm:flex-initial">
             <Search className="w-3.5 h-3.5 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
               placeholder={activeSubTab === 'models' ? 'Search route or target...' : 'Search combo or model...'}
               value={searchQuery}
               onChange={handleSearchChange}
-              className="pl-8 pr-3.5 py-1.5 rounded-lg bg-transparent border border-white/[0.08] focus:border-white/20 text-neutral-200 placeholder:text-neutral-500 font-mono text-xs focus:outline-none w-52 sm:w-64 transition-colors"
+              className="pl-8 pr-3.5 py-1.5 rounded-lg bg-transparent border border-white/[0.08] focus:border-white/20 text-neutral-200 placeholder:text-neutral-500 font-mono text-xs focus:outline-none w-full sm:w-64 transition-colors"
             />
           </div>
 
@@ -246,6 +246,7 @@ export default function ModelsView() {
               size="sm"
               onClick={handleCreateModel}
               leftIcon={<Plus className="w-3.5 h-3.5 text-neutral-400 group-hover:text-white transition-colors" />}
+              className="shrink-0"
             >
               Add Route
             </Button>
@@ -255,6 +256,7 @@ export default function ModelsView() {
               size="sm"
               onClick={handleCreateCombo}
               leftIcon={<Plus className="w-3.5 h-3.5 text-neutral-400 group-hover:text-white transition-colors" />}
+              className="shrink-0"
             >
               Add Combo
             </Button>

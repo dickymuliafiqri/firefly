@@ -22,12 +22,21 @@ type SnapshotProvider interface {
 
 // Store resolves gateway keys against snapshots. It satisfies ports.TenantStore.
 type Store struct {
-	snapshots SnapshotProvider
+	snapshots   SnapshotProvider
+	authManager *Manager
 }
 
 // NewStore builds a Store backed by the given snapshot provider.
 func NewStore(s SnapshotProvider) *Store {
 	return &Store{snapshots: s}
+}
+
+// SetAuthManager attaches an AuthManager to allow authenticated admin dashboard
+// sessions to be recognized by TenantStore.
+func (s *Store) SetAuthManager(m *Manager) {
+	if s != nil {
+		s.authManager = m
+	}
 }
 
 // KeyPrefix is the expected prefix for gateway keys.
@@ -60,8 +69,16 @@ func ExtractBearer(header string) (string, bool) {
 //
 // A nil store or a nil snapshot provider fails closed (nil, false) rather than
 // panicking: a mis-wired provider must not take down the auth path.
-func (s *Store) Lookup(_ context.Context, plaintextKey string) (*domain.Tenant, bool) {
-	if s == nil || isNilProvider(s.snapshots) {
+func (s *Store) Lookup(ctx context.Context, plaintextKey string) (*domain.Tenant, bool) {
+	if s == nil {
+		return nil, false
+	}
+	// 1. Allow authenticated admin dashboard sessions (e.g. Playground)
+	if s.authManager != nil && s.authManager.ValidateToken(ctx, plaintextKey) {
+		return s.authManager.AdminTenant(ctx), true
+	}
+
+	if isNilProvider(s.snapshots) {
 		return nil, false
 	}
 	if !strings.HasPrefix(plaintextKey, KeyPrefix) {

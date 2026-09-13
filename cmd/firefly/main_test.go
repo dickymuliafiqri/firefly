@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"net/http"
 	"os"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/dickymuliafiqri/firefly/internal/auth"
 )
 
 // TestGracefulShutdownEndToEnd builds and runs the gateway, drives a request,
@@ -103,9 +106,17 @@ func TestZeroConfigStartupEndToEnd(t *testing.T) {
 	// 1. Wait for server to come up and answer /healthz
 	waitHealthy(t, "http://"+dataAddr+"/healthz")
 
-	// 2. Query /api/settings: should answer 200 OK
+	// Authenticate with dashboard backend
 	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get("http://" + dataAddr + "/api/settings")
+	token := loginSession(t, client, dataAddr)
+
+	// 2. Query /api/settings with authorization: should answer 200 OK
+	req, err := http.NewRequest("GET", "http://"+dataAddr+"/api/settings", nil)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("GET /api/settings: %v", err)
 	}
@@ -114,9 +125,15 @@ func TestZeroConfigStartupEndToEnd(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	// 3. POST new settings via /api/settings
+	// 3. POST new settings via /api/settings with authorization
 	newSettings := `{"upstreams":[{"name":"u1","base_url":"https://api.openai.com/v1","api_key":"sk-key"}],"models":[],"tenants":[]}`
-	postResp, err := client.Post("http://"+dataAddr+"/api/settings", "application/json", strings.NewReader(newSettings))
+	postReq, err := http.NewRequest("POST", "http://"+dataAddr+"/api/settings", strings.NewReader(newSettings))
+	if err != nil {
+		t.Fatalf("create post request: %v", err)
+	}
+	postReq.Header.Set("Content-Type", "application/json")
+	postReq.Header.Set("Authorization", "Bearer "+token)
+	postResp, err := client.Do(postReq)
 	if err != nil {
 		t.Fatalf("POST /api/settings: %v", err)
 	}
@@ -180,9 +197,16 @@ func TestDefaultConfigsWithoutEnvStartsCleanly(t *testing.T) {
 	// 1. Wait for server to come up and answer /healthz
 	waitHealthy(t, "http://"+dataAddr+"/healthz")
 
-	// 2. Query /api/settings: should answer 200 OK
+	// 2. Authenticate with backend and query /api/settings
 	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get("http://" + dataAddr + "/api/settings")
+	token := loginSession(t, client, dataAddr)
+
+	req, err := http.NewRequest("GET", "http://"+dataAddr+"/api/settings", nil)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("GET /api/settings: %v", err)
 	}
@@ -269,4 +293,27 @@ func waitHealthy(t *testing.T, rawURL string) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("server at %s never came up", rawURL)
+}
+
+func loginSession(t *testing.T, client *http.Client, addr string) string {
+	t.Helper()
+	body := strings.NewReader(`{"password":"` + auth.DefaultDashboardPassword + `"}`)
+	resp, err := client.Post("http://"+addr+"/api/auth/login", "application/json", body)
+	if err != nil {
+		t.Fatalf("login failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("login status = %d, want 200", resp.StatusCode)
+	}
+	var res struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		t.Fatalf("decode login response: %v", err)
+	}
+	if res.Token == "" {
+		t.Fatal("empty login token")
+	}
+	return res.Token
 }

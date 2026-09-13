@@ -223,9 +223,9 @@ export interface ModuleViewProps {
    - **Overview Tab (`1`)**: Always accessible publicly without credentials for instant uptime and live network inspection.
    - **Configuration & Operational Tabs (`2-7`)**: Intercepted by `LoginModal` requiring the dashboard access password (default: `12345678`).
 2. **State & Persistence**:
-   - Authentication session is tracked in `sessionStorage` (`firefly_auth_session_v1`) to prevent token persistence across closed browser tabs.
-   - Customized access password persists in browser `localStorage` (`firefly_dashboard_password_v1`) and can be reconfigured or reset to default from the Settings panel.
-   - Header provides instant session locking (`Lock` button) to terminate access immediately.
+   - Authentication session is tracked in `sessionStorage` (`firefly_session_token_v1` and `firefly_auth_session_v1`) to prevent credential leakage across closed browser tabs.
+   - Master dashboard passwords and credentials are fully secured on the backend (salted SHA-256 in `configs/auth.json`). All credential operations require backend authorization verification (`/api/auth/verify`, `/api/auth/password`).
+   - Header provides instant session locking (`Lock` button) to revoke the active session on the backend immediately.
 
 ---
 

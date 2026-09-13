@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dickymuliafiqri/firefly/internal/auth"
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/openai"
 )
@@ -49,12 +48,9 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Content-Type", "application/json")
 
-	if deps.AdminToken != "" {
-		token, ok := auth.ExtractBearer(r.Header.Get("Authorization"))
-		if !ok || token != deps.AdminToken {
-			openai.WriteError(w, http.StatusUnauthorized, openai.TypeAuthentication, "invalid or missing admin token")
-			return
-		}
+	if !deps.authorizeAdmin(r) {
+		openai.WriteError(w, http.StatusUnauthorized, openai.TypeAuthentication, "unauthorized: valid dashboard session or admin token required")
+		return
 	}
 
 	// Bound incoming payload size to 1 MB

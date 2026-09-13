@@ -126,12 +126,6 @@ func (deps RouterDeps) handleGetTelemetry(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	// Calculate error rate
-	var errRate float64
-	if metricsSnap.TotalRequests > 0 {
-		errRate = (float64(metricsSnap.TotalErrors) / float64(metricsSnap.TotalRequests)) * 100
-	}
-
 	var activeAIStreams int64
 	for _, inf := range metricsSnap.KeyInflight {
 		if inf > 0 {
@@ -147,22 +141,41 @@ func (deps RouterDeps) handleGetTelemetry(w http.ResponseWriter, r *http.Request
 		activeStreams = metricsSnap.HttpInflight - 1
 	}
 
-	var inTokens, outTokens, hubReqs int64
-	if deps.LiveLogs != nil {
+	var inTokens, outTokens, hubReqs, hubErrors int64
+	var estCost float64
+	if deps.Analytics != nil {
+		if sum, err := deps.Analytics.Summary(r.Context()); err == nil {
+			inTokens = sum.InputTokens
+			outTokens = sum.OutputTokens
+			hubReqs = sum.TotalRequests
+			hubErrors = sum.TotalErrors
+			estCost = sum.EstimatedCostUSD
+		}
+	}
+	if inTokens == 0 && outTokens == 0 && deps.LiveLogs != nil {
 		inTokens, outTokens, hubReqs = deps.LiveLogs.CumulativeTotals()
+		estCost = (float64(inTokens) * 0.0000025) + (float64(outTokens) * 0.0000100)
 	}
 	totTokens := inTokens + outTokens
-	estCost := (float64(inTokens) * 0.0000025) + (float64(outTokens) * 0.0000100)
 
 	totalRequests := metricsSnap.TotalRequests
 	if hubReqs > totalRequests {
 		totalRequests = hubReqs
 	}
+	totalErrors := metricsSnap.TotalErrors
+	if hubErrors > totalErrors {
+		totalErrors = hubErrors
+	}
+
+	var errRate float64
+	if totalRequests > 0 {
+		errRate = (float64(totalErrors) / float64(totalRequests)) * 100
+	}
 
 	summary := TelemetrySummaryDTO{
 		ActiveStreams:    activeStreams,
 		TotalRequests:    totalRequests,
-		TotalErrors:      metricsSnap.TotalErrors,
+		TotalErrors:      totalErrors,
 		CircuitTrips:     metricsSnap.CircuitOpenTrips,
 		ErrorRatePct:     errRate,
 		P50LatencyMs:     metricsSnap.P50LatencyMs,
@@ -214,6 +227,13 @@ func (deps RouterDeps) handleGetTelemetry(w http.ResponseWriter, r *http.Request
 				} else if deps.Breakers != nil {
 					if err := deps.Breakers.Allow(u.Name); err != nil {
 						breakerState = "OPEN"
+					}
+				}
+				if deps.Analytics != nil {
+					if overrides, err := deps.Analytics.GetBreakerOverrides(r.Context()); err == nil {
+						if override, exists := overrides[u.Name]; exists {
+							breakerState = strings.ToUpper(override)
+						}
 					}
 				}
 
@@ -277,7 +297,12 @@ func (deps RouterDeps) handleGetTelemetry(w http.ResponseWriter, r *http.Request
 	}
 
 	var recentLogs []LiveLog
-	if deps.LiveLogs != nil {
+	if deps.Analytics != nil {
+		if hist, err := deps.Analytics.History(r.Context(), 100); err == nil && len(hist) > 0 {
+			recentLogs = hist
+		}
+	}
+	if len(recentLogs) == 0 && deps.LiveLogs != nil {
 		recentLogs = deps.LiveLogs.Snapshot()
 	}
 	if recentLogs == nil {
