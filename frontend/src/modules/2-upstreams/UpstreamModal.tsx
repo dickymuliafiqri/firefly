@@ -18,7 +18,7 @@ import {
   RotateCw,
   StopCircle,
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, copyToClipboard } from '@/lib/utils';
 
 export interface UpstreamModalProps {
   isOpen: boolean;
@@ -68,10 +68,12 @@ const KeyRowItem = React.memo(function KeyRowItem({
 }) {
   const [copied, setCopied] = useState(false);
 
-  const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(item.secret);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+  const handleCopy = useCallback(async () => {
+    const success = await copyToClipboard(item.secret);
+    if (success) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }
   }, [item.secret]);
 
   const displaySecret = maskKeyForDisplay(item.secret);
@@ -189,10 +191,12 @@ const ModelRowItem = React.memo(function ModelRowItem({
 }) {
   const [copied, setCopied] = useState(false);
 
-  const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(modelId);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+  const handleCopy = useCallback(async () => {
+    const success = await copyToClipboard(modelId);
+    if (success) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }
   }, [modelId]);
 
   return (

@@ -5,33 +5,12 @@ import { Copy, Check, AlertTriangle } from 'lucide-react';
 import type { TenantDTO } from '@/services/schema';
 import { useStoreActions, useAppStore } from '@/core/state/store';
 import { useSaveSettingsMutation } from '@/services/api';
+import { computeSha256Hex, generateRandomGatewayKey } from '@/lib/crypto';
+import { copyToClipboard } from '@/lib/utils';
 
 export interface KeyGeneratorModalProps {
   isOpen: boolean;
   onClose: () => void;
-}
-
-/**
- * Computes SHA-256 hash in browser using Web Crypto API
- */
-async function computeSha256Hex(text: string): Promise<string> {
-  const enc = new TextEncoder();
-  const data = enc.encode(text);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return 'sha256:' + hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
-}
-
-/**
- * Generates random gateway API key: sk-gw-<32-hex-chars>
- */
-function generateRandomGatewayKey(): string {
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  const hex = Array.from(bytes)
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
-  return `sk-gw-${hex}`;
 }
 
 export const KeyGeneratorModal = React.memo(function KeyGeneratorModal({
@@ -106,15 +85,23 @@ export const KeyGeneratorModal = React.memo(function KeyGeneratorModal({
     setStep('revealed');
   };
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(generatedKey);
-    setCopied(true);
-    addToast({
-      title: 'Copied to Clipboard',
-      message: 'API key secret copied successfully.',
-      type: 'success',
-    });
-    setTimeout(() => setCopied(false), 2000);
+  const handleCopy = async () => {
+    const success = await copyToClipboard(generatedKey);
+    if (success) {
+      setCopied(true);
+      addToast({
+        title: 'Copied to Clipboard',
+        message: 'API key secret copied successfully.',
+        type: 'success',
+      });
+      setTimeout(() => setCopied(false), 2000);
+    } else {
+      addToast({
+        title: 'Copy Failed',
+        message: 'Unable to copy to clipboard automatically. Please copy the key manually.',
+        type: 'error',
+      });
+    }
   };
 
   return (

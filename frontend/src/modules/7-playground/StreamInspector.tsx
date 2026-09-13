@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import { Button } from '@/components/ui/Button';
 import { Terminal, Copy, Check } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, copyToClipboard } from '@/lib/utils';
 
 export interface StreamInspectorProps {
   rawPackets: string[];
@@ -20,10 +20,12 @@ export const StreamInspector = React.memo(function StreamInspector({
 }: StreamInspectorProps) {
   const [copied, setCopied] = useState(false);
 
-  const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(rawPackets.join('\n\n'));
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const handleCopy = useCallback(async () => {
+    const success = await copyToClipboard(rawPackets.join('\n\n'));
+    if (success) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
   }, [rawPackets]);
 
   return (

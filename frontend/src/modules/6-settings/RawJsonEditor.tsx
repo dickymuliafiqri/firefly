@@ -9,6 +9,7 @@ import {
   Check,
 } from 'lucide-react';
 import type { SettingsDTO } from '@/services/schema';
+import { copyToClipboard } from '@/lib/utils';
 
 export interface RawJsonEditorProps {
   value: string;
@@ -98,10 +99,12 @@ export const RawJsonEditor = React.memo(function RawJsonEditor({
   }, [value, onChange]);
 
   // Copy to clipboard
-  const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(value);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const handleCopy = useCallback(async () => {
+    const success = await copyToClipboard(value);
+    if (success) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
   }, [value]);
 
   const hasDiffWithServer = value !== serverValue;
