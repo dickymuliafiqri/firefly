@@ -1,0 +1,81 @@
+# Air configuration for Firefly
+# Repository: https://github.com/air-verse/air
+# Live autoreload for both backend (Go) and frontend (TypeScript/React),
+# with automatic incremental frontend asset building prior to Go compilation.
+
+root = "."
+testdata_dir = "testdata"
+tmp_dir = "tmp"
+
+[build]
+  # Build Go executable into tmp/firefly
+  cmd = "go build -o ./tmp/firefly ./cmd/firefly"
+  bin = "./tmp/firefly"
+  entrypoint = ["./tmp/firefly"]
+  args_bin = ["-config-dir", "configs", "-addr", "0.0.0.0:8080"]
+
+  # Pre-command: checks if frontend files have changed; if so, runs bun run build
+  pre_cmd = ["bash ./scripts/build-frontend.sh"]
+
+  # Debounce delay in milliseconds before building
+  delay = 1000
+
+  # Watch Go backend, configurations, and frontend source files
+  include_dir = ["cmd", "internal", "frontend", "configs"]
+  include_ext = ["go", "json", "ts", "tsx", "js", "jsx", "css", "html"]
+  include_file = []
+
+  # Exclude build outputs, node_modules, and cache directories to prevent infinite build loops
+  exclude_dir = [
+    "assets",
+    "tmp",
+    "vendor",
+    "testdata",
+    "frontend/dist",
+    "frontend/node_modules",
+    ".agents",
+    ".claude",
+    ".planning",
+    ".git"
+  ]
+  exclude_file = []
+  exclude_regex = [
+    "_test\\.go$",
+    ".*\\.timestamp-.*\\.mjs$"
+  ]
+  exclude_unchanged = false
+  follow_symlink = false
+  full_bin = ""
+  ignore_dangerous_root_dir = false
+
+  # Graceful shutdown: send interrupt (SIGINT) to Firefly so in-flight requests drain cleanly
+  send_interrupt = true
+  kill_delay = "1s"
+
+  # Error handling
+  log = "build-errors.log"
+  poll = false
+  poll_interval = 0
+  post_cmd = []
+  rerun = false
+  rerun_delay = 500
+  stop_on_error = true
+
+[color]
+  app = ""
+  build = "yellow"
+  main = "magenta"
+  runner = "green"
+  watcher = "cyan"
+
+[log]
+  main_only = false
+  silent = false
+  time = false
+
+[misc]
+  clean_on_exit = true
+
+[screen]
+  clear_on_rebuild = false
+  keep_scroll = true

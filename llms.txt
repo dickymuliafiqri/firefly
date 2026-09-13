@@ -1,0 +1,37 @@
+# Firefly
+
+> High-concurrency, multi-tenant OpenAI & Anthropic AI reverse proxy and gateway written in pure Go with an embedded React dashboard.
+
+## Core Concepts
+- **Data Plane vs Admin Plane**: The client data plane (`0.0.0.0:8080`) handles OpenAI & Anthropic request forwarding, SSE streaming, and the embedded SPA. The admin plane (`:9090` or `/api/*`) exposes Prometheus `/metrics`, `/debug/*`, and atomic hot-swap settings.
+- **SSE Streaming Relay**: Engineered for 1,000+ simultaneous Server-Sent Events streams (`openai.RelaySSE`) with client disconnect abort (`ctx.Done()`) and stream idle watchdog (`StreamWatchdog`).
+- **Resilience Architecture**:
+  - Layer 1 (`KeyRing`): Manages multi-key quota limits on HTTP 429 (`Retry-After`) and revocation on HTTP 401, failover across remaining keys.
+  - Layer 2 (`Breaker`): Upstream host circuit breaker triggered strictly on 5xx and network failures. Client 4xx never trips breakers.
+- **Three-Tier Admission**:
+  - Layer 1: Server-wide in-flight semaphore (`httpx.GlobalLimiter`) capped at 1,500 slots.
+  - Layer 2: Per-tenant token-bucket rate limiter and concurrency limit (`httpx.AdmissionMiddleware`).
+  - Layer 3: Per-credential atomic CAS concurrency ticket gate (`Limiter.AcquireKeySlot`).
+- **Virtual Combos**: Model-level load balancing grouping multiple upstream models into a single public model route using `least_inflight`, `round_robin`, or `failover` chain strategies.
+- **Single Binary Distribution**: Frontend built with Vite/React is embedded into the standalone executable via `//go:embed all:dist` in `frontend/embed.go`.
+- **Security & Navigation Authentication**: Dashboard navigation requires password authentication (default: `12345678`), configurable in Settings, with public access to the Overview page.
+
+## Key CLI Commands
+- `firefly -config-dir=/etc/firefly -addr=0.0.0.0:8080`: Run the gateway.
+- `firefly -version`: Display compiled version, commit SHA, and build date.
+- `loadtest -mock -c 1000 -profile low`: Run 1,000 concurrent requests burst against in-process mock gateway.
+- `make build`: Build single-binary with embedded frontend assets.
+- `make test`: Run complete test suite with Go race detector (`go test -count=1 -race ./...`).
+
+## Configuration Files
+- `upstreams.json`: List of upstream provider nodes with endpoint URLs, protocols, and API keyrings.
+- `models.json`: Mapping of public client model IDs to upstream provider targets.
+- `tenants.json`: Registered tenant API keys (`sk-gw-...`) with RPS token bucket quotas and allowed model lists.
+- `combos.json`: Virtual model load balancing pools with member model lists and rotation strategies.
+
+## Invariants
+- Never set `http.Server.WriteTimeout` on the data plane.
+- Upstream 4xx/429 errors must never trip host circuit breakers.
+- Always use `httpx.IsNil` at interface boundaries.
+- Recycle buffers with capacity `<= 512KB` to `sync.Pool`.
+- Redact secrets (`sk-gw-***`, `[REDACTED]`) in all logs and client errors.

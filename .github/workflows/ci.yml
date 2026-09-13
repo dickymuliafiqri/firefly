@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Frontend Verification (TypeScript + Vite Build)
+  # ---------------------------------------------------------------------------
+  frontend:
+    name: Frontend Typecheck & Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Bun Environment
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install Frontend Dependencies
+        working-directory: ./frontend
+        run: |
+          if [ -f "bun.lock" ] || [ -f "bun.lockb" ]; then
+            bun install --frozen-lockfile
+          else
+            bun install
+          fi
+
+      - name: Build & Typecheck Frontend
+        working-directory: ./frontend
+        run: bun run build
+
+      - name: Verify Distribution Files
+        run: |
+          test -f frontend/dist/index.html || { echo "Error: frontend/dist/index.html missing"; exit 1; }
+
+      - name: Upload Built Frontend Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-frontend-dist
+          path: frontend/dist
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # Backend Verification (Race Detector Test Suite)
+  # ---------------------------------------------------------------------------
+  backend-test:
+    name: Go Test Suite (-race)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Go Environment
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: true
+
+      - name: Run Go Unit & Integration Tests
+        run: go test -v -count=1 -race ./...
+
+  # ---------------------------------------------------------------------------
+  # Integrated Binary Compilation Check
+  # ---------------------------------------------------------------------------
+  build-check:
+    name: Standalone Binary Compilation Check
+    needs: [frontend, backend-test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Download Built Frontend Assets
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-frontend-dist
+          path: frontend/dist
+
+      - name: Setup Go Environment
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: true
+
+      - name: Build Firefly Standalone Binary
+        run: |
+          CGO_ENABLED=0 go build -trimpath -o bin/firefly ./cmd/firefly
+          ./bin/firefly -version
+
+      - name: Build Loadtest Binary
+        run: |
+          CGO_ENABLED=0 go build -trimpath -o bin/loadtest ./cmd/loadtest
+          ./bin/loadtest -mock -c 10 -n 10 -profile low

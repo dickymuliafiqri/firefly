@@ -1,0 +1,168 @@
+# ==============================================================================
+# FIREFLY .gitignore
+# Comprehensive ignore rules for Go backend, React frontend (Vite/TypeScript),
+# build artifacts, environment secrets, and editor configurations.
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. Go Binaries & Build Artifacts
+# ------------------------------------------------------------------------------
+# Root binary executable
+/firefly
+firefly.exe
+
+# Generic compiled binaries and test binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/bin/
+
+# ------------------------------------------------------------------------------
+# 2. Go Testing, Coverage & Profiling
+# ------------------------------------------------------------------------------
+coverage.out
+coverage.html
+coverage.txt
+*.pprof
+cpu.out
+mem.out
+trace.out
+profile.pprof
+
+# ------------------------------------------------------------------------------
+# 3. Live Reload & Temporary Run Files (Air / Scratch)
+# ------------------------------------------------------------------------------
+# Temporary build folder created by Air (live reload)
+/tmp/
+tmp/
+*.tmp
+*.temp
+
+# ------------------------------------------------------------------------------
+# 4. React Frontend (Vite + TypeScript + Tailwind)
+# ------------------------------------------------------------------------------
+# Node dependencies
+node_modules/
+frontend/node_modules/
+.pnp
+.pnp.js
+
+# Frontend production build output
+# NOTE: frontend/dist/.gitkeep is retained so `//go:embed all:dist` compiles on clean clone
+frontend/dist/*
+!frontend/dist/.gitkeep
+
+# Vite cache & build metadata
+.vite/
+frontend/.vite/
+*.tsbuildinfo
+frontend/*.tsbuildinfo
+
+# Package manager logs & debug info
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-debug.log*
+
+# ------------------------------------------------------------------------------
+# 5. Environment Secrets & Local Overrides
+# ------------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Local config overrides / backups
+*.local.json
+configs/*.backup.json
+
+# ------------------------------------------------------------------------------
+# 6. Operating System Files
+# ------------------------------------------------------------------------------
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+
+# ------------------------------------------------------------------------------
+# 7. IDE, Editors & Development Tools
+# ------------------------------------------------------------------------------
+# JetBrains (GoLand, WebStorm, IntelliJ)
+.idea/
+*.iml
+*.iws
+
+# Visual Studio Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# Sublime Text
+*.sublime-workspace
+*.sublime-project
+
+# Vim / Emacs
+*.swp
+*.swo
+*~
+\#*\#
+.\#*
+
+# AI Agent / CLI temporary transcripts and local scratch
+scratch/
+*.png
+!assets/**/*.png
+!frontend/src/assets/**/*.png
+
+# ------------------------------------------------------------------------------
+# 8. Hidden Dot Directories (Agent Tooling, Planning, Caches & IDEs)
+# ------------------------------------------------------------------------------
+# Ignore all dot-prefixed directories
+.*/
+!.github/
+
+# Explicit dot-directories
+.agents/
+.claude/
+.planning/
+.gemini/
+.idea/
+.vscode/
+.vite/
+
+
+# Whitelist essential root dot-files
+!.gitignore
+!.gitkeep
+!.air.toml
+!.env.example
+
+# ------------------------------------------------------------------------------
+# 9. Additional
+# ------------------------------------------------------------------------------
+skill*
+configs/

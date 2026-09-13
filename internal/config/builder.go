@@ -1,0 +1,519 @@
+package config
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"regexp"
+	"sort"
+	"strings"
+
+	"github.com/dickymuliafiqri/firefly/internal/domain"
+)
+
+// ErrEmptyFile is returned when a config file has zero non-whitespace bytes.
+var ErrEmptyFile = errors.New("empty file")
+
+// Compiled validation patterns (compiled once at package level).
+var (
+	upstreamNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9\-_]{0,63}$`)
+	modelNameRe    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._\-]{0,127}$`)
+	keyHashRe      = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+)
+
+// BuildResult is the fully-resolved, validated content ready to become a
+// snapshot. Maps are owned by the caller.
+type BuildResult struct {
+	Upstreams       map[string]*domain.Upstream
+	UpstreamOrder   []string
+	Models          map[string]*domain.ModelEntry
+	EnabledModelIDs []string
+	TenantsByHash   map[string]*domain.Tenant
+	TenantOrder     []string
+	Combos          map[string]*domain.Combo
+	ComboOrder      []string
+	Warnings        []string
+}
+
+// ParseError is returned for any malformed JSON with the logical file name.
+type ParseError struct {
+	File string
+	Err  error
+}
+
+func (e *ParseError) Error() string {
+	return fmt.Sprintf("config parse error in %s: %v", e.File, e.Err)
+}
+func (e *ParseError) Unwrap() error { return e.Err }
+
+// Build parses all config files, applies defaults, validates cross-references,
+// and returns a validated BuildResult. On any error nothing is returned that
+// should be applied — callers keep their previous snapshot.
+//
+// envLookup abstracts os.LookupEnv so tests can inject a fake environment.
+func Build(fs FileSet, envLookup func(string) (string, bool)) (*BuildResult, error) {
+	var upFile UpstreamsFile
+	if err := decodeStrict("upstreams", fs.Upstreams, &upFile); err != nil {
+		return nil, err
+	}
+	var modelFile ModelsFile
+	if err := decodeStrict("models", fs.Models, &modelFile); err != nil {
+		return nil, err
+	}
+	var tenantFile TenantsFile
+	if err := decodeStrict("tenants", fs.Tenants, &tenantFile); err != nil {
+		return nil, err
+	}
+	var comboFile CombosFile
+	if len(bytes.TrimSpace(fs.Combos)) > 0 {
+		if err := decodeStrict("combos", fs.Combos, &comboFile); err != nil {
+			return nil, err
+		}
+	}
+
+	res := &BuildResult{
+		Upstreams:     make(map[string]*domain.Upstream, len(upFile.Upstreams)),
+		Models:        make(map[string]*domain.ModelEntry, len(modelFile.Models)),
+		TenantsByHash: make(map[string]*domain.Tenant, len(tenantFile.Tenants)),
+		Combos:        make(map[string]*domain.Combo, len(comboFile.Combos)),
+	}
+
+	for i, d := range upFile.Upstreams {
+		u, err := translateUpstream(i, d, envLookup)
+		if err != nil {
+			return nil, err
+		}
+		if _, dup := res.Upstreams[u.Name]; dup {
+			return nil, &ValidationError{Field: "upstreams", Msg: "duplicate upstream name: " + u.Name}
+		}
+		res.Upstreams[u.Name] = u
+		res.UpstreamOrder = append(res.UpstreamOrder, u.Name)
+	}
+	sort.Strings(res.UpstreamOrder)
+
+	enabled := make([]string, 0, len(modelFile.Models))
+	for i, d := range modelFile.Models {
+		m, err := translateModel(i, d, res.Upstreams)
+		if err != nil {
+			return nil, err
+		}
+		if _, dup := res.Models[m.PublicName]; dup {
+			return nil, &ValidationError{Field: "models", Msg: "duplicate public_name: " + m.PublicName}
+		}
+		res.Models[m.PublicName] = m
+		if m.Enabled {
+			enabled = append(enabled, m.PublicName)
+		}
+	}
+	sort.Strings(enabled)
+	res.EnabledModelIDs = enabled
+
+	for i, d := range comboFile.Combos {
+		c, err := translateCombo(i, d, res.Models, res.Combos)
+		if err != nil {
+			return nil, err
+		}
+		if _, dup := res.Models[c.Name]; dup {
+			return nil, &ValidationError{Field: fmt.Sprintf("combos[%d].name", i), Msg: "combo name collides with existing model: " + c.Name}
+		}
+		if _, dup := res.Combos[c.Name]; dup {
+			return nil, &ValidationError{Field: fmt.Sprintf("combos[%d].name", i), Msg: "duplicate combo name: " + c.Name}
+		}
+		res.Combos[c.Name] = c
+		res.ComboOrder = append(res.ComboOrder, c.Name)
+	}
+	sort.Strings(res.ComboOrder)
+
+	for i, d := range tenantFile.Tenants {
+		t, warns, err := translateTenant(i, d, res.Models, res.Combos, envLookup)
+		if err != nil {
+			return nil, err
+		}
+		res.Warnings = append(res.Warnings, warns...)
+		if _, dup := res.TenantsByHash[t.KeyHash]; dup {
+			return nil, &ValidationError{Field: "tenants", Msg: "duplicate key_hash"}
+		}
+		res.TenantsByHash[t.KeyHash] = t
+		res.TenantOrder = append(res.TenantOrder, t.KeyHash)
+	}
+	sort.Strings(res.TenantOrder)
+
+	return res, nil
+}
+
+// decodeStrict decodes JSON and rejects unknown fields (fail-closed).
+func decodeStrict(file string, raw []byte, v any) error {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		raw = []byte("{}")
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		return &ParseError{File: file, Err: err}
+	}
+	return nil
+}
+
+// ValidationError describes a single validation failure.
+type ValidationError struct {
+	Field string
+	Msg   string
+}
+
+func (e *ValidationError) Error() string {
+	return fmt.Sprintf("validation error: %s: %s", e.Field, e.Msg)
+}
+
+// EnvLookupOrOS is the production environment lookup.
+func EnvLookupOrOS(name string) (string, bool) { return os.LookupEnv(name) }
+
+func translateUpstream(i int, d UpstreamDTO, envLookup func(string) (string, bool)) (*domain.Upstream, error) {
+	if !upstreamNameRe.MatchString(d.Name) {
+		return nil, &ValidationError{Field: fmt.Sprintf("upstreams[%d].name", i), Msg: "invalid or empty name"}
+	}
+	proto := d.Protocol
+	if proto == "" {
+		proto = DefaultProtocol
+	}
+	if proto != string(domain.ProtocolOpenAI) && proto != string(domain.ProtocolAnthropic) {
+		return nil, &ValidationError{Field: fmt.Sprintf("upstreams[%d].protocol", i), Msg: "unsupported protocol: " + proto}
+	}
+
+	if d.BaseURL == "" && len(d.BaseURLs) > 0 {
+		d.BaseURL = d.BaseURLs[0]
+	}
+	if d.BaseURL != "" && len(d.BaseURLs) == 0 {
+		d.BaseURLs = []string{d.BaseURL}
+	}
+	if len(d.BaseURLs) == 0 && d.BaseURL == "" {
+		return nil, &ValidationError{Field: fmt.Sprintf("upstreams[%d].base_url", i), Msg: "base_url or base_urls required"}
+	}
+	for _, uURL := range d.BaseURLs {
+		if !strings.HasPrefix(uURL, "https://") && !(pickBool(d.AllowInsecure, false) && strings.HasPrefix(uURL, "http://")) {
+			return nil, &ValidationError{Field: fmt.Sprintf("upstreams[%d].base_url", i), Msg: "must be https (or http with allow_insecure)"}
+		}
+	}
+
+	strategyStr := d.KeyStrategy
+	if strategyStr == "" {
+		strategyStr = DefaultKeyStrategy
+	}
+	strategy := domain.KeyStrategy(strategyStr)
+	if strategy != domain.KeyStrategyRoundRobin && strategy != domain.KeyStrategyLeastInflight {
+		return nil, &ValidationError{
+			Field: fmt.Sprintf("upstreams[%d].key_strategy", i),
+			Msg:   fmt.Sprintf("unsupported key_strategy: %s", strategyStr),
+		}
+	}
+
+	var slots []*domain.KeySlot
+	seenRefs := make(map[string]bool)
+
+	if len(d.CredentialPool) > 0 {
+		for j, k := range d.CredentialPool {
+			secret := k.APIKey
+			if secret == "" {
+				secret = k.Secret
+			}
+			ref := k.Ref
+			if secret != "" {
+				if ref == "" {
+					ref = fmt.Sprintf("%s-key-%d", d.Name, j+1)
+				}
+			} else {
+				if ref == "" {
+					return nil, &ValidationError{
+						Field: fmt.Sprintf("upstreams[%d].credential_pool[%d].ref", i, j),
+						Msg:   "required",
+					}
+				}
+				sec, ok := envLookup(ref)
+				if !ok || sec == "" {
+					return nil, &ValidationError{
+						Field: fmt.Sprintf("upstreams[%d].credential_pool[%d].ref", i, j),
+						Msg:   "ENV var not set: " + ref,
+					}
+				}
+				secret = sec
+			}
+
+			if seenRefs[ref] {
+				return nil, &ValidationError{
+					Field: fmt.Sprintf("upstreams[%d].credential_pool[%d].ref", i, j),
+					Msg:   "duplicate key ref: " + ref,
+				}
+			}
+			seenRefs[ref] = true
+			rps := pickFloat(k.RPS, 0)
+			if rps < 0 {
+				return nil, &ValidationError{
+					Field: fmt.Sprintf("upstreams[%d].credential_pool[%d].rps", i, j),
+					Msg:   "must be non-negative",
+				}
+			}
+			maxConcurrent := pickInt(k.MaxConcurrent, 0)
+			if maxConcurrent < 0 {
+				return nil, &ValidationError{
+					Field: fmt.Sprintf("upstreams[%d].credential_pool[%d].max_concurrent", i, j),
+					Msg:   "must be non-negative",
+				}
+			}
+			slots = append(slots, &domain.KeySlot{
+				Ref:           ref,
+				Secret:        secret,
+				RPS:           rps,
+				MaxConcurrent: maxConcurrent,
+			})
+		}
+	} else if len(d.APIKeys) > 0 {
+		for j, k := range d.APIKeys {
+			if k == "" {
+				continue
+			}
+			ref := fmt.Sprintf("%s-key-%d", d.Name, j+1)
+			slots = append(slots, &domain.KeySlot{
+				Ref:           ref,
+				Secret:        k,
+				RPS:           pickFloat(d.CredentialRPS, 0),
+				MaxConcurrent: pickInt(d.CredentialMaxConcurrent, 0),
+			})
+		}
+		if len(slots) == 0 {
+			return nil, &ValidationError{
+				Field: fmt.Sprintf("upstreams[%d].api_keys", i),
+				Msg:   "at least one non-empty api_key required",
+			}
+		}
+	} else if d.APIKey != "" {
+		ref := fmt.Sprintf("%s-key-1", d.Name)
+		slots = append(slots, &domain.KeySlot{
+			Ref:           ref,
+			Secret:        d.APIKey,
+			RPS:           pickFloat(d.CredentialRPS, 0),
+			MaxConcurrent: pickInt(d.CredentialMaxConcurrent, 0),
+		})
+	} else if d.CredentialRef != "" {
+		secret, ok := envLookup(d.CredentialRef)
+		if !ok || secret == "" {
+			return nil, &ValidationError{
+				Field: fmt.Sprintf("upstreams[%d].credential_ref", i),
+				Msg:   "ENV var not set: " + d.CredentialRef,
+			}
+		}
+		rps := pickFloat(d.CredentialRPS, 0)
+		if rps < 0 {
+			return nil, &ValidationError{
+				Field: fmt.Sprintf("upstreams[%d].credential_rps", i),
+				Msg:   "must be non-negative",
+			}
+		}
+		maxConcurrent := pickInt(d.CredentialMaxConcurrent, 0)
+		if maxConcurrent < 0 {
+			return nil, &ValidationError{
+				Field: fmt.Sprintf("upstreams[%d].credential_max_concurrent", i),
+				Msg:   "must be non-negative",
+			}
+		}
+		slots = append(slots, &domain.KeySlot{
+			Ref:           d.CredentialRef,
+			Secret:        secret,
+			RPS:           rps,
+			MaxConcurrent: maxConcurrent,
+		})
+	} else {
+		return nil, &ValidationError{
+			Field: fmt.Sprintf("upstreams[%d].credential_ref", i),
+			Msg:   "credential_ref or credential_pool required",
+		}
+	}
+
+	keyRing := domain.NewKeyRing(strategy, slots)
+	primarySlot := keyRing.PrimarySlot()
+
+	primaryRef := ""
+	var primaryRPS float64
+	var primaryMaxConcurrent int
+	if primarySlot != nil {
+		primaryRef = primarySlot.Ref
+		primaryRPS = primarySlot.RPS
+		primaryMaxConcurrent = primarySlot.MaxConcurrent
+	}
+
+	if d.CredentialRef != "" && d.CredentialRef != primaryRef {
+		if _, ok := envLookup(d.CredentialRef); !ok {
+			return nil, &ValidationError{
+				Field: fmt.Sprintf("upstreams[%d].credential_ref", i),
+				Msg:   "ENV var not set: " + d.CredentialRef,
+			}
+		}
+	}
+
+	baseURLs := make([]string, len(d.BaseURLs))
+	for idx, u := range d.BaseURLs {
+		baseURLs[idx] = strings.TrimRight(u, "/")
+	}
+
+	return &domain.Upstream{
+		Name:                    d.Name,
+		Protocol:                domain.Protocol(proto),
+		BaseURL:                 strings.TrimRight(d.BaseURL, "/"),
+		BaseURLs:                baseURLs,
+		CredentialRef:           primaryRef,
+		KeyStrategy:             strategy,
+		KeyRing:                 keyRing,
+		TimeoutMs:               pickInt(d.TimeoutMs, DefaultTimeoutMs),
+		IdleTimeoutMs:           pickInt(d.IdleTimeoutMs, DefaultIdleTimeoutMs),
+		StreamIdleTimeoutMs:     pickInt(d.StreamIdleTimeoutMs, DefaultStreamIdleTimeoutMs),
+		MaxIdleConnsPerHost:     pickInt(d.MaxIdleConnsPerHost, DefaultMaxIdleConnsPerHost),
+		MaxConnsPerHost:         pickInt(d.MaxConnsPerHost, DefaultMaxConnsPerHost),
+		ExtraHeaders:            d.ExtraHeaders,
+		AllowInsecure:           pickBool(d.AllowInsecure, false),
+		CredentialRPS:           primaryRPS,
+		CredentialMaxConcurrent: primaryMaxConcurrent,
+		Disabled:                d.Enabled != nil && !*d.Enabled,
+	}, nil
+}
+
+func translateModel(i int, d ModelDTO, ups map[string]*domain.Upstream) (*domain.ModelEntry, error) {
+	if !modelNameRe.MatchString(d.PublicName) {
+		return nil, &ValidationError{Field: fmt.Sprintf("models[%d].public_name", i), Msg: "invalid or empty name"}
+	}
+	if _, ok := ups[d.Upstream]; !ok {
+		return nil, &ValidationError{Field: fmt.Sprintf("models[%d].upstream", i), Msg: "references unknown upstream: " + d.Upstream}
+	}
+	if d.UpstreamModel == "" {
+		return nil, &ValidationError{Field: fmt.Sprintf("models[%d].upstream_model", i), Msg: "required"}
+	}
+	var caps domain.Capabilities
+	if d.Capabilities != nil {
+		caps = domain.Capabilities{
+			Stream:     d.Capabilities.Stream,
+			Tools:      d.Capabilities.Tools,
+			Vision:     d.Capabilities.Vision,
+			JSONMode:   d.Capabilities.JSONMode,
+			Embeddings: d.Capabilities.Embeddings,
+			Audio:      d.Capabilities.Audio,
+		}
+	}
+
+	return &domain.ModelEntry{
+		PublicName:    d.PublicName,
+		Upstream:      d.Upstream,
+		UpstreamModel: d.UpstreamModel,
+		Capabilities:  caps,
+		MaxContext:    pickInt(d.MaxContext, 0),
+		Enabled:       pickBool(d.Enabled, true),
+	}, nil
+}
+
+func translateCombo(i int, d ComboDTO, models map[string]*domain.ModelEntry, combos map[string]*domain.Combo) (*domain.Combo, error) {
+	if !modelNameRe.MatchString(d.Name) {
+		return nil, &ValidationError{Field: fmt.Sprintf("combos[%d].name", i), Msg: "invalid or empty name"}
+	}
+	if len(d.Models) == 0 {
+		return nil, &ValidationError{Field: fmt.Sprintf("combos[%d].models", i), Msg: "must contain at least one model"}
+	}
+	for j, m := range d.Models {
+		if _, ok := models[m]; !ok {
+			return nil, &ValidationError{
+				Field: fmt.Sprintf("combos[%d].models[%d]", i, j),
+				Msg:   "references unknown model: " + m,
+			}
+		}
+	}
+	strategyStr := strings.ToLower(strings.TrimSpace(d.Strategy))
+	if strategyStr == "" {
+		strategyStr = string(domain.RoutingStrategyFailover)
+	}
+	strategy := domain.RoutingStrategy(strategyStr)
+	if strategy != domain.RoutingStrategyFailover &&
+		strategy != domain.RoutingStrategyRoundRobin &&
+		strategy != domain.RoutingStrategyLeastInflight {
+		return nil, &ValidationError{
+			Field: fmt.Sprintf("combos[%d].strategy", i),
+			Msg:   "must be failover, round_robin, or least_inflight",
+		}
+	}
+	return &domain.Combo{
+		Name:     d.Name,
+		Strategy: strategy,
+		Models:   d.Models,
+		Enabled:  pickBool(d.Enabled, true),
+	}, nil
+}
+
+func translateTenant(i int, d TenantDTO, models map[string]*domain.ModelEntry, combos map[string]*domain.Combo, envLookup func(string) (string, bool)) (*domain.Tenant, []string, error) {
+	var warns []string
+	if d.KeyHash == "" && d.APIKey != "" {
+		sum := sha256.Sum256([]byte(d.APIKey))
+		d.KeyHash = "sha256:" + hex.EncodeToString(sum[:])
+	}
+	if !keyHashRe.MatchString(d.KeyHash) {
+		return nil, nil, &ValidationError{Field: fmt.Sprintf("tenants[%d].key_hash", i), Msg: "must be sha256:<64 hex> (or provide api_key)"}
+	}
+	if d.Name == "" {
+		return nil, nil, &ValidationError{Field: fmt.Sprintf("tenants[%d].name", i), Msg: "required"}
+	}
+	status := d.Status
+	if status == "" {
+		status = string(domain.TenantStatusActive)
+	}
+	if status != string(domain.TenantStatusActive) && status != string(domain.TenantStatusSuspended) {
+		return nil, nil, &ValidationError{Field: fmt.Sprintf("tenants[%d].status", i), Msg: "must be active or suspended"}
+	}
+	allowed := d.AllowedModels
+	if len(allowed) == 0 {
+		allowed = []string{"*"}
+	}
+	for _, m := range allowed {
+		if m == "*" {
+			continue
+		}
+		_, inModels := models[m]
+		_, inCombos := combos[m]
+		if !inModels && !inCombos {
+			return nil, nil, &ValidationError{Field: fmt.Sprintf("tenants[%d].allowed_models", i), Msg: "unknown model: " + m}
+		}
+	}
+	if d.CredentialRef != "" {
+		if _, ok := envLookup(d.CredentialRef); !ok {
+			return nil, nil, &ValidationError{Field: fmt.Sprintf("tenants[%d].credential_ref", i), Msg: "ENV var not set: " + d.CredentialRef}
+		}
+	}
+
+	rl := domain.RateLimit{RPS: DefaultTenantRPS, MaxConcurrent: DefaultTenantMaxConcurrent}
+	if d.RateLimit != nil {
+		rl.RPS = pickFloat(d.RateLimit.RPS, DefaultTenantRPS)
+		rl.MaxConcurrent = pickInt(d.RateLimit.MaxConcurrent, DefaultTenantMaxConcurrent)
+		rl.Burst = pickInt(d.RateLimit.Burst, 0)
+	}
+	if rl.Burst == 0 {
+		rl.Burst = int(rl.RPS * 2)
+	}
+	if rl.RPS < 0 || rl.Burst < 0 || rl.MaxConcurrent < 0 {
+		return nil, nil, &ValidationError{Field: fmt.Sprintf("tenants[%d].rate_limit", i), Msg: "values must be non-negative"}
+	}
+	if rl.RPS > 0 && float64(rl.Burst) < rl.RPS {
+		warns = append(warns, fmt.Sprintf("tenant %q: burst (%d) < rps (%.0f)", d.Name, rl.Burst, rl.RPS))
+	}
+	if rl.MaxConcurrent == 0 {
+		warns = append(warns, fmt.Sprintf("tenant %q: max_concurrent=0 (unlimited) risks noisy-neighbor", d.Name))
+	}
+	if rl.RPS == 0 {
+		warns = append(warns, fmt.Sprintf("tenant %q: rps=0 disables rate limiting", d.Name))
+	}
+
+	return &domain.Tenant{
+		KeyHash:       d.KeyHash,
+		Name:          d.Name,
+		Status:        domain.TenantStatus(status),
+		AllowedModels: allowed,
+		CredentialRef: d.CredentialRef,
+		RateLimit:     rl,
+		Metadata:      d.Metadata,
+	}, warns, nil
+}

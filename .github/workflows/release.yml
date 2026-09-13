@@ -1,0 +1,215 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag name (e.g. v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_TAG: ${{ github.event.inputs.tag_name || github.ref_name }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Build Frontend Production Assets
+  # ---------------------------------------------------------------------------
+  build-frontend:
+    name: Build Frontend SPA
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Bun Environment
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install Frontend Dependencies
+        working-directory: ./frontend
+        run: |
+          if [ -f "bun.lock" ] || [ -f "bun.lockb" ]; then
+            bun install --frozen-lockfile
+          else
+            bun install
+          fi
+
+      - name: Build Frontend Bundle
+        working-directory: ./frontend
+        run: bun run build
+
+      - name: Verify Frontend Artifacts
+        run: |
+          test -f frontend/dist/index.html || { echo "Error: frontend/dist/index.html missing"; exit 1; }
+          echo "Frontend built successfully with $(ls -1 frontend/dist/assets | wc -l) asset chunks."
+
+      - name: Upload Frontend Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # 2. Cross-Compile Standalone Binaries (Embedding Frontend SPA)
+  # ---------------------------------------------------------------------------
+  build-backend:
+    name: Build Binary (${{ matrix.goos }}/${{ matrix.goarch }})
+    needs: build-frontend
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Download Frontend Bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+
+      - name: Verify Embedded Assets Presence
+        run: |
+          test -f frontend/dist/index.html || { echo "Error: embedded dist/index.html not found"; exit 1; }
+
+      - name: Setup Go Environment
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: true
+
+      - name: Cross-Compile Standalone Binaries
+        shell: bash
+        run: |
+          mkdir -p build dist
+
+          TAG="${{ env.RELEASE_TAG }}"
+          COMMIT="${{ github.sha }}"
+          BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          LDFLAGS="-s -w -X 'main.Version=${TAG}' -X 'main.Commit=${COMMIT}' -X 'main.BuildDate=${BUILD_DATE}'"
+
+          BIN_NAME="firefly"
+          LOADTEST_NAME="loadtest"
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            BIN_NAME="firefly.exe"
+            LOADTEST_NAME="loadtest.exe"
+          fi
+
+          echo ">> Compiling Firefly for ${{ matrix.goos }}/${{ matrix.goarch }}..."
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+            go build -trimpath -ldflags="${LDFLAGS}" -o "build/${BIN_NAME}" ./cmd/firefly
+
+          echo ">> Compiling Loadtest CLI for ${{ matrix.goos }}/${{ matrix.goarch }}..."
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+            go build -trimpath -ldflags="-s -w" -o "build/${LOADTEST_NAME}" ./cmd/loadtest
+
+          ARCHIVE_NAME="firefly_${TAG}_${{ matrix.goos }}_${{ matrix.goarch }}"
+
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            zip -j "dist/${ARCHIVE_NAME}.zip" "build/${BIN_NAME}" "build/${LOADTEST_NAME}"
+          else
+            tar -czvf "dist/${ARCHIVE_NAME}.tar.gz" -C build "${BIN_NAME}" "${LOADTEST_NAME}"
+          fi
+
+      - name: Upload Release Archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # 3. Publish GitHub Release with Changelog Notes & Checksums
+  # ---------------------------------------------------------------------------
+  publish-release:
+    name: Publish Release to GitHub
+    needs: build-backend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Download All Release Archives
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: release-*
+          merge-multiple: true
+
+      - name: Generate SHA256 Checksums
+        working-directory: release-assets
+        run: |
+          sha256sum firefly_* > checksums.txt
+          cat checksums.txt
+
+      - name: Extract Release Notes from CHANGELOG.md
+        shell: bash
+        run: |
+          TAG="${{ env.RELEASE_TAG }}"
+          VERSION="${TAG#v}"
+
+          echo "Extracting release notes for tag: ${TAG} (version: ${VERSION})..."
+
+          if [ -f "CHANGELOG.md" ]; then
+            awk -v ver="$VERSION" -v tag="$TAG" '
+              BEGIN { capturing = 0 }
+              /^## / {
+                if (capturing) exit
+                if (index($0, "[" tag "]") || index($0, "[" ver "]") || index($0, " " tag " ") || index($0, " " ver " ") || index($0, " " tag) || index($0, " " ver)) {
+                  capturing = 1
+                  next
+                }
+              }
+              capturing { print }
+            ' CHANGELOG.md > RELEASE_NOTES.md
+          fi
+
+          # Fallback if specific section is empty
+          if [ ! -s RELEASE_NOTES.md ]; then
+            echo "### Release ${TAG}" > RELEASE_NOTES.md
+            echo "" >> RELEASE_NOTES.md
+            echo "See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for full change history." >> RELEASE_NOTES.md
+          fi
+
+          echo "--- Release Notes Preview ---"
+          cat RELEASE_NOTES.md
+          echo "-----------------------------"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: Release ${{ env.RELEASE_TAG }}
+          body_path: RELEASE_NOTES.md
+          files: |
+            release-assets/firefly_*
+            release-assets/checksums.txt
+          draft: false
+          prerelease: ${{ contains(env.RELEASE_TAG, '-alpha') || contains(env.RELEASE_TAG, '-beta') || contains(env.RELEASE_TAG, '-rc') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
