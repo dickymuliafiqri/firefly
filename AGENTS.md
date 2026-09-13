@@ -44,6 +44,8 @@ Before modifying or adding code to Firefly, every AI Agent **must understand and
 | `logging` | `internal/logging/` | Structured `slog.Logger` wrapper with custom `RedactHandler` for automatic token and credential header masking. |
 | `metrics` | `internal/metrics/` | Isolated Prometheus registry exposing latencies, in-flight gauges, cooldown counters, and circuit breaker states. |
 | `config` | `internal/config/` | JSON configuration loader (`upstreams.json`, `models.json`, `tenants.json`, `combos.json`) with strict schema validation. |
+| `analytics` | `internal/analytics/` | Persistent disk store for request execution logs, token ledger metrics, and manual/automatic circuit breaker overrides. |
+| `auth` | `internal/auth/` | Master password vault, PBKDF2/salted SHA-256 session token manager, and tenant key verification. |
 | `watch` | `internal/watch/` | File watcher combining `fsnotify`, periodic polling, and SIGHUP signals for atomic configuration hot-reloading. |
 
 ---

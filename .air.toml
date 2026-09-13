@@ -25,7 +25,7 @@ tmp_dir = "tmp"
   include_ext = ["go", "json", "ts", "tsx", "js", "jsx", "css", "html"]
   include_file = []
 
-  # Exclude build outputs, node_modules, and cache directories to prevent infinite build loops
+  # Exclude build outputs, node_modules, cache, and IDE directories to prevent infinite build loops
   exclude_dir = [
     "assets",
     "tmp",
@@ -36,12 +36,35 @@ tmp_dir = "tmp"
     ".agents",
     ".claude",
     ".planning",
+    ".gemini",
+    ".idea",
+    ".vscode",
     ".git"
   ]
-  exclude_file = []
+  # Exclude volatile runtime state and telemetry files that frequently mutate
+  exclude_file = [
+    "configs/telemetry.json",
+    "configs/analytics.json",
+    "configs/analytics.json.tmp",
+    "configs/auth.json",
+    "telemetry.json",
+    "analytics.json",
+    "auth.json",
+    "build-errors.log"
+  ]
+  # Regex exclusions for dynamic telemetry/analytics, temporary buffers, logs, and editor swaps
   exclude_regex = [
     "_test\\.go$",
-    ".*\\.timestamp-.*\\.mjs$"
+    ".*\\.timestamp-.*\\.mjs$",
+    ".*(telemetry|analytics).*",
+    ".*auth\\.json$",
+    ".*\\.tmp$",
+    ".*\\.temp$",
+    ".*\\.log$",
+    ".*\\.swp$",
+    ".*\\.swo$",
+    ".*~.*$",
+    ".*\\.DS_Store$"
   ]
   exclude_unchanged = false
   follow_symlink = false

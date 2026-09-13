@@ -5,6 +5,19 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.2] - 2026-09-14
+
+### Changed
+- **Air Hot-Reload Volatile File Exclusions (`.air.toml`)**:
+  - Configured Air live-reloading to exclude volatile telemetry, analytics, and dynamic state files (`configs/analytics.json`, `configs/telemetry.json`, `configs/auth.json`, `build-errors.log`).
+  - Added comprehensive exclusion regex patterns in `exclude_regex` (`.*(telemetry|analytics).*`, `.*auth\.json$`, `.*\.tmp$`, `.*\.temp$`, `.*\.log$`, `.*\.swp$`, `.*\.swo$`, `.*~.*$`, `.*\.DS_Store$`) to eliminate infinite rebuild loops and spurious server restarts during request forwarding and token accounting.
+  - Added `.gemini`, `.idea`, and `.vscode` to `exclude_dir` to suppress IDE workspace trigger events.
+
+### Documentation
+- **Architecture & Layout Modernization**:
+  - Updated `CONTRIBUTING.md`, `AGENTS.md`, and `llms.txt` with package mappings for `internal/analytics` and `internal/auth`.
+  - Documented React 19 frontend layout and Air live-reloading configuration in `CONTRIBUTING.md`.
+
 ## [1.1.1] - 2026-09-13
 
 ### Fixed

@@ -33,6 +33,9 @@ make test
 make dev
 ```
 
+> [!TIP]
+> **Hot-Reload Filtering (`.air.toml`)**: When using `make dev`, Air automatically ignores runtime state and telemetry files (`configs/analytics.json`, `configs/telemetry.json`, `configs/auth.json`, and `*.tmp` buffers) to prevent infinite rebuild loops when requests mutate runtime state.
+
 ---
 
 ## 3. Repository Architecture & Layout
@@ -42,10 +45,11 @@ gorouter/
 ├── cmd/
 │   ├── firefly/          # Main application daemon entrypoint
 │   └── loadtest/         # Standalone high-concurrency CLI benchmark tool
-├── frontend/             # React 18 + Vite + Tailwind SPA (embedded via //go:embed)
+├── frontend/             # React 19 + Vite + Tailwind SPA (embedded via //go:embed)
 ├── internal/
+│   ├── analytics/        # Persistent request history, token metrics & breaker overrides
 │   ├── anthropic/        # Anthropic Claude Messages protocol translation
-│   ├── auth/             # Tenant API key storage & validation
+│   ├── auth/             # Master password, session manager & tenant key storage
 │   ├── config/           # Dynamic JSON loader (upstreams, models, tenants, combos)
 │   ├── domain/           # Pure domain models (CatalogSnapshot, Model, Tenant, Combo)
 │   ├── httpx/            # Global middleware pipeline (Admission, Auth, Log, Metrics)

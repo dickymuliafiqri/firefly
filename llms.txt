@@ -21,6 +21,7 @@
 - `firefly -config-dir=/etc/firefly -addr=0.0.0.0:8080`: Run the gateway.
 - `firefly -version`: Display compiled version, commit SHA, and build date.
 - `loadtest -mock -c 1000 -profile low`: Run 1,000 concurrent requests burst against in-process mock gateway.
+- `make dev`: Run live-reloading development server with Air (auto-excluding runtime analytics/telemetry state files).
 - `make build`: Build single-binary with embedded frontend assets.
 - `make test`: Run complete test suite with Go race detector (`go test -count=1 -race ./...`).
 
@@ -29,6 +30,8 @@
 - `models.json`: Mapping of public client model IDs to upstream provider targets.
 - `tenants.json`: Registered tenant API keys (`sk-gw-...`) with RPS token bucket quotas and allowed model lists.
 - `combos.json`: Virtual model load balancing pools with member model lists and rotation strategies.
+- `analytics.json`: Runtime disk store for persisted request history, token metrics, and circuit breaker overrides.
+- `auth.json`: Runtime credential vault for dashboard access password and session tokens.
 
 ## Invariants
 - Never set `http.Server.WriteTimeout` on the data plane.
