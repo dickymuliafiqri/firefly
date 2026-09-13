@@ -50,10 +50,10 @@ func (deps RouterDeps) registerFrontendRoutes(mux *http.ServeMux) {
 			}
 		}
 
-		// 3. Fallback to plain ok if no dashboard file found
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		// 3. Fallback HTML if no dashboard file found (e.g. standalone test or headless build)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("<!DOCTYPE html><html><head><title>Firefly AI Gateway</title></head><body><h1>Firefly AI Gateway</h1><p>Dashboard UI not built.</p></body></html>"))
 	}
 
 	// Root route: GET /{$}

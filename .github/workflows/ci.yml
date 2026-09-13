@@ -56,10 +56,17 @@ jobs:
   # ---------------------------------------------------------------------------
   backend-test:
     name: Go Test Suite (-race)
+    needs: [frontend]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+
+      - name: Download Built Frontend Assets
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-frontend-dist
+          path: frontend/dist
 
       - name: Setup Go Environment
         uses: actions/setup-go@v5
