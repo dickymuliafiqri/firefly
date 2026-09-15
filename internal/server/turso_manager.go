@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -37,6 +38,24 @@ func NewTursoManager(configDir string, initialStore *turso.Store, logger *slog.L
 		logger:    logger,
 		store:     initialStore,
 	}
+}
+
+// resolveLocalPath makes the embedded-replica database path writable regardless of
+// the process working directory. Under systemd the CWD is typically "/" (or an
+// install dir owned by root), so a relative default like "data/firefly.db" fails
+// with "mkdir data: permission denied". Anchoring relative paths to the configured
+// (and writable) config directory keeps the local replica alongside turso.json.
+func (m *TursoManager) resolveLocalPath(localPath string) string {
+	if localPath == "" {
+		localPath = "data/firefly.db"
+	}
+	if filepath.IsAbs(localPath) {
+		return localPath
+	}
+	if m.configDir != "" {
+		return filepath.Join(m.configDir, localPath)
+	}
+	return localPath
 }
 
 // AttachRegistry associates the active registry and triggers the background syncer if connected.
@@ -117,9 +136,7 @@ func (m *TursoManager) GetOrInitStore(ctx context.Context) (*turso.Store, error)
 	if localPath == "" {
 		localPath = os.Getenv("FIREFLY_TURSO_LOCAL_PATH")
 	}
-	if localPath == "" {
-		localPath = "data/firefly.db"
-	}
+	localPath = m.resolveLocalPath(localPath)
 
 	syncInterval := 15 * time.Second
 	if cfg.SyncIntervalSec > 0 {
@@ -167,10 +184,7 @@ func (m *TursoManager) UpdateConfig(ctx context.Context, cfg config.TursoDTO) (*
 		return nil, nil
 	}
 
-	localPath := cfg.LocalPath
-	if localPath == "" {
-		localPath = "data/firefly.db"
-	}
+	localPath := m.resolveLocalPath(cfg.LocalPath)
 	syncInterval := 15 * time.Second
 	if cfg.SyncIntervalSec > 0 {
 		syncInterval = time.Duration(cfg.SyncIntervalSec) * time.Second

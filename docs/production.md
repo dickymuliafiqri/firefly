@@ -65,6 +65,8 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now firefly.service
 ```
 
+> **Turso embedded replica path:** the local replica database defaults to `data/firefly.db`, resolved **relative to `-config-dir`**. With the unit above it lands at `/etc/firefly/data/firefly.db`, which is covered by `ReadWritePaths=/etc/firefly`. To store it elsewhere, set an absolute path via `FIREFLY_TURSO_LOCAL_PATH` (or `-turso-local-path`) and ensure that directory is writable by the `firefly` user (add it to `ReadWritePaths`).
+
 ### D. Kernel Network Stack Tuning (`/etc/sysctl.conf`)
 For sustained throughput during burst traffic:
 

@@ -128,6 +128,13 @@ func run() error {
 		}
 	}
 
+	// Anchor a relative embedded-replica path to the (writable) config directory.
+	// Under systemd the process CWD is typically "/", so a relative default like
+	// "data/firefly.db" would fail with "mkdir data: permission denied".
+	if *tursoLocalPath != "" && !filepath.IsAbs(*tursoLocalPath) && *configDir != "" {
+		*tursoLocalPath = filepath.Join(*configDir, *tursoLocalPath)
+	}
+
 	logger := logging.New(os.Stdout, *logLevel)
 	slog.SetDefault(logger)
 

@@ -5,6 +5,14 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] - 2026-09-15
+
+### Fixed
+- **Turso embedded-replica initialization failed under systemd with `mkdir data: permission denied`**:
+  - The local replica database default (`data/firefly.db`) is a relative path, so it was resolved against the process working directory. Under a systemd unit the CWD is typically `/` (or a root-owned install dir), so `os.MkdirAll("data", …)` failed with `permission denied`, aborting Turso store initialization (observed on `GET /api/turso/providers` and `GET /api/turso/*`).
+  - Relative local paths are now anchored to the writable config directory. `internal/server/turso_manager.go` gained a `resolveLocalPath` helper used by both `GetOrInitStore` and `UpdateConfig`, and `cmd/firefly/main.go` anchors a relative `-turso-local-path` to `-config-dir` on startup. Absolute paths and `FIREFLY_TURSO_LOCAL_PATH` / config overrides are respected unchanged.
+  - With the default systemd layout (`-config-dir=/etc/firefly`, `ReadWritePaths=/etc/firefly`) the replica now lands at `/etc/firefly/data/firefly.db`, inside a writable location.
+
 ## [1.2.1] - 2026-09-15
 
 ### Fixed
