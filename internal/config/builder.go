@@ -179,7 +179,16 @@ func translateUpstream(i int, d UpstreamDTO, envLookup func(string) (string, boo
 	if proto == "" {
 		proto = DefaultProtocol
 	}
-	if proto != string(domain.ProtocolOpenAI) && proto != string(domain.ProtocolAnthropic) {
+	if proto == "codebuddy_cn" {
+		proto = string(domain.ProtocolCodeBuddyCN)
+	} else if proto == "codebuddy_intl" {
+		proto = string(domain.ProtocolCodeBuddyIntl)
+	}
+
+	switch domain.Protocol(proto) {
+	case domain.ProtocolOpenAI, domain.ProtocolAnthropic, domain.ProtocolAntigravity, domain.ProtocolCline, domain.ProtocolCodeBuddyCN, domain.ProtocolCodeBuddyIntl:
+		// Valid protocol
+	default:
 		return nil, &ValidationError{Field: fmt.Sprintf("upstreams[%d].protocol", i), Msg: "unsupported protocol: " + proto}
 	}
 
@@ -224,6 +233,8 @@ func translateUpstream(i int, d UpstreamDTO, envLookup func(string) (string, boo
 				if ref == "" {
 					ref = fmt.Sprintf("%s-key-%d", d.Name, j+1)
 				}
+			} else if strings.HasPrefix(ref, "oauth:") {
+				secret = ref
 			} else {
 				if ref == "" {
 					return nil, &ValidationError{
@@ -297,12 +308,18 @@ func translateUpstream(i int, d UpstreamDTO, envLookup func(string) (string, boo
 			MaxConcurrent: pickInt(d.CredentialMaxConcurrent, 0),
 		})
 	} else if d.CredentialRef != "" {
-		secret, ok := envLookup(d.CredentialRef)
-		if !ok || secret == "" {
-			return nil, &ValidationError{
-				Field: fmt.Sprintf("upstreams[%d].credential_ref", i),
-				Msg:   "ENV var not set: " + d.CredentialRef,
+		var secret string
+		if strings.HasPrefix(d.CredentialRef, "oauth:") {
+			secret = d.CredentialRef
+		} else {
+			sec, ok := envLookup(d.CredentialRef)
+			if !ok || sec == "" {
+				return nil, &ValidationError{
+					Field: fmt.Sprintf("upstreams[%d].credential_ref", i),
+					Msg:   "ENV var not set: " + d.CredentialRef,
+				}
 			}
+			secret = sec
 		}
 		rps := pickFloat(d.CredentialRPS, 0)
 		if rps < 0 {
@@ -343,7 +360,7 @@ func translateUpstream(i int, d UpstreamDTO, envLookup func(string) (string, boo
 		primaryMaxConcurrent = primarySlot.MaxConcurrent
 	}
 
-	if d.CredentialRef != "" && d.CredentialRef != primaryRef {
+	if d.CredentialRef != "" && d.CredentialRef != primaryRef && !strings.HasPrefix(d.CredentialRef, "oauth:") {
 		if _, ok := envLookup(d.CredentialRef); !ok {
 			return nil, &ValidationError{
 				Field: fmt.Sprintf("upstreams[%d].credential_ref", i),

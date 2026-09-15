@@ -26,7 +26,7 @@ import {
 import { useSaveSettingsMutation, useSettingsQuery } from '@/services/api';
 import { RawJsonEditor } from './RawJsonEditor';
 import { DiffModal } from './DiffModal';
-import type { SettingsDTO } from '@/services/schema';
+import type { AutoTLSDTO, SettingsDTO } from '@/services/schema';
 import { cn } from '@/lib/utils';
 
 /**
@@ -61,6 +61,7 @@ export default React.memo(function SettingsView() {
   const [isCurrentPasswordMasked, setIsCurrentPasswordMasked] = useState(true);
   const [isNewPasswordMasked, setIsNewPasswordMasked] = useState(true);
   const [isUpdatingPassword, startPasswordTransition] = useTransition();
+  const [tlsDraft, setTlsDraft] = useState<AutoTLSDTO>({ enabled: false, domain: '', email: '' });
 
   // Generate baseline JSON from current state
   const serverJson = useMemo(() => {
@@ -69,6 +70,7 @@ export default React.memo(function SettingsView() {
       models: serverSettings?.models || models,
       tenants: serverSettings?.tenants || tenants,
       combos: serverSettings?.combos || combos,
+      auto_tls: serverSettings?.auto_tls,
     };
     return JSON.stringify(config, null, 2);
   }, [serverSettings, upstreams, models, tenants, combos]);
@@ -82,6 +84,15 @@ export default React.memo(function SettingsView() {
     setRawJsonText(serverJson);
   }, [serverJson]);
 
+  useEffect(() => {
+    const tls = serverSettings?.auto_tls;
+    setTlsDraft({
+      enabled: tls?.enabled ?? false,
+      domain: tls?.domain ?? '',
+      email: tls?.email ?? '',
+    });
+  }, [serverSettings?.auto_tls]);
+
   // Save admin token to store & session storage
   const handleSaveToken = useCallback(() => {
     setAdminToken(tokenInput.trim());
@@ -91,6 +102,31 @@ export default React.memo(function SettingsView() {
       type: 'success',
     });
   }, [tokenInput, setAdminToken, addToast]);
+
+  const handleSaveAutoTLS = useCallback(() => {
+    const autoTLS: AutoTLSDTO = {
+      enabled: tlsDraft.enabled,
+      domain: tlsDraft.domain?.trim(),
+      email: tlsDraft.email?.trim(),
+    };
+    if (autoTLS.enabled && (!autoTLS.domain || !autoTLS.email)) {
+      addToast({
+        title: 'Auto-TLS Needs Domain and Email',
+        message: 'Enter a public hostname and ACME notification email before enabling HTTPS.',
+        type: 'error',
+      });
+      return;
+    }
+    saveMutation.mutate({
+      upstreams: serverSettings?.upstreams || upstreams,
+      models: serverSettings?.models || models,
+      tenants: serverSettings?.tenants || tenants,
+      combos: serverSettings?.combos || combos,
+      auto_tls: autoTLS,
+    }, {
+      onSuccess: () => { void refetch(); },
+    });
+  }, [tlsDraft, addToast, serverSettings, upstreams, models, tenants, combos, saveMutation, refetch]);
 
   // Update dashboard access password on backend
   const handleSavePassword = useCallback(() => {
@@ -411,6 +447,72 @@ export default React.memo(function SettingsView() {
                   Required when Firefly is launched with <code className="text-neutral-400">-admin-token</code> or <code className="text-neutral-400">FIREFLY_ADMIN_TOKEN</code>.
                 </p>
               </div>
+            </div>
+
+            {/* Native Auto-TLS Card */}
+            <div className="p-5 rounded-xl bg-transparent border border-white/[0.06] space-y-4 font-mono text-xs select-none">
+              <div className="flex items-center gap-2 pb-3 border-b border-white/[0.04]">
+                <Shield className="w-4 h-4 text-neutral-400" />
+                <h3 className="text-xs font-mono uppercase tracking-wider text-neutral-300 font-medium">
+                  Native Let&apos;s Encrypt Auto-TLS
+                </h3>
+              </div>
+
+              <label className="flex items-center gap-2 text-neutral-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={tlsDraft.enabled}
+                  onChange={(e) => setTlsDraft((current) => ({ ...current, enabled: e.target.checked }))}
+                  className="h-3.5 w-3.5 rounded border-white/20 bg-transparent accent-neutral-300"
+                />
+                Enable automatic HTTPS certificates and renewal
+              </label>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-mono text-neutral-400 block">Public Domain</label>
+                  <input
+                    type="text"
+                    inputMode="url"
+                    autoCapitalize="none"
+                    spellCheck={false}
+                    disabled={!tlsDraft.enabled}
+                    value={tlsDraft.domain || ''}
+                    onChange={(e) => setTlsDraft((current) => ({ ...current, domain: e.target.value }))}
+                    placeholder="ai.example.com"
+                    className="w-full px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] text-white font-mono text-xs disabled:opacity-50 focus:outline-none focus:border-white/20"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-mono text-neutral-400 block">ACME Notification Email</label>
+                  <input
+                    type="email"
+                    autoCapitalize="none"
+                    spellCheck={false}
+                    disabled={!tlsDraft.enabled}
+                    value={tlsDraft.email || ''}
+                    onChange={(e) => setTlsDraft((current) => ({ ...current, email: e.target.value }))}
+                    placeholder="ops@example.com"
+                    className="w-full px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] text-white font-mono text-xs disabled:opacity-50 focus:outline-none focus:border-white/20"
+                  />
+                </div>
+              </div>
+
+              <div className="p-3 rounded-lg bg-transparent border border-white/[0.04] space-y-1 text-[11px] text-neutral-400">
+                <p className="text-neutral-300 font-medium">HTTP-01 validation requirements</p>
+                <p>Point DNS for this exact hostname to the server and make TCP ports 80 and 443 public and unused. Firefly handles certificate issuance, renewal, and HTTP-to-HTTPS redirect.</p>
+                <p>IP addresses, localhost, wildcards, and URL values are not supported by this native mode.</p>
+              </div>
+
+              <Button
+                variant="minimal"
+                size="sm"
+                onClick={handleSaveAutoTLS}
+                isLoading={saveMutation.isPending}
+                disabled={saveMutation.isPending}
+              >
+                Save Auto-TLS
+              </Button>
             </div>
 
             {/* Admission Semaphore & Rate Limit Settings */}

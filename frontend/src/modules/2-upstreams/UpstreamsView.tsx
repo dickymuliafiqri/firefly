@@ -5,7 +5,7 @@ import { UpstreamCard } from './UpstreamCard';
 import { UpstreamModal } from './UpstreamModal';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
-import { useSaveSettingsMutation } from '@/services/api';
+import { useSaveSettingsMutation, useOAuthConnectionsQuery } from '@/services/api';
 import { Plus, Server } from 'lucide-react';
 
 export default function UpstreamsView() {
@@ -13,6 +13,7 @@ export default function UpstreamsView() {
   const upstreamBreakers = useUpstreamBreakers();
   const { toggleUpstreamBreaker, removeUpstream, addToast } = useStoreActions();
   const saveMutation = useSaveSettingsMutation();
+  const { data: oauthConnections = [] } = useOAuthConnectionsQuery();
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editingUpstream, setEditingUpstream] = useState<UpstreamDTO | null>(null);
@@ -104,6 +105,7 @@ export default function UpstreamsView() {
               key={u.name}
               upstream={u}
               breakerState={upstreamBreakers[u.name] || (u.enabled === false ? 'OPEN' : 'CLOSED')}
+              connections={oauthConnections}
               onToggleBreaker={handleToggleBreaker}
               onEdit={handleEdit}
               onDelete={handleDeleteRequest}
@@ -115,7 +117,7 @@ export default function UpstreamsView() {
           <Server className="w-8 h-8 text-neutral-500 mb-3" />
           <h3 className="text-sm font-medium text-neutral-200">No Upstreams Configured</h3>
           <p className="text-xs text-neutral-500 mt-1 max-w-sm">
-            Add your first OpenAI or Anthropic upstream endpoint to start routing traffic.
+            Add your first OpenAI, Anthropic, or OAuth provider upstream (Google Antigravity, Cline, CodeBuddy) to start routing traffic.
           </p>
           <Button
             variant="minimal"

@@ -16,6 +16,7 @@ export interface PlaygroundSlice {
   playgroundPrompt: string;
   playgroundSelectedModel: string;
   playgroundApiKey: string;
+  playgroundApiKeyManuallyEdited: boolean;
   playgroundTemperature: number;
   playgroundMaxTokens: number;
   playgroundIsStreamMode: boolean;
@@ -34,7 +35,7 @@ export interface PlaygroundSlice {
   ) => void;
   setPlaygroundPrompt: (prompt: string) => void;
   setPlaygroundSelectedModel: (model: string) => void;
-  setPlaygroundApiKey: (key: string) => void;
+  setPlaygroundApiKey: (key: string, options?: { manual?: boolean }) => void;
   setPlaygroundTemperature: (temp: number) => void;
   setPlaygroundMaxTokens: (tokens: number) => void;
   setPlaygroundIsStreamMode: (isStream: boolean) => void;
@@ -68,6 +69,7 @@ export const createPlaygroundSlice: StateCreator<
   playgroundPrompt: '',
   playgroundSelectedModel: '',
   playgroundApiKey: '',
+  playgroundApiKeyManuallyEdited: false,
   playgroundTemperature: 0.7,
   playgroundMaxTokens: 1024,
   playgroundIsStreamMode: true,
@@ -94,8 +96,11 @@ export const createPlaygroundSlice: StateCreator<
   setPlaygroundSelectedModel: (model) =>
     set(() => ({ playgroundSelectedModel: model })),
 
-  setPlaygroundApiKey: (key) => {
-    set(() => ({ playgroundApiKey: key }));
+  setPlaygroundApiKey: (key, options) => {
+    set(() => ({
+      playgroundApiKey: key,
+      playgroundApiKeyManuallyEdited: options?.manual ?? true,
+    }));
   },
 
   setPlaygroundTemperature: (temp) =>

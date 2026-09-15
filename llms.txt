@@ -13,6 +13,9 @@
   - Layer 2: Per-tenant token-bucket rate limiter and concurrency limit (`httpx.AdmissionMiddleware`).
   - Layer 3: Per-credential atomic CAS concurrency ticket gate (`Limiter.AcquireKeySlot`).
 - **Virtual Combos**: Model-level load balancing grouping multiple upstream models into a single public model route using `least_inflight`, `round_robin`, or `failover` chain strategies.
+- **Third-Party AI OAuth & Multi-Account Keyrings**: Native OAuth 2.0 and device code integrations for Google Antigravity Cloud Code, Cline, and Codebuddy (CN & Intl) with encrypted credential storage in `configs/oauth.json` and multi-account keyring rotation.
+- **Native Auto-TLS (Let's Encrypt)**: Built-in ACME HTTP-01 challenge support for zero-config HTTPS deployment, persisted in `configs/tls.json` with dedicated certificate caching.
+- **Model Route Connectivity Verification**: Active probe endpoint (`POST /api/upstreams/check` with `model` parameter) performing minimal inference pings (`max_tokens: 1`) to test and verify AI model connectivity, quotas, and permission before routing traffic.
 - **Single Binary Distribution**: Frontend built with Vite/React 19 is embedded into the standalone executable via `//go:embed all:dist` in `frontend/embed.go`.
 - **Responsive Architecture**: Fully responsive across mobile and desktop with a nocturnal bioluminescent mobile burger menu and adaptive viewports (`min-h-[100dvh]`).
 - **Security & Navigation Authentication**: Dashboard navigation requires password authentication (default: `12345678`), validated and managed via backend credential vault (`configs/auth.json`), with public access to the Overview page.
@@ -32,6 +35,8 @@
 - `combos.json`: Virtual model load balancing pools with member model lists and rotation strategies.
 - `analytics.json`: Runtime disk store for persisted request history, token metrics, and circuit breaker overrides.
 - `auth.json`: Runtime credential vault for dashboard access password and session tokens.
+- `oauth.json`: Encrypted storage for connected third-party AI provider OAuth tokens and refresh metadata.
+- `tls.json`: Operational configuration for native Let's Encrypt Auto-TLS domain and ACME email.
 
 ## Invariants
 - Never set `http.Server.WriteTimeout` on the data plane.

@@ -22,8 +22,8 @@ export const KeyGeneratorModal = React.memo(function KeyGeneratorModal({
 
   const [tenantName, setTenantName] = useState('');
   const [allowedModels, setAllowedModels] = useState('*');
-  const [rps, setRps] = useState(20);
-  const [maxConcurrent, setMaxConcurrent] = useState(20);
+  const [rps, setRps] = useState('20');
+  const [maxConcurrent, setMaxConcurrent] = useState('20');
 
   const [generatedKey, setGeneratedKey] = useState('');
   const [generatedHash, setGeneratedHash] = useState('');
@@ -34,8 +34,8 @@ export const KeyGeneratorModal = React.memo(function KeyGeneratorModal({
     if (isOpen) {
       setTenantName('');
       setAllowedModels('*');
-      setRps(20);
-      setMaxConcurrent(20);
+      setRps('20');
+      setMaxConcurrent('20');
       setGeneratedKey('');
       setGeneratedHash('');
       setCopied(false);
@@ -46,6 +46,17 @@ export const KeyGeneratorModal = React.memo(function KeyGeneratorModal({
   const handleGenerate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!tenantName.trim()) return;
+
+    const parsedRps = Number(rps);
+    const parsedMaxConcurrent = Number(maxConcurrent);
+    if (!Number.isFinite(parsedRps) || parsedRps < 1 || !Number.isFinite(parsedMaxConcurrent) || parsedMaxConcurrent < 1) {
+      addToast({
+        title: 'Validation Error',
+        message: 'RPS and max concurrent must each be at least 1.',
+        type: 'error',
+      });
+      return;
+    }
 
     const rawKey = generateRandomGatewayKey();
     const keyHash = await computeSha256Hex(rawKey);
@@ -64,9 +75,9 @@ export const KeyGeneratorModal = React.memo(function KeyGeneratorModal({
       status: 'active',
       allowed_models: modelsList,
       rate_limit: {
-        rps,
-        burst: rps * 2,
-        max_concurrent: maxConcurrent,
+        rps: parsedRps,
+        burst: parsedRps * 2,
+        max_concurrent: parsedMaxConcurrent,
       },
     };
 
@@ -150,7 +161,7 @@ export const KeyGeneratorModal = React.memo(function KeyGeneratorModal({
                 min={1}
                 max={5000}
                 value={rps}
-                onChange={(e) => setRps(parseInt(e.target.value, 10) || 20)}
+                onChange={(e) => setRps(e.target.value)}
                 className="w-full px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] text-white font-mono text-xs focus:outline-none focus:border-white/20"
               />
             </div>
@@ -162,7 +173,7 @@ export const KeyGeneratorModal = React.memo(function KeyGeneratorModal({
                 min={1}
                 max={500}
                 value={maxConcurrent}
-                onChange={(e) => setMaxConcurrent(parseInt(e.target.value, 10) || 20)}
+                onChange={(e) => setMaxConcurrent(e.target.value)}
                 className="w-full px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] text-white font-mono text-xs focus:outline-none focus:border-white/20"
               />
             </div>

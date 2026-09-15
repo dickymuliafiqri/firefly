@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useCallback, useMemo, useDeferredValue, useRef } from 'react';
-import type { UpstreamDTO, CredentialKeyDTO } from '@/services/schema';
+import type { UpstreamDTO, CredentialKeyDTO, Protocol, ConnectionDTO } from '@/services/schema';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
 import { useStoreActions, useAppStore } from '@/core/state/store';
 import {
   useSaveSettingsMutation,
+  useOAuthConnectionsQuery,
   checkUpstreamHealth,
   type UpstreamCheckResponse,
 } from '@/services/api';
@@ -17,8 +18,42 @@ import {
   Copy,
   RotateCw,
   StopCircle,
+  UserCheck,
 } from 'lucide-react';
 import { cn, copyToClipboard } from '@/lib/utils';
+import { OAuthConnectDialog } from './OAuthConnectDialog';
+
+export function getOAuthDefaultUrl(proto: string): string {
+  switch (proto) {
+    case 'antigravity':
+      return 'https://cloudsandbox-pa.googleapis.com';
+    case 'cline':
+      return 'https://api.cline.bot/api/v1';
+    case 'codebuddy_cn':
+    case 'codebuddy-cn':
+      return 'https://copilot.tencent.com';
+    case 'codebuddy_intl':
+    case 'codebuddy-intl':
+      return 'https://www.codebuddy.ai';
+    default:
+      return '';
+  }
+}
+
+export function isOAuthProtocol(proto?: string): boolean {
+  return ['antigravity', 'cline', 'codebuddy_cn', 'codebuddy_intl', 'codebuddy-cn', 'codebuddy-intl'].includes(proto || '');
+}
+
+export interface BoundAccountItem {
+  id: string;
+  ref: string;
+  connId: string;
+  email?: string;
+  projectId?: string;
+  isExpired?: boolean;
+  maxConcurrent?: number | null;
+  rps?: number | null;
+}
 
 export interface UpstreamModalProps {
   isOpen: boolean;
@@ -40,6 +75,16 @@ export interface KeyItem {
 }
 
 type TabType = 'general' | 'keys' | 'models' | 'load_balancing' | 'network';
+
+function parseDraftNumber(value: string): number | null {
+  if (value.trim() === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function numericDraft(value: number | null | undefined, fallback: number): string {
+  return String(value ?? fallback);
+}
 
 /**
  * Helper to mask secrets cleanly for display
@@ -253,10 +298,19 @@ export const UpstreamModal = React.memo(function UpstreamModal({
 
   // General tab state
   const [name, setName] = useState('');
-  const [protocol, setProtocol] = useState<'openai' | 'anthropic'>('openai');
+  const [authType, setAuthType] = useState<'direct' | 'oauth'>('direct');
+  const [protocol, setProtocol] = useState<Protocol>('openai');
   const [baseUrl, setBaseUrl] = useState('');
   const [baseUrls, setBaseUrls] = useState<string[]>([]);
   const [newBaseUrlInput, setNewBaseUrlInput] = useState('');
+
+  // OAuth tab state
+  const [boundAccounts, setBoundAccounts] = useState<BoundAccountItem[]>([]);
+  const [connectDialogOpen, setConnectDialogOpen] = useState(false);
+  const [selectedExistingConnId, setSelectedExistingConnId] = useState('');
+  const { data: oauthConnections = [] } = useOAuthConnectionsQuery();
+
+  const isOAuth = isOAuthProtocol(protocol);
 
   // Keys tab state
   const [keys, setKeys] = useState<KeyItem[]>([]);
@@ -286,15 +340,17 @@ export const UpstreamModal = React.memo(function UpstreamModal({
 
   // Load balancing tab state
   const [keyStrategy, setKeyStrategy] = useState<'round_robin' | 'least_inflight'>('round_robin');
-  const [credentialRps, setCredentialRps] = useState<number>(0);
-  const [credentialMaxConcurrent, setCredentialMaxConcurrent] = useState<number>(0);
+  const [credentialRps, setCredentialRps] = useState('0');
+  const [credentialMaxConcurrent, setCredentialMaxConcurrent] = useState('0');
 
   // Network & Timeouts tab state
-  const [timeoutSec, setTimeoutSec] = useState(30);
-  const [streamTimeoutSec, setStreamTimeoutSec] = useState(120);
+  const [timeoutSec, setTimeoutSec] = useState('30');
+  const [streamTimeoutSec, setStreamTimeoutSec] = useState('120');
   const [idleTimeoutSec, setIdleTimeoutSec] = useState(90);
-  const [maxConns, setMaxConns] = useState(1500);
-  const [maxIdleConns, setMaxIdleConns] = useState(1000);
+  const [maxConns, setMaxConns] = useState('1500');
+  const [maxIdleConns, setMaxIdleConns] = useState('1000');
+  const credentialRpsValue = parseDraftNumber(credentialRps);
+  const credentialMaxConcurrentValue = parseDraftNumber(credentialMaxConcurrent);
   const [allowInsecure, setAllowInsecure] = useState(false);
   const [extraHeaders, setExtraHeaders] = useState<Array<{ key: string; value: string }>>([]);
 
@@ -302,18 +358,28 @@ export const UpstreamModal = React.memo(function UpstreamModal({
   useEffect(() => {
     if (isOpen) {
       if (upstreamToEdit) {
+        const proto = (upstreamToEdit.protocol as Protocol) || 'openai';
+        const isUpstreamOAuth = isOAuthProtocol(proto);
         setName(upstreamToEdit.name);
-        setProtocol((upstreamToEdit.protocol as 'openai' | 'anthropic') || 'openai');
-        setBaseUrl(upstreamToEdit.base_url || (upstreamToEdit.base_urls && upstreamToEdit.base_urls[0]) || '');
+        setProtocol(proto);
+        setAuthType(isUpstreamOAuth ? 'oauth' : 'direct');
+        setBaseUrl(
+          upstreamToEdit.base_url ||
+          (upstreamToEdit.base_urls && upstreamToEdit.base_urls[0]) ||
+          (isUpstreamOAuth ? getOAuthDefaultUrl(proto) : '')
+        );
         setBaseUrls(upstreamToEdit.base_urls || []);
-        setKeyStrategy((upstreamToEdit.key_strategy as 'round_robin' | 'least_inflight') || 'round_robin');
-        setCredentialRps(upstreamToEdit.credential_rps || 0);
-        setCredentialMaxConcurrent(upstreamToEdit.credential_max_concurrent || 0);
-        setTimeoutSec(Math.round((upstreamToEdit.timeout_ms || 30000) / 1000));
-        setStreamTimeoutSec(Math.round((upstreamToEdit.stream_idle_timeout_ms || 120000) / 1000));
+        setKeyStrategy(
+          (upstreamToEdit.key_strategy as 'round_robin' | 'least_inflight') ||
+          (isUpstreamOAuth ? 'least_inflight' : 'round_robin')
+        );
+        setCredentialRps(numericDraft(upstreamToEdit.credential_rps, 0));
+        setCredentialMaxConcurrent(numericDraft(upstreamToEdit.credential_max_concurrent, 0));
+        setTimeoutSec(numericDraft(upstreamToEdit.timeout_ms != null ? Math.round(upstreamToEdit.timeout_ms / 1000) : null, 30));
+        setStreamTimeoutSec(numericDraft(upstreamToEdit.stream_idle_timeout_ms != null ? Math.round(upstreamToEdit.stream_idle_timeout_ms / 1000) : null, 120));
         setIdleTimeoutSec(Math.round((upstreamToEdit.idle_timeout_ms || 90000) / 1000));
-        setMaxConns(upstreamToEdit.max_conns_per_host || 1500);
-        setMaxIdleConns(upstreamToEdit.max_idle_conns_per_host || 1000);
+        setMaxConns(numericDraft(upstreamToEdit.max_conns_per_host, 1500));
+        setMaxIdleConns(numericDraft(upstreamToEdit.max_idle_conns_per_host, 1000));
         setAllowInsecure(Boolean(upstreamToEdit.allow_insecure));
 
         // Format extra headers
@@ -325,52 +391,80 @@ export const UpstreamModal = React.memo(function UpstreamModal({
           setExtraHeaders([]);
         }
 
-        // Initialize Keys
+        // Initialize Keys & Bound Accounts
         let initialKeys: KeyItem[] = [];
-        if (upstreamToEdit.credential_pool && upstreamToEdit.credential_pool.length > 0) {
-          initialKeys = upstreamToEdit.credential_pool.map((slot, idx) => ({
-            id: `k-${idx}-${slot.ref || idx}`,
-            ref: slot.ref || `${upstreamToEdit.name}-key-${idx + 1}`,
-            secret: slot.secret || slot.api_key || '',
-            rps: slot.rps,
-            max_concurrent: slot.max_concurrent,
-            status: 'idle',
-          }));
-        } else if (upstreamToEdit.api_keys && upstreamToEdit.api_keys.length > 0) {
-          initialKeys = upstreamToEdit.api_keys.map((k, idx) => ({
-            id: `k-${idx}`,
-            ref: `${upstreamToEdit.name}-key-${idx + 1}`,
-            secret: k,
-            status: 'idle',
-          }));
-        } else if (upstreamToEdit.api_key) {
-          initialKeys = [
-            {
-              id: 'k-0',
-              ref: `${upstreamToEdit.name}-key-1`,
-              secret: upstreamToEdit.api_key,
+        let initialBoundAccounts: BoundAccountItem[] = [];
+
+        if (isUpstreamOAuth) {
+          const pool = upstreamToEdit.credential_pool && upstreamToEdit.credential_pool.length > 0
+            ? upstreamToEdit.credential_pool
+            : upstreamToEdit.credential_ref
+            ? [{ ref: upstreamToEdit.credential_ref }]
+            : [];
+          initialBoundAccounts = pool.map((slot, idx) => {
+            const rawRef = slot.ref || '';
+            const cleanRef = rawRef.startsWith('oauth:') ? rawRef.slice(6) : rawRef;
+            const match = oauthConnections.find((c) => c.id === cleanRef || c.email === cleanRef);
+            return {
+              id: `acc-${idx}-${cleanRef}`,
+              ref: rawRef.startsWith('oauth:') ? rawRef : `oauth:${rawRef}`,
+              connId: cleanRef,
+              email: match?.email || cleanRef,
+              projectId: match?.provider_specific_data?.project_id || match?.provider_specific_data?.region,
+              isExpired: match?.is_expired,
+              maxConcurrent: slot.max_concurrent,
+              rps: slot.rps,
+            };
+          });
+        } else {
+          if (upstreamToEdit.credential_pool && upstreamToEdit.credential_pool.length > 0) {
+            initialKeys = upstreamToEdit.credential_pool.map((slot, idx) => ({
+              id: `k-${idx}-${slot.ref || idx}`,
+              ref: slot.ref || `${upstreamToEdit.name}-key-${idx + 1}`,
+              secret: slot.secret || slot.api_key || '',
+              rps: slot.rps,
+              max_concurrent: slot.max_concurrent,
               status: 'idle',
-            },
-          ];
+            }));
+          } else if (upstreamToEdit.api_keys && upstreamToEdit.api_keys.length > 0) {
+            initialKeys = upstreamToEdit.api_keys.map((k, idx) => ({
+              id: `k-${idx}`,
+              ref: `${upstreamToEdit.name}-key-${idx + 1}`,
+              secret: k,
+              status: 'idle',
+            }));
+          } else if (upstreamToEdit.api_key) {
+            initialKeys = [
+              {
+                id: 'k-0',
+                ref: `${upstreamToEdit.name}-key-1`,
+                secret: upstreamToEdit.api_key,
+                status: 'idle',
+              },
+            ];
+          }
         }
         setKeys(initialKeys);
+        setBoundAccounts(initialBoundAccounts);
         setActiveTab('keys');
       } else {
         setName('');
+        setAuthType('direct');
         setProtocol('openai');
         setBaseUrl('https://api.openai.com/v1');
         setBaseUrls([]);
         setKeyStrategy('round_robin');
-        setCredentialRps(0);
-        setCredentialMaxConcurrent(0);
-        setTimeoutSec(30);
-        setStreamTimeoutSec(120);
+        setCredentialRps('0');
+        setCredentialMaxConcurrent('0');
+        setTimeoutSec('30');
+        setStreamTimeoutSec('120');
         setIdleTimeoutSec(90);
-        setMaxConns(1500);
-        setMaxIdleConns(1000);
+        setMaxConns('1500');
+        setMaxIdleConns('1000');
         setAllowInsecure(false);
         setExtraHeaders([]);
         setKeys([]);
+        setBoundAccounts([]);
         setActiveTab('general');
       }
 
@@ -722,14 +816,18 @@ export const UpstreamModal = React.memo(function UpstreamModal({
   const handleFetchUpstreamModels = useCallback(async () => {
     if (!baseUrl.trim()) return;
 
-    // Pick first valid key or any key
-    const validKey = keys.find((k) => k.status === 'valid')?.secret || (keys[0]?.secret || '');
+    // Pick first valid key or any key (or OAuth bound account ref)
+    const oauthRef = isOAuth ? (boundAccounts[0]?.ref || '') : '';
+    const validKey = isOAuth
+      ? oauthRef
+      : (keys.find((k) => k.status === 'valid')?.secret || (keys[0]?.secret || ''));
 
     setIsLoadingModels(true);
     try {
       const res = await checkUpstreamHealth(
         {
           name: name.trim(),
+          key_ref: oauthRef || undefined,
           protocol,
           base_url: baseUrl.trim(),
           api_key: validKey,
@@ -761,7 +859,7 @@ export const UpstreamModal = React.memo(function UpstreamModal({
     } finally {
       setIsLoadingModels(false);
     }
-  }, [baseUrl, keys, name, protocol, adminToken, addToast]);
+  }, [baseUrl, keys, boundAccounts, isOAuth, name, protocol, adminToken, addToast]);
 
   const filteredModels = useMemo(() => {
     if (!deferredModelSearch) return upstreamModels;
@@ -809,14 +907,119 @@ export const UpstreamModal = React.memo(function UpstreamModal({
   }, []);
 
   // -------------------------------------------------------------
+  // OAuth Account Pool Handlers
+  // -------------------------------------------------------------
+  const handleRemoveAccount = useCallback((id: string) => {
+    setBoundAccounts((prev) => prev.filter((a) => a.id !== id));
+  }, []);
+
+  const handleAccountLimitChange = useCallback((id: string, val: number | null) => {
+    setBoundAccounts((prev) =>
+      prev.map((a) => (a.id === id ? { ...a, maxConcurrent: val } : a))
+    );
+  }, []);
+
+  const handleAttachExistingAccount = useCallback(() => {
+    if (!selectedExistingConnId) return;
+    const conn = oauthConnections.find((c) => c.id === selectedExistingConnId);
+    if (!conn) return;
+    const ref = `oauth:${conn.id}`;
+    if (boundAccounts.some((a) => a.ref === ref || a.connId === conn.id)) {
+      addToast({
+        title: 'Account Already Attached',
+        message: `${conn.email || conn.id} is already in the pool.`,
+        type: 'info',
+      });
+      return;
+    }
+    setBoundAccounts((prev) => [
+      ...prev,
+      {
+        id: `acc-${Date.now()}-${conn.id}`,
+        ref,
+        connId: conn.id,
+        email: conn.email || conn.id,
+        projectId: conn.provider_specific_data?.project_id || conn.provider_specific_data?.region,
+        isExpired: conn.is_expired,
+      },
+    ]);
+    setSelectedExistingConnId('');
+  }, [selectedExistingConnId, oauthConnections, boundAccounts, addToast]);
+
+  const handleNewAccountConnected = useCallback((conn: ConnectionDTO) => {
+    const ref = `oauth:${conn.id}`;
+    setBoundAccounts((prev) => {
+      if (prev.some((a) => a.ref === ref || a.connId === conn.id)) return prev;
+      return [
+        ...prev,
+        {
+          id: `acc-${Date.now()}-${conn.id}`,
+          ref,
+          connId: conn.id,
+          email: conn.email || conn.id,
+          projectId: conn.provider_specific_data?.project_id || conn.provider_specific_data?.region,
+          isExpired: conn.is_expired,
+        },
+      ];
+    });
+    setConnectDialogOpen(false);
+    addToast({
+      title: 'Account Attached',
+      message: `${conn.email || conn.id} added to pool.`,
+      type: 'success',
+    });
+  }, [addToast]);
+
+  const availableExistingConnections = useMemo(() => {
+    return oauthConnections.filter((c) => {
+      if (c.provider !== protocol) return false;
+      const ref = `oauth:${c.id}`;
+      return !boundAccounts.some((a) => a.ref === ref || a.connId === c.id);
+    });
+  }, [oauthConnections, protocol, boundAccounts]);
+
+  const handleAuthTypeChange = (type: 'direct' | 'oauth') => {
+    setAuthType(type);
+    if (type === 'oauth') {
+      setProtocol('antigravity');
+      setBaseUrl(getOAuthDefaultUrl('antigravity'));
+      setKeyStrategy('least_inflight');
+    } else {
+      setProtocol('openai');
+      setBaseUrl('https://api.openai.com/v1');
+      setKeyStrategy('round_robin');
+    }
+  };
+
+  const handleProtocolChange = (newProto: Protocol) => {
+    setProtocol(newProto);
+    if (isOAuthProtocol(newProto)) {
+      setBaseUrl(getOAuthDefaultUrl(newProto));
+    }
+  };
+
+  // -------------------------------------------------------------
   // Form Submission
   // -------------------------------------------------------------
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || !baseUrl.trim()) {
+    const finalBaseUrl = isOAuth
+      ? (baseUrl.trim() || getOAuthDefaultUrl(protocol))
+      : baseUrl.trim();
+
+    if (!name.trim() || !finalBaseUrl) {
       addToast({
         title: 'Validation Error',
         message: 'Upstream Name and Base URL are required.',
+        type: 'error',
+      });
+      return;
+    }
+
+    if (isOAuth && boundAccounts.length === 0) {
+      addToast({
+        title: 'Validation Error',
+        message: 'Please bind at least one OAuth account to this upstream pool.',
         type: 'error',
       });
       return;
@@ -830,32 +1033,52 @@ export const UpstreamModal = React.memo(function UpstreamModal({
       }
     }
 
-    const poolDTO: CredentialKeyDTO[] = keys.map((k, idx) => ({
-      ref: k.ref || `${name.trim()}-key-${idx + 1}`,
-      secret: k.secret,
-      api_key: k.secret,
-      rps: k.rps ?? (credentialRps > 0 ? credentialRps : null),
-      max_concurrent: k.max_concurrent ?? (credentialMaxConcurrent > 0 ? credentialMaxConcurrent : null),
-    }));
+    const credentialRpsLimit = credentialRpsValue !== null && credentialRpsValue > 0 ? credentialRpsValue : null;
+    const credentialMaxConcurrentLimit = credentialMaxConcurrentValue !== null && credentialMaxConcurrentValue > 0
+      ? Math.trunc(credentialMaxConcurrentValue)
+      : null;
+    const timeoutMs = parseDraftNumber(timeoutSec);
+    const streamTimeoutMs = parseDraftNumber(streamTimeoutSec);
+    const maxConnsValue = parseDraftNumber(maxConns);
+    const maxIdleConnsValue = parseDraftNumber(maxIdleConns);
 
-    const apiKeysList = keys.map((k) => k.secret).filter(Boolean);
+    let poolDTO: CredentialKeyDTO[] = [];
+    let apiKeysList: string[] = [];
+
+    if (isOAuth) {
+      poolDTO = boundAccounts.map((acc, idx) => ({
+        ref: acc.ref || `oauth:${acc.connId || idx}`,
+        rps: acc.rps ?? credentialRpsLimit,
+        max_concurrent: acc.maxConcurrent ?? credentialMaxConcurrentLimit,
+      }));
+    } else {
+      poolDTO = keys.map((k, idx) => ({
+        ref: k.ref || `${name.trim()}-key-${idx + 1}`,
+        secret: k.secret,
+        api_key: k.secret,
+        rps: k.rps ?? credentialRpsLimit,
+        max_concurrent: k.max_concurrent ?? credentialMaxConcurrentLimit,
+      }));
+      apiKeysList = keys.map((k) => k.secret).filter(Boolean);
+    }
 
     const updated: UpstreamDTO = {
       name: name.trim(),
       protocol,
-      base_url: baseUrl.trim(),
-      base_urls: baseUrls.filter(Boolean),
+      base_url: finalBaseUrl,
+      base_urls: isOAuth ? [] : baseUrls.filter(Boolean),
       key_strategy: keyStrategy,
       api_key: apiKeysList[0] || '',
       api_keys: apiKeysList,
+      credential_ref: isOAuth && poolDTO.length > 0 ? poolDTO[0].ref : undefined,
       credential_pool: poolDTO,
-      credential_rps: credentialRps > 0 ? credentialRps : null,
-      credential_max_concurrent: credentialMaxConcurrent > 0 ? credentialMaxConcurrent : null,
-      timeout_ms: timeoutSec * 1000,
-      stream_idle_timeout_ms: streamTimeoutSec * 1000,
+      credential_rps: credentialRpsLimit,
+      credential_max_concurrent: credentialMaxConcurrentLimit,
+      timeout_ms: timeoutMs === null ? null : Math.round(timeoutMs * 1000),
+      stream_idle_timeout_ms: streamTimeoutMs === null ? null : Math.round(streamTimeoutMs * 1000),
       idle_timeout_ms: idleTimeoutSec * 1000,
-      max_conns_per_host: maxConns,
-      max_idle_conns_per_host: maxIdleConns,
+      max_conns_per_host: maxConnsValue === null ? null : Math.trunc(maxConnsValue),
+      max_idle_conns_per_host: maxIdleConnsValue === null ? null : Math.trunc(maxIdleConnsValue),
       allow_insecure: allowInsecure,
       extra_headers: Object.keys(headersMap).length > 0 ? headersMap : undefined,
       enabled: upstreamToEdit?.enabled ?? true,
@@ -918,9 +1141,9 @@ export const UpstreamModal = React.memo(function UpstreamModal({
                 : 'text-neutral-400 hover:text-white hover:bg-white/[0.02]'
             )}
           >
-            <span>Credentials</span>
+            <span>{isOAuth ? 'Accounts' : 'Credentials'}</span>
             <span className="text-[10px] px-1.5 py-0.2 rounded bg-white/[0.06] tabular-nums">
-              {keys.length}
+              {isOAuth ? boundAccounts.length : keys.length}
             </span>
           </button>
 
@@ -976,6 +1199,41 @@ export const UpstreamModal = React.memo(function UpstreamModal({
           {/* ============================================================== */}
           {activeTab === 'general' ? (
             <div className="space-y-4">
+              {!upstreamToEdit && (
+                <div className="flex flex-col gap-1.5 p-3 rounded-xl border border-white/[0.06] bg-white/[0.015]">
+                  <label className="text-neutral-400 font-medium text-[11px]">Upstream Authentication Type</label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleAuthTypeChange('direct')}
+                      className={cn(
+                        'p-2.5 rounded-lg border text-left flex flex-col gap-0.5 transition-all cursor-pointer font-mono',
+                        authType === 'direct'
+                          ? 'border-white/[0.2] bg-white/[0.06] text-white'
+                          : 'border-white/[0.04] bg-transparent text-neutral-400 hover:text-neutral-200 hover:bg-white/[0.02]'
+                      )}
+                    >
+                      <span className="font-medium text-xs">Standard API Key</span>
+                      <span className="text-[10px] text-neutral-500">OpenAI, Anthropic, DeepSeek, vLLM</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleAuthTypeChange('oauth')}
+                      className={cn(
+                        'p-2.5 rounded-lg border text-left flex flex-col gap-0.5 transition-all cursor-pointer font-mono',
+                        authType === 'oauth'
+                          ? 'border-white/[0.2] bg-white/[0.06] text-white'
+                          : 'border-white/[0.04] bg-transparent text-neutral-400 hover:text-neutral-200 hover:bg-white/[0.02]'
+                      )}
+                    >
+                      <span className="font-medium text-xs">OAuth Provider Fleet</span>
+                      <span className="text-[10px] text-neutral-500">Google Antigravity, Cline, CodeBuddy</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {/* Name */}
                 <div className="flex flex-col gap-1.5">
@@ -986,7 +1244,7 @@ export const UpstreamModal = React.memo(function UpstreamModal({
                     disabled={!!upstreamToEdit}
                     value={name}
                     onChange={(e) => setName(e.target.value)}
-                    placeholder="e.g. openai-prod"
+                    placeholder={isOAuth ? 'e.g. antigravity-prod' : 'e.g. openai-prod'}
                     className="w-full px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] text-white font-mono text-xs focus:outline-none focus:border-white/20 disabled:opacity-50"
                   />
                   <span className="text-[10px] text-neutral-500">
@@ -994,58 +1252,270 @@ export const UpstreamModal = React.memo(function UpstreamModal({
                   </span>
                 </div>
 
-                {/* Wire Protocol */}
+                {/* Wire Protocol / Provider */}
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-neutral-400 font-medium">Wire Protocol</label>
-                  <select
-                    value={protocol}
-                    onChange={(e) => setProtocol(e.target.value as 'openai' | 'anthropic')}
-                    className="w-full px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] text-neutral-200 font-mono text-xs focus:outline-none focus:border-white/20"
-                  >
-                    <option value="openai" className="bg-[#090b10]">OpenAI (Wire Compatible SSE / Chat)</option>
-                    <option value="anthropic" className="bg-[#090b10]">Anthropic (/v1/messages Translation)</option>
-                  </select>
+                  <label className="text-neutral-400 font-medium">
+                    {isOAuth ? 'OAuth Provider' : 'Wire Protocol'}
+                  </label>
+                  {isOAuth ? (
+                    <select
+                      value={protocol}
+                      onChange={(e) => handleProtocolChange(e.target.value as Protocol)}
+                      className="w-full px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] text-neutral-200 font-mono text-xs focus:outline-none focus:border-white/20"
+                    >
+                      <option value="antigravity" className="bg-[#090b10]">Google Antigravity (Gemini & Claude Sandbox)</option>
+                      <option value="cline" className="bg-[#090b10]">Cline (Claude Gateway)</option>
+                      <option value="codebuddy_cn" className="bg-[#090b10]">Tencent Cloud CodeBuddy (CN)</option>
+                      <option value="codebuddy_intl" className="bg-[#090b10]">CodeBuddy International</option>
+                    </select>
+                  ) : (
+                    <select
+                      value={protocol}
+                      onChange={(e) => setProtocol(e.target.value as Protocol)}
+                      className="w-full px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] text-neutral-200 font-mono text-xs focus:outline-none focus:border-white/20"
+                    >
+                      <option value="openai" className="bg-[#090b10]">OpenAI (Wire Compatible SSE / Chat)</option>
+                      <option value="anthropic" className="bg-[#090b10]">Anthropic (/v1/messages Translation)</option>
+                    </select>
+                  )}
                   <span className="text-[10px] text-neutral-500">
-                    Firefly transparently converts request/response schemas if needed.
+                    {isOAuth
+                      ? 'Selects official upstream authentication and gateway dispatch handler.'
+                      : 'Firefly transparently converts request/response schemas if needed.'}
                   </span>
                 </div>
               </div>
 
               {/* Primary Base URL */}
               <div className="flex flex-col gap-1.5">
-                <label className="text-neutral-400 font-medium">Primary Base URL</label>
+                <div className="flex items-center justify-between">
+                  <label className="text-neutral-400 font-medium">Primary Base URL</label>
+                  {isOAuth && (
+                    <span className="text-[10px] text-neutral-400 bg-white/[0.04] px-1.5 py-0.5 rounded border border-white/[0.06] font-mono">
+                      MANAGED PROVIDER ENDPOINT
+                    </span>
+                  )}
+                </div>
                 <input
                   type="url"
                   required
+                  disabled={isOAuth}
                   value={baseUrl}
                   onChange={(e) => setBaseUrl(e.target.value)}
-                  placeholder="https://api.openai.com/v1"
-                  className="w-full px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] text-white font-mono text-xs focus:outline-none focus:border-white/20"
+                  placeholder={isOAuth ? getOAuthDefaultUrl(protocol) : 'https://api.openai.com/v1'}
+                  className={cn(
+                    'w-full px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] font-mono text-xs focus:outline-none focus:border-white/20',
+                    isOAuth ? 'text-neutral-400 opacity-80 cursor-not-allowed' : 'text-white'
+                  )}
                 />
                 <span className="text-[10px] text-neutral-500">
-                  Target API endpoint (e.g. Azure OpenAI, OpenAI, Ollama, Anthropic API).
+                  {isOAuth
+                    ? 'Preconfigured official endpoint handled automatically by the gateway.'
+                    : 'Target API endpoint (e.g. Azure OpenAI, OpenAI, Ollama, Anthropic API).'}
                 </span>
               </div>
 
               {/* Informational failover hint */}
-              <div className="pt-2 border-t border-white/[0.04] text-[11px] text-neutral-500">
-                Multi-host failover endpoints ({baseUrls.length}) can be managed under the{' '}
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('load_balancing')}
-                  className="text-neutral-400 hover:text-white underline cursor-pointer"
-                >
-                  Load Balancing
-                </button>{' '}
-                tab.
-              </div>
+              {!isOAuth && (
+                <div className="pt-2 border-t border-white/[0.04] text-[11px] text-neutral-500">
+                  Multi-host failover endpoints ({baseUrls.length}) can be managed under the{' '}
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('load_balancing')}
+                    className="text-neutral-400 hover:text-white underline cursor-pointer"
+                  >
+                    Load Balancing
+                  </button>{' '}
+                  tab.
+                </div>
+              )}
             </div>
           ) : null}
 
           {/* ============================================================== */}
-          {/* TAB 2: MASS API KEYS & CONCURRENT HEALTH CHECK */}
+          {/* TAB 2: ACCOUNTS (OAUTH) OR KEYS (DIRECT API)                 */}
           {/* ============================================================== */}
-          {activeTab === 'keys' ? (
+          {activeTab === 'keys' && isOAuth ? (
+            <div className="space-y-4">
+              {/* Top Controls Bar */}
+              <div className="p-3 rounded-xl border border-white/[0.06] bg-white/[0.015] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-white font-medium text-xs">Account Pool</span>
+                    <span className="px-2 py-0.5 rounded text-[10px] bg-white/[0.06] text-neutral-300 font-mono tabular-nums">
+                      {boundAccounts.length} {boundAccounts.length === 1 ? 'account' : 'accounts'}
+                    </span>
+                  </div>
+                  <span className="text-[10px] text-neutral-500">
+                    Strategy: <strong className="font-medium text-neutral-400">{keyStrategy}</strong> · Automatic 429 quota cooldown & failover
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="minimal"
+                    size="sm"
+                    onClick={() => setConnectDialogOpen(true)}
+                    leftIcon={<Plus className="w-3.5 h-3.5 text-neutral-400 group-hover:text-white transition-colors" />}
+                  >
+                    Connect New Account
+                  </Button>
+                </div>
+              </div>
+
+              {/* Pool Rotation Strategy */}
+              <div className="p-3 rounded-lg border border-white/[0.04] bg-white/[0.01] flex flex-col gap-2">
+                <label className="text-[11px] text-neutral-400 font-medium">Pool Rotation Strategy</label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <label
+                    className={cn(
+                      'flex items-start gap-2 p-2 rounded-lg border cursor-pointer transition-colors',
+                      keyStrategy === 'least_inflight'
+                        ? 'border-white/[0.2] bg-white/[0.04] text-white'
+                        : 'border-white/[0.04] text-neutral-400 hover:text-neutral-200'
+                    )}
+                  >
+                    <input
+                      type="radio"
+                      name="keyStrategy"
+                      value="least_inflight"
+                      checked={keyStrategy === 'least_inflight'}
+                      onChange={() => setKeyStrategy('least_inflight')}
+                      className="mt-0.5"
+                    />
+                    <div className="flex flex-col">
+                      <span className="text-xs font-medium">Least In-Flight (Recommended)</span>
+                      <span className="text-[10px] text-neutral-500">Routes traffic to the account with lowest in-flight load.</span>
+                    </div>
+                  </label>
+
+                  <label
+                    className={cn(
+                      'flex items-start gap-2 p-2 rounded-lg border cursor-pointer transition-colors',
+                      keyStrategy === 'round_robin'
+                        ? 'border-white/[0.2] bg-white/[0.04] text-white'
+                        : 'border-white/[0.04] text-neutral-400 hover:text-neutral-200'
+                    )}
+                  >
+                    <input
+                      type="radio"
+                      name="keyStrategy"
+                      value="round_robin"
+                      checked={keyStrategy === 'round_robin'}
+                      onChange={() => setKeyStrategy('round_robin')}
+                      className="mt-0.5"
+                    />
+                    <div className="flex flex-col">
+                      <span className="text-xs font-medium">Round Robin</span>
+                      <span className="text-[10px] text-neutral-500">Cycles evenly through each account in the pool.</span>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              {/* Bound Accounts List */}
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between text-[11px] text-neutral-400 font-medium">
+                  <span>Bound Accounts in Pool</span>
+                  <span className="text-[10px] text-neutral-500">Active credentials rotated by gateway</span>
+                </div>
+
+                {boundAccounts.length > 0 ? (
+                  <div className="space-y-1.5 max-h-[220px] overflow-y-auto pr-1">
+                    {boundAccounts.map((acc, index) => (
+                      <div
+                        key={acc.id}
+                        className="flex items-center justify-between p-2.5 rounded-lg border border-white/[0.04] bg-white/[0.01] hover:bg-white/[0.03] transition-colors font-mono text-xs gap-3"
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                          <span className="text-[10px] text-neutral-500 tabular-nums w-6 shrink-0">
+                            #{index + 1}
+                          </span>
+                          <UserCheck className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+                          <span className="text-neutral-200 font-medium text-xs truncate max-w-[200px]" title={acc.email || acc.connId}>
+                            {acc.email || acc.connId}
+                          </span>
+                          {acc.projectId && (
+                            <span className="text-[10px] text-neutral-500 bg-white/[0.04] px-1.5 py-0.5 rounded border border-white/[0.04] shrink-0" title={`Project: ${acc.projectId}`}>
+                              {acc.projectId}
+                            </span>
+                          )}
+                          {acc.isExpired ? (
+                            <span className="text-[10px] text-rose-400 flex items-center gap-1 shrink-0">
+                              <span className="w-1.5 h-1.5 rounded-full bg-rose-400" /> Expired
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-emerald-400 flex items-center gap-1 shrink-0">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" /> Active
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-3 shrink-0">
+                          <div className="flex items-center gap-1 text-[11px] text-neutral-400">
+                            <span className="text-[10px] text-neutral-500">Max Inflight:</span>
+                            <input
+                              type="number"
+                              min="0"
+                              placeholder="10"
+                              value={acc.maxConcurrent ?? ''}
+                              onChange={(e) => handleAccountLimitChange(acc.id, parseDraftNumber(e.target.value))}
+                              className="w-12 px-1.5 py-0.5 rounded bg-transparent border border-white/[0.08] text-white text-[11px] text-center font-mono focus:outline-none focus:border-white/20"
+                            />
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveAccount(acc.id)}
+                            className="text-neutral-500 hover:text-rose-400 p-1 rounded hover:bg-white/[0.04] transition-colors cursor-pointer"
+                            title="Remove account from pool"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="p-6 text-center rounded-lg border border-dashed border-white/[0.08] text-neutral-500 font-mono text-xs flex flex-col items-center gap-2">
+                    <span>No accounts bound to this upstream yet.</span>
+                    <span className="text-[10px]">Select an existing connected account or connect a new one below.</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Attach Existing Account Row */}
+              <div className="p-3 rounded-lg border border-white/[0.04] bg-white/[0.01] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex flex-col gap-1 min-w-0 flex-1">
+                  <label className="text-[11px] text-neutral-400 font-medium">Attach Saved Account</label>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={selectedExistingConnId}
+                      onChange={(e) => setSelectedExistingConnId(e.target.value)}
+                      className="flex-1 px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] text-neutral-200 font-mono text-xs focus:outline-none focus:border-white/20"
+                    >
+                      <option value="" className="bg-[#090b10]">-- Select an authorized account --</option>
+                      {availableExistingConnections.map((c) => (
+                        <option key={c.id} value={c.id} className="bg-[#090b10]">
+                          {c.email || c.id} {c.provider_specific_data?.project_id ? `(${c.provider_specific_data.project_id})` : ''}
+                        </option>
+                      ))}
+                    </select>
+                    <Button
+                      type="button"
+                      variant="minimal"
+                      size="sm"
+                      disabled={!selectedExistingConnId}
+                      onClick={handleAttachExistingAccount}
+                    >
+                      Attach
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : activeTab === 'keys' && !isOAuth ? (
             <div className="space-y-4">
               {/* Top Controls Bar */}
               <div className="p-3 rounded-xl border border-white/[0.06] bg-white/[0.015] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -1549,7 +2019,7 @@ export const UpstreamModal = React.memo(function UpstreamModal({
                       type="number"
                       min={0}
                       value={credentialMaxConcurrent}
-                      onChange={(e) => setCredentialMaxConcurrent(parseInt(e.target.value, 10) || 0)}
+                      onChange={(e) => setCredentialMaxConcurrent(e.target.value)}
                       placeholder="0 = unlimited"
                       className="w-full px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] text-white font-mono text-xs focus:outline-none focus:border-white/20"
                     />
@@ -1565,7 +2035,7 @@ export const UpstreamModal = React.memo(function UpstreamModal({
                       min={0}
                       step={0.5}
                       value={credentialRps}
-                      onChange={(e) => setCredentialRps(parseFloat(e.target.value) || 0)}
+                      onChange={(e) => setCredentialRps(e.target.value)}
                       placeholder="0 = unlimited"
                       className="w-full px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] text-white font-mono text-xs focus:outline-none focus:border-white/20"
                     />
@@ -1610,7 +2080,7 @@ export const UpstreamModal = React.memo(function UpstreamModal({
                               type="number"
                               min={0}
                               value={k.max_concurrent ?? ''}
-                              placeholder={credentialMaxConcurrent > 0 ? `${credentialMaxConcurrent} (def)` : 'unlimited'}
+                              placeholder={credentialMaxConcurrentValue !== null && credentialMaxConcurrentValue > 0 ? `${credentialMaxConcurrentValue} (def)` : 'unlimited'}
                               onChange={(e) => {
                                 const val = e.target.value === '' ? null : parseInt(e.target.value, 10);
                                 handleUpdateKeyLimit(k.id, 'max_concurrent', val);
@@ -1626,7 +2096,7 @@ export const UpstreamModal = React.memo(function UpstreamModal({
                               min={0}
                               step={0.5}
                               value={k.rps ?? ''}
-                              placeholder={credentialRps > 0 ? `${credentialRps} (def)` : 'unlimited'}
+                              placeholder={credentialRpsValue !== null && credentialRpsValue > 0 ? `${credentialRpsValue} (def)` : 'unlimited'}
                               onChange={(e) => {
                                 const val = e.target.value === '' ? null : parseFloat(e.target.value);
                                 handleUpdateKeyLimit(k.id, 'rps', val);
@@ -1678,7 +2148,7 @@ export const UpstreamModal = React.memo(function UpstreamModal({
                     min={1}
                     max={300}
                     value={timeoutSec}
-                    onChange={(e) => setTimeoutSec(parseInt(e.target.value, 10) || 30)}
+                    onChange={(e) => setTimeoutSec(e.target.value)}
                     className="w-full px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] text-white font-mono text-xs focus:outline-none focus:border-white/20"
                   />
                   <span className="text-[10px] text-neutral-500">
@@ -1694,7 +2164,7 @@ export const UpstreamModal = React.memo(function UpstreamModal({
                     min={10}
                     max={600}
                     value={streamTimeoutSec}
-                    onChange={(e) => setStreamTimeoutSec(parseInt(e.target.value, 10) || 120)}
+                    onChange={(e) => setStreamTimeoutSec(e.target.value)}
                     className="w-full px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] text-white font-mono text-xs focus:outline-none focus:border-white/20"
                   />
                   <span className="text-[10px] text-neutral-500">
@@ -1710,7 +2180,7 @@ export const UpstreamModal = React.memo(function UpstreamModal({
                     min={10}
                     max={5000}
                     value={maxConns}
-                    onChange={(e) => setMaxConns(parseInt(e.target.value, 10) || 1500)}
+                    onChange={(e) => setMaxConns(e.target.value)}
                     className="w-full px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] text-white font-mono text-xs focus:outline-none focus:border-white/20"
                   />
                   <span className="text-[10px] text-neutral-500">
@@ -1725,7 +2195,7 @@ export const UpstreamModal = React.memo(function UpstreamModal({
                     min={10}
                     max={2000}
                     value={maxIdleConns}
-                    onChange={(e) => setMaxIdleConns(parseInt(e.target.value, 10) || 1000)}
+                    onChange={(e) => setMaxIdleConns(e.target.value)}
                     className="w-full px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] text-white font-mono text-xs focus:outline-none focus:border-white/20"
                   />
                   <span className="text-[10px] text-neutral-500">
@@ -1838,6 +2308,13 @@ export const UpstreamModal = React.memo(function UpstreamModal({
           </div>
         </div>
       </form>
+
+      <OAuthConnectDialog
+        isOpen={connectDialogOpen}
+        onClose={() => setConnectDialogOpen(false)}
+        provider={protocol}
+        onSuccess={handleNewAccountConnected}
+      />
     </Modal>
   );
 });

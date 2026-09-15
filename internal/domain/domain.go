@@ -29,6 +29,14 @@ const (
 	ProtocolOpenAI Protocol = "openai"
 	// ProtocolAnthropic is the native Anthropic Messages wire format.
 	ProtocolAnthropic Protocol = "anthropic"
+	// ProtocolAntigravity is the Google Cloud Code / Antigravity wire format.
+	ProtocolAntigravity Protocol = "antigravity"
+	// ProtocolCline is the Cline API wire format.
+	ProtocolCline Protocol = "cline"
+	// ProtocolCodeBuddyCN is the CodeBuddy China (copilot.tencent.com) wire format.
+	ProtocolCodeBuddyCN Protocol = "codebuddy-cn"
+	// ProtocolCodeBuddyIntl is the CodeBuddy International (codebuddy.ai) wire format.
+	ProtocolCodeBuddyIntl Protocol = "codebuddy-intl"
 )
 
 

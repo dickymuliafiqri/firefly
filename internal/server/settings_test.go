@@ -80,10 +80,10 @@ func TestSettingsGetAndPost(t *testing.T) {
 	newSettings := config.SettingsDTO{
 		Upstreams: []config.UpstreamDTO{
 			{
-				Name:      "test-openai",
-				Protocol:  "openai",
-				BaseURLs:  []string{"https://api1.openai.com/v1", "https://api2.openai.com/v1"},
-				APIKeys:   []string{"sk-secret-key-1", "sk-secret-key-2"},
+				Name:     "test-openai",
+				Protocol: "openai",
+				BaseURLs: []string{"https://api1.openai.com/v1", "https://api2.openai.com/v1"},
+				APIKeys:  []string{"sk-secret-key-1", "sk-secret-key-2"},
 			},
 		},
 		Models: []config.ModelDTO{
@@ -234,3 +234,43 @@ func TestRootServeIndexHTML(t *testing.T) {
 }
 
 var _ = openai.WriteError
+
+func TestSettingsPreservesAutoTLSWhenCatalogMutationOmitsIt(t *testing.T) {
+	tmpDir := t.TempDir()
+	reg := registry.New()
+	deps := RouterDeps{Snapshots: reg, Registry: reg, ConfigDir: tmpDir}
+	s := New(Config{Addr: "127.0.0.1:0"}, deps, context.Background(), nil)
+
+	initial := config.SettingsDTO{
+		AutoTLS: &config.AutoTLSDTO{
+			Enabled: true,
+			Domain:  "ai.example.com",
+			Email:   "ops@example.com",
+		},
+	}
+	body, _ := json.Marshal(initial)
+	req := httptest.NewRequest(http.MethodPut, "/api/settings", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("initial TLS save status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	// Existing catalog pages send only their catalog fields. The absence of
+	// auto_tls must preserve, not disable, the administrator's TLS setting.
+	legacyBody, _ := json.Marshal(config.SettingsDTO{})
+	legacyReq := httptest.NewRequest(http.MethodPut, "/api/settings", bytes.NewReader(legacyBody))
+	legacyW := httptest.NewRecorder()
+	s.Handler().ServeHTTP(legacyW, legacyReq)
+	if legacyW.Code != http.StatusOK {
+		t.Fatalf("legacy catalog save status = %d, body = %s", legacyW.Code, legacyW.Body.String())
+	}
+
+	got, err := config.LoadAutoTLS(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadAutoTLS() error = %v", err)
+	}
+	if !got.Enabled || got.Domain != "ai.example.com" || got.Email != "ops@example.com" {
+		t.Fatalf("TLS configuration was not preserved: %#v", got)
+	}
+}

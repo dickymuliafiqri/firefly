@@ -49,16 +49,21 @@ gorouter/
 ├── internal/
 │   ├── analytics/        # Persistent request history, token metrics & breaker overrides
 │   ├── anthropic/        # Anthropic Claude Messages protocol translation
+│   ├── antigravity/      # Google Antigravity Cloud Code protocol translation
 │   ├── auth/             # Master password, session manager & tenant key storage
-│   ├── config/           # Dynamic JSON loader (upstreams, models, tenants, combos)
+│   ├── cline/            # Cline OAuth adapter & SSE relay
+│   ├── codebuddy/        # CodeBuddy (CN & Intl) adapter & device auth
+│   ├── config/           # Dynamic JSON loader (upstreams, models, tenants, combos, tls)
 │   ├── domain/           # Pure domain models (CatalogSnapshot, Model, Tenant, Combo)
 │   ├── httpx/            # Global middleware pipeline (Admission, Auth, Log, Metrics)
 │   ├── limits/           # Token-bucket rate limiters & CAS concurrency gates
 │   ├── logging/          # Slog structured logging with secret masking
 │   ├── metrics/          # Prometheus telemetry registry
+│   ├── oauth/            # Third-party AI OAuth manager & credential store
 │   ├── openai/           # OpenAI adapter & SSE streaming relay engine (RelaySSE)
+│   ├── ports/            # Go interface contracts (UpstreamAdapter, OAuthProvider, TokenStore)
 │   ├── registry/         # Atomic snapshot store (atomic.Pointer[CatalogSnapshot])
-│   ├── server/           # HTTP mux routing, forwardEndpoint, and dashboard SPA server
+│   ├── server/           # HTTP mux routing, forwardEndpoint, autotls, and dashboard SPA
 │   ├── upstream/         # HTTP client pool, KeyRing (429/401 cooldown), & Breakers
 │   └── watch/            # File watcher & atomic configuration hot-reloading
 ├── docs/                 # Detailed production & load testing documentation

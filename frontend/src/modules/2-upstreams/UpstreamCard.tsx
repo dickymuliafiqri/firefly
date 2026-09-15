@@ -1,12 +1,14 @@
 import React from 'react';
-import type { UpstreamDTO } from '@/services/schema';
+import type { UpstreamDTO, ConnectionDTO } from '@/services/schema';
 import { KeyRingSlotList } from './KeyRingSlotList';
+import { AccountRingSlotList } from './AccountRingSlotList';
 import { Edit3, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export interface UpstreamCardProps {
   upstream: UpstreamDTO;
   breakerState?: 'CLOSED' | 'HALF-OPEN' | 'OPEN';
+  connections?: ConnectionDTO[];
   onToggleBreaker?: (name: string) => void;
   onEdit?: (upstream: UpstreamDTO) => void;
   onDelete?: (upstream: UpstreamDTO) => void;
@@ -15,11 +17,13 @@ export interface UpstreamCardProps {
 export const UpstreamCard = React.memo(function UpstreamCard({
   upstream,
   breakerState = 'CLOSED',
+  connections = [],
   onToggleBreaker,
   onEdit,
   onDelete,
 }: UpstreamCardProps) {
-  const isAnthropic = upstream.protocol === 'anthropic';
+  const protocol = upstream.protocol || 'openai';
+  const isOAuth = ['antigravity', 'cline', 'codebuddy_cn', 'codebuddy_intl', 'codebuddy-cn', 'codebuddy-intl'].includes(protocol);
   const baseUrl = upstream.base_url || (upstream.base_urls && upstream.base_urls[0]) || '';
   const timeoutSec = Math.round((upstream.timeout_ms || 30000) / 1000);
   const streamTimeoutSec = Math.round((upstream.stream_idle_timeout_ms || 120000) / 1000);
@@ -30,7 +34,43 @@ export const UpstreamCard = React.memo(function UpstreamCard({
     upstream.credential_pool?.length ||
     upstream.api_keys?.length ||
     (upstream.api_key ? 1 : 0);
-  const strategy = upstream.key_strategy || 'round_robin';
+  const accountCount =
+    upstream.credential_pool?.length || (upstream.credential_ref ? 1 : 0);
+  const strategy = upstream.key_strategy || (isOAuth ? 'least_inflight' : 'round_robin');
+
+  const getProtocolLabel = () => {
+    switch (protocol) {
+      case 'antigravity':
+        return 'ANTIGRAVITY';
+      case 'cline':
+        return 'CLINE';
+      case 'codebuddy_cn':
+      case 'codebuddy-cn':
+        return 'CODEBUDDY (CN)';
+      case 'codebuddy_intl':
+      case 'codebuddy-intl':
+        return 'CODEBUDDY (INTL)';
+      case 'anthropic':
+        return 'ANTHROPIC';
+      default:
+        return 'OPENAI';
+    }
+  };
+
+  const getProviderDescription = () => {
+    switch (protocol) {
+      case 'antigravity':
+        return 'Google Cloud Vertex / Antigravity Cloud';
+      case 'cline':
+        return 'Official Cline Claude Gateway';
+      case 'codebuddy_cn':
+        return 'Tencent Cloud CodeBuddy (CN)';
+      case 'codebuddy_intl':
+        return 'CodeBuddy International';
+      default:
+        return baseUrl || 'Default Provider Endpoint';
+    }
+  };
 
   return (
     <div className="group flex flex-col justify-between p-4 rounded-xl bg-transparent border border-white/[0.06] hover:border-white/[0.14] hover:bg-white/[0.015] transition-all duration-200 font-mono text-xs select-none">
@@ -41,7 +81,7 @@ export const UpstreamCard = React.memo(function UpstreamCard({
             {upstream.name}
           </span>
           <span className="text-[11px] text-neutral-500 uppercase">
-            {upstream.protocol?.toUpperCase() || (isAnthropic ? 'ANTHROPIC' : 'OPENAI')}
+            {getProtocolLabel()}
           </span>
         </div>
 
@@ -93,21 +133,40 @@ export const UpstreamCard = React.memo(function UpstreamCard({
         </div>
       </div>
 
-      {/* Target Endpoint Route */}
+      {/* Target Endpoint or Provider Route */}
       <div className="flex items-center gap-2 py-2.5 font-mono text-xs overflow-x-auto text-neutral-400">
-        <span className="text-neutral-500 text-[11px]">Endpoint:</span>
-        <span className="text-neutral-200 font-medium truncate" title={baseUrl}>
-          {baseUrl || 'Default Provider Endpoint'}
+        <span className="text-neutral-500 text-[11px]">
+          {isOAuth ? 'Provider:' : 'Endpoint:'}
         </span>
-        {upstream.base_urls && upstream.base_urls.length > 1 ? (
+        <span className="text-neutral-200 font-medium truncate" title={getProviderDescription()}>
+          {getProviderDescription()}
+        </span>
+        {isOAuth ? (
+          <span className="text-[10px] text-neutral-400 bg-white/[0.04] px-1.5 py-0.5 rounded border border-white/[0.06] shrink-0 font-medium">
+            MANAGED
+          </span>
+        ) : upstream.base_urls && upstream.base_urls.length > 1 ? (
           <span className="text-neutral-500 text-[11px] flex-shrink-0">
             (+{upstream.base_urls.length - 1} failover)
           </span>
         ) : null}
       </div>
 
-      {/* KeyRing Credential Pool Preview */}
-      {upstream.credential_pool && upstream.credential_pool.length > 0 ? (
+      {/* Credential Pool Preview (KeyRing vs AccountRing) */}
+      {isOAuth ? (
+        <AccountRingSlotList
+          slots={
+            upstream.credential_pool && upstream.credential_pool.length > 0
+              ? upstream.credential_pool
+              : upstream.credential_ref
+              ? [{ ref: upstream.credential_ref }]
+              : []
+          }
+          strategy={strategy}
+          connections={connections}
+          protocol={protocol}
+        />
+      ) : upstream.credential_pool && upstream.credential_pool.length > 0 ? (
         <KeyRingSlotList
           slots={upstream.credential_pool}
           strategy={upstream.key_strategy}
@@ -117,7 +176,9 @@ export const UpstreamCard = React.memo(function UpstreamCard({
       {/* Capabilities & Timeouts Footer */}
       <div className="flex flex-wrap items-center gap-2.5 pt-2.5 border-t border-white/[0.04] text-[11px] text-neutral-500">
         <span>
-          {keyCount} {keyCount === 1 ? 'key' : 'keys'} ({strategy})
+          {isOAuth
+            ? `${accountCount} ${accountCount === 1 ? 'account' : 'accounts'} (${strategy})`
+            : `${keyCount} ${keyCount === 1 ? 'key' : 'keys'} (${strategy})`}
         </span>
         <span>·</span>
         <span>{timeoutSec}s ttfb</span>

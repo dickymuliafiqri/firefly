@@ -46,6 +46,10 @@ Before modifying or adding code to Firefly, every AI Agent **must understand and
 | `config` | `internal/config/` | JSON configuration loader (`upstreams.json`, `models.json`, `tenants.json`, `combos.json`) with strict schema validation. |
 | `analytics` | `internal/analytics/` | Persistent disk store for request execution logs, token ledger metrics, and manual/automatic circuit breaker overrides. |
 | `auth` | `internal/auth/` | Master password vault, PBKDF2/salted SHA-256 session token manager, and tenant key verification. |
+| `oauth` | `internal/oauth/` | Third-party AI OAuth manager, token refresh lifecycle, encrypted JSON credential vault (`oauth.json`), and provider implementations. |
+| `antigravity` | `internal/antigravity/` | Google Antigravity Cloud Code adapter, translating OpenAI requests to Google Cloud Code internal protobuf/JSON protocols. |
+| `cline` | `internal/cline/` | Cline OAuth adapter, request rewriting with `HTTP-Referer`/`X-Title` headers, envelope unwrapping, and SSE streaming relay. |
+| `codebuddy` | `internal/codebuddy/` | CodeBuddy (CN & Intl) adapter supporting device authorization flows, request forwarding, and SSE relays. |
 | `watch` | `internal/watch/` | File watcher combining `fsnotify`, periodic polling, and SIGHUP signals for atomic configuration hot-reloading. |
 
 ---

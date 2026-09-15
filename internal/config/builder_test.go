@@ -522,3 +522,70 @@ func TestEnsureConfigFiles(t *testing.T) {
 	}
 }
 
+func TestBuild_OAuthProtocolsAndDynamicRefs(t *testing.T) {
+	upstreamsJSON := `{
+		"upstreams": [
+			{
+				"name": "cline-upstream",
+				"protocol": "cline",
+				"base_url": "https://api.cline.bot/api/v1",
+				"credential_pool": [
+					{"ref": "oauth:cline-mulyono@gmail.com"}
+				]
+			},
+			{
+				"name": "antigravity-upstream",
+				"protocol": "antigravity",
+				"base_url": "https://cloudsandbox-pa.googleapis.com",
+				"credential_ref": "oauth:antigravity"
+			},
+			{
+				"name": "codebuddy-upstream",
+				"protocol": "codebuddy_cn",
+				"base_url": "https://copilot.tencent.com",
+				"credential_pool": [
+					{"ref": "oauth:codebuddy-1"}
+				]
+			}
+		]
+	}`
+
+	modelsJSON := `{"models": []}`
+	tenantsJSON := `{"tenants": []}`
+
+	res, err := Build(FileSet{
+		Upstreams: []byte(upstreamsJSON),
+		Models:    []byte(modelsJSON),
+		Tenants:   []byte(tenantsJSON),
+	}, fakeEnv(nil))
+	if err != nil {
+		t.Fatalf("unexpected error building oauth upstreams: %v", err)
+	}
+
+	if len(res.Upstreams) != 3 {
+		t.Fatalf("expected 3 upstreams, got %d", len(res.Upstreams))
+	}
+
+	clineUp := res.Upstreams["cline-upstream"]
+	if clineUp == nil {
+		t.Fatal("expected cline-upstream to exist")
+	}
+	if clineUp.Protocol != domain.ProtocolCline {
+		t.Errorf("expected protocol 'cline', got %s", clineUp.Protocol)
+	}
+	if clineUp.KeyRing == nil || len(clineUp.KeyRing.Slots) != 1 {
+		t.Fatalf("expected 1 slot in keyring, got %v", clineUp.KeyRing)
+	}
+	if clineUp.KeyRing.Slots[0].Ref != "oauth:cline-mulyono@gmail.com" {
+		t.Errorf("expected ref 'oauth:cline-mulyono@gmail.com', got %s", clineUp.KeyRing.Slots[0].Ref)
+	}
+
+	cbUp := res.Upstreams["codebuddy-upstream"]
+	if cbUp == nil {
+		t.Fatal("expected codebuddy-upstream to exist")
+	}
+	if cbUp.Protocol != domain.ProtocolCodeBuddyCN {
+		t.Errorf("expected normalized protocol 'codebuddy-cn', got %s", cbUp.Protocol)
+	}
+}
+

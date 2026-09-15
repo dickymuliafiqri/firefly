@@ -162,13 +162,36 @@ In addition to passive inline request error classification, Firefly runs an acti
 
 ---
 
-## Multi-Protocol Adapters (OpenAI & Anthropic Claude)
+## Multi-Protocol Adapters & Native OAuth Integrations
 
-Firefly provides clean interface contracts (`ports.UpstreamAdapter`) for multi-provider routing:
+Firefly provides clean interface contracts (`ports.UpstreamAdapter`) for multi-provider routing and native third-party authentication:
 - **OpenAI Adapter (`internal/openai`):** Near-transparent proxy for OpenAI, Azure OpenAI, vLLM, and Ollama. Rewrites public model identifiers to private provider names, cleans hop-by-hop headers, and injects upstream secrets from environment variables or keyring storage.
-- **Anthropic Adapter (`internal/anthropic`):** Provides transparent bi-directional schema translation between OpenAI Chat Completions and the Anthropic Messages API (`/v1/messages`), supporting both non-streaming payloads and SSE streaming chunks.
+- **Anthropic Claude Adapter (`internal/anthropic`):** Provides transparent bi-directional schema translation between OpenAI Chat Completions and the Anthropic Messages API (`/v1/messages`), supporting both non-streaming payloads and SSE streaming chunks.
+- **Google Antigravity Cloud Code Adapter (`internal/antigravity`):** Translates incoming OpenAI inference requests into Google Cloud Code internal protocols, supporting Gemini 2.5 Pro/Flash and Claude 3.7 Sonnet inference models.
+- **Cline OAuth Adapter (`internal/cline`):** Proxies completions to Cline API endpoints (`api.cline.bot`), automatically attaching client identification headers (`HTTP-Referer`, `X-Title`), unwrapping payload envelopes, and relaying SSE streams.
+- **CodeBuddy China & International Adapters (`internal/codebuddy`):** Manages RFC 8628 device authorization grants, payload rewrites, and completion streaming for CodeBuddy China and International endpoints.
 
 ---
+
+## Third-Party AI OAuth & Multi-Account Rotation
+
+Firefly natively integrates OAuth 2.0 authorization code and device code flows directly within the gateway:
+- **Zero Environment Variable Restarts:** Connect accounts interactively from the web dashboard. OAuth tokens and refresh lifecycles are persisted in encrypted backend storage (`configs/oauth.json`).
+- **Multi-Account Upstream Keyrings:** Bind multiple third-party accounts (e.g. 2+ Cline or Google accounts) to a single upstream host. Firefly pools and rotates requests across account slots using `least_inflight` or `round_robin` strategies, automatically failing over if any account hits rate limits (`HTTP 429`).
+- **Dynamic Token Resolution:** References formatted as `oauth:<connection_id>` dynamically resolve valid bearer tokens on every outbound request, proactively refreshing tokens before expiration.
+
+---
+
+## Active Model Verification & Health Probing
+
+Before exposing a model route to client applications, Firefly enables active model verification directly from the **Create Model Route / Edit Route** dialog:
+- **Minimal Inference Ping:** Dispatches a minimal inference check (`max_tokens: 1`) to the upstream host (`POST /api/upstreams/check` with `model`).
+- **Immediate Status Classification:**
+  - **HTTP 200 (Success):** Confirms model connectivity, returns TTFB latency in milliseconds, and verifies authorization.
+  - **HTTP 401 / 403 (Auth Rejected):** Details permission issues or expired credentials.
+  - **HTTP 404 (Not Found):** Detects misspelled model identifiers or models unavailable on the provider tier.
+  - **HTTP 429 (Quota Exhausted):** Identifies upstream account exhaustion before sending user traffic.
+- **Zero Secret Leakage:** Upstream API keys and OAuth tokens are evaluated server-side and never exposed in client payloads.
 
 ## Virtual Combos (Model-Level Load Balancing)
 
@@ -255,6 +278,12 @@ make build
 - `-health-check-interval`: Frequency of background health probes (duration, e.g. `15s`; `0` disables). Default: `15s`.
 - `-shutdown-grace-seconds` / `FIREFLY_SHUTDOWN_GRACE_SECONDS`: Maximum time allowed for active SSE streams to finish during shutdown. Default: `30`.
 - `-version`: Print version information, commit hash, and build timestamp, then exit.
+
+### Native Auto-TLS (Let’s Encrypt)
+
+Auto-TLS is disabled by default and is configured from **Settings → Native Let's Encrypt Auto-TLS**. Enable it with one public hostname and an ACME notification email; Firefly persists the setting in `configs/tls.json` and its certificate/key cache in `configs/certificates/` (mode `0700`).
+
+When enabled, Firefly starts an HTTP listener on `:80` for the HTTP-01 challenge and redirects other matching HTTP requests to HTTPS, then serves the normal Firefly handler on `:443`. DNS for the exact hostname must resolve to the server and TCP ports 80 and 443 must be reachable and unused. IP addresses, `localhost`, wildcard domains, and URL values are rejected; wildcard certificates require DNS-01 and are not supported by this native mode. The existing `-addr` HTTP listener remains unchanged for backward compatibility.
 
 ---
 

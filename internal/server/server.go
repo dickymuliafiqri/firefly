@@ -51,6 +51,7 @@ type Server struct {
 	logger       *slog.Logger
 	grace        time.Duration
 	baseCtx      context.Context
+	streamCtx    context.Context
 	shuttingDown atomic.Bool
 	streamCancel context.CancelFunc
 }
@@ -114,12 +115,23 @@ func newServer(cfg Config, baseCtx context.Context, logger *slog.Logger) *Server
 		logger:       logger,
 		grace:        cfg.ShutdownGrace,
 		baseCtx:      baseCtx,
+		streamCtx:    streamCtx,
 		streamCancel: streamCancel,
 	}
 }
 
 // Handler exposes the underlying http.Server's handler (used in tests).
 func (s *Server) Handler() http.Handler { return s.http.Handler }
+
+// AttachAutoTLS binds an AutoTLS controller to this server's middleware chain,
+// stream context, and graceful-shutdown budget. Binding does not enable TLS;
+// callers must explicitly apply an enabled AutoTLSConfig.
+func (s *Server) AttachAutoTLS(autoTLS *AutoTLS) {
+	if s == nil || autoTLS == nil {
+		return
+	}
+	autoTLS.bind(s.http.Handler, s.streamCtx, s.grace)
+}
 
 // ShuttingDown reports whether the server has received a shutdown signal and is in draining mode.
 func (s *Server) ShuttingDown() bool {

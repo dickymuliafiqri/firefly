@@ -5,6 +5,37 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-09-15
+
+### Added
+- **Third-Party AI OAuth Integration (`internal/oauth`)**:
+  - Centralized OAuth 2.0 authorization code and device code manager (`oauth.Manager`) with encrypted atomic persistence (`configs/oauth.json`) and automated token refresh lifecycles.
+  - Native provider adapters: Google Antigravity Cloud Code (`internal/antigravity`), Cline (`internal/cline`), and CodeBuddy China & International (`internal/codebuddy`).
+  - Multi-account upstream keyrings: support connecting 2+ accounts per provider on a single upstream host with automatic `least_inflight` / `round_robin` load balancing and 429 quota failover.
+  - Dynamic token resolution: runtime references (`oauth:<id>`) resolve and refresh bearer tokens on every outbound request without requiring server restarts or environment variables.
+  - Interactive dashboard OAuth connection dialog and account management in `UpstreamModal.tsx`, `UpstreamCard.tsx`, and `AccountRingSlotList.tsx`.
+  - OAuth REST API endpoints: `/api/oauth/providers`, `/api/oauth/authorize`, `/api/oauth/callback`, `/api/oauth/poll`, `/api/oauth/connections`, and `/api/oauth/connections/{id}`.
+- **Native Let's Encrypt Auto-TLS (`internal/server/autotls.go`, `internal/config/tls.go`)**:
+  - Embedded ACME HTTP-01 challenge support for zero-config HTTPS certificate provisioning and automated renewal via `golang.org/x/crypto/acme/autocert`.
+  - Secure certificate cache directory (`configs/certificates/`, mode `0700`) and operational configuration in `configs/tls.json`.
+  - Automatic HTTP-to-HTTPS redirect on port 80 while serving the data and admin plane on port 443 without interrupting the standard `-addr` listener.
+- **Active Model Route Connectivity Verification (`internal/server/upstream_check.go`)**:
+  - Enhanced `/api/upstreams/check` with optional `model` parameter executing minimal inference probes (`max_tokens: 1`) across OpenAI, Anthropic, Cline, Codebuddy, and Antigravity protocols.
+  - Granular error classification powered by `gjson` (HTTP 200 active, 401/403 auth rejected, 404 model not found, 429 quota exhausted, 400 invalid parameters, 5xx server error).
+  - Added **Model Verification** panel and "Test Connection" button in `ModelModal.tsx` with responsive feedback badges (Emerald success / Rose rejection with upstream error message and latency).
+
+### Changed
+- **Configuration Builder Protocol & Token Resolution (`internal/config/builder.go`)**:
+  - Extended configuration builder to support `cline`, `antigravity`, `codebuddy-cn`, and `codebuddy-intl` protocols.
+  - Enabled dynamic `oauth:...` credential references in keyrings without requiring host OS environment variable lookup.
+- **Frontend Upstream & Models Layout**:
+  - Redesigned Upstreams view and modal to accommodate multi-account keyrings, OAuth status badges, and interactive authorization flows.
+  - Strictly enforced Vercel React Best Practices across newly introduced components (`rerender-no-inline-components`, `rendering-conditional-render`, `rerender-functional-setstate`, `js-early-exit`).
+
+### Fixed
+- Fixed Cline OAuth protocol validation and default base URL normalization (`https://api.cline.bot/api/v1`).
+- Fixed upstream model catalog discovery when authenticating via dynamic OAuth tokens.
+
 ## [1.1.2] - 2026-09-14
 
 ### Changed

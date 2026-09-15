@@ -88,6 +88,7 @@ export const usePlaygroundMessages = () => useAppStore((state) => state.playgrou
 export const usePlaygroundPrompt = () => useAppStore((state) => state.playgroundPrompt);
 export const usePlaygroundSelectedModel = () => useAppStore((state) => state.playgroundSelectedModel);
 export const usePlaygroundApiKey = () => useAppStore((state) => state.playgroundApiKey);
+export const usePlaygroundApiKeyManuallyEdited = () => useAppStore((state) => state.playgroundApiKeyManuallyEdited);
 export const usePlaygroundTemperature = () => useAppStore((state) => state.playgroundTemperature);
 export const usePlaygroundMaxTokens = () => useAppStore((state) => state.playgroundMaxTokens);
 export const usePlaygroundIsStreamMode = () => useAppStore((state) => state.playgroundIsStreamMode);

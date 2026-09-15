@@ -116,6 +116,10 @@ type SettingsDTO struct {
 	Models    []ModelDTO    `json:"models"`
 	Tenants   []TenantDTO   `json:"tenants"`
 	Combos    []ComboDTO    `json:"combos,omitempty"`
+	// AutoTLS is persisted separately in tls.json because it controls network
+	// listeners rather than the hot-swappable routing catalog. A nil value on
+	// update means "preserve the existing TLS configuration".
+	AutoTLS *AutoTLSDTO `json:"auto_tls,omitempty"`
 }
 
 // RateLimitDTO mirrors the rate_limit object.

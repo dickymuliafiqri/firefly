@@ -14,6 +14,7 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/httpx"
 	"github.com/dickymuliafiqri/firefly/internal/limits"
 	"github.com/dickymuliafiqri/firefly/internal/metrics"
+	"github.com/dickymuliafiqri/firefly/internal/oauth"
 	"github.com/dickymuliafiqri/firefly/internal/openai"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
@@ -37,6 +38,8 @@ type RouterDeps struct {
 	Logger   *slog.Logger
 	Metrics  *metrics.Metrics
 	LiveLogs *LiveLogHub
+	AutoTLS  *AutoTLS
+	OAuthManager *oauth.Manager
 
 	// GlobalLimiter manages server-wide in-flight concurrency with a bounded wait queue.
 	// If nil and DisableGlobalAdmission is false, a default 1500-slot limiter is used.
@@ -168,6 +171,20 @@ func (s *Server) buildHandler(deps RouterDeps) http.Handler {
 	mux.HandleFunc("GET /api/history", deps.handleGetHistory)
 	mux.HandleFunc("DELETE /api/history", deps.handleDeleteHistory)
 
+	// OAuth Management Endpoints (admin/dashboard guarded)
+	mux.HandleFunc("OPTIONS /api/oauth/providers", deps.handleOptionsOAuth)
+	mux.HandleFunc("GET /api/oauth/providers", deps.handleListOAuthProviders)
+	mux.HandleFunc("OPTIONS /api/oauth/authorize", deps.handleOptionsOAuth)
+	mux.HandleFunc("POST /api/oauth/authorize", deps.handleOAuthAuthorize)
+	mux.HandleFunc("OPTIONS /api/oauth/callback", deps.handleOptionsOAuth)
+	mux.HandleFunc("GET /api/oauth/callback", deps.handleOAuthCallback)
+	mux.HandleFunc("POST /api/oauth/callback", deps.handleOAuthCallback)
+	mux.HandleFunc("OPTIONS /api/oauth/poll", deps.handleOptionsOAuth)
+	mux.HandleFunc("POST /api/oauth/poll", deps.handleOAuthPoll)
+	mux.HandleFunc("OPTIONS /api/oauth/connections", deps.handleOptionsOAuth)
+	mux.HandleFunc("GET /api/oauth/connections", deps.handleListOAuthConnections)
+	mux.HandleFunc("OPTIONS /api/oauth/connections/{id}", deps.handleOptionsOAuth)
+	mux.HandleFunc("DELETE /api/oauth/connections/{id}", deps.handleDeleteOAuthConnection)
 
 	// /v1/models is auth-protected but needs no upstream.
 	mux.Handle("GET /v1/models", deps.protected(http.HandlerFunc(deps.handleListModels)))

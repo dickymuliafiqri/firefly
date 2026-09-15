@@ -14,13 +14,21 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/dickymuliafiqri/firefly/internal/analytics"
 	"github.com/dickymuliafiqri/firefly/internal/anthropic"
+	"github.com/dickymuliafiqri/firefly/internal/antigravity"
+	"github.com/dickymuliafiqri/firefly/internal/cline"
+	"github.com/dickymuliafiqri/firefly/internal/codebuddy"
 	"github.com/dickymuliafiqri/firefly/internal/domain"
+	"github.com/dickymuliafiqri/firefly/internal/oauth"
+	antigravityProvider "github.com/dickymuliafiqri/firefly/internal/oauth/providers/antigravity"
+	clineProvider "github.com/dickymuliafiqri/firefly/internal/oauth/providers/cline"
+	codebuddyProvider "github.com/dickymuliafiqri/firefly/internal/oauth/providers/codebuddy"
 
 	"github.com/dickymuliafiqri/firefly/internal/auth"
 	"github.com/dickymuliafiqri/firefly/internal/config"
@@ -51,11 +59,11 @@ func main() {
 
 func run() error {
 	var (
-		configDir      = flag.String("config-dir", "configs", "directory containing upstreams.json, models.json, tenants.json")
-		addr           = flag.String("addr", "0.0.0.0:8080", "listen address")
-		adminAddr      = flag.String("admin-addr", "", "admin listen address for /metrics and guarded /debug/* (empty disables)")
-		logLevel       = flag.String("log-level", "info", "log level: debug|info|warn|error")
-		graceSecs      = flag.Int("shutdown-grace-seconds", 30, "max seconds to drain in-flight requests on shutdown")
+		configDir         = flag.String("config-dir", "configs", "directory containing upstreams.json, models.json, tenants.json")
+		addr              = flag.String("addr", "0.0.0.0:8080", "listen address")
+		adminAddr         = flag.String("admin-addr", "", "admin listen address for /metrics and guarded /debug/* (empty disables)")
+		logLevel          = flag.String("log-level", "info", "log level: debug|info|warn|error")
+		graceSecs         = flag.Int("shutdown-grace-seconds", 30, "max seconds to drain in-flight requests on shutdown")
 		adminToken        = flag.String("admin-token", "", "bearer token guarding /debug/* endpoints (defaults to $FIREFLY_ADMIN_TOKEN; empty disables them)")
 		dashboardPassword = flag.String("dashboard-password", "", "master password for dashboard access (defaults to $FIREFLY_DASHBOARD_PASSWORD or 12345678)")
 		healthInterval    = flag.Duration("health-check-interval", upstream.DefaultHealthCheckInterval, "interval between background upstream health checks (0 to disable)")
@@ -201,6 +209,71 @@ func run() error {
 		return fmt.Errorf("register anthropic adapter: %w", err)
 	}
 
+	// 3b. OAuth subsystem & persistent token store
+	oauthStore, err := oauth.NewStore(filepath.Join(*configDir, "oauth.json"))
+	if err != nil {
+		return fmt.Errorf("init oauth store: %w", err)
+	}
+	oauthMgr := oauth.NewManager(oauthStore, oauth.WithLogger(logger))
+	if err := oauthMgr.RegisterProvider(antigravityProvider.New()); err != nil {
+		logger.Warn("could not register antigravity oauth provider", "err", err)
+	}
+	if err := oauthMgr.RegisterProvider(clineProvider.New()); err != nil {
+		logger.Warn("could not register cline oauth provider", "err", err)
+	}
+	if err := oauthMgr.RegisterProvider(codebuddyProvider.NewCN()); err != nil {
+		logger.Warn("could not register codebuddy-cn oauth provider", "err", err)
+	}
+	if err := oauthMgr.RegisterProvider(codebuddyProvider.NewIntl()); err != nil {
+		logger.Warn("could not register codebuddy-intl oauth provider", "err", err)
+	}
+
+	// 3c. Background proactive token refresher
+	refresher := oauth.NewRefresher(oauthMgr, oauth.RefresherConfig{
+		Logger: logger,
+	})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		refresher.Run(ctx)
+	}()
+
+	antigravityAdapter := antigravity.NewAdapter(pool, breakers, antigravity.Config{
+		TokenResolver:    oauthMgr.ResolveToken,
+		SecretLookup:     os.LookupEnv,
+		Retry:            retry,
+		Logger:           logger,
+		MaxBufferedBytes: 32 << 20,
+		Metrics:          mx,
+	})
+	if err := adapterRegistry.Register(domain.ProtocolAntigravity, antigravityAdapter); err != nil {
+		return fmt.Errorf("register antigravity adapter: %w", err)
+	}
+	clineAdapter := cline.NewAdapter(pool, breakers, cline.Config{
+		TokenResolver:    oauthMgr.ResolveToken,
+		SecretLookup:     os.LookupEnv,
+		Retry:            retry,
+		Logger:           logger,
+		MaxBufferedBytes: 32 << 20,
+		Metrics:          mx,
+	})
+	if err := adapterRegistry.Register(domain.ProtocolCline, clineAdapter); err != nil {
+		return fmt.Errorf("register cline adapter: %w", err)
+	}
+	codebuddyAdapter := codebuddy.NewAdapter(pool, breakers, codebuddy.Config{
+		TokenResolver:    oauthMgr.ResolveToken,
+		SecretLookup:     os.LookupEnv,
+		Retry:            retry,
+		Logger:           logger,
+		MaxBufferedBytes: 32 << 20,
+		Metrics:          mx,
+	})
+	if err := adapterRegistry.Register(domain.ProtocolCodeBuddyCN, codebuddyAdapter); err != nil {
+		return fmt.Errorf("register codebuddy-cn adapter: %w", err)
+	}
+	if err := adapterRegistry.Register(domain.ProtocolCodeBuddyIntl, codebuddyAdapter); err != nil {
+		return fmt.Errorf("register codebuddy-intl adapter: %w", err)
+	}
 
 	// 4. Analytics, Token Ledger, and Request History Persistent Storage.
 	analyticsStore, err := analytics.NewStore(*configDir)
@@ -228,29 +301,51 @@ func run() error {
 
 	liveLogs := server.NewLiveLogHub()
 	liveLogs.AttachStore(analyticsStore)
+	autoTLS := server.NewAutoTLS(filepath.Join(*configDir, "certificates"), logger)
 
 	deps := server.RouterDeps{
-		Snapshots:   reg,
-		Registry:    reg,
-		ConfigDir:   *configDir,
-		AdminToken:  *adminToken,
-		Auth:        authMgr,
-		TenantStore: tenantStore,
-		Limiter:     limits.New(),
-		Adapters:    adapterRegistry,
-		Adapter:     openAIAdapter,
-		Usage:       counters,
-		Breakers:    breakers,
-		Analytics:   analyticsStore,
-		LiveLogs:    liveLogs,
-		Logger:      logger,
-		Metrics:     mx,
+		Snapshots:    reg,
+		Registry:     reg,
+		ConfigDir:    *configDir,
+		AdminToken:   *adminToken,
+		Auth:         authMgr,
+		TenantStore:  tenantStore,
+		Limiter:      limits.New(),
+		Adapters:     adapterRegistry,
+		Adapter:      openAIAdapter,
+		Usage:        counters,
+		Breakers:     breakers,
+		Analytics:    analyticsStore,
+		LiveLogs:     liveLogs,
+		AutoTLS:      autoTLS,
+		OAuthManager: oauthMgr,
+		Logger:       logger,
+		Metrics:      mx,
 	}
 	graceDuration := time.Duration(*graceSecs) * time.Second
 	srv := server.New(server.Config{
 		Addr:          *addr,
 		ShutdownGrace: graceDuration,
 	}, deps, ctx, logger)
+	srv.AttachAutoTLS(autoTLS)
+
+	// Auto-TLS is disabled by default. When enabled through Settings, it owns
+	// standards ports 80/443 for HTTP-01 validation and HTTPS while the normal
+	// data listener remains available at its configured address.
+	if tlsSettings, err := config.LoadAutoTLS(*configDir); err != nil {
+		logger.Warn("could not load auto TLS configuration; leaving TLS disabled", "err", err)
+	} else if err := autoTLS.Apply(server.AutoTLSConfig{
+		Enabled: tlsSettings.Enabled,
+		Domain:  tlsSettings.Domain,
+		Email:   tlsSettings.Email,
+	}); err != nil {
+		logger.Warn("could not start auto TLS; Firefly remains available on its HTTP listener", "err", err)
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		autoTLS.Run(ctx)
+	}()
 
 	// 5. Admin plane (/metrics + guarded /debug/*), drained alongside the data
 	//    plane. Only started when an address is configured.

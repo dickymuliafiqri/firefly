@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/openai"
+	"github.com/tidwall/gjson"
 )
 
 type UpstreamCheckRequest struct {
@@ -24,6 +26,7 @@ type UpstreamCheckRequest struct {
 	BaseURL   string `json:"base_url"`
 	APIKey    string `json:"api_key,omitempty"`
 	TimeoutMs int    `json:"timeout_ms,omitempty"`
+	Model     string `json:"model,omitempty"`
 }
 
 type UpstreamCheckResponse struct {
@@ -41,6 +44,30 @@ func (deps RouterDeps) handleOptionsUpstreamCheck(w http.ResponseWriter, r *http
 	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// extractUpstreamError extracts an error description from upstream JSON response body or plain text.
+func extractUpstreamError(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	if msg := gjson.GetBytes(body, "error.message").String(); msg != "" {
+		return msg
+	}
+	if msg := gjson.GetBytes(body, "message").String(); msg != "" {
+		return msg
+	}
+	if msg := gjson.GetBytes(body, "detail").String(); msg != "" {
+		return msg
+	}
+	if msg := gjson.GetBytes(body, "error").String(); msg != "" {
+		return msg
+	}
+	trimmed := strings.TrimSpace(string(body))
+	if len(trimmed) > 0 && len(trimmed) <= 300 && !strings.HasPrefix(trimmed, "<") {
+		return trimmed
+	}
+	return ""
 }
 
 // handleCheckUpstream actively tests connectivity and authentication against an upstream endpoint.
@@ -69,6 +96,16 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 
 	baseURL := strings.TrimSpace(req.BaseURL)
 	apiKey := strings.TrimSpace(req.APIKey)
+	protocol := strings.ToLower(strings.TrimSpace(req.Protocol))
+	if protocol == "codebuddy_cn" {
+		protocol = "codebuddy-cn"
+	} else if protocol == "codebuddy_intl" {
+		protocol = "codebuddy-intl"
+	}
+
+	if apiKey == "" && req.KeyRef != "" {
+		apiKey = req.KeyRef
+	}
 
 	// If an existing upstream name is provided, resolve missing or masked fields from snapshot
 	if req.Name != "" {
@@ -78,10 +115,10 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 				if baseURL == "" {
 					baseURL = existingUp.BaseURL
 				}
-				if req.Protocol == "" {
-					req.Protocol = string(existingUp.Protocol)
+				if protocol == "" {
+					protocol = string(existingUp.Protocol)
 				}
-				if (apiKey == "" || isMasked(apiKey) || strings.HasPrefix(apiKey, "env:")) && existingUp.KeyRing != nil {
+				if (apiKey == "" || isMasked(apiKey) || strings.HasPrefix(apiKey, "env:") || strings.HasPrefix(apiKey, "oauth:")) && existingUp.KeyRing != nil {
 					var targetSlot *domain.KeySlot
 					if req.KeyRef != "" {
 						targetSlot = existingUp.KeyRing.SlotByRef(req.KeyRef)
@@ -97,12 +134,108 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 					if targetSlot == nil {
 						targetSlot = existingUp.KeyRing.PrimarySlot()
 					}
-					if targetSlot != nil && targetSlot.Secret != "" {
-						apiKey = targetSlot.Secret
+					if targetSlot != nil {
+						if targetSlot.Secret != "" {
+							apiKey = targetSlot.Secret
+						} else if targetSlot.Ref != "" {
+							apiKey = targetSlot.Ref
+						}
 					}
 				}
 			}
 		}
+	}
+
+	if protocol == "" {
+		protocol = "openai"
+	}
+
+	// Timeout configuration
+	timeout := 10 * time.Second
+	if req.TimeoutMs > 0 {
+		timeout = time.Duration(req.TimeoutMs) * time.Millisecond
+		if timeout > 30*time.Second {
+			timeout = 30 * time.Second
+		} else if timeout < 1*time.Second {
+			timeout = 1 * time.Second
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+
+	// Resolve OAuth dynamic token references
+	if deps.OAuthManager != nil {
+		if strings.HasPrefix(apiKey, "oauth:") {
+			if tok, err := deps.OAuthManager.ResolveToken(ctx, apiKey); err == nil && tok != "" {
+				apiKey = tok
+			}
+		} else if strings.HasPrefix(req.KeyRef, "oauth:") && (apiKey == "" || strings.HasPrefix(apiKey, "oauth:")) {
+			if tok, err := deps.OAuthManager.ResolveToken(ctx, req.KeyRef); err == nil && tok != "" {
+				apiKey = tok
+			}
+		} else if apiKey == "" && (protocol == "cline" || protocol == "antigravity" || strings.HasPrefix(protocol, "codebuddy")) {
+			if conns, err := deps.OAuthManager.ListConnections(ctx); err == nil {
+				for _, c := range conns {
+					if c.Provider == protocol || (strings.HasPrefix(protocol, "codebuddy") && strings.HasPrefix(c.Provider, "codebuddy")) {
+						if tok, err := deps.OAuthManager.ResolveToken(ctx, c.ID); err == nil && tok != "" {
+							apiKey = tok
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if protocol == "antigravity" {
+		models := []string{
+			"gemini-2.5-pro",
+			"gemini-2.5-flash",
+			"gemini-2.0-flash",
+			"gemini-2.0-pro",
+			"claude-3-7-sonnet",
+			"claude-3-5-sonnet",
+		}
+		if req.Model != "" {
+			reqModel := strings.TrimSpace(req.Model)
+			found := false
+			for _, m := range models {
+				if strings.EqualFold(m, reqModel) {
+					found = true
+					break
+				}
+			}
+			if found {
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(UpstreamCheckResponse{
+					Healthy:    true,
+					StatusCode: 200,
+					LatencyMs:  1,
+					Message:    fmt.Sprintf("Antigravity Cloud Code supports model %q", reqModel),
+				})
+			} else {
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(UpstreamCheckResponse{
+					Healthy:    false,
+					StatusCode: http.StatusBadRequest,
+					LatencyMs:  1,
+					Message:    fmt.Sprintf("Antigravity does not support model %q (available: %s)", reqModel, strings.Join(models, ", ")),
+				})
+			}
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(UpstreamCheckResponse{
+			Healthy:    true,
+			StatusCode: 200,
+			LatencyMs:  1,
+			Message:    fmt.Sprintf("Antigravity Cloud Code upstream (%d models available)", len(models)),
+			ModelCount: len(models),
+			Models:     models,
+		})
+		return
 	}
 
 	if baseURL == "" {
@@ -124,51 +257,108 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Timeout configuration
-	timeout := 10 * time.Second
-	if req.TimeoutMs > 0 {
-		timeout = time.Duration(req.TimeoutMs) * time.Millisecond
-		if timeout > 30*time.Second {
-			timeout = 30 * time.Second
-		} else if timeout < 1*time.Second {
-			timeout = 1 * time.Second
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), timeout)
-	defer cancel()
-
-	protocol := strings.ToLower(strings.TrimSpace(req.Protocol))
-	if protocol == "" {
-		protocol = "openai"
-	}
-
 	var probeURL string
 	trimmedBase := strings.TrimRight(baseURL, "/")
+	reqModel := strings.TrimSpace(req.Model)
 
-	if protocol == "anthropic" {
-		probePath := "/v1/models"
-		if strings.HasSuffix(trimmedBase, "/v1") {
-			probePath = "/models"
+	var httpReq *http.Request
+	if reqModel != "" {
+		// Specific model connectivity check via minimal inference request
+		var probeBody []byte
+		if protocol == "anthropic" {
+			probePath := "/v1/messages"
+			if strings.HasSuffix(trimmedBase, "/v1") {
+				probePath = "/messages"
+			}
+			probeURL = trimmedBase + probePath
+			probeBody, _ = json.Marshal(map[string]any{
+				"model": reqModel,
+				"messages": []map[string]string{
+					{"role": "user", "content": "ping"},
+				},
+				"max_tokens": 1,
+			})
+		} else if protocol == "cline" {
+			if strings.Contains(trimmedBase, "api.cline.bot") && !strings.HasSuffix(trimmedBase, "/api/v1") && !strings.HasSuffix(trimmedBase, "/v1") {
+				trimmedBase += "/api/v1"
+			}
+			probeURL = trimmedBase + "/chat/completions"
+			probeBody, _ = json.Marshal(map[string]any{
+				"model": reqModel,
+				"messages": []map[string]string{
+					{"role": "user", "content": "ping"},
+				},
+				"max_tokens": 1,
+			})
+		} else {
+			// OpenAI compatible (including codebuddy)
+			if strings.Contains(strings.ToLower(reqModel), "embed") {
+				probePath := "/embeddings"
+				if strings.Contains(trimmedBase, "api.openai.com") && !strings.HasSuffix(trimmedBase, "/v1") {
+					probePath = "/v1/embeddings"
+				}
+				probeURL = trimmedBase + probePath
+				probeBody, _ = json.Marshal(map[string]any{
+					"model": reqModel,
+					"input": "ping",
+				})
+			} else {
+				probePath := "/chat/completions"
+				if strings.Contains(trimmedBase, "api.openai.com") && !strings.HasSuffix(trimmedBase, "/v1") {
+					probePath = "/v1/chat/completions"
+				}
+				probeURL = trimmedBase + probePath
+				probeBody, _ = json.Marshal(map[string]any{
+					"model": reqModel,
+					"messages": []map[string]string{
+						{"role": "user", "content": "ping"},
+					},
+					"max_tokens": 1,
+				})
+			}
 		}
-		probeURL = trimmedBase + probePath
+
+		httpReq, err = http.NewRequestWithContext(ctx, http.MethodPost, probeURL, bytes.NewReader(probeBody))
+		if err != nil {
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(UpstreamCheckResponse{
+				Healthy: false,
+				Message: "failed to construct model probe request: " + err.Error(),
+			})
+			return
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
 	} else {
-		// OpenAI compatible
-		probePath := "/models"
-		if strings.Contains(trimmedBase, "api.openai.com") && !strings.HasSuffix(trimmedBase, "/v1") {
-			probePath = "/v1/models"
+		// General upstream Reachability & Model List Probe (GET /models)
+		if protocol == "anthropic" {
+			probePath := "/v1/models"
+			if strings.HasSuffix(trimmedBase, "/v1") {
+				probePath = "/models"
+			}
+			probeURL = trimmedBase + probePath
+		} else if protocol == "cline" {
+			if strings.Contains(trimmedBase, "api.cline.bot") && !strings.HasSuffix(trimmedBase, "/api/v1") && !strings.HasSuffix(trimmedBase, "/v1") {
+				trimmedBase += "/api/v1"
+			}
+			probeURL = trimmedBase + "/models"
+		} else {
+			// OpenAI compatible
+			probePath := "/models"
+			if strings.Contains(trimmedBase, "api.openai.com") && !strings.HasSuffix(trimmedBase, "/v1") {
+				probePath = "/v1/models"
+			}
+			probeURL = trimmedBase + probePath
 		}
-		probeURL = trimmedBase + probePath
-	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, probeURL, nil)
-	if err != nil {
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(UpstreamCheckResponse{
-			Healthy: false,
-			Message: "failed to construct probe request: " + err.Error(),
-		})
-		return
+		httpReq, err = http.NewRequestWithContext(ctx, http.MethodGet, probeURL, nil)
+		if err != nil {
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(UpstreamCheckResponse{
+				Healthy: false,
+				Message: "failed to construct probe request: " + err.Error(),
+			})
+			return
+		}
 	}
 
 	httpReq.Header.Set("Accept", "application/json")
@@ -182,6 +372,10 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 	} else {
 		if apiKey != "" {
 			httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+		}
+		if protocol == "cline" {
+			httpReq.Header.Set("HTTP-Referer", "https://cline.bot")
+			httpReq.Header.Set("X-Title", "Cline")
 		}
 	}
 
@@ -222,6 +416,63 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 	}()
 
 	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+
+	if reqModel != "" {
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(UpstreamCheckResponse{
+				Healthy:    true,
+				StatusCode: resp.StatusCode,
+				LatencyMs:  latencyMs,
+				Message:    fmt.Sprintf("Model %q connected successfully (%dms)", reqModel, latencyMs),
+			})
+			return
+		}
+
+		errMsg := extractUpstreamError(bodyBytes)
+		var msg string
+		switch {
+		case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+			if errMsg == "" {
+				errMsg = "Invalid, expired, or unauthorized API key"
+			}
+			msg = fmt.Sprintf("Authentication failed (HTTP %d): %s", resp.StatusCode, errMsg)
+		case resp.StatusCode == http.StatusNotFound:
+			if errMsg == "" {
+				errMsg = fmt.Sprintf("Model %q was not found or is unavailable on this upstream", reqModel)
+			}
+			msg = fmt.Sprintf("Model not found (HTTP 404): %s", errMsg)
+		case resp.StatusCode == http.StatusTooManyRequests:
+			if errMsg == "" {
+				errMsg = "Rate limit or quota exceeded on upstream provider"
+			}
+			msg = fmt.Sprintf("Rate limit exceeded (HTTP 429): %s", errMsg)
+		case resp.StatusCode == http.StatusBadRequest:
+			if errMsg == "" {
+				errMsg = "Invalid request or unsupported model parameters"
+			}
+			msg = fmt.Sprintf("Request rejected (HTTP 400): %s", errMsg)
+		case resp.StatusCode >= 500:
+			if errMsg == "" {
+				errMsg = http.StatusText(resp.StatusCode)
+			}
+			msg = fmt.Sprintf("Upstream server error (HTTP %d): %s", resp.StatusCode, errMsg)
+		default:
+			if errMsg == "" {
+				errMsg = http.StatusText(resp.StatusCode)
+			}
+			msg = fmt.Sprintf("Upstream returned HTTP %d: %s", resp.StatusCode, errMsg)
+		}
+
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(UpstreamCheckResponse{
+			Healthy:    false,
+			StatusCode: resp.StatusCode,
+			LatencyMs:  latencyMs,
+			Message:    msg,
+		})
+		return
+	}
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		var parsed struct {
@@ -269,6 +520,15 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 			extractID(item)
 		}
 
+		if len(modelIDs) == 0 {
+			var topArray []json.RawMessage
+			if err := json.Unmarshal(bodyBytes, &topArray); err == nil {
+				for _, item := range topArray {
+					extractID(item)
+				}
+			}
+		}
+
 		slices.Sort(modelIDs)
 		modelCount := len(modelIDs)
 		if modelCount == 0 && len(parsed.Data) > 0 {
@@ -294,18 +554,7 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 
 	// 401 / 403 Authentication failure
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		var errResp struct {
-			Error struct {
-				Message string `json:"message"`
-				Type    string `json:"type"`
-			} `json:"error"`
-			Detail string `json:"detail"`
-		}
-		_ = json.Unmarshal(bodyBytes, &errResp)
-		errMsg := errResp.Error.Message
-		if errMsg == "" {
-			errMsg = errResp.Detail
-		}
+		errMsg := extractUpstreamError(bodyBytes)
 		if errMsg == "" {
 			errMsg = "Invalid or expired API key"
 		}

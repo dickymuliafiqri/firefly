@@ -2,9 +2,9 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import type { ModelDTO } from '@/services/schema';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
-import { useUpstreams, useStoreActions, useAppStore } from '@/core/state/store';
-import { useSaveSettingsMutation, useUpstreamModelsQuery } from '@/services/api';
-import { Trash2, Loader2, RotateCw } from 'lucide-react';
+import { useUpstreams, useStoreActions, useAppStore, useAdminToken } from '@/core/state/store';
+import { useSaveSettingsMutation, useUpstreamModelsQuery, checkUpstreamHealth } from '@/services/api';
+import { Trash2, Loader2, RotateCw, CheckCircle2, XCircle, Activity, Play } from 'lucide-react';
 
 export interface ModelModalProps {
   isOpen: boolean;
@@ -13,6 +13,48 @@ export interface ModelModalProps {
   onDelete?: (model: ModelDTO) => void;
 }
 
+export interface ModelCheckResult {
+  healthy: boolean;
+  statusCode: number;
+  latencyMs: number;
+  message: string;
+}
+
+interface ModelCheckBannerProps {
+  result: ModelCheckResult;
+}
+
+// Module-level memoized feedback component adhering to rerender-no-inline-components
+const ModelCheckBanner = React.memo(function ModelCheckBanner({ result }: ModelCheckBannerProps) {
+  return (
+    <div
+      role="alert"
+      className={
+        result.healthy
+          ? 'flex items-start gap-2.5 p-2.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+          : 'flex items-start gap-2.5 p-2.5 rounded-lg border border-rose-500/30 bg-rose-500/10 text-rose-300'
+      }
+    >
+      {result.healthy ? (
+        <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+      ) : (
+        <XCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+      )}
+      <div className="flex flex-col gap-0.5 text-[11px] leading-tight flex-1 min-w-0">
+        <div className="flex items-center justify-between gap-2">
+          <span className="font-semibold tracking-wide">
+            {result.healthy ? 'Model Connection Active' : 'Connection Rejected'}
+          </span>
+          <span className="text-[10px] opacity-75 whitespace-nowrap font-mono">
+            {result.statusCode > 0 ? `HTTP ${result.statusCode} · ` : ''}{result.latencyMs}ms
+          </span>
+        </div>
+        <p className="opacity-90 font-mono text-[10px] break-words">{result.message}</p>
+      </div>
+    </div>
+  );
+});
+
 export const ModelModal = React.memo(function ModelModal({
   isOpen,
   onClose,
@@ -20,13 +62,14 @@ export const ModelModal = React.memo(function ModelModal({
   onDelete,
 }: ModelModalProps) {
   const upstreams = useUpstreams();
+  const adminToken = useAdminToken();
   const { addOrUpdateModel } = useStoreActions();
   const saveMutation = useSaveSettingsMutation();
 
   const [publicName, setPublicName] = useState('');
   const [upstream, setUpstream] = useState('');
   const [upstreamModel, setUpstreamModel] = useState('');
-  const [maxContext, setMaxContext] = useState(128000);
+  const [maxContext, setMaxContext] = useState('128000');
   const [stream, setStream] = useState(true);
   const [tools, setTools] = useState(true);
   const [vision, setVision] = useState(false);
@@ -34,12 +77,18 @@ export const ModelModal = React.memo(function ModelModal({
   const [embeddings, setEmbeddings] = useState(false);
   const [isManualPrivateModel, setIsManualPrivateModel] = useState(false);
 
+  // Model connection testing state
+  const [isCheckingModel, setIsCheckingModel] = useState(false);
+  const [checkResult, setCheckResult] = useState<ModelCheckResult | null>(null);
+
   useEffect(() => {
+    setIsCheckingModel(false);
+    setCheckResult(null);
     if (modelToEdit) {
       setPublicName(modelToEdit.public_name);
       setUpstream(modelToEdit.upstream);
       setUpstreamModel(modelToEdit.upstream_model);
-      setMaxContext(modelToEdit.max_context || 128000);
+      setMaxContext(modelToEdit.max_context != null ? String(modelToEdit.max_context) : '128000');
       setStream(modelToEdit.capabilities?.stream ?? true);
       setTools(modelToEdit.capabilities?.tools ?? true);
       setVision(modelToEdit.capabilities?.vision ?? false);
@@ -51,7 +100,7 @@ export const ModelModal = React.memo(function ModelModal({
       const defaultUp = upstreams[0]?.name || 'openai-main';
       setUpstream(defaultUp);
       setUpstreamModel('');
-      setMaxContext(128000);
+      setMaxContext('128000');
       setStream(true);
       setTools(true);
       setVision(false);
@@ -87,6 +136,7 @@ export const ModelModal = React.memo(function ModelModal({
 
       // Auto-suggest public model ID if user hasn't entered one yet
       setPublicName((prev) => (prev ? prev : selected));
+      setCheckResult(null);
 
       // Auto-tune capabilities based on model name hints
       const lower = selected.toLowerCase();
@@ -98,21 +148,70 @@ export const ModelModal = React.memo(function ModelModal({
         setVision(true);
       }
       if (lower.includes('gemini-3') || lower.includes('claude-opus-4')) {
-        setMaxContext(1000000);
+        setMaxContext('1000000');
       }
     },
     []
   );
 
+  // Derive target model name (private upstream model if provided, otherwise public name)
+  const targetModel = upstreamModel.trim() || publicName.trim();
+
+  // Test connection to the selected model on the upstream host
+  const handleTestModel = useCallback(async () => {
+    // js-early-exit: ensure model and upstream host are selected
+    if (!targetModel || !selectedUpstreamObj) return;
+
+    setIsCheckingModel(true);
+    setCheckResult(null);
+
+    try {
+      const res = await checkUpstreamHealth(
+        {
+          name: selectedUpstreamObj.name,
+          protocol: selectedUpstreamObj.protocol,
+          base_url: selectedUpstreamObj.base_url,
+          key_ref: selectedUpstreamObj.credential_ref || selectedUpstreamObj.credential_pool?.[0]?.ref,
+          api_key: selectedUpstreamObj.api_key,
+          model: targetModel,
+          timeout_ms: 10000,
+        },
+        adminToken
+      );
+
+      setCheckResult({
+        healthy: res.healthy,
+        statusCode: res.status_code,
+        latencyMs: res.latency_ms,
+        message: res.message,
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Unknown connection error';
+      setCheckResult({
+        healthy: false,
+        statusCode: 0,
+        latencyMs: 0,
+        message,
+      });
+    } finally {
+      setIsCheckingModel(false);
+    }
+  }, [targetModel, selectedUpstreamObj, adminToken]);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!publicName.trim() || !upstream.trim()) return;
+
+    const parsedMaxContext = Number(maxContext);
+    const normalizedMaxContext = Number.isFinite(parsedMaxContext) && parsedMaxContext > 0
+      ? Math.trunc(parsedMaxContext)
+      : undefined;
 
     const updated: ModelDTO = {
       public_name: publicName.trim(),
       upstream: upstream.trim(),
       upstream_model: upstreamModel.trim() || publicName.trim(),
-      max_context: maxContext,
+      max_context: normalizedMaxContext,
       enabled: modelToEdit?.enabled ?? true,
       capabilities: {
         stream,
@@ -154,7 +253,10 @@ export const ModelModal = React.memo(function ModelModal({
             required
             disabled={!!modelToEdit}
             value={publicName}
-            onChange={(e) => setPublicName(e.target.value)}
+            onChange={(e) => {
+              setPublicName(e.target.value);
+              setCheckResult(null);
+            }}
             placeholder="e.g. gpt-4o or gemini-pro (ID exposed to clients)"
             className="w-full px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] text-white font-mono text-xs focus:outline-none focus:border-white/20 disabled:opacity-50"
           />
@@ -193,6 +295,7 @@ export const ModelModal = React.memo(function ModelModal({
               onChange={(e) => {
                 const nextUpstream = e.target.value;
                 setUpstream(nextUpstream);
+                setCheckResult(null);
                 if (!modelToEdit && !isManualPrivateModel) {
                   setUpstreamModel('');
                 }
@@ -249,7 +352,10 @@ export const ModelModal = React.memo(function ModelModal({
                 type="text"
                 required
                 value={upstreamModel}
-                onChange={(e) => setUpstreamModel(e.target.value)}
+                onChange={(e) => {
+                  setUpstreamModel(e.target.value);
+                  setCheckResult(null);
+                }}
                 placeholder={isModelsLoading ? 'Fetching upstream models...' : 'e.g. gpt-4o-2024-08-06'}
                 className="w-full px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] text-white font-mono text-xs focus:outline-none focus:border-white/20"
               />
@@ -265,6 +371,43 @@ export const ModelModal = React.memo(function ModelModal({
           </div>
         </div>
 
+        {/* Model Connectivity & Verification */}
+        <div className="flex flex-col gap-2.5 p-3 rounded-lg border border-white/[0.08] bg-white/[0.015]">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex flex-col gap-0.5 min-w-0">
+              <span className="text-neutral-300 font-medium text-[11px] flex items-center gap-1.5">
+                <Activity className="w-3.5 h-3.5 text-neutral-400" />
+                Model Verification
+              </span>
+              <span className="text-[10px] text-neutral-500 truncate">
+                {targetModel
+                  ? `Probe upstream host (${selectedUpstreamObj?.name || 'upstream'}) for "${targetModel}"`
+                  : 'Select or specify a model to test connection before saving'}
+              </span>
+            </div>
+            <Button
+              type="button"
+              variant="minimal"
+              size="sm"
+              onClick={handleTestModel}
+              disabled={isCheckingModel || !targetModel || !selectedUpstreamObj}
+              className="shrink-0 text-xs px-2.5 py-1 text-neutral-300 hover:text-white border-white/10 hover:border-white/20"
+              leftIcon={
+                isCheckingModel ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-neutral-400" />
+                ) : (
+                  <Play className="w-3 h-3 text-neutral-300 fill-neutral-300/20" />
+                )
+              }
+            >
+              {isCheckingModel ? 'Testing...' : 'Test Connection'}
+            </Button>
+          </div>
+
+          {/* Verification Feedback Banner adhering to rendering-conditional-render */}
+          {checkResult ? <ModelCheckBanner result={checkResult} /> : null}
+        </div>
+
         {/* Row 3: Max Context Window & Combo Info Note */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {/* Max Context Window */}
@@ -274,7 +417,7 @@ export const ModelModal = React.memo(function ModelModal({
               type="number"
               step={1000}
               value={maxContext}
-              onChange={(e) => setMaxContext(parseInt(e.target.value, 10) || 128000)}
+              onChange={(e) => setMaxContext(e.target.value)}
               className="w-full px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] text-white font-mono text-xs focus:outline-none focus:border-white/20"
             />
             <span className="text-[10px] text-neutral-500">

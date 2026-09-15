@@ -27,6 +27,7 @@ const (
 	FileNameModels    = "models.json"
 	FileNameTenants   = "tenants.json"
 	FileNameCombos    = "combos.json"
+	FileNameTLS       = "tls.json"
 )
 
 // IsConfigFile reports whether base (a filename, not a path) is one of the
@@ -105,6 +106,7 @@ func EnsureConfigFiles(dir string) error {
 		{FileNameModels, []byte("{\n  \"models\": []\n}\n")},
 		{FileNameTenants, []byte("{\n  \"tenants\": []\n}\n")},
 		{FileNameCombos, []byte("{\n  \"combos\": []\n}\n")},
+		{FileNameTLS, []byte("{\n  \"enabled\": false\n}\n")},
 	}
 
 	for _, d := range defaults {

@@ -24,6 +24,7 @@ import {
   usePlaygroundPrompt,
   usePlaygroundSelectedModel,
   usePlaygroundApiKey,
+  usePlaygroundApiKeyManuallyEdited,
   usePlaygroundTemperature,
   usePlaygroundMaxTokens,
   usePlaygroundIsStreamMode,
@@ -89,6 +90,7 @@ export const ChatWindow = React.memo(function ChatWindow({
   const inputPrompt = usePlaygroundPrompt();
   const selectedModel = usePlaygroundSelectedModel();
   const apiKey = usePlaygroundApiKey();
+  const apiKeyManuallyEdited = usePlaygroundApiKeyManuallyEdited();
   const temperature = usePlaygroundTemperature();
   const maxTokens = usePlaygroundMaxTokens();
   const isStreamMode = usePlaygroundIsStreamMode();
@@ -194,23 +196,22 @@ export const ChatWindow = React.memo(function ChatWindow({
     }
   }, [enabledCombos, enabledModels, selectedModel, setPlaygroundSelectedModel, isComboAvailable, isModelAvailable]);
 
-  // Auto-pick tenant key or admin session token if empty
+  // Auto-pick tenant key or admin session token only until the user edits the field.
   useEffect(() => {
-    if (!apiKey) {
-      if (adminToken) {
-        setPlaygroundApiKey(adminToken);
-        return;
-      }
-      const hasDemo = tenants.some(
-        (t) =>
-          t.name === 'demo' ||
-          t.key_hash?.includes('ef084336ee257cf5b084310d376f1cb5e3e7cf20742438623d445a15a6b5b2b9')
-      );
-      if (hasDemo || tenants.length > 0) {
-        setPlaygroundApiKey('sk-gw-demo-000000000000000000000000');
-      }
+    if (apiKey || apiKeyManuallyEdited) return;
+    if (adminToken) {
+      setPlaygroundApiKey(adminToken, { manual: false });
+      return;
     }
-  }, [adminToken, tenants, apiKey, setPlaygroundApiKey]);
+    const hasDemo = tenants.some(
+      (t) =>
+        t.name === 'demo' ||
+        t.key_hash?.includes('ef084336ee257cf5b084310d376f1cb5e3e7cf20742438623d445a15a6b5b2b9')
+    );
+    if (hasDemo || tenants.length > 0) {
+      setPlaygroundApiKey('sk-gw-demo-000000000000000000000000', { manual: false });
+    }
+  }, [adminToken, tenants, apiKey, apiKeyManuallyEdited, setPlaygroundApiKey]);
 
   // Cleanup animFrame on unmount
   useEffect(() => {

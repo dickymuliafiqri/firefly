@@ -3,10 +3,61 @@
  * Matches backend Go types in `internal/config/dto.go` and `internal/server/settings.go`.
  */
 
-export type Protocol = 'openai' | 'anthropic';
+export type Protocol =
+  | 'openai'
+  | 'anthropic'
+  | 'antigravity'
+  | 'cline'
+  | 'codebuddy_cn'
+  | 'codebuddy_intl';
 export type KeyStrategy = 'round_robin' | 'least_inflight';
 export type BreakerState = 'CLOSED' | 'OPEN' | 'HALF-OPEN';
 export type TenantStatus = 'active' | 'suspended' | 'revoked';
+
+export interface ProviderInfoDTO {
+  id: string;
+  name: string;
+  flow_type: string;
+  is_sensitive?: boolean;
+}
+
+export interface AuthorizeRequestDTO {
+  provider: string;
+  redirect_uri?: string;
+}
+
+export interface AuthorizeResponseDTO {
+  session_id: string;
+  auth_url: string;
+  state: string;
+}
+
+export interface CallbackRequestDTO {
+  state: string;
+  code: string;
+}
+
+export interface PollRequestDTO {
+  state: string;
+  device_code?: string;
+}
+
+export interface ConnectionDTO {
+  id: string;
+  provider: string;
+  email?: string;
+  expires_at?: string;
+  is_expired: boolean;
+  provider_specific_data?: Record<string, string>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PollResponseDTO {
+  status: string;
+  pending: boolean;
+  connection?: ConnectionDTO;
+}
 
 export interface CredentialKeyDTO {
   ref?: string;
@@ -81,11 +132,18 @@ export interface ComboDTO {
   enabled?: boolean | null;
 }
 
+export interface AutoTLSDTO {
+  enabled: boolean;
+  domain?: string;
+  email?: string;
+}
+
 export interface SettingsDTO {
   upstreams: UpstreamDTO[];
   models: ModelDTO[];
   tenants: TenantDTO[];
   combos?: ComboDTO[];
+  auto_tls?: AutoTLSDTO;
 }
 
 export interface HealthStatus {

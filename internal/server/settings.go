@@ -239,6 +239,13 @@ func (deps RouterDeps) handleGetSettings(w http.ResponseWriter, r *http.Request)
 	if settings.Combos == nil {
 		settings.Combos = []config.ComboDTO{}
 	}
+	if autoTLS, err := config.LoadAutoTLS(deps.ConfigDir); err == nil {
+		settings.AutoTLS = &autoTLS
+	} else {
+		// A malformed tls.json must not hide the routing catalog. The update path
+		// will reject a mutation until the configuration can be read safely.
+		settings.AutoTLS = &config.AutoTLSDTO{}
+	}
 
 	_ = json.NewEncoder(w).Encode(settings)
 }
@@ -268,6 +275,34 @@ func (deps RouterDeps) handleUpdateSettings(w http.ResponseWriter, r *http.Reque
 		openai.WriteError(w, http.StatusBadRequest, openai.TypeInvalidRequest, "parse JSON settings: "+err.Error())
 		return
 	}
+
+	// Catalog mutations issued by other dashboard pages predate Auto-TLS and do
+	// not include auto_tls. Preserve the persisted setting when that field is
+	// absent; only an explicit field can enable, replace, or disable HTTPS.
+	previousTLS, err := config.LoadAutoTLS(deps.ConfigDir)
+	if err != nil {
+		openai.WriteError(w, http.StatusInternalServerError, openai.TypeAPI, "read TLS config: "+err.Error())
+		return
+	}
+	nextTLS := previousTLS
+	if payload.AutoTLS != nil {
+		nextTLS = *payload.AutoTLS
+	}
+	normalizedTLS, err := NormalizeAutoTLSConfig(AutoTLSConfig{
+		Enabled: nextTLS.Enabled,
+		Domain:  nextTLS.Domain,
+		Email:   nextTLS.Email,
+	})
+	if err != nil {
+		openai.WriteError(w, http.StatusBadRequest, openai.TypeInvalidRequest, err.Error())
+		return
+	}
+	nextTLS = config.AutoTLSDTO{
+		Enabled: normalizedTLS.Enabled,
+		Domain:  normalizedTLS.Domain,
+		Email:   normalizedTLS.Email,
+	}
+	payload.AutoTLS = &nextTLS
 
 	// If any secret was left masked (unchanged in frontend), restore existing secret from snapshot
 	snap := deps.currentSnapshot()
@@ -384,9 +419,34 @@ func (deps RouterDeps) handleUpdateSettings(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Bind the public ports before writing tls.json. A conflict (for example a
+	// pre-existing reverse proxy on :80/:443) is returned to the administrator
+	// instead of persisting a configuration that cannot operate.
+	tlsApplied := false
+	rollbackTLS := func() {
+		if deps.AutoTLS == nil || !tlsApplied {
+			return
+		}
+		if err := deps.AutoTLS.Apply(AutoTLSConfig{
+			Enabled: previousTLS.Enabled,
+			Domain:  previousTLS.Domain,
+			Email:   previousTLS.Email,
+		}); err != nil && deps.Logger != nil {
+			deps.Logger.Error("could not roll back auto TLS configuration", "err", err)
+		}
+	}
+	if deps.AutoTLS != nil {
+		if err := deps.AutoTLS.Apply(normalizedTLS); err != nil {
+			openai.WriteError(w, http.StatusServiceUnavailable, openai.TypeAPI, "apply auto TLS: "+err.Error())
+			return
+		}
+		tlsApplied = true
+	}
+
 	// Persist to disk if config directory is set
 	if deps.ConfigDir != "" {
 		if err := os.MkdirAll(deps.ConfigDir, 0o755); err != nil {
+			rollbackTLS()
 			openai.WriteError(w, http.StatusInternalServerError, openai.TypeAPI, "create config dir: "+err.Error())
 			return
 		}
@@ -397,19 +457,28 @@ func (deps RouterDeps) handleUpdateSettings(w http.ResponseWriter, r *http.Reque
 		combIndent, _ := json.MarshalIndent(combFile, "", "  ")
 
 		if err := os.WriteFile(filepath.Join(deps.ConfigDir, config.FileNameUpstreams), upIndent, 0o644); err != nil {
+			rollbackTLS()
 			openai.WriteError(w, http.StatusInternalServerError, openai.TypeAPI, "write upstreams config: "+err.Error())
 			return
 		}
 		if err := os.WriteFile(filepath.Join(deps.ConfigDir, config.FileNameModels), modIndent, 0o644); err != nil {
+			rollbackTLS()
 			openai.WriteError(w, http.StatusInternalServerError, openai.TypeAPI, "write models config: "+err.Error())
 			return
 		}
 		if err := os.WriteFile(filepath.Join(deps.ConfigDir, config.FileNameTenants), tenIndent, 0o644); err != nil {
+			rollbackTLS()
 			openai.WriteError(w, http.StatusInternalServerError, openai.TypeAPI, "write tenants config: "+err.Error())
 			return
 		}
 		if err := os.WriteFile(filepath.Join(deps.ConfigDir, config.FileNameCombos), combIndent, 0o644); err != nil {
+			rollbackTLS()
 			openai.WriteError(w, http.StatusInternalServerError, openai.TypeAPI, "write combos config: "+err.Error())
+			return
+		}
+		if err := config.SaveAutoTLS(deps.ConfigDir, nextTLS); err != nil {
+			rollbackTLS()
+			openai.WriteError(w, http.StatusInternalServerError, openai.TypeAPI, "write TLS config: "+err.Error())
 			return
 		}
 	}
@@ -438,5 +507,6 @@ func (deps RouterDeps) handleUpdateSettings(w http.ResponseWriter, r *http.Reque
 		"status":     "ok",
 		"generation": newGen,
 		"warnings":   res.Warnings,
+		"auto_tls":   nextTLS,
 	})
 }

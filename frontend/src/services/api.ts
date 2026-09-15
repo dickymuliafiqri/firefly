@@ -1,6 +1,18 @@
 import { useEffect } from 'react';
 import { QueryClient, useQuery, useMutation } from '@tanstack/react-query';
-import type { SettingsDTO, HealthStatus, TelemetryDTO, LiveConnectionLog, Protocol } from './schema';
+import type {
+  SettingsDTO,
+  HealthStatus,
+  TelemetryDTO,
+  LiveConnectionLog,
+  Protocol,
+  ProviderInfoDTO,
+  ConnectionDTO,
+  AuthorizeRequestDTO,
+  AuthorizeResponseDTO,
+  PollRequestDTO,
+  PollResponseDTO,
+} from './schema';
 import { useAdminToken, useAppStore } from '@/core/state/store';
 
 export const queryClient = new QueryClient({
@@ -367,9 +379,10 @@ export interface UpstreamCheckRequest {
   name?: string;
   key_ref?: string;
   protocol?: 'openai' | 'anthropic' | string;
-  base_url: string;
+  base_url?: string;
   api_key?: string;
   timeout_ms?: number;
+  model?: string;
 }
 
 export interface UpstreamCheckResponse {
@@ -605,5 +618,163 @@ export function useLiveTelemetryStream() {
   }, [adminToken, addLog]);
 }
 
+/**
+ * Fetch available OAuth providers from Go API plane: GET /api/oauth/providers
+ */
+export async function fetchOAuthProviders(adminToken?: string): Promise<ProviderInfoDTO[]> {
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+  };
+  if (adminToken) {
+    headers['Authorization'] = `Bearer ${adminToken}`;
+  }
 
+  const res = await fetch(`${BASE_URL}/api/oauth/providers`, { headers });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, body?.error?.message || 'Failed to fetch OAuth providers');
+  }
+  return res.json();
+}
 
+export function useOAuthProvidersQuery() {
+  const adminToken = useAdminToken();
+  return useQuery({
+    queryKey: ['oauth', 'providers', adminToken],
+    queryFn: () => fetchOAuthProviders(adminToken),
+    enabled: !!adminToken,
+    staleTime: 60000,
+  });
+}
+
+/**
+ * Fetch active OAuth connections: GET /api/oauth/connections
+ */
+export async function fetchOAuthConnections(adminToken?: string): Promise<ConnectionDTO[]> {
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+  };
+  if (adminToken) {
+    headers['Authorization'] = `Bearer ${adminToken}`;
+  }
+
+  const res = await fetch(`${BASE_URL}/api/oauth/connections`, { headers });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, body?.error?.message || 'Failed to fetch OAuth connections');
+  }
+  return res.json();
+}
+
+export function useOAuthConnectionsQuery() {
+  const adminToken = useAdminToken();
+  return useQuery({
+    queryKey: ['oauth', 'connections', adminToken],
+    queryFn: () => fetchOAuthConnections(adminToken),
+    enabled: !!adminToken,
+    staleTime: 5000,
+    refetchInterval: 15000,
+  });
+}
+
+/**
+ * Initiate an OAuth authorization flow: POST /api/oauth/authorize
+ */
+export async function initiateOAuthAuthorize(
+  payload: AuthorizeRequestDTO,
+  adminToken?: string
+): Promise<AuthorizeResponseDTO> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+  };
+  if (adminToken) {
+    headers['Authorization'] = `Bearer ${adminToken}`;
+  }
+
+  const res = await fetch(`${BASE_URL}/api/oauth/authorize`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, body?.error?.message || 'Failed to initiate OAuth authorization');
+  }
+  return res.json();
+}
+
+export function useOAuthAuthorizeMutation() {
+  const adminToken = useAdminToken();
+  return useMutation({
+    mutationFn: (payload: AuthorizeRequestDTO) => initiateOAuthAuthorize(payload, adminToken),
+  });
+}
+
+/**
+ * Poll OAuth session status: POST /api/oauth/poll
+ */
+export async function pollOAuthStatus(
+  payload: PollRequestDTO,
+  adminToken?: string
+): Promise<PollResponseDTO> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+  };
+  if (adminToken) {
+    headers['Authorization'] = `Bearer ${adminToken}`;
+  }
+
+  const res = await fetch(`${BASE_URL}/api/oauth/poll`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, body?.error?.message || 'Failed to poll OAuth status');
+  }
+  return res.json();
+}
+
+export function useOAuthPollMutation() {
+  const adminToken = useAdminToken();
+  return useMutation({
+    mutationFn: (payload: PollRequestDTO) => pollOAuthStatus(payload, adminToken),
+  });
+}
+
+/**
+ * Delete an OAuth connection: DELETE /api/oauth/connections/{id}
+ */
+export async function deleteOAuthConnection(id: string, adminToken?: string): Promise<void> {
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+  };
+  if (adminToken) {
+    headers['Authorization'] = `Bearer ${adminToken}`;
+  }
+
+  const res = await fetch(`${BASE_URL}/api/oauth/connections/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    headers,
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, body?.error?.message || 'Failed to delete OAuth connection');
+  }
+}
+
+export function useDeleteOAuthConnectionMutation() {
+  const adminToken = useAdminToken();
+  return useMutation({
+    mutationFn: (id: string) => deleteOAuthConnection(id, adminToken),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['oauth', 'connections'] });
+    },
+  });
+}
