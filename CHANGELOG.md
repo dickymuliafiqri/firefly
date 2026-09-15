@@ -5,6 +5,13 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.3] - 2026-09-15
+
+### Fixed
+- **Turso native library extraction panicked under systemd with `mkdir /home/firefly: permission denied`**:
+  - The `tursogo` loader extracts a bundled native shared library at runtime into `os.UserCacheDir()` (`$XDG_CACHE_HOME`, else `$HOME/.cache`). A systemd service user such as `firefly` typically has no writable `$HOME`, so the very first Turso client initialization panicked and crashed the process (`status=2/INVALIDARGUMENT`, restart loop).
+  - `internal/turso/client.go` now defaults the loader's `TURSO_GO_CACHE_DIR` to a writable directory next to the local replica (`<local-db-dir>/.turso-cache`) before the library is loaded, unless the operator already set `TURSO_GO_CACHE_DIR`. With the default systemd layout this resolves under `/etc/firefly`, which is covered by `ReadWritePaths`.
+
 ## [1.2.2] - 2026-09-15
 
 ### Fixed

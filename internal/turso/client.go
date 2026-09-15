@@ -51,6 +51,19 @@ func NewClient(ctx context.Context, cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("create local db directory %q: %w", dir, err)
 	}
 
+	// The tursogo loader extracts a native shared library at runtime. By default it
+	// picks os.UserCacheDir() ($XDG_CACHE_HOME, else $HOME/.cache). A systemd unit
+	// user such as "firefly" often has no writable $HOME, so extraction panics with
+	// "mkdir /home/firefly: permission denied". Default the loader's cache dir to a
+	// writable location next to the local replica unless the operator overrode it.
+	if os.Getenv("TURSO_GO_CACHE_DIR") == "" {
+		cacheDir := filepath.Join(dir, ".turso-cache")
+		if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+			return nil, fmt.Errorf("create turso library cache directory %q: %w", cacheDir, err)
+		}
+		_ = os.Setenv("TURSO_GO_CACHE_DIR", cacheDir)
+	}
+
 	logger.Info("initializing turso embedded sync db",
 		"local_path", cfg.LocalPath,
 		"remote_url", cfg.RemoteURL)
