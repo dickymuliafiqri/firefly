@@ -2,6 +2,8 @@ package oauth
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -70,5 +72,61 @@ func TestStore_SaveAndGet(t *testing.T) {
 	}
 	if _, err := store2.Get(ctx, "ag-1"); err == nil {
 		t.Fatal("expected error after delete, got nil")
+	}
+}
+
+func TestStore_FilePathAndNestedSupport(t *testing.T) {
+	ctx := context.Background()
+
+	// 1. Direct file path test
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "oauth.json")
+	storeFile, err := NewStore(filePath)
+	if err != nil {
+		t.Fatalf("NewStore(filePath) error: %v", err)
+	}
+
+	conn := &domain.OAuthConnection{
+		ID:       "c-1",
+		Provider: "cline",
+		Email:    "test@example.com",
+	}
+	if err := storeFile.Save(ctx, conn); err != nil {
+		t.Fatalf("Save error: %v", err)
+	}
+
+	// Verify file was written directly to filePath (not nested in dir/oauth.json/oauth.json)
+	fi, err := os.Stat(filePath)
+	if err != nil || fi.IsDir() {
+		t.Fatalf("expected regular file at %s, got err=%v, isDir=%v", filePath, err, fi != nil && fi.IsDir())
+	}
+
+	// 2. Nested directory backward-compatibility test
+	nestedDir := t.TempDir()
+	nestedOauthDir := filepath.Join(nestedDir, "oauth.json")
+	if err := os.MkdirAll(nestedOauthDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll error: %v", err)
+	}
+
+	// Case 2a: Passing nested directory directly
+	storeNestedDir, err := NewStore(nestedOauthDir)
+	if err != nil {
+		t.Fatalf("NewStore(nestedOauthDir) error: %v", err)
+	}
+	if err := storeNestedDir.Save(ctx, conn); err != nil {
+		t.Fatalf("Save in nested dir error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(nestedOauthDir, "oauth.json")); err != nil {
+		t.Fatalf("expected file in nested directory: %v", err)
+	}
+
+	// Case 2b: Passing parent dir where oauth.json is a directory
+	storeParent, err := NewStore(nestedDir)
+	if err != nil {
+		t.Fatalf("NewStore(nestedDir) error: %v", err)
+	}
+	got, err := storeParent.Get(ctx, "c-1")
+	if err != nil || got == nil {
+		t.Fatalf("expected to read from nested directory via parent, got: %v", err)
 	}
 }

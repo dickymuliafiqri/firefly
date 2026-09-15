@@ -262,18 +262,25 @@ func TestBuildCredentialRefBackwardCompatibility(t *testing.T) {
 	}
 }
 
-func TestBuildRejectsEmptyCredentialPoolAndRef(t *testing.T) {
+func TestBuildAllowsEmptyCredentialPoolAndRef(t *testing.T) {
+	// An upstream may be created without any credential material; operators can
+	// add keys later. It must build successfully with an empty key ring rather
+	// than being rejected.
 	cfg := `{"upstreams":[{"name":"u1","base_url":"https://api.openai.com/v1"}]}`
-	_, err := Build(FileSet{
+	res, err := Build(FileSet{
 		Upstreams: []byte(cfg),
 		Models:    []byte(`{"models":[]}`),
 		Tenants:   []byte(`{"tenants":[]}`),
 	}, fakeEnv(map[string]string{}))
-	if err == nil {
-		t.Fatal("expected error when both credential_ref and credential_pool are empty")
+	if err != nil {
+		t.Fatalf("expected credential-less upstream to be accepted, got: %v", err)
 	}
-	if _, ok := err.(*ValidationError); !ok {
-		t.Fatalf("want *ValidationError, got %T: %v", err, err)
+	u, ok := res.Upstreams["u1"]
+	if !ok || u == nil {
+		t.Fatalf("upstream u1 not built: %+v", res.Upstreams)
+	}
+	if u.KeyRing != nil && u.KeyRing.SlotCount() != 0 {
+		t.Fatalf("expected empty key ring, got %d slots", u.KeyRing.SlotCount())
 	}
 }
 

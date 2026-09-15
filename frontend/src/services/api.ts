@@ -12,6 +12,9 @@ import type {
   AuthorizeResponseDTO,
   PollRequestDTO,
   PollResponseDTO,
+  TursoDTO,
+  TursoProvidersResponse,
+  TursoKeysResponse,
 } from './schema';
 import { useAdminToken, useAppStore } from '@/core/state/store';
 
@@ -94,6 +97,13 @@ export async function saveSettings(
 
   if (res.status === 401) {
     throw new ApiError(401, 'Unauthorized: Valid Admin Token required');
+  }
+  if (res.status === 409) {
+    const body = await res.json().catch(() => ({}));
+    const message =
+      body?.error?.message ||
+      'Configuration conflict: Settings have been modified by another node. Refreshing latest data.';
+    throw new ApiError(409, message, 'conflict');
   }
   if (res.status === 503) {
     throw new ApiError(503, 'Service Unavailable: Gateway is draining');
@@ -366,6 +376,15 @@ export function useSaveSettingsMutation() {
       });
     },
     onError: (err: unknown) => {
+      if (err instanceof ApiError && err.status === 409) {
+        queryClient.invalidateQueries({ queryKey: ['settings'] });
+        useAppStore.getState().addToast({
+          title: 'Configuration Conflict (409)',
+          message: err.message,
+          type: 'error',
+        });
+        return;
+      }
       useAppStore.getState().addToast({
         title: 'Save Failed',
         message: err instanceof Error ? err.message : 'Failed to save configuration',
@@ -399,7 +418,8 @@ export interface UpstreamCheckResponse {
  */
 export async function checkUpstreamHealth(
   req: UpstreamCheckRequest,
-  adminToken?: string
+  adminToken?: string,
+  signal?: AbortSignal
 ): Promise<UpstreamCheckResponse> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -413,6 +433,7 @@ export async function checkUpstreamHealth(
     method: 'POST',
     headers,
     body: JSON.stringify(req),
+    signal,
   });
 
   if (res.status === 401) {
@@ -778,3 +799,100 @@ export function useDeleteOAuthConnectionMutation() {
     },
   });
 }
+
+/**
+ * Fetch available Harvester providers from Turso centralized database: GET /api/turso/providers
+ */
+export async function fetchTursoProviders(adminToken?: string): Promise<TursoProvidersResponse> {
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+  };
+  if (adminToken) {
+    headers['Authorization'] = `Bearer ${adminToken}`;
+  }
+
+  const res = await fetch(`${BASE_URL}/api/turso/providers`, { headers });
+  if (!res.ok) {
+    return { configured: false, providers: [] };
+  }
+  return res.json().catch(() => ({ configured: false, providers: [] }));
+}
+
+export function useTursoProvidersQuery() {
+  const adminToken = useAdminToken();
+  return useQuery({
+    queryKey: ['turso', 'providers', adminToken],
+    queryFn: () => fetchTursoProviders(adminToken),
+    staleTime: 30000,
+    refetchInterval: 15000,
+  });
+}
+
+/**
+ * Test connectivity and authorization with Turso database: POST /api/turso/test
+ */
+export async function testTursoConnection(
+  payload: TursoDTO,
+  adminToken?: string
+): Promise<{ ok: boolean; message: string; latency_ms?: number }> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+  };
+  if (adminToken) {
+    headers['Authorization'] = `Bearer ${adminToken}`;
+  }
+
+  const res = await fetch(`${BASE_URL}/api/turso/test`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, body?.message || 'Turso test request failed');
+  }
+  return res.json();
+}
+
+export function useTestTursoMutation() {
+  const adminToken = useAdminToken();
+  return useMutation({
+    mutationFn: (payload: TursoDTO) => testTursoConnection(payload, adminToken),
+  });
+}
+
+/**
+ * Fetch active provider keys from Turso centralized database: GET /api/turso/providers/{id}/keys or /api/turso/keys
+ */
+export async function fetchTursoProviderKeys(
+  providerId?: number,
+  adminToken?: string
+): Promise<TursoKeysResponse> {
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+  };
+  if (adminToken) {
+    headers['Authorization'] = `Bearer ${adminToken}`;
+  }
+
+  const endpoint = providerId && providerId > 0
+    ? `${BASE_URL}/api/turso/providers/${providerId}/keys`
+    : `${BASE_URL}/api/turso/keys`;
+
+  const res = await fetch(endpoint, { headers });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, body?.error?.message || body?.message || 'Failed to fetch keys from Turso database');
+  }
+  return res.json().catch(() => ({ ok: false, count: 0, keys: [] }));
+}
+
+export function useFetchTursoKeysMutation() {
+  const adminToken = useAdminToken();
+  return useMutation({
+    mutationFn: (providerId?: number) => fetchTursoProviderKeys(providerId, adminToken),
+  });
+}
+

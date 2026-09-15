@@ -50,6 +50,7 @@ type Config struct {
 	MaxBufferedBytes int64
 	Metrics          KeyMetricsObserver
 	IdleTimeout      time.Duration
+	Notifier         ports.KeyActionNotifier
 }
 
 // Adapter implements ports.UpstreamAdapter for the Google Antigravity Cloud Code protocol.
@@ -145,86 +146,30 @@ func (a *Adapter) Forward(ctx context.Context, t *domain.Target, req ports.Forwa
 		}
 
 		res := a.attempt(ctx, u, req, t, antigravityBody, respW, attempt)
-		if res.streamed {
+
+		decision := upstream.ProcessAttemptOutcome(u, t, upstream.AttemptOutcome{
+			Status:    res.status,
+			Err:       res.err,
+			Headers:   res.headers,
+			Committed: res.streamed,
+		}, a.breaker, a.metrics, a.cfg.Notifier, a.logger)
+
+		switch {
+		case decision.Success:
+			return nil
+		case decision.StopCommitted:
 			return res.err
-		}
-
-		if a.metrics != nil && t.KeySlot != nil {
-			a.metrics.ObserveKeyRequest(u.Name, t.KeySlot.Ref, res.status)
-		}
-
-		if res.status > 0 && res.status < 400 && res.err == nil {
-			if a.breaker != nil {
-				a.breaker.Report(u.Name, true)
-			}
-			return nil
-		}
-
-		isUpstreamFailure := res.status >= 500 || (res.status == 0 && res.err != nil)
-		if a.breaker != nil && isUpstreamFailure {
-			a.breaker.Report(u.Name, false)
-		}
-
-		// Handle 429 Too Many Requests: mark key cooldown and failover to next key if available.
-		if res.status == http.StatusTooManyRequests {
-			ra := ""
-			if res.headers != nil {
-				ra = res.headers.Get("Retry-After")
-			}
-			if u.KeyRing != nil && t.KeySlot != nil {
-				upstream.FromDomain(u.KeyRing).Handle429(t.KeySlot.Ref, ra)
-			}
-			if a.metrics != nil && t.KeySlot != nil {
-				a.metrics.ObserveKeyCooldown(u.Name, t.KeySlot.Ref)
-				a.metrics.ObserveKeyRequest(u.Name, t.KeySlot.Ref, http.StatusTooManyRequests)
-			}
-			if u.KeyRing != nil && len(u.KeyRing.Slots) > 1 {
-				if nextSlot, selErr := u.KeyRing.SelectKey(time.Now().UnixNano()); selErr == nil && nextSlot != nil {
-					t.KeySlot = nextSlot
-					t.CredentialRef = nextSlot.Ref
-					lastErr = &openai.ErrUpstream{Status: res.status, Retried: true, Body: res.body, Header: res.headers}
-					continue
-				}
-			}
+		case decision.Failover:
+			lastErr = &openai.ErrUpstream{Status: res.status, Retried: true, Body: res.body, Header: res.headers}
+			continue
+		case decision.Relay:
 			relayError(respW, res.status, res.headers, res.body)
 			return nil
-		}
-
-		// Handle 401 Unauthorized: mark key revoked and failover to next key if available.
-		if res.status == http.StatusUnauthorized {
-			if u.KeyRing != nil && t.KeySlot != nil {
-				upstream.FromDomain(u.KeyRing).Handle401(t.KeySlot.Ref)
+		default: // decision.Fail
+			lastErr = &openai.ErrUpstream{Status: res.status, Retried: attempt > 1, Cause: res.err, Body: res.body, Header: res.headers}
+			if !decision.IsHostFailure {
+				return lastErr
 			}
-			if a.metrics != nil && t.KeySlot != nil {
-				a.metrics.ObserveKeyRequest(u.Name, t.KeySlot.Ref, http.StatusUnauthorized)
-			}
-			if u.KeyRing != nil && len(u.KeyRing.Slots) > 1 {
-				if nextSlot, selErr := u.KeyRing.SelectKey(time.Now().UnixNano()); selErr == nil && nextSlot != nil {
-					t.KeySlot = nextSlot
-					t.CredentialRef = nextSlot.Ref
-					lastErr = &openai.ErrUpstream{Status: res.status, Retried: true, Body: res.body, Header: res.headers}
-					continue
-				}
-			}
-			relayError(respW, res.status, res.headers, res.body)
-			return nil
-		}
-
-		if res.status >= 400 && res.status < 500 {
-			relayError(respW, res.status, res.headers, res.body)
-			return nil
-		}
-
-		if u.KeyRing != nil && len(u.KeyRing.Slots) > 1 {
-			if nextSlot, selErr := u.KeyRing.SelectKey(time.Now().UnixNano()); selErr == nil && nextSlot != nil {
-				t.KeySlot = nextSlot
-				t.CredentialRef = nextSlot.Ref
-			}
-		}
-
-		lastErr = &openai.ErrUpstream{Status: res.status, Retried: attempt > 1, Cause: res.err, Body: res.body, Header: res.headers}
-		if !isUpstreamFailure {
-			return lastErr
 		}
 	}
 

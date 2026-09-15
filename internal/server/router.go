@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/openai"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
+	"github.com/dickymuliafiqri/firefly/internal/turso"
 )
 
 // RouterDeps carries everything the HTTP routes need.
@@ -38,13 +40,23 @@ type RouterDeps struct {
 	Logger   *slog.Logger
 	Metrics  *metrics.Metrics
 	LiveLogs *LiveLogHub
-	AutoTLS  *AutoTLS
+	AutoTLS      *AutoTLS
 	OAuthManager *oauth.Manager
+	TursoStore   *turso.Store
+	TursoManager *TursoManager
 
 	// GlobalLimiter manages server-wide in-flight concurrency with a bounded wait queue.
 	// If nil and DisableGlobalAdmission is false, a default 1500-slot limiter is used.
 	GlobalLimiter          *httpx.GlobalLimiter
 	DisableGlobalAdmission bool
+}
+
+// getTursoStore returns the active turso.Store, prioritizing TursoManager if present.
+func (deps RouterDeps) getTursoStore(ctx context.Context) (*turso.Store, error) {
+	if deps.TursoManager != nil {
+		return deps.TursoManager.GetOrInitStore(ctx)
+	}
+	return deps.TursoStore, nil
 }
 
 // SnapshotProvider yields the current catalog snapshot.
@@ -149,6 +161,16 @@ func (s *Server) buildHandler(deps RouterDeps) http.Handler {
 	mux.HandleFunc("GET /api/settings", deps.handleGetSettings)
 	mux.HandleFunc("POST /api/settings", deps.handleUpdateSettings)
 	mux.HandleFunc("PUT /api/settings", deps.handleUpdateSettings)
+
+	// Turso Centralized Database API
+	mux.HandleFunc("OPTIONS /api/turso/providers", deps.handleOptionsSettings)
+	mux.HandleFunc("GET /api/turso/providers", deps.handleGetTursoProviders)
+	mux.HandleFunc("OPTIONS /api/turso/providers/{id}/keys", deps.handleOptionsSettings)
+	mux.HandleFunc("GET /api/turso/providers/{id}/keys", deps.handleGetTursoProviderKeys)
+	mux.HandleFunc("OPTIONS /api/turso/keys", deps.handleOptionsSettings)
+	mux.HandleFunc("GET /api/turso/keys", deps.handleGetTursoProviderKeys)
+	mux.HandleFunc("OPTIONS /api/turso/test", deps.handleOptionsSettings)
+	mux.HandleFunc("POST /api/turso/test", deps.handleTestTurso)
 
 	// Upstream Health Check Probe API
 	mux.HandleFunc("OPTIONS /api/upstreams/check", deps.handleOptionsUpstreamCheck)

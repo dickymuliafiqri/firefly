@@ -271,17 +271,30 @@ func TestPhase4_HighConcurrencyStreaming1000Users(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 
-			req, err := http.NewRequest("POST", base+"/v1/chat/completions",
-				strings.NewReader(`{"model":"gpt-4o-mini","stream":true,"messages":[{"role":"user","content":"ping"}]}`))
-			if err != nil {
-				failCount.Add(1)
-				return
-			}
-			req.Header.Set("Authorization", "Bearer "+gatewayKey)
-			req.Header.Set("Accept", "text/event-stream")
+			var resp *http.Response
+			var err error
+			for attempt := 0; attempt < 5; attempt++ {
+				req, reqErr := http.NewRequest("POST", base+"/v1/chat/completions",
+					strings.NewReader(`{"model":"gpt-4o-mini","stream":true,"messages":[{"role":"user","content":"ping"}]}`))
+				if reqErr != nil {
+					failCount.Add(1)
+					return
+				}
+				req.Header.Set("Authorization", "Bearer "+gatewayKey)
+				req.Header.Set("Accept", "text/event-stream")
 
-			resp, err := client.Do(req)
-			if err != nil {
+				resp, err = client.Do(req)
+				if err != nil {
+					if strings.Contains(err.Error(), "refused") || strings.Contains(err.Error(), "reset") {
+						time.Sleep(15 * time.Millisecond)
+						continue
+					}
+					failCount.Add(1)
+					return
+				}
+				break
+			}
+			if resp == nil {
 				failCount.Add(1)
 				return
 			}

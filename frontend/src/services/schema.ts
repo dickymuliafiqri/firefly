@@ -72,6 +72,7 @@ export interface UpstreamDTO {
   protocol?: Protocol | string;
   base_url?: string;
   base_urls?: string[];
+  provider_id?: number | null;
   api_key?: string;
   api_keys?: string[];
   credential_ref?: string;
@@ -86,6 +87,9 @@ export interface UpstreamDTO {
   allow_insecure?: boolean | null;
   credential_rps?: number | null;
   credential_max_concurrent?: number | null;
+  key_error_threshold?: number | null;
+  key_error_action?: 'deactivate' | 'delete' | 'cooldown' | string | null;
+  key_cooldown_duration_ms?: number | null;
   enabled?: boolean | null;
 }
 
@@ -138,12 +142,61 @@ export interface AutoTLSDTO {
   email?: string;
 }
 
+export interface TursoDTO {
+  database_url?: string;
+  auth_token?: string;
+  local_path?: string;
+  sync_interval_sec?: number;
+}
+
+export interface TursoProviderDTO {
+  id: number;
+  name: string;
+  base_url: string;
+  description?: string;
+  active_keys: number;
+}
+
+export interface TursoProvidersResponse {
+  configured: boolean;
+  providers: TursoProviderDTO[];
+}
+
+export interface TursoKeyDTO {
+  id: number;
+  provider_id: number;
+  api_key: string;
+  status: string;
+  is_active: boolean;
+}
+
+export interface TursoKeysResponse {
+  ok: boolean;
+  provider_id?: number;
+  count: number;
+  keys: TursoKeyDTO[];
+}
+
 export interface SettingsDTO {
   upstreams: UpstreamDTO[];
   models: ModelDTO[];
   tenants: TenantDTO[];
   combos?: ComboDTO[];
+  /** Marks the models list as authoritative so the backend may delete absent
+   *  models, including deleting the last one (empty list). */
+  manage_models?: boolean;
+  /** Marks the upstreams list as authoritative so the backend may delete absent
+   *  upstreams, including the last one (empty list). */
+  manage_upstreams?: boolean;
+  /** Marks the combos list as authoritative so the backend may delete absent
+   *  combos, including the last one (empty list). */
+  manage_combos?: boolean;
+  /** Marks the tenants list as authoritative so the backend may delete absent
+   *  tenants, including the last one (empty list). */
+  manage_tenants?: boolean;
   auto_tls?: AutoTLSDTO;
+  storage_engine?: string;
+  turso?: TursoDTO;
 }
 
 export interface HealthStatus {

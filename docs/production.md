@@ -35,7 +35,7 @@ Firefly can be installed automatically via the one-line installer (`install.sh`)
 ```ini
 [Unit]
 Description=Firefly High-Concurrency AI Gateway
-Documentation=https://github.com/dickymuliafiqri/gorouter
+Documentation=https://github.com/dickymuliafiqri/firefly
 After=network-online.target
 Wants=network-online.target
 

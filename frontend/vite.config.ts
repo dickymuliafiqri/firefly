@@ -24,6 +24,18 @@ export default defineConfig({
       '/v1': {
         target: 'http://localhost:8080',
         changeOrigin: true,
+        // SSE streaming must not be buffered by the dev proxy. Force identity
+        // encoding and streaming-friendly response headers so chat tokens reach
+        // the browser incrementally instead of all at once.
+        configure: (proxy) => {
+          proxy.on('proxyReq', (proxyReq) => {
+            proxyReq.setHeader('Accept-Encoding', 'identity');
+          });
+          proxy.on('proxyRes', (proxyRes) => {
+            proxyRes.headers['x-accel-buffering'] = 'no';
+            proxyRes.headers['cache-control'] = 'no-cache, no-transform';
+          });
+        },
       },
     },
   },

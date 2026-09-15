@@ -1,91 +1,91 @@
 # Firefly High-Concurrency Load Testing & Benchmark Guide
 
-Panduan ini mendokumentasikan alat uji beban (*load testing*) dan *benchmarking* untuk menguji ketahanan endpoint `/v1/chat/completions` pada gateway **Firefly** di bawah skema **100 dan 1.000 request simultan** (*at the exact same millisecond*) dengan profil beban: **Rendah (Low)**, **Sedang (Medium)**, dan **Berat (Heavy)**.
+This guide documents the load testing and benchmarking tool used to stress the `/v1/chat/completions` endpoint of the **Firefly** gateway under **100 and 1,000 simultaneous requests** (*at the exact same millisecond*), across three workload profiles: **Low**, **Medium**, and **Heavy**.
 
-Alat ini dirancang sebagai **binary eksternal (*detached/standalone*)** di [`cmd/loadtest`](file:///Users/dickymuliafiqri/go/src/github.com/dickymuliafiqri/gorouter/cmd/loadtest), serta dilengkapi dengan **suite pengujian manual (*manual test*)** yang terisolasi dari proses CI reguler melalui build tag `//go:build manual`.
-
----
-
-## 1. Arsitektur Pengujian & Karakteristik Beban
-
-### 1.1. Mekanisme Synchronized Barrier Concurrency
-Untuk memastikan seluruh request (100 atau 1.000) benar-benar menghantam gateway **di waktu yang bersamaan**, runner menggunakan sinkronisasi *two-phase barrier*:
-1. Semua $C$ goroutine pekerja (*workers*) di-spawn terlebih dahulu.
-2. Setiap pekerja menyiapkan HTTP request payload di memori dan melaporkan status siap (`readyWg.Done()`).
-3. Seluruh pekerja menahan eksekusi pada channel barrier `<-startBarrier`.
-4. Setelah seluruh pekerja $100\%$ siap, barrier dibuka serentak (`close(startBarrier)`), melepaskan 100 atau 1.000 koneksi ke Firefly pada milidetik yang sama.
+The tool is built as a **standalone (detached) binary** in [`cmd/loadtest`](../cmd/loadtest), and ships with a **manual test suite** isolated from the regular CI process via the `//go:build manual` build tag.
 
 ---
 
-### 1.2. Tiga Profil Beban (Workload Profiles)
+## 1. Test Architecture & Workload Characteristics
 
-| Profil Beban | Mode Stream | Max Tokens | Karakteristik Payload & Skenario Uji |
+### 1.1. Synchronized Barrier Concurrency Mechanism
+To ensure that all requests (100 or 1,000) truly hit the gateway **at the same instant**, the runner uses a *two-phase barrier* synchronization:
+1. All $C$ worker goroutines are spawned up front.
+2. Each worker prepares its HTTP request payload in memory and reports readiness (`readyWg.Done()`).
+3. Every worker blocks on the barrier channel `<-startBarrier`.
+4. Once all workers are $100\%$ ready, the barrier is released at once (`close(startBarrier)`), unleashing 100 or 1,000 connections to Firefly at the same millisecond.
+
+---
+
+### 1.2. Three Workload Profiles
+
+| Workload Profile | Stream Mode | Max Tokens | Payload Characteristics & Test Scenario |
 | :--- | :--- | :--- | :--- |
-| **Rendah (`low`)** | `stream: false` | 16 | **Minimal Prompt:** Single-turn prompt singkat (*"Ping! Respond with 'pong'"*). Menguji throughput murni (*raw RPS*), alokasi memori minimal, dan kecepatan *round-trip* proxy gateway. |
-| **Sedang (`medium`)** | `stream: true` (SSE) | 128 | **Interactive Chat:** Prompt teknis (~150 kata) mengenai arsitektur gateway. Menguji konsumsi token *Server-Sent Events* (SSE) secara streaming, alokasi buffer streaming, serta mengukur **TTFT** (*Time to First Token*). |
-| **Berat (`heavy`)** | `stream: true` (SSE) | 512 | **High-Context Stress Test:** Multi-turn conversation context (~2KB prompt JSON) dengan instruksi sistem arsitektur terdistribusi. Menguji penanganan koneksi berdurasi panjang (*prolonged socket lifetime*), *buffer recycling* (`sync.Pool`), dan pencegahan kebocoran memori di bawah saturasi 1.000 koneksi bersamaan. |
+| **Low (`low`)** | `stream: false` | 16 | **Minimal Prompt:** A short single-turn prompt (*"Ping! Respond with 'pong'"*). Tests raw throughput (raw RPS), minimal memory allocation, and gateway proxy round-trip speed. |
+| **Medium (`medium`)** | `stream: true` (SSE) | 128 | **Interactive Chat:** A technical prompt (~150 words) about gateway architecture. Tests streaming Server-Sent Events (SSE) token consumption, streaming buffer allocation, and measures **TTFT** (Time to First Token). |
+| **Heavy (`heavy`)** | `stream: true` (SSE) | 512 | **High-Context Stress Test:** A multi-turn conversation context (~2KB JSON prompt) with distributed-architecture system instructions. Tests prolonged socket lifetime, buffer recycling (`sync.Pool`), and memory-leak prevention under 1,000 concurrent connections. |
 
 ---
 
-## 2. Cara Menjalankan
+## 2. How to Run
 
-### 2.1. Membangun Binary Standalone (Detached CLI)
+### 2.1. Building the Standalone Binary (Detached CLI)
 
-Kompilasi binary loadtest ke folder `bin/`:
+Compile the loadtest binary into the `bin/` folder:
 ```bash
 make build-loadtest
-# atau
+# or
 go build -o bin/loadtest ./cmd/loadtest
 ```
 
-Lihat opsi dan bantuan perintah:
+View the available options and command help:
 ```bash
 ./bin/loadtest -h
 ```
 
 ---
 
-### 2.2. Mode Mock Upstream (Zero-Setup & Zero-Cost)
-Gunakan flag `-mock` untuk menjalankan gateway Firefly dan upstream mock secara *in-process*. Mode ini tidak membutuhkan koneksi internet, tidak memerlukan API key eksternal berbayar, dan memiliki kapasitas hingga ribuan koneksi konkuren.
+### 2.2. Mock Upstream Mode (Zero-Setup & Zero-Cost)
+Use the `-mock` flag to run the Firefly gateway and a mock upstream in-process. This mode needs no internet connection, no paid external API key, and can handle thousands of concurrent connections.
 
-#### A. Menjalankan 100 Request Simultan:
+#### A. Running 100 Simultaneous Requests:
 ```bash
-# Beban Rendah (100 request simultan, non-streaming)
+# Low load (100 simultaneous requests, non-streaming)
 ./bin/loadtest -mock -c 100 -profile low
 
-# Beban Sedang (100 request streaming SSE simultan)
+# Medium load (100 simultaneous SSE streaming requests)
 ./bin/loadtest -mock -c 100 -profile medium
 
-# Beban Berat (100 request context berat & streaming)
+# Heavy load (100 high-context streaming requests)
 ./bin/loadtest -mock -c 100 -profile heavy
 ```
 
-#### B. Menjalankan 1.000 Request Simultan:
+#### B. Running 1,000 Simultaneous Requests:
 ```bash
-# Beban Rendah (1.000 request simultan)
+# Low load (1,000 simultaneous requests)
 ./bin/loadtest -mock -c 1000 -profile low
 
-# Beban Sedang (1.000 stream SSE simultan)
+# Medium load (1,000 simultaneous SSE streams)
 ./bin/loadtest -mock -c 1000 -profile medium
 
-# Beban Berat (1.000 stream context berat simultan)
+# Heavy load (1,000 simultaneous high-context streams)
 ./bin/loadtest -mock -c 1000 -profile heavy
 ```
 
-#### C. Menjalankan Matriks Pengujian Lengkap (Benchmark Suite):
-Perintah ini akan menjalankan seluruh 6 skenario secara bertahap dan mencetak tabel perbandingan performa:
+#### C. Running the Full Test Matrix (Benchmark Suite):
+This command runs all 6 scenarios in sequence and prints a performance comparison table:
 ```bash
 make loadtest-suite
-# atau
+# or
 ./bin/loadtest -mock -suite
 ```
 
 ---
 
-### 2.3. Menjalankan Terhadap Server Firefly yang Sedang Berjalan (Live Instance)
-Jika Firefly sudah berjalan di server lokal atau remote (misal `http://localhost:8080`):
+### 2.3. Running Against a Live Firefly Server (Live Instance)
+If Firefly is already running on a local or remote server (for example `http://localhost:8080`):
 ```bash
-# Menguji gateway aktif dengan model dan API key tenant tertentu
+# Test a live gateway with a specific model and tenant API key
 ./bin/loadtest -url http://localhost:8080 \
   -key sk-gw-demo-000000000000000000000000 \
   -model gemma4 \
@@ -93,47 +93,47 @@ Jika Firefly sudah berjalan di server lokal atau remote (misal `http://localhost
   -profile medium
 ```
 
-> **Catatan Rate Limiting:**
-> Jika tenant di `configs/tenants.json` memiliki batas limitasi ketat (misal `max_concurrent: 20` atau `rps: 20`), runner akan secara akurat menampilkan request yang sukses (`200 OK`) dan request yang terkena pembatasan rate limit (`429 Too Many Requests`). Ini memverifikasi bahwa Layer 2 Admission Firefly bekerja melindungi backend dari lonjakan beban tak terkendali.
+> **Rate Limiting Note:**
+> If the tenant in `configs/tenants.json` has strict limits (for example `max_concurrent: 20` or `rps: 20`), the runner accurately reports both successful requests (`200 OK`) and rate-limited requests (`429 Too Many Requests`). This verifies that Firefly's Layer 2 admission control protects the backend from uncontrolled load spikes.
 
 ---
 
-### 2.4. Menjalankan via Go Test (Manual Test Suite)
+### 2.4. Running via Go Test (Manual Test Suite)
 
-File pengujian di [`cmd/loadtest/load_test.go`](file:///Users/dickymuliafiqri/go/src/github.com/dickymuliafiqri/gorouter/cmd/loadtest/load_test.go) diproteksi dengan tag `manual` sehingga tidak akan memperlambat perintah `go test ./...` biasa.
+The test file at [`cmd/loadtest/load_test.go`](../cmd/loadtest/load_test.go) is protected by the `manual` build tag so it does not slow down a plain `go test ./...` run.
 
-Untuk menjalankan pengujian melalui harness Go test:
+To run the tests through the Go test harness:
 ```bash
-# Jalankan seluruh suite benchmark
+# Run the entire benchmark suite
 make test-load
-# atau
+# or
 go test -v -tags manual -run TestLoadSuite ./cmd/loadtest
 
-# Menjalankan spesifik 100 konkuren
+# Run only the 100-concurrent test
 go test -v -tags manual -run TestLoad100Concurrent ./cmd/loadtest
 
-# Menjalankan spesifik 1.000 konkuren
+# Run only the 1,000-concurrent test
 go test -v -tags manual -run TestLoad1000Concurrent ./cmd/loadtest
 ```
 
 ---
 
-## 3. Struktur Laporan Metrik
+## 3. Metric Report Structure
 
-Setiap pengujian menyajikan data observabilitas lengkap:
+Each test run reports a full set of observability data:
 
 1. **Throughput & Data Transferred:**
-   - Total waktu eksekusi (`Total Duration`).
-   - Request per detik (`Throughput RPS`).
-   - Token per detik (`Token Throughput`) untuk respons streaming.
-   - Total transfer payload data.
+   - Total execution time (`Total Duration`).
+   - Requests per second (`Throughput RPS`).
+   - Tokens per second (`Token Throughput`) for streaming responses.
+   - Total payload data transferred.
 2. **HTTP Status Breakdown:**
-   - `✓ 200 OK`: Jumlah dan persentase keberhasilan.
-   - `⚠ 429 Too Many Requests`: Request yang ditolak oleh Layer 1 / Layer 2 Rate Limiter.
-   - `✗ 5xx Server Errors`: Gangguan upstream atau gateway.
-   - `✗ 4xx Client Errors`: Error otentikasi / validasi parameter.
-   - `✗ Network/Conn Errors`: Timeout, TCP reset, atau kehabisan file descriptor.
-3. **Distribusi Latensi (Time to Complete Response):**
-   - Min, P50 (Median), P90, P95, P99, Max, Mean, dan Standar Deviasi.
+   - `✓ 200 OK`: Count and percentage of successes.
+   - `⚠ 429 Too Many Requests`: Requests rejected by the Layer 1 / Layer 2 rate limiter.
+   - `✗ 5xx Server Errors`: Upstream or gateway failures.
+   - `✗ 4xx Client Errors`: Authentication / parameter validation errors.
+   - `✗ Network/Conn Errors`: Timeouts, TCP resets, or file-descriptor exhaustion.
+3. **Latency Distribution (Time to Complete Response):**
+   - Min, P50 (median), P90, P95, P99, Max, Mean, and standard deviation.
 4. **Time To First Token (TTFT):**
-   - Diukur khusus untuk koneksi streaming SSE: waktu sejak request dikirim hingga karakter token pertama diterima oleh klien.
+   - Measured specifically for SSE streaming connections: the time from when the request is sent until the first token character is received by the client.

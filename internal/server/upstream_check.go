@@ -103,10 +103,6 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 		protocol = "codebuddy-intl"
 	}
 
-	if apiKey == "" && req.KeyRef != "" {
-		apiKey = req.KeyRef
-	}
-
 	// If an existing upstream name is provided, resolve missing or masked fields from snapshot
 	if req.Name != "" {
 		snap := deps.currentSnapshot()
@@ -118,10 +114,13 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 				if protocol == "" {
 					protocol = string(existingUp.Protocol)
 				}
-				if (apiKey == "" || isMasked(apiKey) || strings.HasPrefix(apiKey, "env:") || strings.HasPrefix(apiKey, "oauth:")) && existingUp.KeyRing != nil {
+				if existingUp.KeyRing != nil {
 					var targetSlot *domain.KeySlot
 					if req.KeyRef != "" {
 						targetSlot = existingUp.KeyRing.SlotByRef(req.KeyRef)
+					}
+					if targetSlot == nil && apiKey != "" {
+						targetSlot = existingUp.KeyRing.SlotByRef(apiKey)
 					}
 					if targetSlot == nil && isMasked(apiKey) {
 						for _, slot := range existingUp.KeyRing.Slots {
@@ -131,7 +130,7 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 							}
 						}
 					}
-					if targetSlot == nil {
+					if targetSlot == nil && (apiKey == "" || isMasked(apiKey) || strings.HasPrefix(apiKey, "env:") || strings.HasPrefix(apiKey, "oauth:")) {
 						targetSlot = existingUp.KeyRing.PrimarySlot()
 					}
 					if targetSlot != nil {
@@ -144,6 +143,10 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 				}
 			}
 		}
+	}
+
+	if apiKey == "" && req.KeyRef != "" {
+		apiKey = req.KeyRef
 	}
 
 	if protocol == "" {
@@ -276,7 +279,7 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 				"messages": []map[string]string{
 					{"role": "user", "content": "ping"},
 				},
-				"max_tokens": 1,
+				"max_tokens": 10,
 			})
 		} else if protocol == "cline" {
 			if strings.Contains(trimmedBase, "api.cline.bot") && !strings.HasSuffix(trimmedBase, "/api/v1") && !strings.HasSuffix(trimmedBase, "/v1") {
@@ -288,7 +291,7 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 				"messages": []map[string]string{
 					{"role": "user", "content": "ping"},
 				},
-				"max_tokens": 1,
+				"max_tokens": 10,
 			})
 		} else {
 			// OpenAI compatible (including codebuddy)
@@ -313,7 +316,7 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 					"messages": []map[string]string{
 						{"role": "user", "content": "ping"},
 					},
-					"max_tokens": 1,
+					"max_tokens": 10,
 				})
 			}
 		}
@@ -376,6 +379,10 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 		if protocol == "cline" {
 			httpReq.Header.Set("HTTP-Referer", "https://cline.bot")
 			httpReq.Header.Set("X-Title", "Cline")
+			httpReq.Header.Set("X-PLATFORM", "Visual Studio Code")
+			httpReq.Header.Set("X-CLIENT-TYPE", "VSCode Extension")
+			httpReq.Header.Set("X-CLIENT-VERSION", "3.49.1")
+			httpReq.Header.Set("X-CORE-VERSION", "3.49.1")
 		}
 	}
 

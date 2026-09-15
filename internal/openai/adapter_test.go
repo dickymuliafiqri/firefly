@@ -1,6 +1,8 @@
 package openai
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -425,3 +427,86 @@ func TestForwardContextCancelledDuringRetryWait(t *testing.T) {
 	}
 }
 
+
+
+// TestForwardScrubsAcceptEncoding proves the adapter does NOT forward the
+// client's Accept-Encoding header. Forwarding it (e.g. "gzip") makes Go's
+// transport skip transparent decompression and relay raw compressed bytes,
+// which corrupts both JSON and SSE responses (the "garbled SSE" bug).
+func TestForwardScrubsAcceptEncoding(t *testing.T) {
+	var gotAcceptEncoding string
+	var seen bool
+	a, _, base := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		gotAcceptEncoding = r.Header.Get("Accept-Encoding")
+		seen = true
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}, map[string]string{"UP_KEY": "sk"})
+
+	rec := httptest.NewRecorder()
+	err := a.Forward(context.Background(), upstreamTarget(base, "m"), ports.ForwardRequest{
+		Method:    http.MethodPost,
+		Path:      "/chat/completions",
+		BodyBytes: []byte(`{"model":"m","stream":false}`),
+		Headers:   http.Header{"Accept-Encoding": []string{"gzip, br"}},
+	}, rec)
+	if err != nil {
+		t.Fatalf("Forward: %v", err)
+	}
+	if !seen {
+		t.Fatal("upstream was not called")
+	}
+	// The client's explicit "gzip, br" must not survive. Go's transport may set
+	// its own "gzip" for auto-decompression, but never the client's br value.
+	if strings.Contains(gotAcceptEncoding, "br") {
+		t.Fatalf("client Accept-Encoding must be scrubbed, upstream saw %q", gotAcceptEncoding)
+	}
+}
+
+// TestForwardStreamDecompressesGzippedSSE proves that when an upstream returns
+// a gzip-compressed SSE body (Content-Encoding: gzip) that Go's transport did
+// not auto-decompress, the relay decodes it before framing so the client sees
+// readable events instead of raw gzip bytes.
+func TestForwardStreamDecompressesGzippedSSE(t *testing.T) {
+	events := "data: {\"delta\":\"He\"}\n\ndata: {\"delta\":\"llo\"}\n\ndata: [DONE]\n\n"
+
+	var gz bytes.Buffer
+	zw := gzip.NewWriter(&gz)
+	if _, err := zw.Write([]byte(events)); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+	compressed := gz.Bytes()
+
+	a, _, base := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		// Emit a gzip-encoded SSE body unconditionally. Because the outbound
+		// request has no client Accept-Encoding (scrubbed), Go's transport will
+		// not have negotiated/handled this, so decodeResponseBody must decode it.
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Content-Encoding", "gzip")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(compressed)
+		if fl, ok := w.(http.Flusher); ok {
+			fl.Flush()
+		}
+	}, map[string]string{"UP_KEY": "sk"})
+
+	rec := httptest.NewRecorder()
+	err := a.Forward(context.Background(), upstreamTarget(base, "m"), ports.ForwardRequest{
+		Method:    http.MethodPost,
+		Path:      "/chat/completions",
+		BodyBytes: []byte(`{"model":"m","stream":true}`),
+		Stream:    true,
+	}, rec)
+	if err != nil {
+		t.Fatalf("Forward: %v", err)
+	}
+	if got := rec.Body.String(); got != events {
+		t.Fatalf("decoded SSE body = %q, want %q", got, events)
+	}
+	if !strings.Contains(rec.Body.String(), "[DONE]") {
+		t.Fatal("terminating [DONE] sentinel lost after decompression")
+	}
+}

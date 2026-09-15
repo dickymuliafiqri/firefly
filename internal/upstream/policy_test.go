@@ -1,0 +1,147 @@
+package upstream
+
+import (
+	"net/http"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/dickymuliafiqri/firefly/internal/domain"
+	"github.com/dickymuliafiqri/firefly/internal/ports"
+)
+
+type mockKeyNotifier struct {
+	mu      sync.Mutex
+	actions []ports.KeyAction
+	refs    []string
+	ids     []int64
+}
+
+func (m *mockKeyNotifier) NotifyKeyAction(action ports.KeyAction, upstreamName, ref string, keyID int64, reason string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.actions = append(m.actions, action)
+	m.refs = append(m.refs, ref)
+	m.ids = append(m.ids, keyID)
+}
+
+func TestHandleKeyOutcome_SuccessResetsCounter(t *testing.T) {
+	slot := &domain.KeySlot{Ref: "k1", APIKeyID: 10}
+	slot.ConsecutiveErrors.Store(5)
+
+	u := &domain.Upstream{
+		Name:              "test-up",
+		KeyErrorThreshold: 3,
+		KeyErrorAction:    "deactivate",
+	}
+
+	action, failover := HandleKeyOutcome(u, slot, http.StatusOK, "", nil, nil)
+	if action || failover {
+		t.Errorf("expected no action and no failover on 200 OK, got action=%v failover=%v", action, failover)
+	}
+	if slot.ConsecutiveErrors.Load() != 0 {
+		t.Errorf("expected consecutive errors reset to 0, got %d", slot.ConsecutiveErrors.Load())
+	}
+}
+
+func TestHandleKeyOutcome_ThresholdDeactivate(t *testing.T) {
+	notifier := &mockKeyNotifier{}
+	slot := &domain.KeySlot{Ref: "k1", APIKeyID: 42}
+	slot.ConsecutiveErrors.Store(2)
+
+	u := &domain.Upstream{
+		Name:              "test-up",
+		KeyErrorThreshold: 3,
+		KeyErrorAction:    "deactivate",
+	}
+
+	// 3rd consecutive error: 429
+	action, failover := HandleKeyOutcome(u, slot, http.StatusTooManyRequests, "10", notifier, nil)
+	if !action || !failover {
+		t.Errorf("expected action=true and failover=true, got action=%v failover=%v", action, failover)
+	}
+	if !slot.Revoked.Load() {
+		t.Errorf("expected slot to be revoked")
+	}
+
+	notifier.mu.Lock()
+	defer notifier.mu.Unlock()
+	if len(notifier.actions) != 1 || notifier.actions[0] != ports.KeyActionDeactivate {
+		t.Errorf("expected deactivate action notified, got %v", notifier.actions)
+	}
+	if len(notifier.ids) != 1 || notifier.ids[0] != 42 {
+		t.Errorf("expected key ID 42, got %v", notifier.ids)
+	}
+}
+
+func TestHandleKeyOutcome_ThresholdDelete(t *testing.T) {
+	notifier := &mockKeyNotifier{}
+	slot := &domain.KeySlot{Ref: "k-trial", APIKeyID: 99}
+	slot.ConsecutiveErrors.Store(1)
+
+	u := &domain.Upstream{
+		Name:              "trial-up",
+		KeyErrorThreshold: 2,
+		KeyErrorAction:    "delete",
+	}
+
+	// 2nd consecutive error: 403 Forbidden
+	action, failover := HandleKeyOutcome(u, slot, http.StatusForbidden, "", notifier, nil)
+	if !action || !failover {
+		t.Errorf("expected action=true and failover=true, got action=%v failover=%v", action, failover)
+	}
+	if !slot.Revoked.Load() {
+		t.Errorf("expected slot to be revoked")
+	}
+
+	notifier.mu.Lock()
+	defer notifier.mu.Unlock()
+	if len(notifier.actions) != 1 || notifier.actions[0] != ports.KeyActionDelete {
+		t.Errorf("expected delete action notified, got %v", notifier.actions)
+	}
+}
+
+func TestHandleKeyOutcome_ThresholdCooldown(t *testing.T) {
+	slot := &domain.KeySlot{Ref: "k-cooldown", APIKeyID: 100}
+	kr := domain.NewKeyRing(domain.KeyStrategyRoundRobin, []*domain.KeySlot{slot})
+	slot.ConsecutiveErrors.Store(2)
+
+	u := &domain.Upstream{
+		Name:                  "cooldown-up",
+		KeyRing:               kr,
+		KeyErrorThreshold:     3,
+		KeyErrorAction:        "cooldown",
+		KeyCooldownDurationMs: 60000,
+	}
+
+	action, failover := HandleKeyOutcome(u, slot, http.StatusTooManyRequests, "", nil, nil)
+	if !action || !failover {
+		t.Errorf("expected action=true and failover=true, got action=%v failover=%v", action, failover)
+	}
+	if slot.Revoked.Load() {
+		t.Errorf("expected slot NOT to be revoked on cooldown action")
+	}
+	if !slot.IsInCooldown(time.Now().UnixNano()) {
+		t.Errorf("expected slot to be in cooldown")
+	}
+	if slot.ConsecutiveErrors.Load() != 0 {
+		t.Errorf("expected consecutive errors reset to 0 after cooldown action, got %d", slot.ConsecutiveErrors.Load())
+	}
+}
+
+func TestHandleKeyOutcome_5xxIgnored(t *testing.T) {
+	slot := &domain.KeySlot{Ref: "k1", APIKeyID: 1}
+	u := &domain.Upstream{
+		Name:              "test-up",
+		KeyErrorThreshold: 1,
+		KeyErrorAction:    "delete",
+	}
+
+	action, failover := HandleKeyOutcome(u, slot, http.StatusInternalServerError, "", nil, nil)
+	if action || failover {
+		t.Errorf("5xx must never trigger key threshold action, got action=%v failover=%v", action, failover)
+	}
+	if slot.ConsecutiveErrors.Load() != 0 {
+		t.Errorf("5xx must not increment consecutive key error counter, got %d", slot.ConsecutiveErrors.Load())
+	}
+}

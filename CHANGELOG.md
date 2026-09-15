@@ -5,6 +5,34 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-09-15
+
+### Fixed
+- **Garbled SSE / non-streaming responses when the upstream compressed the body (`internal/openai`)**:
+  - The OpenAI adapter now scrubs the client `Accept-Encoding` header before forwarding, so Go's transport negotiates encoding itself and transparently decompresses gzip/deflate responses instead of relaying raw compressed bytes to the client.
+  - Added `decodeResponseBody` as defense-in-depth on both the streaming (`RelaySSE`) and non-streaming (`RelayBuffered`) paths for upstreams that compress unconditionally.
+- **Circuit breaker mis-classification for OpenAI and Anthropic adapters**:
+  - `401`/`429`/other 4xx responses are no longer reported to the upstream circuit breaker. Classification is now enforced centrally by `upstream.ProcessAttemptOutcome`, honoring the Layer 1 (key) vs Layer 2 (host) invariant for every adapter.
+- **Deleting the last model / upstream / combo / tenant did not persist (Turso store)**:
+  - Authoritative-delete flags (`manage_models`, `manage_upstreams`, `manage_combos`, `manage_tenants`) now let the dashboard delete the final catalog item, while a partial/stale save with an empty list still never wipes existing rows (race protection with the 5s settings poll).
+- **Deleting one model deleted all models / upstream delete validation error**:
+  - The Turso `SaveSettings` cascade no longer removes models for an upstream that surviving models still reference, and the frontend refuses to send an inconsistent partial catalog.
+
+### Added
+- **Upstreams without credentials**: an upstream may now be created and saved with no `api_key`/`credential_ref`/`credential_pool` (built with an empty key ring) so keys can be added later. Requests routed to it fail closed at forward time; the configuration itself is valid and hot-swappable.
+- **Playground reasoning / "thinking" display (`ChatWindow.tsx`)**: assistant reasoning streamed via `delta.reasoning_content` (or `message.reasoning_content` for non-streaming) is captured and shown in a collapsible "Thinking" panel above the answer; added auto-scroll to keep the newest tokens in view.
+- **Frontend delete guard**: the Upstreams delete dialog blocks removing an upstream that model routes still reference and lists the blocking routes.
+
+### Changed
+- **Shared upstream attempt engine (`internal/upstream/attempt.go`)**: extracted the duplicated per-adapter breaker/key-outcome/failover logic into `ProcessAttemptOutcome`, removing DRY violations across the five adapters and preventing classification drift.
+- **Frontend settings payload helper (`core/state/store.ts`)**: introduced `buildSettingsPayload(overrides)` to build the `PUT /api/settings` body from a single fresh store snapshot; replaced 11 duplicated payload-construction sites across the Upstreams, Models, Combos, Tenants views/modals.
+- **Playground streaming flush**: replaced the `requestAnimationFrame`-throttled render with a wall-clock time-throttled flush that force-renders the first token, and set `cache: 'no-store'` on the chat fetch for streaming reliability across browsers.
+- **Language consistency**: translated all remaining Indonesian UI strings, comments, and documentation to English (`UpstreamModal.tsx`, `SettingsView.tsx`, `docs/loadtest.md`, `cmd/loadtest/*`, `CHANGELOG.md`).
+- **Dev proxy streaming (`frontend/vite.config.ts`)**: the `/v1` dev proxy forces `Accept-Encoding: identity` and streaming-friendly response headers so SSE is not buffered when running via the Vite dev server.
+
+### Known Issues
+- **Playground live token rendering**: in some browsers the chat reply and SSE inspector may still render only after the stream completes even though the gateway relays SSE incrementally (verified via `curl -N`). The gateway and API are confirmed correct; the remaining issue is client-side rendering and is under investigation.
+
 ## [1.2.0] - 2026-09-15
 
 ### Added
@@ -127,7 +155,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Playground**: In-browser testing environment with TTFT, TPS, and SSE packet inspector.
 - **Detached High-Concurrency Load Tester (`cmd/loadtest`)**:
   - Standalone binary supporting 100 and 1,000 simultaneous request bursts.
-  - Workload profiles: Low (rendah), Medium (sedang), and Heavy (berat).
+  - Workload profiles: Low, Medium, and Heavy.
   - Built-in `-mock` flag for self-contained validation without live external AI API keys.
 - **CLI & Packaging**:
   - Added `-version` flag to CLI to display version, commit hash, and build timestamp.

@@ -3,7 +3,7 @@ import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
 import { Copy, Check, AlertTriangle } from 'lucide-react';
 import type { TenantDTO } from '@/services/schema';
-import { useStoreActions, useAppStore } from '@/core/state/store';
+import { useStoreActions, buildSettingsPayload } from '@/core/state/store';
 import { useSaveSettingsMutation } from '@/services/api';
 import { computeSha256Hex, generateRandomGatewayKey } from '@/lib/crypto';
 import { copyToClipboard } from '@/lib/utils';
@@ -83,13 +83,7 @@ export const KeyGeneratorModal = React.memo(function KeyGeneratorModal({
 
     // Save to Zustand and Go backend
     addOrUpdateTenant(newTenant);
-    const currentSettings = {
-      upstreams: useAppStore.getState().upstreams,
-      models: useAppStore.getState().models,
-      tenants: useAppStore.getState().tenants,
-      combos: useAppStore.getState().combos,
-    };
-    saveMutation.mutate(currentSettings);
+    saveMutation.mutate(buildSettingsPayload());
 
     setGeneratedKey(rawKey);
     setGeneratedHash(keyHash);

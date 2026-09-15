@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { useTenants, useStoreActions, useAppStore } from '@/core/state/store';
+import { useTenants, useStoreActions, useAppStore, buildSettingsPayload } from '@/core/state/store';
 import type { TenantDTO } from '@/services/schema';
 import { TenantTable } from './TenantTable';
 import { KeyGeneratorModal } from './KeyGeneratorModal';
@@ -20,13 +20,7 @@ export default function TenantsView() {
       const updated: TenantDTO = { ...tenant, status: nextStatus };
       addOrUpdateTenant(updated);
 
-      const currentSettings = {
-        upstreams: useAppStore.getState().upstreams,
-        models: useAppStore.getState().models,
-        tenants: useAppStore.getState().tenants,
-        combos: useAppStore.getState().combos,
-      };
-      saveMutation.mutate(currentSettings);
+      saveMutation.mutate(buildSettingsPayload());
 
       addToast({
         title: `Tenant ${nextStatus === 'active' ? 'Activated' : 'Suspended'}`,
@@ -39,15 +33,15 @@ export default function TenantsView() {
 
   const handleDelete = useCallback(
     (tenant: TenantDTO) => {
-      removeTenant(tenant.key_hash || tenant.name);
+      const identifier = tenant.key_hash || tenant.name;
+      const nextTenants = useAppStore
+        .getState()
+        .tenants.filter((t) => (t.key_hash || t.name) !== identifier);
+      removeTenant(identifier);
 
-      const currentSettings = {
-        upstreams: useAppStore.getState().upstreams,
-        models: useAppStore.getState().models,
-        tenants: useAppStore.getState().tenants,
-        combos: useAppStore.getState().combos,
-      };
-      saveMutation.mutate(currentSettings);
+      saveMutation.mutate(
+        buildSettingsPayload({ tenants: nextTenants, manage_tenants: true })
+      );
 
       addToast({
         title: 'Tenant Deleted',

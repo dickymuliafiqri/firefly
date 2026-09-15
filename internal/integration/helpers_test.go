@@ -121,7 +121,7 @@ func writeConfigWithUpstream(t *testing.T, dir, baseURL string, allowedModels []
 func writeConfigWithConcurrency(t *testing.T, dir, baseURL string, allowedModels []string, maxConcurrent int) {
 	t.Helper()
 	upstreams := []byte(`{"upstreams":[{"name":"openai","base_url":"` + baseURL + `",` +
-		`"credential_ref":"OPENAI_API_KEY","protocol":"openai","allow_insecure":true}]}`)
+		`"credential_ref":"OPENAI_API_KEY","protocol":"openai","allow_insecure":true,"max_idle_conns_per_host":2000,"max_conns_per_host":2000}]}`)
 	mods, _ := json.Marshal(map[string]any{"models": []map[string]any{
 		{"public_name": "gpt-4o", "upstream": "openai", "upstream_model": "gpt-4o", "enabled": true},
 		{"public_name": "gpt-4o-mini", "upstream": "openai", "upstream_model": "gpt-4o-mini", "enabled": true},

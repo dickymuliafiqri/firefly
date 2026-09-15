@@ -66,12 +66,12 @@ export const Modal = React.memo(function Modal({
         role="dialog"
         aria-modal="true"
         className={cn(
-          'relative z-10 w-full rounded-2xl bg-[#090b10] border border-white/[0.08] p-4 sm:p-6 shadow-2xl transition-all duration-150 animate-in zoom-in-95',
+          'relative z-10 w-full max-h-[92vh] flex flex-col rounded-2xl bg-[#090b10] border border-white/[0.08] p-4 sm:p-6 shadow-2xl transition-all duration-150 animate-in zoom-in-95',
           SIZE_CLASSES[size]
         )}
       >
         {/* Header */}
-        <div className="flex items-start justify-between gap-4 pb-4 border-b border-white/[0.04]">
+        <div className="flex items-start justify-between gap-4 pb-4 border-b border-white/[0.04] shrink-0">
           <div>
             {title ? (
               <h3 className="text-sm font-semibold text-white tracking-tight">
@@ -93,7 +93,7 @@ export const Modal = React.memo(function Modal({
         </div>
 
         {/* Body Content */}
-        <div className="pt-4">{children}</div>
+        <div className="pt-4 overflow-y-auto flex-1 min-h-0">{children}</div>
       </div>
     </div>,
     document.body

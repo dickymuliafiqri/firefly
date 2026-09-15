@@ -48,8 +48,13 @@ type UpstreamDTO struct {
 	AllowInsecure       *bool              `json:"allow_insecure,omitempty"`
 	Enabled             *bool              `json:"enabled,omitempty"`
 
+	ProviderID              *int64   `json:"provider_id,omitempty"`
 	CredentialRPS           *float64 `json:"credential_rps,omitempty"`
 	CredentialMaxConcurrent *int     `json:"credential_max_concurrent,omitempty"`
+
+	KeyErrorThreshold     *int   `json:"key_error_threshold,omitempty"`
+	KeyErrorAction        string `json:"key_error_action,omitempty"`
+	KeyCooldownDurationMs *int   `json:"key_cooldown_duration_ms,omitempty"`
 }
 
 // ModelsFile is the top-level shape of models.json.
@@ -116,10 +121,31 @@ type SettingsDTO struct {
 	Models    []ModelDTO    `json:"models"`
 	Tenants   []TenantDTO   `json:"tenants"`
 	Combos    []ComboDTO    `json:"combos,omitempty"`
+	// ManageModels signals that the Models list in this payload is authoritative,
+	// so the backend may delete models absent from it — even when the list is
+	// empty (deleting the last model). When false/absent, an empty Models list is
+	// treated as a partial/stale payload and no models are deleted.
+	ManageModels bool `json:"manage_models,omitempty"`
+	// ManageUpstreams signals that the Upstreams list is authoritative, allowing
+	// deletion of upstreams absent from it (including the last one). When
+	// false/absent, an empty Upstreams list never deletes existing upstreams.
+	ManageUpstreams bool `json:"manage_upstreams,omitempty"`
+	// ManageCombos signals that the Combos list is authoritative, allowing
+	// deletion of combos absent from it (including the last one). When
+	// false/absent, an empty Combos list never deletes existing combos.
+	ManageCombos bool `json:"manage_combos,omitempty"`
+	// ManageTenants signals that the Tenants list is authoritative, allowing
+	// deletion of tenants absent from it (including the last one). When
+	// false/absent, an empty Tenants list never deletes existing tenants.
+	ManageTenants bool `json:"manage_tenants,omitempty"`
 	// AutoTLS is persisted separately in tls.json because it controls network
 	// listeners rather than the hot-swappable routing catalog. A nil value on
 	// update means "preserve the existing TLS configuration".
 	AutoTLS *AutoTLSDTO `json:"auto_tls,omitempty"`
+	// StorageEngine indicates whether configuration is backed by Turso or local JSON.
+	StorageEngine string `json:"storage_engine,omitempty"`
+	// Turso credentials and replica options.
+	Turso *TursoDTO `json:"turso,omitempty"`
 }
 
 // RateLimitDTO mirrors the rate_limit object.

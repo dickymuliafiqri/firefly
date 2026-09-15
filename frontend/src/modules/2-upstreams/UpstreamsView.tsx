@@ -1,5 +1,5 @@
-import { useState, useCallback } from 'react';
-import { useUpstreams, useUpstreamBreakers, useStoreActions, useAppStore } from '@/core/state/store';
+import { useState, useCallback, useMemo } from 'react';
+import { useUpstreams, useUpstreamBreakers, useModels, useStoreActions, useAppStore, buildSettingsPayload } from '@/core/state/store';
 import type { UpstreamDTO } from '@/services/schema';
 import { UpstreamCard } from './UpstreamCard';
 import { UpstreamModal } from './UpstreamModal';
@@ -11,6 +11,7 @@ import { Plus, Server } from 'lucide-react';
 export default function UpstreamsView() {
   const upstreams = useUpstreams();
   const upstreamBreakers = useUpstreamBreakers();
+  const models = useModels();
   const { toggleUpstreamBreaker, removeUpstream, addToast } = useStoreActions();
   const saveMutation = useSaveSettingsMutation();
   const { data: oauthConnections = [] } = useOAuthConnectionsQuery();
@@ -18,6 +19,15 @@ export default function UpstreamsView() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editingUpstream, setEditingUpstream] = useState<UpstreamDTO | null>(null);
   const [deletingUpstream, setDeletingUpstream] = useState<UpstreamDTO | null>(null);
+
+  // Model routes that still point at the upstream targeted for deletion.
+  const blockingModels = useMemo(() => {
+    if (!deletingUpstream) return [] as string[];
+    const name = deletingUpstream.name;
+    return models
+      .filter((m) => m.upstream === name || (m.fallback_upstreams || []).includes(name))
+      .map((m) => m.public_name);
+  }, [deletingUpstream, models]);
 
   const handleCreate = useCallback(() => {
     setEditingUpstream(null);
@@ -41,15 +51,34 @@ export default function UpstreamsView() {
   const handleConfirmDelete = useCallback(() => {
     if (!deletingUpstream) return;
     const name = deletingUpstream.name;
+
+    // Refuse to delete an upstream that models still reference. Deleting it
+    // would orphan those model routes and the backend save would fail (or, worse,
+    // cascade-delete the models). Direct the user to remove/repoint the models
+    // first.
+    const state = useAppStore.getState();
+    const referencingModels = state.models.filter(
+      (m) => m.upstream === name || (m.fallback_upstreams || []).includes(name)
+    );
+    if (referencingModels.length > 0) {
+      const names = referencingModels.map((m) => m.public_name).join(', ');
+      addToast({
+        title: 'Cannot Delete Upstream',
+        message: `${name} is still referenced by ${referencingModels.length} model route(s): ${names}. Remove or repoint them first.`,
+        type: 'error',
+      });
+      setDeletingUpstream(null);
+      return;
+    }
+
     removeUpstream(name);
 
-    const currentSettings = {
-      upstreams: useAppStore.getState().upstreams.filter((u) => u.name !== name),
-      models: useAppStore.getState().models,
-      tenants: useAppStore.getState().tenants,
-      combos: useAppStore.getState().combos,
-    };
-    saveMutation.mutate(currentSettings);
+    saveMutation.mutate(
+      buildSettingsPayload({
+        upstreams: state.upstreams.filter((u) => u.name !== name),
+        manage_upstreams: true,
+      })
+    );
 
     addToast({
       title: 'Upstream Deleted',
@@ -148,9 +177,20 @@ export default function UpstreamsView() {
         size="sm"
       >
         <div className="flex flex-col gap-4 font-mono text-xs">
-          <p className="text-neutral-300">
-            This will permanently remove upstream <span className="text-white font-medium">{deletingUpstream?.name}</span> from the gateway routing configuration.
-          </p>
+          {blockingModels.length > 0 ? (
+            <div className="flex flex-col gap-2">
+              <p className="text-rose-300">
+                Upstream <span className="text-white font-medium">{deletingUpstream?.name}</span> cannot be deleted
+                because it is still referenced by {blockingModels.length} model route(s):
+              </p>
+              <p className="text-neutral-300 break-words">{blockingModels.join(', ')}</p>
+              <p className="text-neutral-500">Remove or repoint these model routes first, then try again.</p>
+            </div>
+          ) : (
+            <p className="text-neutral-300">
+              This will permanently remove upstream <span className="text-white font-medium">{deletingUpstream?.name}</span> from the gateway routing configuration.
+            </p>
+          )}
 
           <div className="pt-2 border-t border-white/[0.04] flex items-center justify-end gap-3">
             <Button
@@ -168,6 +208,7 @@ export default function UpstreamsView() {
               type="button"
               onClick={handleConfirmDelete}
               isLoading={saveMutation.isPending}
+              disabled={blockingModels.length > 0}
               className="text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 border-rose-500/20 hover:border-rose-500/40"
             >
               Delete

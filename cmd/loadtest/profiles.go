@@ -49,7 +49,7 @@ func GetProfile(name LoadProfile, model string, overrideStream *bool) (ProfileCo
 	case ProfileLow:
 		cfg = ProfileConfig{
 			Name:        ProfileLow,
-			Description: "Low Load (Beban Rendah): minimal prompt, non-streaming, 16 max tokens. Fast round-trip test.",
+			Description: "Low Load: minimal prompt, non-streaming, 16 max tokens. Fast round-trip test.",
 			MaxTokens:   16,
 			Stream:      false,
 			Messages: []ChatMessage{
@@ -60,7 +60,7 @@ func GetProfile(name LoadProfile, model string, overrideStream *bool) (ProfileCo
 	case ProfileMedium:
 		cfg = ProfileConfig{
 			Name:        ProfileMedium,
-			Description: "Medium Load (Beban Sedang): technical explanation prompt (~150 words), streaming SSE, 128 max tokens. Interactive UI simulation.",
+			Description: "Medium Load: technical explanation prompt (~150 words), streaming SSE, 128 max tokens. Interactive UI simulation.",
 			MaxTokens:   128,
 			Stream:      true,
 			Messages: []ChatMessage{
@@ -75,7 +75,7 @@ func GetProfile(name LoadProfile, model string, overrideStream *bool) (ProfileCo
 	case ProfileHeavy:
 		cfg = ProfileConfig{
 			Name:        ProfileHeavy,
-			Description: "Heavy Load (Beban Berat): multi-turn architecture context (~2KB prompt), streaming SSE with sustained chunk processing, 512 max tokens. High-concurrency stress test.",
+			Description: "Heavy Load: multi-turn architecture context (~2KB prompt), streaming SSE with sustained chunk processing, 512 max tokens. High-concurrency stress test.",
 			MaxTokens:   512,
 			Stream:      true,
 			Messages: []ChatMessage{

@@ -3,6 +3,8 @@ import type { StateCreator } from 'zustand';
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
+  /** Optional model reasoning / "thinking" trace, streamed via delta.reasoning_content. */
+  reasoning?: string;
 }
 
 export interface ChunkTiming {

@@ -15,6 +15,7 @@ Before modifying or adding code to Firefly, every AI Agent **must understand and
 2. **Strict Separation Between Layer 1 (Key/4xx) and Layer 2 (Host/5xx) Errors:**
    - Status `429 Too Many Requests` and `401 Unauthorized` from upstream indicate **credential/quota exhaustion**, **NOT** host infrastructure failure. These are handled exclusively by `KeyRing` (dynamic cooldown or key revocation) and retried across remaining keys in the keyring.
    - Only network transport errors (dial failure, TCP reset, DNS error) and HTTP `5xx` responses are reported to the upstream **Circuit Breaker**. Client 4xx errors or key 429 quota exhaustion **MUST NEVER** trip an upstream Circuit Breaker.
+   - This classification is enforced in a single place — `upstream.ProcessAttemptOutcome` (`internal/upstream/attempt.go`) — which every protocol adapter (`openai`, `anthropic`, `antigravity`, `cline`, `codebuddy`) calls after each attempt. Adapters must not re-implement breaker/failover logic; doing so previously caused OpenAI/Anthropic to mis-report wrapped 4xx errors as host failures.
 3. **Fail-Closed & Typed-Nil Interface Safety (`httpx.IsNil`):**
    In Go, an interface holding a typed `nil` pointer (e.g. `(*Registry)(nil)`) evaluates `v != nil` as `true`. Firefly requires the `httpx.IsNil(v)` helper at every dependency injection boundary to prevent nil-pointer dereference panics inside handlers, immediately responding fail-closed (HTTP 401 or 503).
 4. **Memory Allocation Discipline & Buffer Recycling (`sync.Pool`):**
@@ -37,9 +38,9 @@ Before modifying or adding code to Firefly, every AI Agent **must understand and
 | `domain` | `internal/domain/` | Core domain models: `CatalogSnapshot`, `Tenant`, `Upstream`, `Model`, `Combo`, `KeyRing`, `KeySlot`, `Target`. Pure data structures without side-effects. |
 | `registry` | `internal/registry/` | Thread-safe catalog snapshot store backed by `atomic.Pointer[domain.CatalogSnapshot]`. Zero-downtime hot-swap configuration reloads. |
 | `limits` | `internal/limits/` | Token-bucket rate limiters (`golang.org/x/time/rate`) per tenant, and CAS atomic concurrency gates per-credential/keyslot. |
-| `upstream` | `internal/upstream/` | Outbound HTTP client pool (`upstream.Pool`), Circuit Breaker (`Breaker`), KeyRing selection & 429/401 cooldown handler, retry policies. |
+| `upstream` | `internal/upstream/` | Outbound HTTP client pool (`upstream.Pool`), Circuit Breaker (`Breaker`), KeyRing selection & 429/401 cooldown handler, key error policy (`HandleKeyOutcome`), and the shared post-attempt decision engine (`ProcessAttemptOutcome` in `attempt.go`) that centralizes breaker classification, key failover, and metrics for every adapter. |
 | `ports` | `internal/ports/` | Go interface contracts: `UpstreamAdapter`, `TenantStore`, `UsageRecorder`, `AdapterRegistry`, `ForwardRequest`. |
-| `openai` | `internal/openai/` | OpenAI wire-compatible adapter, SSE streaming relay engine (`RelaySSE`), stream idle watchdog, OpenAI error formatting (`WriteError`). |
+| `openai` | `internal/openai/` | OpenAI wire-compatible adapter, SSE streaming relay engine (`RelaySSE`), stream idle watchdog, transparent gzip/deflate response decompression (`decodeResponseBody`), and OpenAI error formatting (`WriteError`). |
 | `anthropic` | `internal/anthropic/` | Anthropic Claude Messages adapter (`/v1/messages`), bi-directional schema translation for payloads and SSE chunks. |
 | `logging` | `internal/logging/` | Structured `slog.Logger` wrapper with custom `RedactHandler` for automatic token and credential header masking. |
 | `metrics` | `internal/metrics/` | Isolated Prometheus registry exposing latencies, in-flight gauges, cooldown counters, and circuit breaker states. |
@@ -51,6 +52,7 @@ Before modifying or adding code to Firefly, every AI Agent **must understand and
 | `cline` | `internal/cline/` | Cline OAuth adapter, request rewriting with `HTTP-Referer`/`X-Title` headers, envelope unwrapping, and SSE streaming relay. |
 | `codebuddy` | `internal/codebuddy/` | CodeBuddy (CN & Intl) adapter supporting device authorization flows, request forwarding, and SSE relays. |
 | `watch` | `internal/watch/` | File watcher combining `fsnotify`, periodic polling, and SIGHUP signals for atomic configuration hot-reloading. |
+| `turso` | `internal/turso/` | Optional Turso/libSQL backing store: catalog + settings persistence (`SaveSettings`/`LoadSettings`), provider/key harvester, periodic syncer, and the usage flusher that persists key lifecycle actions. Deletes are gated by authoritative `manage_*` flags so a partial/stale save never wipes the catalog. |
 
 ---
 
@@ -103,7 +105,9 @@ Before modifying or adding code to Firefly, every AI Agent **must understand and
     │
     ▼ 6. Upstream Adapter Execution (ports.UpstreamAdapter)
     ├── Protocol Lookup           : Select adapter (`openai` or `anthropic`)
-    ├── Header & Body Prep        : Strip hop-by-hop & client auth headers.
+    ├── Header & Body Prep        : Strip hop-by-hop, client auth, and Accept-Encoding headers
+    │                               (so the transport negotiates encoding and gzip/deflate
+    │                               responses are transparently decompressed, never relayed raw).
     │                               Inject secret upstream API key (`KeySlot.Ref`).
     │                               Rewrite public model name to upstream private name.
     │                               (On Anthropic: convert OpenAI schema to Anthropic Messages).

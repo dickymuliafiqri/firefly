@@ -71,6 +71,12 @@ func New(cfg Config, deps RouterDeps, baseCtx context.Context, logger *slog.Logg
 	if deps.Analytics != nil {
 		deps.LiveLogs.AttachStore(deps.Analytics)
 	}
+	if deps.TursoManager == nil {
+		deps.TursoManager = NewTursoManager(deps.ConfigDir, deps.TursoStore, logger)
+	}
+	if deps.Registry != nil {
+		deps.TursoManager.AttachRegistry(deps.Registry)
+	}
 	s := newServer(cfg, baseCtx, logger)
 	s.http.Handler = s.buildHandler(deps)
 	return s

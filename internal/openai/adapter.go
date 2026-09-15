@@ -58,6 +58,8 @@ type Config struct {
 	MaxBufferedBytes int64
 	// Metrics receives key health and saturation updates. Nil is safe.
 	Metrics KeyMetricsObserver
+	// Notifier receives automated key lifecycle actions (deactivate/delete). Nil is safe.
+	Notifier ports.KeyActionNotifier
 }
 
 // Adapter implements ports.UpstreamAdapter for the OpenAI (and compatible)
@@ -184,88 +186,32 @@ func (a *Adapter) Forward(ctx context.Context, t *domain.Target, req ports.Forwa
 
 		res := a.attempt(ctx, u, req, t, body, respW, attempt)
 
-		// Classify for the breaker: only transport errors and 5xx are
-		// upstream failures. 4xx are client errors or rate limits.
-		var ue *ErrUpstream
-		_ = errors.As(res.err, &ue)
-		isUpstreamFailure := (res.err != nil && !errors.Is(res.err, context.Canceled)) || res.status >= 500
-		if a.breaker != nil {
-			a.breaker.Report(u.Name, !isUpstreamFailure)
-		}
+		// Centralized classification: breaker reporting, key error policy,
+		// metrics, and failover selection all live in the upstream package so
+		// every adapter shares one correct implementation.
+		decision := upstream.ProcessAttemptOutcome(u, t, upstream.AttemptOutcome{
+			Status:    res.status,
+			Err:       res.err,
+			Headers:   res.headers,
+			Committed: res.streamed || headerCommitted(respW),
+		}, a.breaker, a.metrics, a.cfg.Notifier, a.logger)
 
-		if res.err == nil && res.status < 400 {
-			return nil // success
-		}
-
-		// Streaming already committed bytes: we cannot retry without
-		// corrupting the client stream. Surface the error.
-		if res.streamed || headerCommitted(respW) {
+		switch {
+		case decision.Success:
+			return nil
+		case decision.StopCommitted:
 			return res.err
-		}
-
-		// Handle 429 Too Many Requests: mark key cooldown and failover to next key if available.
-		if res.status == http.StatusTooManyRequests {
-			ra := ""
-			if res.headers != nil {
-				ra = res.headers.Get("Retry-After")
-			}
-			if u.KeyRing != nil && t.KeySlot != nil {
-				upstream.FromDomain(u.KeyRing).Handle429(t.KeySlot.Ref, ra)
-			}
-			if a.metrics != nil && t.KeySlot != nil {
-				a.metrics.ObserveKeyCooldown(u.Name, t.KeySlot.Ref)
-				a.metrics.ObserveKeyRequest(u.Name, t.KeySlot.Ref, http.StatusTooManyRequests)
-			}
-			if u.KeyRing != nil && len(u.KeyRing.Slots) > 1 {
-				if nextSlot, selErr := u.KeyRing.SelectKey(time.Now().UnixNano()); selErr == nil && nextSlot != nil {
-					t.KeySlot = nextSlot
-					t.CredentialRef = nextSlot.Ref
-					lastErr = &ErrUpstream{Status: res.status, Retried: true, Body: res.body, Header: res.headers}
-					continue
-				}
-			}
-			// No other key available; relay 429 with Retry-After to client
+		case decision.Failover:
+			lastErr = &ErrUpstream{Status: res.status, Retried: true, Body: res.body, Header: res.headers}
+			continue
+		case decision.Relay:
 			relayBufferedError(respW, &ErrUpstream{Status: res.status, Body: res.body, Header: res.headers})
 			return nil
-		}
-
-		// Handle 401 Unauthorized (Invalid Key): mark key revoked and failover to next key if available.
-		if res.status == http.StatusUnauthorized {
-			if u.KeyRing != nil && t.KeySlot != nil {
-				upstream.FromDomain(u.KeyRing).Handle401(t.KeySlot.Ref)
+		default: // decision.Fail
+			lastErr = &ErrUpstream{Status: res.status, Retried: attempt > 1, Cause: res.err, Body: res.body, Header: res.headers}
+			if !decision.IsHostFailure {
+				return lastErr
 			}
-			if a.metrics != nil && t.KeySlot != nil {
-				a.metrics.ObserveKeyRequest(u.Name, t.KeySlot.Ref, http.StatusUnauthorized)
-			}
-			if u.KeyRing != nil && len(u.KeyRing.Slots) > 1 {
-				if nextSlot, selErr := u.KeyRing.SelectKey(time.Now().UnixNano()); selErr == nil && nextSlot != nil {
-					t.KeySlot = nextSlot
-					t.CredentialRef = nextSlot.Ref
-					lastErr = &ErrUpstream{Status: res.status, Retried: true, Body: res.body, Header: res.headers}
-					continue
-				}
-			}
-			relayBufferedError(respW, &ErrUpstream{Status: res.status, Body: res.body, Header: res.headers})
-			return nil
-		}
-
-		// Other 4xx client errors (400, 404, etc.): do not retry, relay verbatim
-		if res.status >= 400 && res.status < 500 {
-			relayBufferedError(respW, ue)
-			return nil
-		}
-
-		// Connection error or 5xx: if multiple keys exist in KeyRing, rotate key for next attempt.
-		if u.KeyRing != nil && len(u.KeyRing.Slots) > 1 {
-			if nextSlot, selErr := u.KeyRing.SelectKey(time.Now().UnixNano()); selErr == nil && nextSlot != nil {
-				t.KeySlot = nextSlot
-				t.CredentialRef = nextSlot.Ref
-			}
-		}
-
-		lastErr = &ErrUpstream{Status: res.status, Retried: attempt > 1, Cause: res.err, Body: res.body, Header: res.headers}
-		if !isUpstreamFailure {
-			return lastErr
 		}
 	}
 
@@ -351,7 +297,16 @@ func (a *Adapter) attempt(ctx context.Context, u *domain.Upstream, req ports.For
 	if req.Stream && resp.StatusCode < 400 &&
 		strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
 		idle := time.Duration(u.StreamIdleTimeoutMs) * time.Millisecond
-		n, relayErr := RelaySSE(ctx, w, resp.Body, idle)
+		// Defense in depth: if the upstream still returned a compressed body
+		// (e.g. an ExtraHeaders-set Accept-Encoding, or a server that gzips
+		// unconditionally), Go's transport will NOT have auto-decompressed it.
+		// Relaying raw gzip/deflate bytes over SSE corrupts the stream, so we
+		// decode here before framing.
+		streamBody, decErr := decodeResponseBody(resp)
+		if decErr != nil {
+			return attemptResult{status: resp.StatusCode, headers: resp.Header.Clone(), err: decErr}
+		}
+		n, relayErr := RelaySSE(ctx, w, streamBody, idle)
 		return attemptResult{
 			status:   resp.StatusCode,
 			headers:  resp.Header.Clone(),
@@ -361,8 +316,14 @@ func (a *Adapter) attempt(ctx context.Context, u *domain.Upstream, req ports.For
 	}
 
 	// Non-streaming (or an upstream error while streaming was requested):
-	// buffer so we can pick the status code and shape the error body.
-	buf, rerr := RelayBuffered(resp.Body, a.cfg.MaxBufferedBytes)
+	// buffer so we can pick the status code and shape the error body. Decode any
+	// compressed body first (mirrors the streaming path) so a gzip/deflate
+	// response the transport did not auto-decompress is not relayed as raw bytes.
+	decoded, decErr := decodeResponseBody(resp)
+	if decErr != nil {
+		return attemptResult{status: resp.StatusCode, headers: resp.Header.Clone(), err: decErr}
+	}
+	buf, rerr := RelayBuffered(decoded, a.cfg.MaxBufferedBytes)
 	if rerr != nil {
 		return attemptResult{status: resp.StatusCode, headers: resp.Header.Clone(), body: buf, err: rerr}
 	}

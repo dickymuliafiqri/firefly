@@ -2,11 +2,14 @@ import React, { useState, useEffect, useCallback, useMemo, useDeferredValue, use
 import type { UpstreamDTO, CredentialKeyDTO, Protocol, ConnectionDTO } from '@/services/schema';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
-import { useStoreActions, useAppStore } from '@/core/state/store';
+import { useStoreActions, useAppStore, buildSettingsPayload } from '@/core/state/store';
 import {
   useSaveSettingsMutation,
   useOAuthConnectionsQuery,
+  useTursoProvidersQuery,
+  useSettingsQuery,
   checkUpstreamHealth,
+  fetchTursoProviderKeys,
   type UpstreamCheckResponse,
 } from '@/services/api';
 import {
@@ -19,6 +22,7 @@ import {
   RotateCw,
   StopCircle,
   UserCheck,
+  Database,
 } from 'lucide-react';
 import { cn, copyToClipboard } from '@/lib/utils';
 import { OAuthConnectDialog } from './OAuthConnectDialog';
@@ -303,12 +307,46 @@ export const UpstreamModal = React.memo(function UpstreamModal({
   const [baseUrl, setBaseUrl] = useState('');
   const [baseUrls, setBaseUrls] = useState<string[]>([]);
   const [newBaseUrlInput, setNewBaseUrlInput] = useState('');
+  const [providerId, setProviderId] = useState('');
 
   // OAuth tab state
   const [boundAccounts, setBoundAccounts] = useState<BoundAccountItem[]>([]);
   const [connectDialogOpen, setConnectDialogOpen] = useState(false);
   const [selectedExistingConnId, setSelectedExistingConnId] = useState('');
   const { data: oauthConnections = [] } = useOAuthConnectionsQuery();
+
+  // Turso Harvester Providers
+  const { data: serverSettings } = useSettingsQuery();
+  const {
+    data: tursoProvidersData,
+    isLoading: isLoadingProviders,
+    refetch: refetchTursoProviders,
+  } = useTursoProvidersQuery();
+
+  const isTursoConfigured = Boolean(
+    tursoProvidersData?.configured ||
+    Boolean(serverSettings?.turso?.database_url) ||
+    serverSettings?.storage_engine === 'turso'
+  );
+  const tursoProviders = useMemo(() => tursoProvidersData?.providers ?? [], [tursoProvidersData]);
+
+  // Refetch Turso providers whenever modal opens
+  useEffect(() => {
+    if (isOpen) {
+      void refetchTursoProviders();
+    }
+  }, [isOpen, refetchTursoProviders]);
+
+  const handleProviderSelect = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
+    const selectedId = e.target.value;
+    setProviderId(selectedId);
+    if (selectedId) {
+      const p = tursoProviders.find((prov) => String(prov.id) === selectedId);
+      if (p && p.base_url && (!baseUrl || baseUrl === 'https://api.openai.com/v1')) {
+        setBaseUrl(p.base_url);
+      }
+    }
+  }, [tursoProviders, baseUrl]);
 
   const isOAuth = isOAuthProtocol(protocol);
 
@@ -320,6 +358,9 @@ export const UpstreamModal = React.memo(function UpstreamModal({
   const [keySearch, setKeySearch] = useState('');
   const deferredKeySearch = useDeferredValue(keySearch);
   const [keyFilter, setKeyFilter] = useState<'all' | 'valid' | 'invalid' | 'rate_limited' | 'unchecked'>('all');
+  const [isImportingDbKeys, setIsImportingDbKeys] = useState(false);
+  const [isDbPickerOpen, setIsDbPickerOpen] = useState(false);
+  const [selectedImportProviderId, setSelectedImportProviderId] = useState('');
 
   // Concurrent health check state
   const [isCheckingAll, setIsCheckingAll] = useState(false);
@@ -342,6 +383,9 @@ export const UpstreamModal = React.memo(function UpstreamModal({
   const [keyStrategy, setKeyStrategy] = useState<'round_robin' | 'least_inflight'>('round_robin');
   const [credentialRps, setCredentialRps] = useState('0');
   const [credentialMaxConcurrent, setCredentialMaxConcurrent] = useState('0');
+  const [keyErrorThreshold, setKeyErrorThreshold] = useState('0');
+  const [keyErrorAction, setKeyErrorAction] = useState<'deactivate' | 'delete' | 'cooldown'>('deactivate');
+  const [keyCooldownSec, setKeyCooldownSec] = useState('300');
 
   // Network & Timeouts tab state
   const [timeoutSec, setTimeoutSec] = useState('30');
@@ -381,6 +425,10 @@ export const UpstreamModal = React.memo(function UpstreamModal({
         setMaxConns(numericDraft(upstreamToEdit.max_conns_per_host, 1500));
         setMaxIdleConns(numericDraft(upstreamToEdit.max_idle_conns_per_host, 1000));
         setAllowInsecure(Boolean(upstreamToEdit.allow_insecure));
+        setProviderId(upstreamToEdit.provider_id != null ? String(upstreamToEdit.provider_id) : '');
+        setKeyErrorThreshold(numericDraft(upstreamToEdit.key_error_threshold, 0));
+        setKeyErrorAction((upstreamToEdit.key_error_action as 'deactivate' | 'delete' | 'cooldown') || 'deactivate');
+        setKeyCooldownSec(numericDraft(upstreamToEdit.key_cooldown_duration_ms != null ? Math.round(upstreamToEdit.key_cooldown_duration_ms / 1000) : null, 300));
 
         // Format extra headers
         if (upstreamToEdit.extra_headers) {
@@ -465,6 +513,10 @@ export const UpstreamModal = React.memo(function UpstreamModal({
         setExtraHeaders([]);
         setKeys([]);
         setBoundAccounts([]);
+        setProviderId('');
+        setKeyErrorThreshold('0');
+        setKeyErrorAction('deactivate');
+        setKeyCooldownSec('300');
         setActiveTab('general');
       }
 
@@ -528,6 +580,137 @@ export const UpstreamModal = React.memo(function UpstreamModal({
       });
     },
     [uniqueBulkKeys, name, keys.length, addToast]
+  );
+
+  // -------------------------------------------------------------
+  // Import Keys from Turso Database Handler
+  // -------------------------------------------------------------
+  const handleImportKeysFromDatabase = useCallback(
+    async (targetProviderId?: number) => {
+      if (!isTursoConfigured) {
+        addToast({
+          title: 'Database Not Configured',
+          message: 'Turso centralized database credentials have not been configured in Settings.',
+          type: 'error',
+        });
+        return;
+      }
+
+      // If no target provider ID specified:
+      let effectiveProviderId: number | undefined = targetProviderId;
+      if (!effectiveProviderId) {
+        if (providerId.trim() !== '') {
+          const parsed = parseInt(providerId, 10);
+          if (!isNaN(parsed) && parsed > 0) {
+            effectiveProviderId = parsed;
+          }
+        }
+      }
+
+      // If still not determined:
+      if (!effectiveProviderId) {
+        if (tursoProviders.length === 0) {
+          addToast({
+            title: 'No Providers Found',
+            message: 'No Harvester providers were found in the Turso database.',
+            type: 'info',
+          });
+          return;
+        }
+        if (tursoProviders.length === 1) {
+          effectiveProviderId = tursoProviders[0].id;
+          setProviderId(String(tursoProviders[0].id));
+          if (tursoProviders[0].base_url && (!baseUrl || baseUrl === 'https://api.openai.com/v1')) {
+            setBaseUrl(tursoProviders[0].base_url);
+          }
+        } else {
+          // Open picker modal
+          setSelectedImportProviderId(tursoProviders[0] ? String(tursoProviders[0].id) : '');
+          setIsDbPickerOpen(true);
+          return;
+        }
+      }
+
+      setIsImportingDbKeys(true);
+      try {
+        const res = await fetchTursoProviderKeys(effectiveProviderId, adminToken);
+        const incoming = res.keys || [];
+        if (incoming.length === 0) {
+          addToast({
+            title: 'No Active Keys',
+            message: 'No active keys found for this provider in the Turso database.',
+            type: 'info',
+          });
+          setIsDbPickerOpen(false);
+          return;
+        }
+
+        // Deduplicate against existing keys in form state
+        const existingSecrets = new Set(keys.map((k) => k.secret.trim()));
+        const newValidKeys = incoming.filter(
+          (k) => k.api_key && k.api_key.trim() && !existingSecrets.has(k.api_key.trim())
+        );
+        const duplicatesCount = incoming.length - newValidKeys.length;
+
+        if (newValidKeys.length === 0) {
+          addToast({
+            title: 'Keys Already Imported',
+            message: `All ${incoming.length} key(s) from this provider are already present in the credential pool.`,
+            type: 'info',
+          });
+          setIsDbPickerOpen(false);
+          return;
+        }
+
+        const prefix = name.trim() || 'upstream';
+        const startIndex = keys.length;
+
+        const newItems: KeyItem[] = newValidKeys.map((item, idx) => ({
+          id: `turso-${item.id}-${Date.now()}-${idx}`,
+          ref: `${prefix}-key-${startIndex + idx + 1}`,
+          secret: item.api_key.trim(),
+          status: 'idle',
+        }));
+
+        setKeys((prev) => [...prev, ...newItems]);
+        setIsDbPickerOpen(false);
+
+        // Update providerId and baseUrl if not yet set
+        if (!providerId && effectiveProviderId) {
+          setProviderId(String(effectiveProviderId));
+          const prov = tursoProviders.find((p) => p.id === effectiveProviderId);
+          if (prov && prov.base_url && (!baseUrl || baseUrl === 'https://api.openai.com/v1')) {
+            setBaseUrl(prov.base_url);
+          }
+        }
+
+        addToast({
+          title: 'Keys Imported from Database',
+          message: `Imported ${newItems.length} active key(s) from Turso database${
+            duplicatesCount > 0 ? ` (${duplicatesCount} duplicate(s) skipped)` : ''
+          }.`,
+          type: 'success',
+        });
+      } catch (err) {
+        addToast({
+          title: 'Database Import Failed',
+          message: err instanceof Error ? err.message : 'Failed to retrieve keys from database',
+          type: 'error',
+        });
+      } finally {
+        setIsImportingDbKeys(false);
+      }
+    },
+    [
+      isTursoConfigured,
+      providerId,
+      tursoProviders,
+      adminToken,
+      keys,
+      name,
+      baseUrl,
+      addToast,
+    ]
   );
 
   // -------------------------------------------------------------
@@ -1041,6 +1224,9 @@ export const UpstreamModal = React.memo(function UpstreamModal({
     const streamTimeoutMs = parseDraftNumber(streamTimeoutSec);
     const maxConnsValue = parseDraftNumber(maxConns);
     const maxIdleConnsValue = parseDraftNumber(maxIdleConns);
+    const parsedProviderId = parseDraftNumber(providerId);
+    const parsedKeyErrorThreshold = parseDraftNumber(keyErrorThreshold);
+    const parsedKeyCooldownSec = parseDraftNumber(keyCooldownSec);
 
     let poolDTO: CredentialKeyDTO[] = [];
     let apiKeysList: string[] = [];
@@ -1067,6 +1253,7 @@ export const UpstreamModal = React.memo(function UpstreamModal({
       protocol,
       base_url: finalBaseUrl,
       base_urls: isOAuth ? [] : baseUrls.filter(Boolean),
+      provider_id: parsedProviderId === null ? null : Math.trunc(parsedProviderId),
       key_strategy: keyStrategy,
       api_key: apiKeysList[0] || '',
       api_keys: apiKeysList,
@@ -1074,6 +1261,11 @@ export const UpstreamModal = React.memo(function UpstreamModal({
       credential_pool: poolDTO,
       credential_rps: credentialRpsLimit,
       credential_max_concurrent: credentialMaxConcurrentLimit,
+      key_error_threshold: parsedKeyErrorThreshold === null || parsedKeyErrorThreshold <= 0 ? 0 : Math.trunc(parsedKeyErrorThreshold),
+      key_error_action: keyErrorAction,
+      key_cooldown_duration_ms: keyErrorAction === 'cooldown' && parsedKeyCooldownSec !== null && parsedKeyCooldownSec > 0
+        ? Math.round(parsedKeyCooldownSec * 1000)
+        : 300000,
       timeout_ms: timeoutMs === null ? null : Math.round(timeoutMs * 1000),
       stream_idle_timeout_ms: streamTimeoutMs === null ? null : Math.round(streamTimeoutMs * 1000),
       idle_timeout_ms: idleTimeoutSec * 1000,
@@ -1087,13 +1279,7 @@ export const UpstreamModal = React.memo(function UpstreamModal({
     addOrUpdateUpstream(updated);
 
     // Synchronize to Go backend
-    const currentSettings = {
-      upstreams: useAppStore.getState().upstreams,
-      models: useAppStore.getState().models,
-      tenants: useAppStore.getState().tenants,
-      combos: useAppStore.getState().combos,
-    };
-    saveMutation.mutate(currentSettings);
+    saveMutation.mutate(buildSettingsPayload());
 
     onClose();
   };
@@ -1315,6 +1501,62 @@ export const UpstreamModal = React.memo(function UpstreamModal({
                 </span>
               </div>
 
+              {/* Turso Harvester Provider Dropdown */}
+              {!isOAuth && (
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-neutral-400 font-medium">Turso Harvester Provider</label>
+                    <span
+                      className={cn(
+                        'text-[10px] font-mono',
+                        isTursoConfigured ? 'text-emerald-400' : 'text-neutral-500'
+                      )}
+                    >
+                      {isLoadingProviders
+                        ? 'SYNCING...'
+                        : isTursoConfigured
+                        ? 'CENTRALIZED DB'
+                        : 'NOT CONFIGURED'}
+                    </span>
+                  </div>
+                  {isTursoConfigured ? (
+                    <select
+                      value={providerId || ''}
+                      onChange={handleProviderSelect}
+                      disabled={isLoadingProviders}
+                      className="w-full px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] text-neutral-200 font-mono text-xs focus:outline-none focus:border-white/20"
+                    >
+                      <option value="" className="bg-[#090b10]">
+                        {isLoadingProviders
+                          ? 'Loading providers from Turso...'
+                          : tursoProviders.length === 0
+                          ? '-- Standalone Upstream (0 providers in Turso) --'
+                          : '-- Not connected (Standalone Upstream) --'}
+                      </option>
+                      {tursoProviders.map((p) => (
+                        <option key={p.id} value={String(p.id)} className="bg-[#090b10]">
+                          {p.name} ({p.active_keys} active keys) — {p.base_url || 'no url'}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <select
+                      disabled
+                      className="w-full px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] text-neutral-500 font-mono text-xs cursor-not-allowed opacity-60"
+                    >
+                      <option className="bg-[#090b10]">
+                        Turso database is not configured (set it up in the Settings menu)
+                      </option>
+                    </select>
+                  )}
+                  <span className="text-[10px] text-neutral-500">
+                    {isTursoConfigured
+                      ? 'Select a Turso provider to load all its active API keys automatically, without manual copy-paste.'
+                      : 'Configure the Turso database credentials on the Settings page to enable automatic provider loading.'}
+                  </span>
+                </div>
+              )}
+
               {/* Informational failover hint */}
               {!isOAuth && (
                 <div className="pt-2 border-t border-white/[0.04] text-[11px] text-neutral-500">
@@ -1528,11 +1770,32 @@ export const UpstreamModal = React.memo(function UpstreamModal({
                   </div>
                   <span className="text-[10px] text-neutral-500">
                     Strategy: <strong className="font-medium text-neutral-400">{keyStrategy}</strong> · Dynamic 429 cooldown & 401 revocation
+                    {parseDraftNumber(keyErrorThreshold) ? (
+                      <> · Policy: <span className="text-amber-400 font-medium">{keyErrorAction} after {keyErrorThreshold} fails</span></>
+                    ) : null}
                   </span>
                 </div>
 
                 {/* Batch Action Buttons */}
                 <div className="flex items-center gap-2 flex-wrap">
+                  <Button
+                    type="button"
+                    variant="minimal"
+                    size="sm"
+                    onClick={() => handleImportKeysFromDatabase()}
+                    disabled={isImportingDbKeys || !isTursoConfigured}
+                    title={!isTursoConfigured ? 'Turso database is not configured in Settings' : undefined}
+                    leftIcon={
+                      isImportingDbKeys ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-neutral-400" />
+                      ) : (
+                        <Database className="w-3.5 h-3.5 text-neutral-400" />
+                      )
+                    }
+                  >
+                    {isImportingDbKeys ? 'Importing...' : 'Import from Database'}
+                  </Button>
+
                   <Button
                     type="button"
                     variant="minimal"
@@ -2111,7 +2374,110 @@ export const UpstreamModal = React.memo(function UpstreamModal({
                 </div>
               ) : null}
 
-              {/* 4. 2-Layer Resilience Architecture */}
+              {/* 4. Key Error Resilience Policy */}
+              <div className="space-y-3 pt-4 border-t border-white/[0.06]">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h4 className="text-white font-medium text-xs tracking-tight flex items-center gap-2">
+                      <span>Consecutive Key Error Resilience Policy</span>
+                      {parseDraftNumber(keyErrorThreshold) ? (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                          Active ({keyErrorAction} after {keyErrorThreshold} fails)
+                        </span>
+                      ) : (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/[0.04] text-neutral-500 border border-white/[0.06]">
+                          Disabled
+                        </span>
+                      )}
+                    </h4>
+                    <p className="text-[10px] text-neutral-500">
+                      Protects the upstream pool by automatically taking action when an individual key encounters N consecutive credential or quota errors (429, 401, 402, 403). Healthy 200 OK responses automatically reset the counter.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
+                  {/* Error Threshold */}
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-neutral-400 font-medium">Consecutive Error Threshold</label>
+                    <input
+                      type="number"
+                      min={0}
+                      value={keyErrorThreshold}
+                      onChange={(e) => setKeyErrorThreshold(e.target.value)}
+                      placeholder="0 = disabled (e.g. 3 or 5)"
+                      className="w-full px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] text-white font-mono text-xs focus:outline-none focus:border-white/20"
+                    />
+                    <span className="text-[10px] text-neutral-500">
+                      Consecutive failures before action triggers (0 = disabled). Recommended: 3 to 5.
+                    </span>
+                  </div>
+
+                  {/* Action on Threshold Reached */}
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-neutral-400 font-medium">Action on Threshold Reached</label>
+                    <select
+                      value={keyErrorAction}
+                      onChange={(e) => setKeyErrorAction(e.target.value as 'deactivate' | 'delete' | 'cooldown')}
+                      className="w-full px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] text-neutral-200 font-mono text-xs focus:outline-none focus:border-white/20"
+                    >
+                      <option value="deactivate" className="bg-[#090b10]">
+                        Deactivate Key (safe for subscription accounts)
+                      </option>
+                      <option value="delete" className="bg-[#090b10]">
+                        Delete Permanently (best for trial/disposable accounts)
+                      </option>
+                      <option value="cooldown" className="bg-[#090b10]">
+                        Temporary Cooldown
+                      </option>
+                    </select>
+                    <span className="text-[10px] text-neutral-500">
+                      {keyErrorAction === 'deactivate' &&
+                        'Key is deactivated in memory and marked inactive in database (is_active = 0). Preserves credentials for subscription renewals.'}
+                      {keyErrorAction === 'delete' &&
+                        'Key is permanently purged from memory and deleted from database (DELETE FROM api_keys). Ideal for free trial accounts.'}
+                      {keyErrorAction === 'cooldown' &&
+                        'Key is placed on temporary cooldown for the set duration without modifying database state.'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Cooldown duration input if action is cooldown */}
+                {keyErrorAction === 'cooldown' && (
+                  <div className="flex flex-col gap-1.5 pt-1">
+                    <label className="text-neutral-400 font-medium">Cooldown Duration (Seconds)</label>
+                    <input
+                      type="number"
+                      min={10}
+                      step={10}
+                      value={keyCooldownSec}
+                      onChange={(e) => setKeyCooldownSec(e.target.value)}
+                      placeholder="300"
+                      className="w-full md:w-1/2 px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] text-white font-mono text-xs focus:outline-none focus:border-white/20"
+                    />
+                    <span className="text-[10px] text-neutral-500">
+                      Seconds to pause traffic to the key before resetting the counter (default 300s = 5 minutes).
+                    </span>
+                  </div>
+                )}
+
+                {isTursoConfigured ? (
+                  <div className="p-2.5 rounded-lg bg-emerald-500/5 border border-emerald-500/20 text-[10px] text-emerald-400/90 flex items-center gap-2">
+                    <Database className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                    <span>
+                      <strong>Turso Centralized DB Connected:</strong> Key state changes will automatically propagate to local SQLite replica and push to cloud asynchronously.
+                    </span>
+                  </div>
+                ) : (
+                  <div className="p-2.5 rounded-lg bg-white/[0.02] border border-white/[0.06] text-[10px] text-neutral-400 flex items-center gap-2">
+                    <span>
+                      Turso DB is not configured; key actions will apply locally to active memory and runtime configuration.
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              {/* 5. 2-Layer Resilience Architecture */}
               <div className="p-3.5 rounded-lg border border-white/[0.06] bg-white/[0.015] text-xs font-mono space-y-2 pt-4 border-t border-white/[0.06]">
                 <div className="text-neutral-300 font-medium text-[11px] tracking-tight">
                   2-Layer Resilience & Fault Isolation Architecture
@@ -2315,6 +2681,64 @@ export const UpstreamModal = React.memo(function UpstreamModal({
         provider={protocol}
         onSuccess={handleNewAccountConnected}
       />
+
+      <Modal
+        isOpen={isDbPickerOpen}
+        onClose={() => setIsDbPickerOpen(false)}
+        title={
+          <div className="flex items-center gap-2">
+            <Database className="w-4 h-4 text-emerald-400" />
+            <span>Import Keys from Database</span>
+          </div>
+        }
+        description="Select a Harvester provider to import active keys from Turso database."
+        size="sm"
+      >
+        <div className="space-y-4 pt-1 font-mono text-xs">
+          <div className="flex flex-col gap-1.5">
+            <label className="text-neutral-400 font-medium">Turso Provider</label>
+            <select
+              value={selectedImportProviderId}
+              onChange={(e) => setSelectedImportProviderId(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg bg-transparent border border-white/[0.08] text-neutral-200 font-mono text-xs focus:outline-none focus:border-white/20"
+            >
+              <option value="" className="bg-[#090b10]">-- Select Provider --</option>
+              {tursoProviders.map((p) => (
+                <option key={p.id} value={String(p.id)} className="bg-[#090b10]">
+                  {p.name} ({p.active_keys} active keys)
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-3 border-t border-white/[0.04]">
+            <Button
+              type="button"
+              variant="minimal"
+              size="sm"
+              onClick={() => setIsDbPickerOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="minimal"
+              size="sm"
+              disabled={!selectedImportProviderId || isImportingDbKeys}
+              isLoading={isImportingDbKeys}
+              onClick={() => {
+                const pid = parseInt(selectedImportProviderId, 10);
+                if (!isNaN(pid) && pid > 0) {
+                  void handleImportKeysFromDatabase(pid);
+                }
+              }}
+              leftIcon={<Database className="w-3.5 h-3.5 text-neutral-400" />}
+            >
+              Import Keys
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </Modal>
   );
 });

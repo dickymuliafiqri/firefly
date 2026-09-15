@@ -493,3 +493,82 @@ func TestUpstreamCheck_Model_Antigravity(t *testing.T) {
 	}
 }
 
+func TestUpstreamCheck_KeyRefResolutionFromSnapshot(t *testing.T) {
+	var receivedAuthHeader string
+	var receivedMaxTokens float64
+
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedAuthHeader = r.Header.Get("Authorization")
+
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if mt, ok := body["max_tokens"].(float64); ok {
+			receivedMaxTokens = mt
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-123","choices":[{"message":{"role":"assistant","content":"pong"}}]}`))
+	}))
+	defer mockServer.Close()
+
+	// Build snapshot with an upstream containing a KeyRing
+	keySlot := &domain.KeySlot{
+		Ref:    "test-up-key-1",
+		Secret: "sk-real-secret-12345",
+	}
+	up := &domain.Upstream{
+		Name:     "test-up",
+		Protocol: domain.ProtocolOpenAI,
+		BaseURL:  mockServer.URL,
+		KeyRing:  domain.NewKeyRing(domain.KeyStrategyRoundRobin, []*domain.KeySlot{keySlot}),
+	}
+	snap := domain.NewCatalogSnapshot(
+		1,
+		map[string]*domain.Upstream{"test-up": up},
+		[]string{"test-up"},
+		map[string]*domain.ModelEntry{},
+		nil,
+		map[string]*domain.Tenant{},
+		nil,
+	)
+
+	deps := RouterDeps{Snapshots: fakeProvider{snap}}
+	s := New(Config{Addr: "0.0.0.0:8080"}, deps, context.Background(), nil)
+
+	// Caller specifies existing upstream Name and KeyRef, but empty or masked APIKey
+	payload := UpstreamCheckRequest{
+		Name:      "test-up",
+		KeyRef:    "test-up-key-1",
+		APIKey:    "",
+		Model:     "gpt-4o",
+		TimeoutMs: 5000,
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/upstreams/check", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	var res UpstreamCheckResponse
+	if err := json.NewDecoder(w.Body).Decode(&res); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if !res.Healthy {
+		t.Fatalf("expected healthy=true, got false: %s", res.Message)
+	}
+
+	if receivedAuthHeader != "Bearer sk-real-secret-12345" {
+		t.Errorf("expected mock server to receive unmasked secret, got %q", receivedAuthHeader)
+	}
+
+	if receivedMaxTokens != 10 {
+		t.Errorf("expected max_tokens = 10, got %v", receivedMaxTokens)
+	}
+}
+
+

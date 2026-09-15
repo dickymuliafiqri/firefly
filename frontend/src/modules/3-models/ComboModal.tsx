@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import type { ComboDTO } from '@/services/schema';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
-import { useModels, useCombos, useStoreActions, useAppStore } from '@/core/state/store';
+import { useModels, useCombos, useStoreActions, buildSettingsPayload } from '@/core/state/store';
 import { useSaveSettingsMutation } from '@/services/api';
 import { Trash2, ArrowUp, ArrowDown, Check, Scale, Shuffle, ArrowRight, ShieldAlert } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -113,13 +113,7 @@ export const ComboModal = React.memo(function ComboModal({
 
     addOrUpdateCombo(updated);
 
-    const currentSettings = {
-      upstreams: useAppStore.getState().upstreams,
-      models: useAppStore.getState().models,
-      tenants: useAppStore.getState().tenants,
-      combos: useAppStore.getState().combos,
-    };
-    saveMutation.mutate(currentSettings);
+    saveMutation.mutate(buildSettingsPayload());
 
     addToast({
       title: comboToEdit ? 'Combo Updated' : 'Combo Created',

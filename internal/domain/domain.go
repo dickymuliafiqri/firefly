@@ -52,13 +52,15 @@ const (
 // KeySlot represents one API key/credential within a KeyRing pool.
 // It tracks in-flight concurrency and cooldown status atomically.
 type KeySlot struct {
-	Ref           string
-	Secret        string // Resolved secret plaintext from ENV
-	RPS           float64
-	MaxConcurrent int
-	Inflight      atomic.Int64
-	CooldownUntil atomic.Int64 // Unix nanoseconds timestamp
-	Revoked       atomic.Bool
+	Ref               string
+	APIKeyID          int64 // Database row ID in api_keys (if loaded from Turso)
+	Secret            string // Resolved secret plaintext from ENV
+	RPS               float64
+	MaxConcurrent     int
+	Inflight          atomic.Int64
+	CooldownUntil     atomic.Int64 // Unix nanoseconds timestamp
+	Revoked           atomic.Bool
+	ConsecutiveErrors atomic.Int64
 }
 
 // String implements fmt.Stringer to ensure secrets are never printed.
@@ -66,8 +68,8 @@ func (ks *KeySlot) String() string {
 	if ks == nil {
 		return "<nil>"
 	}
-	return fmt.Sprintf("KeySlot{Ref:%s, RPS:%.2f, MaxConcurrent:%d, Inflight:%d, Revoked:%t}",
-		ks.Ref, ks.RPS, ks.MaxConcurrent, ks.Inflight.Load(), ks.Revoked.Load())
+	return fmt.Sprintf("KeySlot{Ref:%s, RPS:%.2f, MaxConcurrent:%d, Inflight:%d, Revoked:%t, ConsecutiveErrors:%d}",
+		ks.Ref, ks.RPS, ks.MaxConcurrent, ks.Inflight.Load(), ks.Revoked.Load(), ks.ConsecutiveErrors.Load())
 }
 
 // Format implements fmt.Formatter to mask ks.Secret for all verbs (%v, %+v, %#v, %s, %q).
@@ -97,20 +99,24 @@ func (ks *KeySlot) MarshalJSON() ([]byte, error) {
 		return []byte("null"), nil
 	}
 	type keySlotSafe struct {
-		Ref           string  `json:"ref"`
-		RPS           float64 `json:"rps,omitempty"`
-		MaxConcurrent int     `json:"max_concurrent,omitempty"`
-		Inflight      int64   `json:"inflight"`
-		CooldownUntil int64   `json:"cooldown_until,omitempty"`
-		Revoked       bool    `json:"revoked"`
+		Ref               string  `json:"ref"`
+		APIKeyID          int64   `json:"api_key_id,omitempty"`
+		RPS               float64 `json:"rps,omitempty"`
+		MaxConcurrent     int     `json:"max_concurrent,omitempty"`
+		Inflight          int64   `json:"inflight"`
+		CooldownUntil     int64   `json:"cooldown_until,omitempty"`
+		Revoked           bool    `json:"revoked"`
+		ConsecutiveErrors int64   `json:"consecutive_errors,omitempty"`
 	}
 	return json.Marshal(keySlotSafe{
-		Ref:           ks.Ref,
-		RPS:           ks.RPS,
-		MaxConcurrent: ks.MaxConcurrent,
-		Inflight:      ks.Inflight.Load(),
-		CooldownUntil: ks.CooldownUntil.Load(),
-		Revoked:       ks.Revoked.Load(),
+		Ref:               ks.Ref,
+		APIKeyID:          ks.APIKeyID,
+		RPS:               ks.RPS,
+		MaxConcurrent:     ks.MaxConcurrent,
+		Inflight:          ks.Inflight.Load(),
+		CooldownUntil:     ks.CooldownUntil.Load(),
+		Revoked:           ks.Revoked.Load(),
+		ConsecutiveErrors: ks.ConsecutiveErrors.Load(),
 	})
 }
 
@@ -328,6 +334,15 @@ type Upstream struct {
 	CredentialMaxConcurrent int
 	Disabled                bool
 	Inflight                atomic.Int64
+
+	// KeyErrorThreshold is the number of consecutive 4xx/quota errors before
+	// triggering KeyErrorAction on an individual key slot. 0 = disabled.
+	KeyErrorThreshold int
+	// KeyErrorAction defines what happens when KeyErrorThreshold is reached:
+	// "deactivate" (default), "delete", or "cooldown".
+	KeyErrorAction string
+	// KeyCooldownDurationMs is the cooldown duration in ms when KeyErrorAction is "cooldown".
+	KeyCooldownDurationMs int
 }
 
 // RoutingStrategy dictates how requests for a model are distributed across candidate upstreams.

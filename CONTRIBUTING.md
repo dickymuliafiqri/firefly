@@ -20,8 +20,8 @@ To build and test Firefly locally, ensure you have:
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/dickymuliafiqri/gorouter.git
-cd gorouter
+git clone https://github.com/dickymuliafiqri/firefly.git
+cd firefly
 
 # 2. Build the unified single-binary with embedded frontend
 make build
@@ -41,7 +41,7 @@ make dev
 ## 3. Repository Architecture & Layout
 
 ```
-gorouter/
+firefly/
 ├── cmd/
 │   ├── firefly/          # Main application daemon entrypoint
 │   └── loadtest/         # Standalone high-concurrency CLI benchmark tool
@@ -64,7 +64,8 @@ gorouter/
 │   ├── ports/            # Go interface contracts (UpstreamAdapter, OAuthProvider, TokenStore)
 │   ├── registry/         # Atomic snapshot store (atomic.Pointer[CatalogSnapshot])
 │   ├── server/           # HTTP mux routing, forwardEndpoint, autotls, and dashboard SPA
-│   ├── upstream/         # HTTP client pool, KeyRing (429/401 cooldown), & Breakers
+│   ├── turso/            # Optional Turso/libSQL catalog & settings store, syncer, usage flusher
+│   ├── upstream/         # HTTP client pool, KeyRing (429/401 cooldown), Breakers, & shared attempt engine
 │   └── watch/            # File watcher & atomic configuration hot-reloading
 ├── docs/                 # Detailed production & load testing documentation
 ├── install.sh            # Universal one-line installer for Linux distributions
@@ -82,6 +83,7 @@ Every contributor and AI coding agent **must strictly follow** these core rules:
 2. **Strict Separation Between Layer 1 (Key/4xx) and Layer 2 (Host/5xx) Errors:**
    - Status 429 and 401 indicate credential or quota limits handled by `KeyRing` cooldown/failover.
    - Only network transport failures and 5xx status codes trigger the upstream `Breaker`. 4xx errors **must never** trip circuit breakers.
+   - This is enforced centrally by `upstream.ProcessAttemptOutcome`; adapters must call it rather than re-implementing breaker/failover logic.
 3. **Fail-Closed & Typed-Nil Interface Safety (`httpx.IsNil`):**
    Always use `httpx.IsNil(v)` at dependency boundaries to prevent typed-nil dereference panics.
 4. **Buffer Pooling Discipline (`sync.Pool`):**

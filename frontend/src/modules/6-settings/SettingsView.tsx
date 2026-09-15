@@ -23,10 +23,11 @@ import {
   useAppStore,
   useStoreActions,
 } from '@/core/state/store';
-import { useSaveSettingsMutation, useSettingsQuery } from '@/services/api';
+import { useQueryClient } from '@tanstack/react-query';
+import { useSaveSettingsMutation, useSettingsQuery, useTestTursoMutation } from '@/services/api';
 import { RawJsonEditor } from './RawJsonEditor';
 import { DiffModal } from './DiffModal';
-import type { AutoTLSDTO, SettingsDTO } from '@/services/schema';
+import type { AutoTLSDTO, SettingsDTO, TursoDTO } from '@/services/schema';
 import { cn } from '@/lib/utils';
 
 /**
@@ -49,6 +50,7 @@ export default React.memo(function SettingsView() {
   const tenants = useTenants();
   const { logout, addToast, updatePassword } = useStoreActions();
 
+  const queryClient = useQueryClient();
   const { data: serverSettings, refetch, isFetching } = useSettingsQuery();
   const saveMutation = useSaveSettingsMutation();
 
@@ -62,6 +64,13 @@ export default React.memo(function SettingsView() {
   const [isNewPasswordMasked, setIsNewPasswordMasked] = useState(true);
   const [isUpdatingPassword, startPasswordTransition] = useTransition();
   const [tlsDraft, setTlsDraft] = useState<AutoTLSDTO>({ enabled: false, domain: '', email: '' });
+  const [tursoDraft, setTursoDraft] = useState<TursoDTO>({
+    database_url: '',
+    auth_token: '',
+    local_path: 'data/firefly.db',
+  });
+  const [isTursoTokenMasked, setIsTursoTokenMasked] = useState(true);
+  const testTursoMutation = useTestTursoMutation();
 
   // Generate baseline JSON from current state
   const serverJson = useMemo(() => {
@@ -71,6 +80,7 @@ export default React.memo(function SettingsView() {
       tenants: serverSettings?.tenants || tenants,
       combos: serverSettings?.combos || combos,
       auto_tls: serverSettings?.auto_tls,
+      turso: serverSettings?.turso,
     };
     return JSON.stringify(config, null, 2);
   }, [serverSettings, upstreams, models, tenants, combos]);
@@ -92,6 +102,17 @@ export default React.memo(function SettingsView() {
       email: tls?.email ?? '',
     });
   }, [serverSettings?.auto_tls]);
+
+  useEffect(() => {
+    const t = serverSettings?.turso;
+    if (t) {
+      setTursoDraft({
+        database_url: t.database_url || '',
+        auth_token: t.auth_token || '',
+        local_path: t.local_path || 'data/firefly.db',
+      });
+    }
+  }, [serverSettings?.turso]);
 
   // Save admin token to store & session storage
   const handleSaveToken = useCallback(() => {
@@ -127,6 +148,80 @@ export default React.memo(function SettingsView() {
       onSuccess: () => { void refetch(); },
     });
   }, [tlsDraft, addToast, serverSettings, upstreams, models, tenants, combos, saveMutation, refetch]);
+
+  // Save Turso database credentials
+  const handleSaveTurso = useCallback(() => {
+    const turso: TursoDTO = {
+      database_url: tursoDraft.database_url?.trim(),
+      auth_token: tursoDraft.auth_token?.trim(),
+      local_path: tursoDraft.local_path?.trim() || 'data/firefly.db',
+    };
+    if (!turso.database_url) {
+      addToast({
+        title: 'Validation Error',
+        message: 'Turso Database URL is required.',
+        type: 'error',
+      });
+      return;
+    }
+    saveMutation.mutate({
+      upstreams: serverSettings?.upstreams || upstreams,
+      models: serverSettings?.models || models,
+      tenants: serverSettings?.tenants || tenants,
+      combos: serverSettings?.combos || combos,
+      auto_tls: serverSettings?.auto_tls,
+      turso,
+    }, {
+      onSuccess: () => {
+        void refetch();
+        void queryClient.invalidateQueries({ queryKey: ['turso'] });
+        void queryClient.invalidateQueries({ queryKey: ['settings'] });
+        void queryClient.refetchQueries({ queryKey: ['turso', 'providers'] });
+        addToast({
+          title: 'Turso Credentials Saved',
+          message: 'Database configuration successfully saved and updated.',
+          type: 'success',
+        });
+      },
+    });
+  }, [tursoDraft, addToast, serverSettings, upstreams, models, tenants, combos, saveMutation, refetch, queryClient]);
+
+  // Test Turso database connection probe
+  const handleTestTurso = useCallback(async () => {
+    if (!tursoDraft.database_url) {
+      addToast({
+        title: 'Validation Error',
+        message: 'Turso Database URL is required to test connection.',
+        type: 'error',
+      });
+      return;
+    }
+    try {
+      const res = await testTursoMutation.mutateAsync({
+        database_url: tursoDraft.database_url.trim(),
+        auth_token: tursoDraft.auth_token?.trim(),
+      });
+      if (res.ok) {
+        addToast({
+          title: 'Turso Connection Successful',
+          message: `${res.message} (Latency: ${res.latency_ms ?? 0}ms)`,
+          type: 'success',
+        });
+      } else {
+        addToast({
+          title: 'Turso Connection Failed',
+          message: res.message,
+          type: 'error',
+        });
+      }
+    } catch (err) {
+      addToast({
+        title: 'Connection Test Failed',
+        message: err instanceof Error ? err.message : 'Network error testing Turso connection',
+        type: 'error',
+      });
+    }
+  }, [tursoDraft, testTursoMutation, addToast]);
 
   // Update dashboard access password on backend
   const handleSavePassword = useCallback(() => {
@@ -212,6 +307,8 @@ export default React.memo(function SettingsView() {
       saveMutation.mutate(parsed, {
         onSuccess: () => {
           setIsDiffModalOpen(false);
+          void queryClient.invalidateQueries({ queryKey: ['turso'] });
+          void queryClient.invalidateQueries({ queryKey: ['settings'] });
         },
       });
     } catch (err) {
@@ -221,7 +318,7 @@ export default React.memo(function SettingsView() {
         type: 'error',
       });
     }
-  }, [rawJsonText, saveMutation]);
+  }, [rawJsonText, saveMutation, queryClient]);
 
   // Reset draft to server state
   const handleResetToCurrent = useCallback(() => {
@@ -515,6 +612,112 @@ export default React.memo(function SettingsView() {
               </Button>
             </div>
 
+            {/* Turso Centralized Database Configuration Card */}
+            <div className="p-5 rounded-xl bg-transparent border border-white/[0.06] space-y-4 font-mono text-xs select-none">
+              <div className="flex items-center justify-between pb-3 border-b border-white/[0.04]">
+                <div className="flex items-center gap-2">
+                  <Database className="w-4 h-4 text-neutral-400" />
+                  <h3 className="text-xs font-mono uppercase tracking-wider text-neutral-300 font-medium">
+                    Turso Database Credentials
+                  </h3>
+                </div>
+                {serverSettings?.storage_engine === 'turso' || tursoDraft.database_url ? (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 text-emerald-400 text-[10px]">
+                    <span className="w-1 h-1 rounded-full bg-emerald-400" />
+                    Configured
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border border-white/[0.06] bg-white/[0.02] text-neutral-400 text-[10px]">
+                    Not Configured
+                  </span>
+                )}
+              </div>
+
+              <div className="space-y-3">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-mono text-neutral-400 block">
+                    Database URL (libSQL)
+                  </label>
+                  <input
+                    type="text"
+                    value={tursoDraft.database_url || ''}
+                    onChange={(e) => setTursoDraft((prev) => ({ ...prev, database_url: e.target.value }))}
+                    placeholder="libsql://your-db-name.turso.io"
+                    className="w-full px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] text-white font-mono text-xs focus:outline-none focus:border-white/20"
+                  />
+                  <span className="text-[10px] text-neutral-500 block">
+                    Turso Cloud database URL in the libsql://... format
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-mono text-neutral-400 block">
+                      Auth Token (JWT)
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={isTursoTokenMasked ? 'password' : 'text'}
+                        value={tursoDraft.auth_token || ''}
+                        onChange={(e) => setTursoDraft((prev) => ({ ...prev, auth_token: e.target.value }))}
+                        placeholder="eyJhbGciOi..."
+                        className="w-full px-3 py-1.5 pr-9 rounded-lg bg-transparent border border-white/[0.08] text-white font-mono text-xs focus:outline-none focus:border-white/20"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setIsTursoTokenMasked((m) => !m)}
+                        className="absolute right-2.5 top-2 text-neutral-500 hover:text-white transition-colors cursor-pointer"
+                        title={isTursoTokenMasked ? 'Show token' : 'Hide token'}
+                      >
+                        {isTursoTokenMasked ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-mono text-neutral-400 block">
+                      Local Replica Path
+                    </label>
+                    <input
+                      type="text"
+                      value={tursoDraft.local_path || 'data/firefly.db'}
+                      onChange={(e) => setTursoDraft((prev) => ({ ...prev, local_path: e.target.value }))}
+                      placeholder="data/firefly.db"
+                      className="w-full px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] text-white font-mono text-xs focus:outline-none focus:border-white/20"
+                    />
+                  </div>
+                </div>
+
+                <div className="p-3 rounded-lg bg-transparent border border-white/[0.04] space-y-1 text-[11px] text-neutral-400">
+                  <p className="text-neutral-300 font-medium">Multi-Node Centralized Sync</p>
+                  <p>
+                    Credentials are saved to turso.json to synchronize the routing catalog tables, provider harvester, and telemetry tokens centrally across Firefly nodes.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2 pt-1">
+                  <Button
+                    variant="minimal"
+                    size="sm"
+                    onClick={handleTestTurso}
+                    isLoading={testTursoMutation.isPending}
+                    disabled={testTursoMutation.isPending}
+                  >
+                    Test Connection
+                  </Button>
+                  <Button
+                    variant="minimal"
+                    size="sm"
+                    onClick={handleSaveTurso}
+                    isLoading={saveMutation.isPending}
+                    disabled={saveMutation.isPending}
+                  >
+                    Save Turso Credentials
+                  </Button>
+                </div>
+              </div>
+            </div>
+
             {/* Admission Semaphore & Rate Limit Settings */}
             <div className="p-5 rounded-xl bg-transparent border border-white/[0.06] space-y-4 font-mono text-xs select-none">
               <div className="flex items-center gap-2 pb-3 border-b border-white/[0.04]">
@@ -591,6 +794,12 @@ export default React.memo(function SettingsView() {
               </div>
 
               <div className="space-y-2">
+                <div className="flex items-center justify-between py-1 border-b border-white/[0.04]">
+                  <span className="text-neutral-500">Storage Backend:</span>
+                  <span className="text-neutral-200 font-medium">
+                    {serverSettings?.storage_engine === 'turso' ? 'Turso Centralized DB' : 'Local File System'}
+                  </span>
+                </div>
                 <div className="flex items-center justify-between py-1 border-b border-white/[0.04]">
                   <span className="text-neutral-500">Upstream Hosts:</span>
                   <span className="text-neutral-200 font-medium">{upstreams.length} configured</span>

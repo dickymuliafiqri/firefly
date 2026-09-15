@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useTransition, useCallback } from 'react';
-import { useModels, useCombos, useStoreActions, useAppStore } from '@/core/state/store';
+import { useModels, useCombos, useStoreActions, useAppStore, buildSettingsPayload } from '@/core/state/store';
 import type { ModelDTO, ComboDTO } from '@/services/schema';
 import { ModelCard } from './ModelCard';
 import { ModelModal } from './ModelModal';
@@ -73,13 +73,7 @@ export default function ModelsView() {
       const updated: ModelDTO = { ...target, enabled };
       addOrUpdateModel(updated);
 
-      const currentSettings = {
-        upstreams: useAppStore.getState().upstreams,
-        models: useAppStore.getState().models,
-        tenants: useAppStore.getState().tenants,
-        combos: useAppStore.getState().combos,
-      };
-      saveMutation.mutate(currentSettings);
+      saveMutation.mutate(buildSettingsPayload());
     },
     [models, addOrUpdateModel, saveMutation]
   );
@@ -106,15 +100,33 @@ export default function ModelsView() {
   const handleConfirmDeleteModel = useCallback(() => {
     if (!deletingModel) return;
     const publicName = deletingModel.public_name;
+
+    // Build the payload from a single fresh snapshot of the store so a
+    // concurrent settings poll cannot interleave and hand us a partial catalog.
+    const state = useAppStore.getState();
+    const nextModels = state.models.filter((m) => m.public_name !== publicName);
+
+    // Guard against sending a payload whose upstream list is incomplete relative
+    // to the models we are keeping. A partial upstream list can make the backend
+    // treat still-referenced upstreams as removed. If inconsistent, refuse and
+    // let the next poll reconcile rather than risk a destructive save.
+    const upstreamNames = new Set(state.upstreams.map((u) => u.name));
+    const missingUpstream = nextModels.some((m) => m.upstream && !upstreamNames.has(m.upstream));
+    if (missingUpstream) {
+      addToast({
+        title: 'Delete Deferred',
+        message: 'Catalog is still syncing. Please retry in a moment.',
+        type: 'error',
+      });
+      setDeletingModel(null);
+      return;
+    }
+
     removeModel(publicName);
 
-    const currentSettings = {
-      upstreams: useAppStore.getState().upstreams,
-      models: useAppStore.getState().models.filter((m) => m.public_name !== publicName),
-      tenants: useAppStore.getState().tenants,
-      combos: useAppStore.getState().combos,
-    };
-    saveMutation.mutate(currentSettings);
+    saveMutation.mutate(
+      buildSettingsPayload({ models: nextModels, manage_models: true })
+    );
 
     addToast({
       title: 'Model Route Deleted',
@@ -134,13 +146,7 @@ export default function ModelsView() {
       const updated: ComboDTO = { ...target, enabled };
       addOrUpdateCombo(updated);
 
-      const currentSettings = {
-        upstreams: useAppStore.getState().upstreams,
-        models: useAppStore.getState().models,
-        tenants: useAppStore.getState().tenants,
-        combos: useAppStore.getState().combos,
-      };
-      saveMutation.mutate(currentSettings);
+      saveMutation.mutate(buildSettingsPayload());
     },
     [combos, addOrUpdateCombo, saveMutation]
   );
@@ -167,15 +173,12 @@ export default function ModelsView() {
   const handleConfirmDeleteCombo = useCallback(() => {
     if (!deletingCombo) return;
     const comboName = deletingCombo.name;
+    const nextCombos = useAppStore.getState().combos.filter((c) => c.name !== comboName);
     removeCombo(comboName);
 
-    const currentSettings = {
-      upstreams: useAppStore.getState().upstreams,
-      models: useAppStore.getState().models,
-      tenants: useAppStore.getState().tenants,
-      combos: useAppStore.getState().combos.filter((c) => c.name !== comboName),
-    };
-    saveMutation.mutate(currentSettings);
+    saveMutation.mutate(
+      buildSettingsPayload({ combos: nextCombos, manage_combos: true })
+    );
 
     addToast({
       title: 'Combo Deleted',

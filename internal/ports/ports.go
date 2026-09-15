@@ -85,3 +85,17 @@ type UsageCounter struct {
 	Model         string
 	Requests      int64
 }
+
+// KeyAction represents an automated lifecycle action triggered on a failing key.
+type KeyAction string
+
+const (
+	KeyActionDeactivate KeyAction = "deactivate"
+	KeyActionDelete     KeyAction = "delete"
+	KeyActionCooldown   KeyAction = "cooldown"
+)
+
+// KeyActionNotifier receives automated key lifecycle events triggered by error thresholds.
+type KeyActionNotifier interface {
+	NotifyKeyAction(action KeyAction, upstreamName, ref string, keyID int64, reason string)
+}

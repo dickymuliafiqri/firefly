@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import type { SettingsDTO } from '@/services/schema';
 import { createSettingsSlice, type SettingsSlice } from './settingsSlice';
 import { createTelemetrySlice, type TelemetrySlice } from './telemetrySlice';
 import { createUISlice, type UISlice } from './uiSlice';
@@ -81,6 +82,45 @@ const STORE_ACTIONS = {
 };
 
 export const useStoreActions = () => STORE_ACTIONS;
+
+/**
+ * Overrides for buildSettingsPayload. Any catalog array supplied here replaces
+ * the value taken from the current store snapshot (e.g. a filtered list after a
+ * delete). The manage_* flags mark the corresponding list as authoritative so
+ * the backend honors deletions down to an empty list; omit them for
+ * non-destructive saves.
+ */
+export interface SettingsPayloadOverrides {
+  upstreams?: SettingsDTO['upstreams'];
+  models?: SettingsDTO['models'];
+  tenants?: SettingsDTO['tenants'];
+  combos?: SettingsDTO['combos'];
+  manage_upstreams?: boolean;
+  manage_models?: boolean;
+  manage_combos?: boolean;
+  manage_tenants?: boolean;
+}
+
+/**
+ * Builds a settings payload for PUT /api/settings from a single fresh store
+ * snapshot, so a concurrent settings poll cannot interleave and produce a
+ * partial catalog. Overrides replace individual fields (filtered lists) and set
+ * authoritative manage_* flags. This is the single source of truth for the
+ * payload shape used by every catalog mutation.
+ */
+export function buildSettingsPayload(overrides: SettingsPayloadOverrides = {}): SettingsDTO {
+  const state = useAppStore.getState();
+  return {
+    upstreams: overrides.upstreams ?? state.upstreams,
+    models: overrides.models ?? state.models,
+    tenants: overrides.tenants ?? state.tenants,
+    combos: overrides.combos ?? state.combos,
+    ...(overrides.manage_upstreams !== undefined && { manage_upstreams: overrides.manage_upstreams }),
+    ...(overrides.manage_models !== undefined && { manage_models: overrides.manage_models }),
+    ...(overrides.manage_combos !== undefined && { manage_combos: overrides.manage_combos }),
+    ...(overrides.manage_tenants !== undefined && { manage_tenants: overrides.manage_tenants }),
+  };
+}
 
 // ================= PLAYGROUND SELECTOR HOOKS =================
 

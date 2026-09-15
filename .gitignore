@@ -162,7 +162,11 @@ scratch/
 !.env.example
 
 # ------------------------------------------------------------------------------
-# 9. Additional
+# 9. Additional & Database Files
 # ------------------------------------------------------------------------------
 skill*
 configs/
+data/
+*.db
+*.db-*
+*.db.turso-sync-metadata

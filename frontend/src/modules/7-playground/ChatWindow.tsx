@@ -12,6 +12,7 @@ import {
   Eye,
   EyeOff,
   RotateCcw,
+  Brain,
 } from 'lucide-react';
 import {
   useAdminToken,
@@ -119,8 +120,10 @@ export const ChatWindow = React.memo(function ChatWindow({
 
   // Transient Stream Buffering Ref (Vercel Best Practice: rerender-use-ref-transient-values)
   const streamTextRef = useRef<string>('');
+  const streamReasoningRef = useRef<string>('');
   const abortControllerRef = useRef<AbortController | null>(null);
   const animFrameRef = useRef<number | null>(null);
+  const messagesScrollRef = useRef<HTMLDivElement | null>(null);
 
   const enabledModels = models.filter((m) => m.enabled !== false);
   const enabledCombos = combos.filter((c) => c.enabled !== false);
@@ -222,6 +225,13 @@ export const ChatWindow = React.memo(function ChatWindow({
     };
   }, []);
 
+  // Keep the newest tokens in view as the reply streams in.
+  useEffect(() => {
+    const el = messagesScrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages]);
+
   // Cancel generation
   const handleStop = useCallback(() => {
     if (abortControllerRef.current) {
@@ -271,6 +281,7 @@ export const ChatWindow = React.memo(function ChatWindow({
     setPlaygroundIsGenerating(true);
     onStreamingChange?.(true);
     streamTextRef.current = '';
+    streamReasoningRef.current = '';
 
     const controller = new AbortController();
     abortControllerRef.current = controller;
@@ -281,22 +292,28 @@ export const ChatWindow = React.memo(function ChatWindow({
     let lastChunkTime = startTime;
     const chunkTimings: ChunkTiming[] = [];
 
-    // Schedule throttled flush to React state via requestAnimationFrame (Vercel Best Practice: rerender-use-ref-transient-values)
-    const scheduleFlush = () => {
-      if (animFrameRef.current !== null) return;
-      animFrameRef.current = requestAnimationFrame(() => {
-        setPlaygroundMessages((prev) => {
-          const updated = [...prev];
-          const lastIndex = updated.length - 1;
-          if (lastIndex >= 0 && updated[lastIndex].role === 'assistant') {
-            updated[lastIndex] = {
-              ...updated[lastIndex],
-              content: streamTextRef.current,
-            };
-          }
-          return updated;
-        });
-        animFrameRef.current = null;
+    // Flush the buffered stream text/reasoning into React state. We throttle by
+    // wall-clock time (not requestAnimationFrame) because a tight async read
+    // loop can starve rAF callbacks in some browsers, deferring every visible
+    // update until the stream ends. force=true bypasses the throttle for the
+    // first token and the final flush so the UI updates promptly.
+    let lastFlushAt = 0;
+    const FLUSH_INTERVAL_MS = 33; // ~30fps
+    const flushToState = (force = false) => {
+      const now = performance.now();
+      if (!force && now - lastFlushAt < FLUSH_INTERVAL_MS) return;
+      lastFlushAt = now;
+      setPlaygroundMessages((prev) => {
+        const updated = [...prev];
+        const lastIndex = updated.length - 1;
+        if (lastIndex >= 0 && updated[lastIndex].role === 'assistant') {
+          updated[lastIndex] = {
+            ...updated[lastIndex],
+            content: streamTextRef.current,
+            reasoning: streamReasoningRef.current || undefined,
+          };
+        }
+        return updated;
       });
     };
 
@@ -310,6 +327,10 @@ export const ChatWindow = React.memo(function ChatWindow({
         method: 'POST',
         headers,
         signal: controller.signal,
+        // no-store keeps the streamed response out of the HTTP cache; some
+        // browsers (notably Firefox) otherwise buffer a cacheable body and only
+        // expose it to the reader once complete, defeating incremental rendering.
+        cache: 'no-store',
         body: JSON.stringify({
           model: selectedModel || enabledModels[0]?.public_name || 'gpt-4o',
           messages: nextMessages,
@@ -330,7 +351,9 @@ export const ChatWindow = React.memo(function ChatWindow({
         // Non-streaming response
         const json = await response.json();
         const content = json?.choices?.[0]?.message?.content || '';
+        const reasoning = json?.choices?.[0]?.message?.reasoning_content || '';
         streamTextRef.current = content;
+        streamReasoningRef.current = reasoning;
 
         setPlaygroundMessages((prev) => {
           const updated = [...prev];
@@ -339,6 +362,7 @@ export const ChatWindow = React.memo(function ChatWindow({
             updated[lastIndex] = {
               ...updated[lastIndex],
               content,
+              reasoning: reasoning || undefined,
             };
           }
           return updated;
@@ -356,6 +380,7 @@ export const ChatWindow = React.memo(function ChatWindow({
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
+        let reasoningArrived = false;
 
         while (true) {
           const { done, value } = await reader.read();
@@ -384,7 +409,17 @@ export const ChatWindow = React.memo(function ChatWindow({
 
               try {
                 const parsed = JSON.parse(payload);
-                const deltaContent = parsed.choices?.[0]?.delta?.content;
+                const delta = parsed.choices?.[0]?.delta;
+                const deltaContent = delta?.content;
+                // Reasoning / "thinking" trace: some upstreams (e.g. reasoning
+                // models via CodeBuddy/Antigravity) stream it separately from the
+                // final answer. Accumulate it so the UI can show the model
+                // thinking before/while it writes the reply.
+                const deltaReasoning = delta?.reasoning_content;
+                if (deltaReasoning) {
+                  streamReasoningRef.current += deltaReasoning;
+                  reasoningArrived = true;
+                }
                 if (deltaContent) {
                   batchDeltas.push(deltaContent);
                 }
@@ -443,7 +478,9 @@ export const ChatWindow = React.memo(function ChatWindow({
             }
 
             lastChunkTime = readEnd;
-            scheduleFlush();
+            // Force the very first content flush so the reply appears the moment
+            // the first token arrives, then throttle subsequent flushes.
+            flushToState(chunkCount === K);
 
             if (chunkCount % 3 === 0) {
               window.dispatchEvent(
@@ -470,13 +507,19 @@ export const ChatWindow = React.memo(function ChatWindow({
               currentTps,
               roundedElapsed
             );
+          } else if (reasoningArrived) {
+            // Reasoning tokens arrived without answer content in this batch
+            // (common while the model is still "thinking"). Flush so the
+            // thinking trace streams into the UI live.
+            flushToState(streamReasoningRef.current.length > 0 && !streamTextRef.current);
           }
         }
       }
 
-      // Final state flush
+      // Final state flush (bypass throttle to render the complete reply).
+      flushToState(true);
+      // Cancel any pending animation frame from earlier code paths.
       if (animFrameRef.current !== null) {
-        cancelAnimationFrame(animFrameRef.current);
         animFrameRef.current = null;
       }
       setPlaygroundMessages((prev) => {
@@ -486,6 +529,7 @@ export const ChatWindow = React.memo(function ChatWindow({
           updated[lastIndex] = {
             ...updated[lastIndex],
             content: streamTextRef.current,
+            reasoning: streamReasoningRef.current || undefined,
           };
         }
         return updated;
@@ -693,7 +737,10 @@ export const ChatWindow = React.memo(function ChatWindow({
       </div>
 
       {/* Messages Scroll Area */}
-      <div className="flex-1 min-h-[300px] max-h-[460px] overflow-y-auto space-y-3 p-3 rounded-xl bg-transparent border border-white/[0.06] font-mono text-xs">
+      <div
+        ref={messagesScrollRef}
+        className="flex-1 min-h-[300px] max-h-[460px] overflow-y-auto space-y-3 p-3 rounded-xl bg-transparent border border-white/[0.06] font-mono text-xs"
+      >
         {messages.map((msg, idx) => {
           const isUser = msg.role === 'user';
           const isAssistant = msg.role === 'assistant';
@@ -735,10 +782,34 @@ export const ChatWindow = React.memo(function ChatWindow({
                 <div className="text-[10px] text-neutral-500 font-medium uppercase tracking-wider">
                   {isUser ? 'User Request' : `${selectedModel || 'Assistant'} Response`}
                 </div>
+
+                {/* Reasoning / "thinking" trace, shown above the answer. Open by
+                    default while it is the only thing streaming so the user sees
+                    the model think; collapsible once the answer arrives. */}
+                {isAssistant && msg.reasoning ? (
+                  <details
+                    className="rounded-lg border border-white/[0.06] bg-white/[0.015] mb-1"
+                    open={!msg.content}
+                  >
+                    <summary className="flex items-center gap-1.5 px-2.5 py-1.5 cursor-pointer select-none text-[10px] uppercase tracking-wider text-violet-300/80 hover:text-violet-200">
+                      <Brain className="w-3 h-3" />
+                      <span>Thinking</span>
+                      {isGenerating && !msg.content ? (
+                        <span className="text-neutral-500 normal-case tracking-normal">
+                          (reasoning…)
+                        </span>
+                      ) : null}
+                    </summary>
+                    <div className="px-2.5 pb-2.5 pt-0.5 whitespace-pre-wrap break-words text-[11px] text-neutral-400 italic border-t border-white/[0.04]">
+                      {msg.reasoning}
+                    </div>
+                  </details>
+                ) : null}
+
                 <div className="whitespace-pre-wrap select-text break-words">
                   {msg.content || (isGenerating && isAssistant ? (
                     <span className="inline-flex items-center gap-1 text-neutral-500 text-[11px]">
-                      Waiting for first token...
+                      {msg.reasoning ? 'Thinking…' : 'Waiting for first token...'}
                     </span>
                   ) : null)}
                 </div>

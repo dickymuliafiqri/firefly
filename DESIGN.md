@@ -144,7 +144,8 @@ frontend/
 │   │   ├── 3-models/            # Module 3: Models & Routing Target Catalog
 │   │   ├── 4-tenants/           # Module 4: Tenant Credentials & RPS Gates
 │   │   ├── 5-telemetry/         # Module 5: Real-Time Stream Telemetry & Metrics
-│   │   └── 6-playground/        # Module 6: Interactive Prompt Playground
+│   │   ├── 6-settings/          # Module 6: Settings, Auto-TLS & Turso Configuration
+│   │   └── 7-playground/        # Module 7: Interactive Streaming Prompt Playground
 │   ├── components/ui/           # Reusable UI Elements (GlassCard, Badge, Button, Modal)
 │   ├── services/                # API Client & Adapters
 │   │   ├── api.ts               # Typed fetch / TanStack Query hooks

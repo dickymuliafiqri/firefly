@@ -27,7 +27,7 @@ func run() error {
 	var (
 		concurrency = flag.Int("c", 100, "concurrency level: number of simultaneous requests (e.g. 100 or 1000)")
 		totalReqs   = flag.Int("n", 0, "total requests to dispatch (default: same as concurrency for synchronized burst)")
-		profileName = flag.String("profile", "low", "workload profile: low (rendah), medium (sedang), heavy (berat)")
+		profileName = flag.String("profile", "low", "workload profile: low, medium, or heavy")
 		suite       = flag.Bool("suite", false, "run the complete automated 6-scenario matrix (100 & 1000 requests across low/medium/heavy)")
 		targetURL   = flag.String("url", "http://localhost:8080", "target Firefly gateway base URL")
 		apiKey      = flag.String("key", "sk-gw-demo-000000000000000000000000", "tenant Bearer API key")

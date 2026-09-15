@@ -28,22 +28,51 @@ type oauthFileDTO struct {
 type Store struct {
 	mu          sync.RWMutex
 	dir         string
+	filePath    string
 	connections map[string]*domain.OAuthConnection
 }
 
-// NewStore initializes a Store and loads any existing connections from dir/oauth.json.
-func NewStore(dir string) (*Store, error) {
+func resolvePaths(pathOrDir string) (string, string) {
+	if pathOrDir == "" {
+		return "", ""
+	}
+
+	fi, err := os.Stat(pathOrDir)
+	if err == nil && fi.IsDir() {
+		// Check if pathOrDir contains oauth.json directory (legacy nested layout)
+		subPath := filepath.Join(pathOrDir, FileNameOAuth)
+		subFi, subErr := os.Stat(subPath)
+		if subErr == nil && subFi.IsDir() {
+			return subPath, filepath.Join(subPath, FileNameOAuth)
+		}
+		// If the directory itself is named oauth.json, target is inside it
+		if filepath.Base(pathOrDir) == FileNameOAuth {
+			return pathOrDir, filepath.Join(pathOrDir, FileNameOAuth)
+		}
+		return pathOrDir, subPath
+	}
+
+	if filepath.Ext(pathOrDir) == ".json" {
+		return filepath.Dir(pathOrDir), pathOrDir
+	}
+
+	return pathOrDir, filepath.Join(pathOrDir, FileNameOAuth)
+}
+
+// NewStore initializes a Store and loads any existing connections from dir or file path.
+func NewStore(pathOrDir string) (*Store, error) {
+	dir, filePath := resolvePaths(pathOrDir)
 	s := &Store{
 		dir:         dir,
+		filePath:    filePath,
 		connections: make(map[string]*domain.OAuthConnection),
 	}
 
-	if dir == "" {
+	if s.filePath == "" {
 		return s, nil
 	}
 
-	path := filepath.Join(dir, FileNameOAuth)
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(s.filePath)
 	if errors.Is(err, os.ErrNotExist) {
 		return s, nil
 	}
@@ -133,7 +162,7 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 }
 
 func (s *Store) persistLocked() error {
-	if s.dir == "" {
+	if s.dir == "" || s.filePath == "" {
 		return nil
 	}
 
@@ -171,7 +200,7 @@ func (s *Store) persistLocked() error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close oauth temp file: %w", err)
 	}
-	if err := os.Rename(tmpName, filepath.Join(s.dir, FileNameOAuth)); err != nil {
+	if err := os.Rename(tmpName, s.filePath); err != nil {
 		return fmt.Errorf("replace oauth config: %w", err)
 	}
 

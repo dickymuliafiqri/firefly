@@ -274,3 +274,77 @@ func TestSettingsPreservesAutoTLSWhenCatalogMutationOmitsIt(t *testing.T) {
 		t.Fatalf("TLS configuration was not preserved: %#v", got)
 	}
 }
+
+func TestTursoProvidersConfiguredFlow(t *testing.T) {
+	tmpDir := t.TempDir()
+	reg := registry.New()
+	deps := RouterDeps{
+		Snapshots: reg,
+		Registry:  reg,
+		ConfigDir: tmpDir,
+	}
+	s := New(Config{Addr: "127.0.0.1:0"}, deps, context.Background(), nil)
+
+	// Step 1: Query without credentials -> configured: false
+	req := httptest.NewRequest(http.MethodGet, "/api/turso/providers", nil)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /api/turso/providers status = %d, want 200", w.Code)
+	}
+	var resp struct {
+		Configured bool `json:"configured"`
+		Providers  []any `json:"providers"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Configured {
+		t.Fatalf("expected configured = false, got true")
+	}
+
+	// Step 2: Save Turso credentials via settings
+	settingsUpdate := config.SettingsDTO{
+		Turso: &config.TursoDTO{
+			DatabaseURL: "libsql://test-db.turso.io",
+			AuthToken:   "dummy-token",
+			LocalPath:   filepath.Join(tmpDir, "test.db"),
+		},
+	}
+	body, _ := json.Marshal(settingsUpdate)
+	putReq := httptest.NewRequest(http.MethodPut, "/api/settings", bytes.NewReader(body))
+	putW := httptest.NewRecorder()
+	s.Handler().ServeHTTP(putW, putReq)
+	if putW.Code != http.StatusOK {
+		t.Fatalf("PUT /api/settings status = %d, body = %s", putW.Code, putW.Body.String())
+	}
+
+	// Step 3: Query /api/turso/providers again -> configured: true
+	req2 := httptest.NewRequest(http.MethodGet, "/api/turso/providers", nil)
+	w2 := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("GET /api/turso/providers status = %d, want 200", w2.Code)
+	}
+	var resp2 struct {
+		Configured bool `json:"configured"`
+		Providers  []any `json:"providers"`
+	}
+	if err := json.NewDecoder(w2.Body).Decode(&resp2); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !resp2.Configured {
+		t.Fatalf("expected configured = true after saving credentials, got false")
+	}
+
+	// Step 4: Query /api/turso/providers/1/keys
+	req3 := httptest.NewRequest(http.MethodGet, "/api/turso/providers/1/keys", nil)
+	w3 := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w3, req3)
+	// Even if dummy turso remote is unreachable in test, endpoint responds with 200 or 503
+	if w3.Code != http.StatusOK && w3.Code != http.StatusServiceUnavailable {
+		t.Fatalf("GET /api/turso/providers/1/keys status = %d, want 200 or 503", w3.Code)
+	}
+}
+
+

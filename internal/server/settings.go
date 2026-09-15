@@ -1,17 +1,22 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/dickymuliafiqri/firefly/internal/config"
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/httpx"
 	"github.com/dickymuliafiqri/firefly/internal/openai"
+	"github.com/dickymuliafiqri/firefly/internal/turso"
 )
 
 // handleOptionsSettings serves CORS preflight requests for the settings API.
@@ -50,11 +55,20 @@ func (deps RouterDeps) handleGetSettings(w http.ResponseWriter, r *http.Request)
 
 	snap := deps.currentSnapshot()
 
-	// Try reading directly from config files first if config dir exists
+	// Try reading directly from Turso database first if configured
 	var settings config.SettingsDTO
 	loadedFromDisk := false
 
-	if deps.ConfigDir != "" {
+	if tStore, _ := deps.getTursoStore(r.Context()); tStore != nil {
+		if tSettings, err := tStore.LoadSettings(r.Context()); err == nil && tSettings != nil {
+			if len(tSettings.Upstreams) > 0 || len(tSettings.Models) > 0 || len(tSettings.Tenants) > 0 || len(tSettings.Combos) > 0 {
+				settings = *tSettings
+				loadedFromDisk = true
+			}
+		}
+	}
+
+	if !loadedFromDisk && deps.ConfigDir != "" {
 		src := config.NewFileConfigSource(deps.ConfigDir)
 		if raw, err := src.Load(r.Context()); err == nil {
 			// Only load from disk if the files on disk actually validate with current environment.
@@ -246,6 +260,27 @@ func (deps RouterDeps) handleGetSettings(w http.ResponseWriter, r *http.Request)
 		// will reject a mutation until the configuration can be read safely.
 		settings.AutoTLS = &config.AutoTLSDTO{}
 	}
+
+	if tStore, _ := deps.getTursoStore(r.Context()); tStore != nil {
+		settings.StorageEngine = "turso"
+	} else {
+		settings.StorageEngine = "local"
+	}
+
+	tursoCfg, _ := config.LoadTursoConfig(deps.ConfigDir)
+	if tursoCfg.DatabaseURL == "" && os.Getenv("TURSO_DATABASE_URL") != "" {
+		tursoCfg.DatabaseURL = os.Getenv("TURSO_DATABASE_URL")
+	}
+	if tursoCfg.AuthToken == "" && os.Getenv("TURSO_AUTH_TOKEN") != "" {
+		tursoCfg.AuthToken = os.Getenv("TURSO_AUTH_TOKEN")
+	}
+	if tursoCfg.LocalPath == "" {
+		tursoCfg.LocalPath = "data/firefly.db"
+	}
+	if tursoCfg.AuthToken != "" {
+		tursoCfg.AuthToken = maskSecret(tursoCfg.AuthToken)
+	}
+	settings.Turso = &tursoCfg
 
 	_ = json.NewEncoder(w).Encode(settings)
 }
@@ -443,6 +478,39 @@ func (deps RouterDeps) handleUpdateSettings(w http.ResponseWriter, r *http.Reque
 		tlsApplied = true
 	}
 
+	// Update Turso credentials if provided in payload
+	if payload.Turso != nil {
+		tursoCfg := *payload.Turso
+		if isMasked(tursoCfg.AuthToken) {
+			savedCfg, _ := config.LoadTursoConfig(deps.ConfigDir)
+			if savedCfg.AuthToken != "" {
+				tursoCfg.AuthToken = savedCfg.AuthToken
+			} else {
+				tursoCfg.AuthToken = os.Getenv("TURSO_AUTH_TOKEN")
+			}
+		}
+		if tursoCfg.LocalPath == "" {
+			tursoCfg.LocalPath = "data/firefly.db"
+		}
+		if deps.ConfigDir != "" {
+			_ = config.SaveTursoConfig(deps.ConfigDir, tursoCfg)
+		}
+		if deps.TursoManager != nil {
+			if _, err := deps.TursoManager.UpdateConfig(r.Context(), tursoCfg); err != nil {
+				deps.Logger.Warn("failed to update turso client configuration", "err", err)
+			}
+		}
+	}
+
+	// Persist to Turso database if Turso store is configured
+	if tStore, _ := deps.getTursoStore(r.Context()); tStore != nil {
+		if err := tStore.SaveSettings(r.Context(), payload); err != nil {
+			rollbackTLS()
+			openai.WriteError(w, http.StatusInternalServerError, openai.TypeAPI, "save settings to turso: "+err.Error())
+			return
+		}
+	}
+
 	// Persist to disk if config directory is set
 	if deps.ConfigDir != "" {
 		if err := os.MkdirAll(deps.ConfigDir, 0o755); err != nil {
@@ -508,5 +576,190 @@ func (deps RouterDeps) handleUpdateSettings(w http.ResponseWriter, r *http.Reque
 		"generation": newGen,
 		"warnings":   res.Warnings,
 		"auto_tls":   nextTLS,
+	})
+}
+
+// handleGetTursoProviders retrieves available providers from the Turso centralized database.
+func (deps RouterDeps) handleGetTursoProviders(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Content-Type", "application/json")
+
+	if !deps.authorizeAdmin(r) {
+		openai.WriteError(w, http.StatusUnauthorized, openai.TypeAuthentication, "unauthorized: valid dashboard session or admin token required")
+		return
+	}
+
+	cfg, _ := config.LoadTursoConfig(deps.ConfigDir)
+	hasConfig := cfg.DatabaseURL != "" || os.Getenv("TURSO_DATABASE_URL") != ""
+
+	store, err := deps.getTursoStore(r.Context())
+	if err != nil {
+		deps.Logger.Warn("turso store initialization failed in handleGetTursoProviders", "err", err)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"configured": hasConfig,
+			"providers":  []any{},
+			"error":      err.Error(),
+		})
+		return
+	}
+
+	if store == nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"configured": hasConfig,
+			"providers":  []any{},
+		})
+		return
+	}
+
+	providers, err := store.ListProviders(r.Context())
+	if err != nil {
+		deps.Logger.Warn("failed to list turso providers", "err", err)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"configured": true,
+			"providers":  []any{},
+			"error":      err.Error(),
+		})
+		return
+	}
+
+	if providers == nil {
+		providers = []turso.ProviderSummary{}
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"configured": true,
+		"providers":  providers,
+	})
+}
+
+// handleGetTursoProviderKeys retrieves active keys from the Turso database for a provider.
+func (deps RouterDeps) handleGetTursoProviderKeys(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Content-Type", "application/json")
+
+	if !deps.authorizeAdmin(r) {
+		openai.WriteError(w, http.StatusUnauthorized, openai.TypeAuthentication, "unauthorized: valid dashboard session or admin token required")
+		return
+	}
+
+	store, err := deps.getTursoStore(r.Context())
+	if err != nil {
+		deps.Logger.Warn("turso store not available in handleGetTursoProviderKeys", "err", err)
+		openai.WriteError(w, http.StatusServiceUnavailable, openai.TypeAPI, "turso store not available: "+err.Error())
+		return
+	}
+	if store == nil {
+		openai.WriteError(w, http.StatusBadRequest, openai.TypeInvalidRequest, "turso database is not configured")
+		return
+	}
+
+	var providerID int64
+	idStr := r.PathValue("id")
+	if idStr == "" {
+		idStr = r.URL.Query().Get("provider_id")
+	}
+	if idStr != "" {
+		if pid, err := strconv.ParseInt(idStr, 10, 64); err == nil {
+			providerID = pid
+		}
+	}
+
+	keys, err := store.ListProviderKeys(r.Context(), providerID)
+	if err != nil {
+		openai.WriteError(w, http.StatusInternalServerError, openai.TypeAPI, "list provider keys: "+err.Error())
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":          true,
+		"provider_id": providerID,
+		"count":       len(keys),
+		"keys":        keys,
+	})
+}
+
+// handleTestTurso validates connectivity and auth credentials against Turso database.
+func (deps RouterDeps) handleTestTurso(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Content-Type", "application/json")
+
+	if !deps.authorizeAdmin(r) {
+		openai.WriteError(w, http.StatusUnauthorized, openai.TypeAuthentication, "unauthorized: valid dashboard session or admin token required")
+		return
+	}
+
+	var req struct {
+		DatabaseURL string `json:"database_url"`
+		AuthToken   string `json:"auth_token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		openai.WriteError(w, http.StatusBadRequest, openai.TypeInvalidRequest, "invalid json payload: "+err.Error())
+		return
+	}
+
+	if isMasked(req.AuthToken) {
+		savedCfg, _ := config.LoadTursoConfig(deps.ConfigDir)
+		if savedCfg.AuthToken != "" {
+			req.AuthToken = savedCfg.AuthToken
+		} else {
+			req.AuthToken = os.Getenv("TURSO_AUTH_TOKEN")
+		}
+	}
+	if req.DatabaseURL == "" {
+		savedCfg, _ := config.LoadTursoConfig(deps.ConfigDir)
+		if savedCfg.DatabaseURL != "" {
+			req.DatabaseURL = savedCfg.DatabaseURL
+		} else {
+			req.DatabaseURL = os.Getenv("TURSO_DATABASE_URL")
+		}
+	}
+
+	if req.DatabaseURL == "" || req.AuthToken == "" {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":      false,
+			"message": "Database URL and Auth Token are required.",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	testPath := filepath.Join(os.TempDir(), fmt.Sprintf("firefly_test_turso_%d.db", time.Now().UnixNano()))
+	defer func() {
+		_ = os.Remove(testPath)
+		_ = os.Remove(testPath + ".turso-sync-metadata")
+	}()
+
+	testClient, err := turso.NewClient(ctx, turso.Config{
+		RemoteURL:    req.DatabaseURL,
+		AuthToken:    req.AuthToken,
+		LocalPath:    testPath,
+		SyncInterval: 1 * time.Minute,
+		Logger:       deps.Logger,
+	})
+	if err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":      false,
+			"message": fmt.Sprintf("Connection failed: %v", err),
+		})
+		return
+	}
+	defer testClient.Close()
+
+	if err := testClient.DB().PingContext(ctx); err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":      false,
+			"message": fmt.Sprintf("Database ping failed: %v", err),
+		})
+		return
+	}
+
+	latency := time.Since(start).Milliseconds()
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":         true,
+		"message":    "Successfully connected to Turso database.",
+		"latency_ms": latency,
 	})
 }

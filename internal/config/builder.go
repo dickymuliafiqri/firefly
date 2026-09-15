@@ -341,12 +341,11 @@ func translateUpstream(i int, d UpstreamDTO, envLookup func(string) (string, boo
 			RPS:           rps,
 			MaxConcurrent: maxConcurrent,
 		})
-	} else {
-		return nil, &ValidationError{
-			Field: fmt.Sprintf("upstreams[%d].credential_ref", i),
-			Msg:   "credential_ref or credential_pool required",
-		}
 	}
+	// Note: an upstream with no credential material at all is allowed. It is
+	// created with an empty key ring so operators can add keys later. Any
+	// request routed to it will fail closed at forward time (no secret), but the
+	// configuration itself is valid and hot-swappable.
 
 	keyRing := domain.NewKeyRing(strategy, slots)
 	primarySlot := keyRing.PrimarySlot()
@@ -392,6 +391,9 @@ func translateUpstream(i int, d UpstreamDTO, envLookup func(string) (string, boo
 		CredentialRPS:           primaryRPS,
 		CredentialMaxConcurrent: primaryMaxConcurrent,
 		Disabled:                d.Enabled != nil && !*d.Enabled,
+		KeyErrorThreshold:       pickInt(d.KeyErrorThreshold, 0),
+		KeyErrorAction:          d.KeyErrorAction,
+		KeyCooldownDurationMs:   pickInt(d.KeyCooldownDurationMs, 300000),
 	}, nil
 }
 
