@@ -3,6 +3,7 @@ import { useAudioState } from '@/core/audio/useAudioState';
 import { useIsAuthenticated, useStoreActions } from '@/core/state/store';
 import { Lock, Unlock, Menu, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { APP_VERSION } from '@/core/constants';
 
 export type TabId =
   | 'overview'
@@ -81,8 +82,8 @@ export const Header = React.memo(function Header({
 
   return (
     <header className="w-full pt-5 sm:pt-6 px-4 sm:px-10 lg:px-16 flex items-center justify-between relative z-40 select-none bg-transparent">
-      {/* Brand: firefly bare text */}
-      <div className="flex items-center gap-2 text-white font-semibold tracking-tight text-sm">
+      {/* Brand: firefly bare text with version */}
+      <div className="flex items-center gap-2 tracking-tight text-sm">
         <button
           onClick={() => {
             onTabChange('overview');
@@ -92,6 +93,13 @@ export const Header = React.memo(function Header({
         >
           firefly
         </button>
+        <span
+          className="text-xs font-mono font-normal text-neutral-500 select-none tracking-normal"
+          title={`Version ${APP_VERSION}`}
+          aria-label={`Firefly ${APP_VERSION}`}
+        >
+          {APP_VERSION}
+        </span>
       </div>
 
       {/* Desktop Navigation (visible on md and up) */}

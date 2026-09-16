@@ -472,7 +472,7 @@ func (deps RouterDeps) handleUpdateSettings(w http.ResponseWriter, r *http.Reque
 	}
 	if deps.AutoTLS != nil {
 		if err := deps.AutoTLS.Apply(normalizedTLS); err != nil {
-			openai.WriteError(w, http.StatusServiceUnavailable, openai.TypeAPI, "apply auto TLS: "+err.Error())
+			openai.WriteError(w, http.StatusBadRequest, openai.TypeInvalidRequest, "apply auto TLS: "+err.Error())
 			return
 		}
 		tlsApplied = true

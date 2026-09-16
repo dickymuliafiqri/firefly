@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/dickymuliafiqri/firefly/internal/auth"
@@ -346,5 +347,41 @@ func TestTursoProvidersConfiguredFlow(t *testing.T) {
 		t.Fatalf("GET /api/turso/providers/1/keys status = %d, want 200 or 503", w3.Code)
 	}
 }
+
+func TestSettingsAutoTLSApplyFailureReturns400(t *testing.T) {
+	tmpDir := t.TempDir()
+	reg := registry.New()
+
+	// An unattached AutoTLS controller (handler == nil) fails Apply when enabled
+	unattachedTLS := NewAutoTLS(filepath.Join(tmpDir, "certs"), nil)
+
+	deps := RouterDeps{
+		Snapshots: reg,
+		Registry:  reg,
+		ConfigDir: tmpDir,
+		AutoTLS:   unattachedTLS,
+	}
+	s := New(Config{Addr: "127.0.0.1:0"}, deps, context.Background(), nil)
+
+	settingsUpdate := config.SettingsDTO{
+		AutoTLS: &config.AutoTLSDTO{
+			Enabled: true,
+			Domain:  "ai.example.com",
+			Email:   "admin@example.com",
+		},
+	}
+	body, _ := json.Marshal(settingsUpdate)
+	req := httptest.NewRequest(http.MethodPut, "/api/settings", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("PUT /api/settings status = %d, want 400 Bad Request; body = %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "apply auto TLS:") {
+		t.Fatalf("expected error body to contain 'apply auto TLS:', got %s", w.Body.String())
+	}
+}
+
 
 

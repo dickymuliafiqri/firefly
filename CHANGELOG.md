@@ -5,6 +5,24 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.3] - 2026-09-16
+
+### Added
+- **Application Version Display in Header/Navbar (`frontend`)**:
+  - Rendered current application version (`v1.3.3`) immediately to the right of the brand title `firefly`.
+  - Styled with muted typography (`font-mono text-xs text-neutral-500`) without a badge/pill container, seamlessly blending into the Nocturnal Celestial theme.
+  - Centralized version identifier in `frontend/src/core/constants.ts` (`APP_VERSION`).
+
+### Fixed
+- **Auto-TLS Error Reporting & Status Code Semantics (`internal/server`, `frontend`)**:
+  - Fixed an issue where failing to bind Auto-TLS ports (:80/:443) returned `503 Service Unavailable`, causing the frontend's hardcoded 503 catch block in `saveSettings` to report a misleading `"Service Unavailable: Gateway is draining"` toast instead of the real system error.
+  - Updated `handleUpdateSettings` in `internal/server/settings.go` to return `400 Bad Request` with `openai.TypeInvalidRequest` when Auto-TLS fails to apply.
+  - Updated `frontend/src/services/api.ts` to inspect and extract `body?.error?.message` on any HTTP 503 response in both `fetchSettings` and `saveSettings` instead of discarding the server message.
+  - Added unit test `TestSettingsAutoTLSApplyFailureReturns400` in `internal/server/settings_test.go`.
+- **Production Auto-TLS Hardening & Troubleshooting Guide (`docs/production.md`)**:
+  - Documented Linux capability requirements (`CAP_NET_BIND_SERVICE` / `setcap`) for systemd non-root execution when Auto-TLS binds privileged ports 80 and 443.
+  - Documented reverse proxy coexistence rules (Nginx/Caddy/Traefik).
+
 ## [1.3.2] - 2026-09-16
 
 ### Fixed

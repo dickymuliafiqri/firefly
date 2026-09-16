@@ -55,6 +55,10 @@ StandardError=journal
 ProtectSystem=full
 ReadWritePaths=/etc/firefly
 
+# Privileged port binding (:80/:443) when enabling built-in Auto-TLS
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
 [Install]
 WantedBy=multi-user.target
 ```
@@ -166,3 +170,29 @@ To maintain stability under 1,000+ simultaneous Server-Sent Events (SSE) streami
 ### E. Global Admission Semaphore & Backpressure (`httpx.GlobalLimiter`)
 - Enforces a 1,500-slot server-wide in-flight semaphore with a bounded queue (timeout 1.5s).
 - If saturated and the queue expires, requests fail fast with `HTTP 429 Too Many Requests` (`Retry-After: 2`), shielding the server from thundering herd spikes and OOM crashes.
+
+---
+
+## 6. Auto-TLS & HTTPS Deployment Guide
+
+Firefly includes native Let's Encrypt automated TLS certificate issuance and renewal via ACME HTTP-01 challenge (`internal/server/autotls.go`).
+
+### A. Port & Linux Capability Requirements
+Auto-TLS binds directly to standard privileged ports:
+- **Port 80 (HTTP)**: Serves the `/.well-known/acme-challenge/` token challenge and permanent 301 redirects to HTTPS.
+- **Port 443 (HTTPS)**: Serves encrypted data and dashboard traffic.
+
+When running as an unprivileged user (e.g. `firefly` via systemd), granting socket bind capabilities is required:
+```bash
+sudo setcap 'cap_net_bind_service=+ep' /usr/local/bin/firefly
+```
+Or in the systemd service unit (`/etc/systemd/system/firefly.service`):
+```ini
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+```
+
+### B. Coexistence with Existing Reverse Proxies (Nginx / Caddy / Traefik)
+- **Behind a Reverse Proxy:** If Nginx, Caddy, or Traefik is already terminating SSL/TLS in front of Firefly (e.g., `proxy_pass http://localhost:8080`), **leave Firefly's built-in Auto-TLS disabled**. The edge proxy manages TLS certificates.
+- **Standalone Direct Exposure:** If Firefly is directly exposed to the internet without an external proxy, ensure ports 80 and 443 are free (`sudo ss -tulpn | grep -E ':(80|443)'`), firewall allows ingress (`sudo ufw allow 80/tcp && sudo ufw allow 443/tcp`), and public DNS (A/AAAA record) resolves to the server's public IP.
+

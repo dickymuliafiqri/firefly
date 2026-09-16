@@ -63,7 +63,9 @@ export async function fetchSettings(adminToken?: string): Promise<SettingsDTO> {
     throw new ApiError(401, 'Unauthorized: Valid Admin Token required');
   }
   if (res.status === 503) {
-    throw new ApiError(503, 'Service Unavailable: Gateway is draining');
+    const body = await res.json().catch(() => ({}));
+    const message = body?.error?.message || 'Service Unavailable: Gateway is draining';
+    throw new ApiError(503, message, body?.error?.type);
   }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -106,7 +108,9 @@ export async function saveSettings(
     throw new ApiError(409, message, 'conflict');
   }
   if (res.status === 503) {
-    throw new ApiError(503, 'Service Unavailable: Gateway is draining');
+    const body = await res.json().catch(() => ({}));
+    const message = body?.error?.message || 'Service Unavailable: Gateway is draining';
+    throw new ApiError(503, message, body?.error?.type);
   }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
