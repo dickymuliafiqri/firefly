@@ -247,12 +247,8 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 	}
 
 	if protocol == "grok-cli" {
-		// Prefer live discovery from the Grok CLI /models endpoint when a bearer
-		// token is available; fall back to the curated static list otherwise (or on
-		// any failure). apiKey has already been resolved from the key ring / OAuth above.
-		staticModels := grok.SupportedModels()
-		models := staticModels
-		discovered := false
+		// When an apiKey is provided (e.g. testing an individual key or keyring check in Upstream Modal),
+		// actively probe the live Grok CLI /models endpoint to verify credentials.
 		if strings.TrimSpace(apiKey) != "" {
 			client := &http.Client{
 				Timeout: timeout,
@@ -260,24 +256,102 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 					return http.ErrUseLastResponse
 				},
 			}
-			if live, err := grok.FetchModels(ctx, client, baseURL, apiKey); err == nil && len(live) > 0 {
-				models = live
-				discovered = true
-			} else if err != nil {
-				deps.Logger.Debug("grok-cli live model discovery failed; using static list", "err", err)
+			start := time.Now()
+			live, err := grok.FetchModels(ctx, client, baseURL, apiKey)
+			latencyMs := time.Since(start).Milliseconds()
+
+			if err != nil {
+				statusCode := 0
+				rawBody := err.Error()
+				var httpErr *grok.HTTPError
+				if errors.As(err, &httpErr) {
+					statusCode = httpErr.StatusCode
+					rawBody = httpErr.Body
+				} else if errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err) {
+					rawBody = fmt.Sprintf("Health check timed out after %dms", latencyMs)
+				}
+
+				errMsg := extractUpstreamError([]byte(rawBody))
+				if errMsg == "" {
+					errMsg = rawBody
+				}
+
+				var msg string
+				switch {
+				case statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden:
+					if errMsg == "" {
+						errMsg = "Invalid, expired, or unauthorized API key"
+					}
+					msg = fmt.Sprintf("Authentication failed (HTTP %d): %s", statusCode, errMsg)
+				case statusCode == http.StatusTooManyRequests:
+					if errMsg == "" {
+						errMsg = "Rate limit or quota exceeded"
+					}
+					msg = fmt.Sprintf("Rate limit exceeded (HTTP 429): %s", errMsg)
+				case statusCode >= 500:
+					if errMsg == "" {
+						errMsg = http.StatusText(statusCode)
+					}
+					msg = fmt.Sprintf("Upstream server error (HTTP %d): %s", statusCode, errMsg)
+				case statusCode == 0:
+					msg = fmt.Sprintf("Connection error: %s", errMsg)
+				default:
+					msg = fmt.Sprintf("Upstream returned HTTP %d: %s", statusCode, errMsg)
+				}
+
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(UpstreamCheckResponse{
+					Healthy:    false,
+					StatusCode: statusCode,
+					LatencyMs:  latencyMs,
+					Message:    msg,
+				})
+				return
 			}
+
+			// Key is healthy and models were discovered live
+			if reqModel := strings.TrimSpace(req.Model); reqModel != "" {
+				known := false
+				for _, m := range live {
+					if strings.EqualFold(m, reqModel) {
+						known = true
+						break
+					}
+				}
+				if !known {
+					known = grok.SupportsModel(reqModel)
+				}
+				msg := fmt.Sprintf("Grok CLI supports model %q", reqModel)
+				if !known {
+					msg = fmt.Sprintf("Grok CLI accepts custom model %q (routed as-is)", reqModel)
+				}
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(UpstreamCheckResponse{
+					Healthy:    true,
+					StatusCode: 200,
+					LatencyMs:  latencyMs,
+					Message:    msg,
+				})
+				return
+			}
+
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(UpstreamCheckResponse{
+				Healthy:    true,
+				StatusCode: 200,
+				LatencyMs:  latencyMs,
+				Message:    fmt.Sprintf("Grok CLI upstream (%d models available, live)", len(live)),
+				ModelCount: len(live),
+				Models:     live,
+			})
+			return
 		}
 
-		source := "curated"
-		if discovered {
-			source = "live"
-		}
-
+		// When no apiKey is provided, fall back to curated static list (discovery mode without credentials)
+		staticModels := grok.SupportedModels()
 		if reqModel := strings.TrimSpace(req.Model); reqModel != "" {
-			// A model is "supported" if the live/curated list contains it; any other
-			// id is still accepted as a custom model (routed to grok as-is).
 			known := false
-			for _, m := range models {
+			for _, m := range staticModels {
 				if strings.EqualFold(m, reqModel) {
 					known = true
 					break
@@ -288,7 +362,7 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 			}
 			msg := fmt.Sprintf("Grok CLI supports model %q", reqModel)
 			if !known {
-				msg = fmt.Sprintf("Grok CLI accepts custom model %q (not in the %s list; routed as-is)", reqModel, source)
+				msg = fmt.Sprintf("Grok CLI accepts custom model %q (not in the curated list; routed as-is)", reqModel)
 			}
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(UpstreamCheckResponse{
@@ -305,9 +379,9 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 			Healthy:    true,
 			StatusCode: 200,
 			LatencyMs:  1,
-			Message:    fmt.Sprintf("Grok CLI upstream (%d models available, %s)", len(models), source),
-			ModelCount: len(models),
-			Models:     models,
+			Message:    fmt.Sprintf("Grok CLI upstream (%d models available, curated)", len(staticModels)),
+			ModelCount: len(staticModels),
+			Models:     staticModels,
 		})
 		return
 	}

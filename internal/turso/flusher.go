@@ -208,12 +208,21 @@ DRAINED_ACTIONS:
 		return nil
 	}
 
-	tx, err := f.store.DB().BeginTx(ctx, nil)
+	f.store.Lock()
+	defer f.store.Unlock()
+
+	tx, err := f.store.BeginTx(ctx)
 	if err != nil {
 		return fmt.Errorf("begin usage tx: %w", err)
 	}
+	committed := false
 	defer func() {
-		_ = tx.Rollback()
+		if !committed {
+			_ = tx.Rollback()
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+			_, _ = f.store.DB().ExecContext(cleanupCtx, "ROLLBACK")
+			cancel()
+		}
 	}()
 
 	now := time.Now().UnixMilli()
@@ -295,12 +304,16 @@ DRAINED_ACTIONS:
 	}
 
 	if err := tx.Commit(); err != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		_, _ = f.store.DB().ExecContext(cleanupCtx, "ROLLBACK")
+		cancel()
 		return fmt.Errorf("commit usage tx: %w", err)
 	}
+	committed = true
 
 	// Push usage updates to Turso Cloud
 	if updatedAny && f.store.Client() != nil {
-		_ = f.store.Client().Push(ctx)
+		_ = f.store.Client().PushLocked(ctx)
 	}
 
 	return nil

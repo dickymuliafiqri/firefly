@@ -5,6 +5,21 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-09-16
+
+### Fixed
+- **Turso Sync Engine vs. SQL Transaction Deadlock & Stale Transaction Recovery (`internal/turso`)**:
+  - Resolved `Database is busy` lock contention between the background syncer/flusher and database mutations (`SaveSettings`, `UsageFlusher`) by coordinating operations through an exclusive `sync.RWMutex` on `Client` (`Lock()`, `Unlock()`, `PushLocked()`, `PullLocked()`).
+  - Added exponential backoff retry loops for transient `Database is busy` conditions on both `Pull` and `Push`.
+  - Configured embedded replica single connection pooling (`db.SetMaxOpenConns(1)`, `db.SetMaxIdleConns(1)`, `db.SetConnMaxLifetime(0)`) and set `BusyTimeout: 10000` (10s) in `TursoSyncDbConfig`.
+  - Fixed a driver issue in `tursogo` where failed `Commit()` calls marked transactions as `done = true` without executing SQLite `ROLLBACK`, leaving connections uncommitted in the pool and causing subsequent `BeginTx` calls to fail with `cannot start a transaction within a transaction`.
+  - Implemented self-healing `beginTx` / `BeginTx` with automatic rollback recovery (using `context.WithoutCancel(ctx)` with a 2-second timeout) and hardened `SaveSettings` to issue an explicit `ROLLBACK` on commit failure.
+- **Accurate Grok CLI Key Verification on Upstream Modal (`internal/server`, `internal/grok`)**:
+  - Fixed false-positive key check validation in `POST /api/upstreams/check` where testing an invalid or expired Grok key previously swallowed upstream HTTP 401/403/429 errors in a debug log and unconditionally returned `Healthy: true` and `StatusCode: 200` with hardcoded 1ms latency.
+  - Exported `HTTPError` in `internal/grok` and updated `FetchModels` to return `&HTTPError` capturing upstream HTTP status codes and error bodies.
+  - Updated `handleCheckUpstream` to actively measure round-trip latency, validate bearer tokens against the live Grok CLI `/models` endpoint, and return `Healthy: false` with the exact upstream status code (e.g. `401 Unauthorized` or `429 Too Many Requests`).
+  - Preserved discovery mode without credentials falling back to the curated static model list when no API key is provided.
+
 ## [1.3.0] - 2026-09-15
 
 ### Added

@@ -176,6 +176,7 @@ Firefly menyediakan kontrak interface yang bersih (`ports.UpstreamAdapter`) untu
 - **Google Antigravity Cloud Code Adapter (`internal/antigravity`):** Menerjemahkan request inferensi OpenAI yang masuk ke protokol internal Google Cloud Code, mendukung model inferensi Gemini 2.5 Pro/Flash dan Claude 3.7 Sonnet.
 - **Cline OAuth Adapter (`internal/cline`):** Mem-proxy completion ke endpoint API Cline (`api.cline.bot`), otomatis melampirkan header identifikasi klien (`HTTP-Referer`, `X-Title`), membuka envelope payload, dan me-relay stream SSE.
 - **CodeBuddy China & International Adapter (`internal/codebuddy`):** Mengelola device authorization grant RFC 8628, penulisan ulang payload, dan streaming completion untuk endpoint CodeBuddy China dan International.
+- **Grok CLI / Grok Build Adapter (`internal/grok`):** Merutekan request ke inference API xAI Grok CLI (`cli-chat-proxy.grok.com`, OpenAI Responses API) menggunakan bearer token xAI OAuth, menerjemahkan OpenAI Chat Completions ke/dari format wire Responses (termasuk output penalaran/thinking) dan mem-pool token akun yang dikumpulkan di seluruh key ring.
 
 ---
 

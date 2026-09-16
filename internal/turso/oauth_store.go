@@ -34,13 +34,45 @@ func NewOAuthStore(client *Client) *OAuthStore {
 	}
 }
 
+func (s *OAuthStore) rLock() {
+	if s.client != nil {
+		s.client.RLock()
+	} else {
+		s.mu.RLock()
+	}
+}
+
+func (s *OAuthStore) rUnlock() {
+	if s.client != nil {
+		s.client.RUnlock()
+	} else {
+		s.mu.RUnlock()
+	}
+}
+
+func (s *OAuthStore) lock() {
+	if s.client != nil {
+		s.client.Lock()
+	} else {
+		s.mu.Lock()
+	}
+}
+
+func (s *OAuthStore) unlock() {
+	if s.client != nil {
+		s.client.Unlock()
+	} else {
+		s.mu.Unlock()
+	}
+}
+
 // Get retrieves an OAuthConnection by ID.
 func (s *OAuthStore) Get(ctx context.Context, id string) (*domain.OAuthConnection, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.rLock()
+	defer s.rUnlock()
 
 	var (
 		provider, accessToken string
@@ -100,8 +132,8 @@ func (s *OAuthStore) Save(ctx context.Context, conn *domain.OAuthConnection) err
 		return errors.New("cannot save nil connection or connection without ID")
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 
 	now := time.Now().UnixMilli()
 	created := conn.CreatedAt.UnixMilli()
@@ -137,7 +169,7 @@ func (s *OAuthStore) Save(ctx context.Context, conn *domain.OAuthConnection) err
 	}
 
 	if s.client != nil {
-		_ = s.client.Push(ctx)
+		_ = s.client.PushLocked(ctx)
 	}
 
 	return nil
@@ -148,8 +180,8 @@ func (s *OAuthStore) List(ctx context.Context) ([]*domain.OAuthConnection, error
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.rLock()
+	defer s.rUnlock()
 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, provider, email, access_token, refresh_token, expires_at,
@@ -207,8 +239,8 @@ func (s *OAuthStore) Delete(ctx context.Context, id string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 
 	_, err := s.db.ExecContext(ctx, "DELETE FROM oauth_connections WHERE id = ?", id)
 	if err != nil {
@@ -216,7 +248,7 @@ func (s *OAuthStore) Delete(ctx context.Context, id string) error {
 	}
 
 	if s.client != nil {
-		_ = s.client.Push(ctx)
+		_ = s.client.PushLocked(ctx)
 	}
 
 	return nil

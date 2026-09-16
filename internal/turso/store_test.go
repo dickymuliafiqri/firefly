@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,6 +21,8 @@ func setupTestDB(t *testing.T) (*Store, *sql.DB) {
 	if err != nil {
 		t.Fatalf("open memory db: %v", err)
 	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 
 	ctx := context.Background()
 	if err := MigrateSchema(ctx, db); err != nil {
@@ -816,4 +820,93 @@ func TestSaveSettings_ManageCombosAndTenantsDeleteLast(t *testing.T) {
 	if len(got2.Tenants) != 0 {
 		t.Fatalf("ManageTenants must delete the last tenant, got %d", len(got2.Tenants))
 	}
+}
+
+func TestStore_StaleTransactionRecovery(t *testing.T) {
+	ctx := context.Background()
+	store, db := setupTestDB(t)
+
+	// Intentionally simulate a dangling/stale transaction left uncommitted on the connection
+	_, err := db.ExecContext(ctx, "BEGIN")
+	if err != nil {
+		t.Fatalf("setup raw BEGIN: %v", err)
+	}
+
+	// BeginTx should intercept "cannot start a transaction within a transaction",
+	// rollback the stale transaction, and successfully open a new transaction.
+	tx, err := store.BeginTx(ctx)
+	if err != nil {
+		t.Fatalf("expected BeginTx to recover from stale transaction, got: %v", err)
+	}
+
+	// The recovered transaction must be valid and operational
+	_, err = tx.ExecContext(ctx, "UPDATE catalog_revisions SET revision = revision + 1 WHERE id = 1")
+	if err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("exec on recovered tx: %v", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit recovered tx: %v", err)
+	}
+}
+
+func TestStore_SaveSettingsStaleTransactionRecovery(t *testing.T) {
+	ctx := context.Background()
+	store, db := setupTestDB(t)
+
+	// Intentionally leave connection in a transaction state
+	_, err := db.ExecContext(ctx, "BEGIN")
+	if err != nil {
+		t.Fatalf("setup raw BEGIN: %v", err)
+	}
+
+	// SaveSettings should transparently recover and save successfully
+	err = store.SaveSettings(ctx, config.SettingsDTO{
+		Upstreams: []config.UpstreamDTO{
+			{
+				Name:     "upstream-recovery",
+				Protocol: "openai",
+				BaseURL:  "https://api.openai.com",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected SaveSettings to recover from stale transaction, got: %v", err)
+	}
+
+	got, err := store.LoadSettings(ctx)
+	if err != nil {
+		t.Fatalf("load settings: %v", err)
+	}
+	if len(got.Upstreams) != 1 || got.Upstreams[0].Name != "upstream-recovery" {
+		t.Fatalf("unexpected upstreams loaded: %+v", got.Upstreams)
+	}
+}
+
+func TestStore_ConcurrentOperations(t *testing.T) {
+	ctx := context.Background()
+	store, _ := setupTestDB(t)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			for j := 0; j < 5; j++ {
+				_, _ = store.GetCatalogRevision(ctx)
+				_, _ = store.LoadSettings(ctx)
+				_ = store.SaveSettings(ctx, config.SettingsDTO{
+					Upstreams: []config.UpstreamDTO{
+						{
+							Name:     fmt.Sprintf("upstream-%d-%d", idx, j),
+							Protocol: "openai",
+							BaseURL:  "https://api.openai.com",
+						},
+					},
+				})
+			}
+		}(i)
+	}
+	wg.Wait()
 }

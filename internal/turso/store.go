@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -48,14 +49,108 @@ func (s *Store) DB() *sql.DB {
 	return s.db
 }
 
+func (s *Store) rLock() {
+	if s.client != nil {
+		s.client.RLock()
+	} else {
+		s.mu.RLock()
+	}
+}
+
+func (s *Store) rUnlock() {
+	if s.client != nil {
+		s.client.RUnlock()
+	} else {
+		s.mu.RUnlock()
+	}
+}
+
+func (s *Store) lock() {
+	if s.client != nil {
+		s.client.Lock()
+	} else {
+		s.mu.Lock()
+	}
+}
+
+func (s *Store) unlock() {
+	if s.client != nil {
+		s.client.Unlock()
+	} else {
+		s.mu.Unlock()
+	}
+}
+
+// Lock acquires the underlying store lock.
+func (s *Store) Lock() {
+	s.lock()
+}
+
+// Unlock releases the underlying store lock.
+func (s *Store) Unlock() {
+	s.unlock()
+}
+
+// RLock acquires the underlying store read lock.
+func (s *Store) RLock() {
+	s.rLock()
+}
+
+// RUnlock releases the underlying store read lock.
+func (s *Store) RUnlock() {
+	s.rUnlock()
+}
+
+func isTransactionInProgressError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "transaction within a transaction") ||
+		strings.Contains(msg, "cannot start a transaction within a transaction")
+}
+
+func (s *Store) getLogger() *slog.Logger {
+	if s != nil && s.logger != nil {
+		return s.logger
+	}
+	return slog.Default()
+}
+
+// beginTx starts a new transaction. If a previous transaction was left uncommitted
+// or unrolled-back on the SQLite connection (yielding "cannot start a transaction
+// within a transaction"), it recovers by issuing ROLLBACK and retrying once.
+func (s *Store) beginTx(ctx context.Context) (*sql.Tx, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		if isTransactionInProgressError(err) {
+			s.getLogger().Warn("detected stale transaction on database connection; issuing rollback recovery", "err", err)
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+			_, rollbackErr := s.db.ExecContext(cleanupCtx, "ROLLBACK")
+			cancel()
+			if rollbackErr != nil {
+				s.getLogger().Warn("turso rollback recovery encountered warning", "err", rollbackErr)
+			}
+			return s.db.BeginTx(ctx, nil)
+		}
+		return nil, err
+	}
+	return tx, nil
+}
+
+// BeginTx starts a transaction with automatic rollback recovery for stale transactions.
+func (s *Store) BeginTx(ctx context.Context) (*sql.Tx, error) {
+	return s.beginTx(ctx)
+}
+
 // -----------------------------------------------------------------------------
 // Catalog Revision & Snapshot Loading
 // -----------------------------------------------------------------------------
 
 // GetCatalogRevision fetches the current catalog revision from the database.
 func (s *Store) GetCatalogRevision(ctx context.Context) (int64, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.rLock()
+	defer s.rUnlock()
 	return s.getCatalogRevisionLocked(ctx)
 }
 
@@ -70,8 +165,8 @@ func (s *Store) getCatalogRevisionLocked(ctx context.Context) (int64, error) {
 
 // BumpCatalogRevision increments the catalog revision and returns the new value.
 func (s *Store) BumpCatalogRevision(ctx context.Context) (int64, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 	return s.bumpCatalogRevisionLocked(ctx)
 }
 
@@ -97,8 +192,8 @@ func (s *Store) bumpCatalogRevisionLocked(ctx context.Context) (int64, error) {
 // resolves dynamic keys from providers/api_keys, builds a validated
 // CatalogSnapshot, and returns any validation warnings.
 func (s *Store) LoadCatalogSnapshot(ctx context.Context, envLookup func(string) (string, bool)) (*domain.CatalogSnapshot, []string, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.rLock()
+	defer s.rUnlock()
 
 	settings, err := s.loadSettingsInternal(ctx)
 	if err != nil {
@@ -161,8 +256,8 @@ func (s *Store) LoadCatalogSnapshot(ctx context.Context, envLookup func(string) 
 
 // LoadSettings retrieves the full settings DTO from the database.
 func (s *Store) LoadSettings(ctx context.Context) (*config.SettingsDTO, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.rLock()
+	defer s.rUnlock()
 	return s.loadSettingsInternal(ctx)
 }
 
@@ -606,15 +701,21 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 // SaveSettings writes the full SettingsDTO into the Turso database in an atomic
 // transaction, updates catalog revisions, and pushes changes to the cloud.
 func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginTx(ctx)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
+	committed := false
 	defer func() {
-		_ = tx.Rollback()
+		if !committed {
+			_ = tx.Rollback()
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+			_, _ = s.db.ExecContext(cleanupCtx, "ROLLBACK")
+			cancel()
+		}
 	}()
 
 	now := time.Now().UnixMilli()
@@ -1010,13 +1111,17 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 	}
 
 	if err := tx.Commit(); err != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		_, _ = s.db.ExecContext(cleanupCtx, "ROLLBACK")
+		cancel()
 		return fmt.Errorf("commit settings tx: %w", err)
 	}
+	committed = true
 
 	// 6. Push local changes up to Turso Cloud primary
 	if s.client != nil {
-		if err := s.client.Push(ctx); err != nil {
-			s.logger.Warn("turso push encountered error after save settings", "err", err)
+		if err := s.client.PushLocked(ctx); err != nil {
+			s.getLogger().Warn("turso push encountered error after save settings", "err", err)
 		}
 	}
 
@@ -1029,8 +1134,8 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 
 // SaveUpstream inserts or updates an upstream using OCC version verification.
 func (s *Store) SaveUpstream(ctx context.Context, u *UpstreamRecord) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 
 	now := time.Now().UnixMilli()
 	fallbacksJSON, _ := json.Marshal(u.FallbackBaseURLs)
@@ -1101,15 +1206,15 @@ func (s *Store) SaveUpstream(ctx context.Context, u *UpstreamRecord) error {
 
 	_, _ = s.bumpCatalogRevisionLocked(ctx)
 	if s.client != nil {
-		_ = s.client.Push(ctx)
+		_ = s.client.PushLocked(ctx)
 	}
 	return nil
 }
 
 // DeleteUpstream deletes an upstream by ID.
 func (s *Store) DeleteUpstream(ctx context.Context, id int64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 
 	res, err := s.db.ExecContext(ctx, "DELETE FROM upstreams WHERE id = ?", id)
 	if err != nil {
@@ -1122,15 +1227,15 @@ func (s *Store) DeleteUpstream(ctx context.Context, id int64) error {
 
 	_, _ = s.bumpCatalogRevisionLocked(ctx)
 	if s.client != nil {
-		_ = s.client.Push(ctx)
+		_ = s.client.PushLocked(ctx)
 	}
 	return nil
 }
 
 // SaveModel inserts or updates a model with OCC.
 func (s *Store) SaveModel(ctx context.Context, m *ModelRecord) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 
 	now := time.Now().UnixMilli()
 	fallbacksJSON, _ := json.Marshal(m.FallbackUpstreams)
@@ -1184,15 +1289,15 @@ func (s *Store) SaveModel(ctx context.Context, m *ModelRecord) error {
 
 	_, _ = s.bumpCatalogRevisionLocked(ctx)
 	if s.client != nil {
-		_ = s.client.Push(ctx)
+		_ = s.client.PushLocked(ctx)
 	}
 	return nil
 }
 
 // DeleteModel deletes a model by ID.
 func (s *Store) DeleteModel(ctx context.Context, id int64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 
 	res, err := s.db.ExecContext(ctx, "DELETE FROM models WHERE id = ?", id)
 	if err != nil {
@@ -1205,15 +1310,15 @@ func (s *Store) DeleteModel(ctx context.Context, id int64) error {
 
 	_, _ = s.bumpCatalogRevisionLocked(ctx)
 	if s.client != nil {
-		_ = s.client.Push(ctx)
+		_ = s.client.PushLocked(ctx)
 	}
 	return nil
 }
 
 // SaveCombo inserts or updates a combo with OCC.
 func (s *Store) SaveCombo(ctx context.Context, c *ComboRecord) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 
 	now := time.Now().UnixMilli()
 	modelsJSON, _ := json.Marshal(c.Models)
@@ -1262,15 +1367,15 @@ func (s *Store) SaveCombo(ctx context.Context, c *ComboRecord) error {
 
 	_, _ = s.bumpCatalogRevisionLocked(ctx)
 	if s.client != nil {
-		_ = s.client.Push(ctx)
+		_ = s.client.PushLocked(ctx)
 	}
 	return nil
 }
 
 // DeleteCombo deletes a combo by ID.
 func (s *Store) DeleteCombo(ctx context.Context, id int64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 
 	res, err := s.db.ExecContext(ctx, "DELETE FROM combos WHERE id = ?", id)
 	if err != nil {
@@ -1283,15 +1388,15 @@ func (s *Store) DeleteCombo(ctx context.Context, id int64) error {
 
 	_, _ = s.bumpCatalogRevisionLocked(ctx)
 	if s.client != nil {
-		_ = s.client.Push(ctx)
+		_ = s.client.PushLocked(ctx)
 	}
 	return nil
 }
 
 // SaveTenant inserts or updates a tenant with OCC.
 func (s *Store) SaveTenant(ctx context.Context, t *TenantRecord) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 
 	now := time.Now().UnixMilli()
 	allowedJSON, _ := json.Marshal(t.AllowedModels)
@@ -1341,15 +1446,15 @@ func (s *Store) SaveTenant(ctx context.Context, t *TenantRecord) error {
 
 	_, _ = s.bumpCatalogRevisionLocked(ctx)
 	if s.client != nil {
-		_ = s.client.Push(ctx)
+		_ = s.client.PushLocked(ctx)
 	}
 	return nil
 }
 
 // DeleteTenant deletes a tenant by ID.
 func (s *Store) DeleteTenant(ctx context.Context, id int64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 
 	res, err := s.db.ExecContext(ctx, "DELETE FROM tenants WHERE id = ?", id)
 	if err != nil {
@@ -1362,7 +1467,7 @@ func (s *Store) DeleteTenant(ctx context.Context, id int64) error {
 
 	_, _ = s.bumpCatalogRevisionLocked(ctx)
 	if s.client != nil {
-		_ = s.client.Push(ctx)
+		_ = s.client.PushLocked(ctx)
 	}
 	return nil
 }
@@ -1378,8 +1483,8 @@ type ProviderSummary struct {
 
 // ListProviders retrieves the active providers and their available active key count.
 func (s *Store) ListProviders(ctx context.Context) ([]ProviderSummary, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.rLock()
+	defer s.rUnlock()
 
 	now := time.Now().UnixMilli()
 	rows, err := s.db.QueryContext(ctx, `
@@ -1420,8 +1525,8 @@ type ProviderKeyDTO struct {
 
 // ListProviderKeys retrieves active API keys for a specific provider, or all active keys if providerID <= 0.
 func (s *Store) ListProviderKeys(ctx context.Context, providerID int64) ([]ProviderKeyDTO, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.rLock()
+	defer s.rUnlock()
 
 	now := time.Now().UnixMilli()
 	var (
@@ -1470,8 +1575,8 @@ func (s *Store) ListProviderKeys(ctx context.Context, providerID int64) ([]Provi
 
 // DeactivateExpiredKeys marks keys whose expires_at timestamp has passed as expired.
 func (s *Store) DeactivateExpiredKeys(ctx context.Context) (int64, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 
 	now := time.Now().UnixMilli()
 	res, err := s.db.ExecContext(ctx, `
@@ -1491,8 +1596,8 @@ func (s *Store) DeactivateExpiredKeys(ctx context.Context) (int64, error) {
 
 // GetKeysState returns the latest updated_at timestamp and active count of api_keys.
 func (s *Store) GetKeysState(ctx context.Context) (int64, int64, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.rLock()
+	defer s.rUnlock()
 
 	var (
 		maxUpdated sql.NullInt64
@@ -1511,8 +1616,8 @@ func (s *Store) GetKeysState(ctx context.Context) (int64, int64, error) {
 
 // DeactivateKey marks an API key as deactivated (is_active = 0, status = 'deactivated').
 func (s *Store) DeactivateKey(ctx context.Context, keyID int64, reason string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 
 	now := time.Now().UnixMilli()
 	_, err := s.db.ExecContext(ctx, `
@@ -1531,15 +1636,15 @@ func (s *Store) DeactivateKey(ctx context.Context, keyID int64, reason string) e
 	`, now, keyID)
 
 	if s.client != nil {
-		_ = s.client.Push(ctx)
+		_ = s.client.PushLocked(ctx)
 	}
 	return nil
 }
 
 // DeleteKey removes an API key and cascading upstream credentials from the database (hard delete).
 func (s *Store) DeleteKey(ctx context.Context, keyID int64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 
 	_, _ = s.db.ExecContext(ctx, `DELETE FROM upstream_credentials WHERE api_key_id = ?`, keyID)
 	_, err := s.db.ExecContext(ctx, `DELETE FROM api_keys WHERE id = ?`, keyID)
@@ -1548,7 +1653,7 @@ func (s *Store) DeleteKey(ctx context.Context, keyID int64) error {
 	}
 
 	if s.client != nil {
-		_ = s.client.Push(ctx)
+		_ = s.client.PushLocked(ctx)
 	}
 	return nil
 }

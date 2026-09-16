@@ -14,6 +14,16 @@ import (
 // GrokCLIModelsPath is the Grok CLI model-discovery endpoint path.
 const GrokCLIModelsPath = "/models"
 
+// HTTPError captures a non-2xx HTTP status and response body from the Grok CLI endpoint.
+type HTTPError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("grok models discovery failed (HTTP %d): %s", e.StatusCode, e.Body)
+}
+
 // FetchModels queries the live Grok CLI /models endpoint using the given bearer
 // access token and returns the discovered public model ids.
 //
@@ -60,7 +70,10 @@ func FetchModels(ctx context.Context, client *http.Client, baseURL, accessToken 
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
-		return nil, fmt.Errorf("grok models discovery failed (HTTP %d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, &HTTPError{
+			StatusCode: resp.StatusCode,
+			Body:       strings.TrimSpace(string(body)),
+		}
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))

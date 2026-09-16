@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,13 +23,13 @@ type Config struct {
 	Logger       *slog.Logger
 }
 
-// Client wraps TursoSyncDb and provides thread-safe sync operations.
+// Client wraps TursoSyncDb and coordinates thread-safe database and sync operations.
 type Client struct {
 	cfg    Config
 	syncDb *turso.TursoSyncDb
 	db     *sql.DB
 	logger *slog.Logger
-	mu     sync.Mutex
+	mu     sync.RWMutex
 }
 
 // NewClient initializes a TursoSyncDb instance, pulls the latest cloud snapshot,
@@ -69,9 +70,10 @@ func NewClient(ctx context.Context, cfg Config) (*Client, error) {
 		"remote_url", cfg.RemoteURL)
 
 	syncDb, err := turso.NewTursoSyncDb(ctx, turso.TursoSyncDbConfig{
-		Path:      cfg.LocalPath,
-		RemoteUrl: cfg.RemoteURL,
-		AuthToken: cfg.AuthToken,
+		Path:        cfg.LocalPath,
+		RemoteUrl:   cfg.RemoteURL,
+		AuthToken:   cfg.AuthToken,
+		BusyTimeout: 10000,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("init turso sync db: %w", err)
@@ -89,6 +91,12 @@ func NewClient(ctx context.Context, cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connect to local replica db: %w", err)
 	}
+
+	// Single connection ensures committed and rolled-back transactions share a pager
+	// without multi-connection lock contention on the local SQLite replica.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(0)
 
 	client := &Client{
 		cfg:    cfg,
@@ -119,28 +127,110 @@ func (c *Client) DB() *sql.DB {
 	return c.db
 }
 
-// Pull pulls latest changes from Turso Cloud to the local database file.
+// Lock acquires the exclusive write lock on Client for database mutations and sync operations.
+func (c *Client) Lock() {
+	if c != nil {
+		c.mu.Lock()
+	}
+}
+
+// Unlock releases the exclusive write lock on Client.
+func (c *Client) Unlock() {
+	if c != nil {
+		c.mu.Unlock()
+	}
+}
+
+// RLock acquires the shared read lock on Client for database read operations.
+func (c *Client) RLock() {
+	if c != nil {
+		c.mu.RLock()
+	}
+}
+
+// RUnlock releases the shared read lock on Client.
+func (c *Client) RUnlock() {
+	if c != nil {
+		c.mu.RUnlock()
+	}
+}
+
+// Pull pulls latest changes from Turso Cloud to the local database file, retrying on busy conditions.
 func (c *Client) Pull(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	_, err := c.syncDb.Pull(ctx)
-	if err != nil {
-		return fmt.Errorf("turso pull: %w", err)
-	}
-	return nil
+	return c.pullLocked(ctx)
 }
 
-// Push pushes local database changes up to Turso Cloud primary.
+// PullLocked pulls latest changes assuming caller already holds c.mu Lock.
+func (c *Client) PullLocked(ctx context.Context) error {
+	return c.pullLocked(ctx)
+}
+
+func (c *Client) pullLocked(ctx context.Context) error {
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		_, err = c.syncDb.Pull(ctx)
+		if err == nil {
+			return nil
+		}
+		if isDatabaseBusyError(err) && attempt < 2 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(100*(attempt+1)) * time.Millisecond):
+				continue
+			}
+		}
+		break
+	}
+	return fmt.Errorf("turso pull: %w", err)
+}
+
+// Push pushes local database changes up to Turso Cloud primary, retrying on busy conditions.
 func (c *Client) Push(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.pushLocked(ctx)
+}
 
-	err := c.syncDb.Push(ctx)
-	if err != nil {
-		return fmt.Errorf("turso push: %w", err)
+// PushLocked pushes local database changes assuming caller already holds c.mu Lock.
+func (c *Client) PushLocked(ctx context.Context) error {
+	return c.pushLocked(ctx)
+}
+
+func (c *Client) pushLocked(ctx context.Context) error {
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		err = c.syncDb.Push(ctx)
+		if err == nil {
+			return nil
+		}
+		if isDatabaseBusyError(err) && attempt < 2 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(100*(attempt+1)) * time.Millisecond):
+				continue
+			}
+		}
+		break
 	}
-	return nil
+	return fmt.Errorf("turso push: %w", err)
+}
+
+func isDatabaseBusyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "database is busy") || strings.Contains(msg, "busy")
 }
 
 // Close closes the local database connection.

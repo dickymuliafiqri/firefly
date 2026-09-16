@@ -758,3 +758,81 @@ func TestUpstreamCheck_AntigravityCustomModelAccepted(t *testing.T) {
 		t.Fatalf("antigravity custom model must be accepted, got: %s", resp.Message)
 	}
 }
+
+func TestUpstreamCheck_GrokCLIExpiredKey(t *testing.T) {
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"Invalid or expired credentials (auth_kind=bearer, x_xai_token_auth=xai-grok-cli, upstream=PermissionDenied, reason=no auth context)"}`))
+	}))
+	defer mockServer.Close()
+
+	deps := RouterDeps{}
+	s := New(Config{Addr: "0.0.0.0:8080"}, deps, context.Background(), nil)
+
+	payload := UpstreamCheckRequest{
+		Protocol:  "grok-cli",
+		BaseURL:   mockServer.URL + "/v1",
+		APIKey:    "ey-expired-test-token",
+		TimeoutMs: 5000,
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/upstreams/check", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var resp UpstreamCheckResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Healthy {
+		t.Fatalf("expired key must NOT be healthy: %+v", resp)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected status code 401, got %d", resp.StatusCode)
+	}
+	if resp.LatencyMs < 0 {
+		t.Errorf("latency_ms should be non-negative, got %d", resp.LatencyMs)
+	}
+}
+
+func TestUpstreamCheck_GrokCLIRateLimited(t *testing.T) {
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"Rate limit exceeded"}`))
+	}))
+	defer mockServer.Close()
+
+	deps := RouterDeps{}
+	s := New(Config{Addr: "0.0.0.0:8080"}, deps, context.Background(), nil)
+
+	payload := UpstreamCheckRequest{
+		Protocol:  "grok-cli",
+		BaseURL:   mockServer.URL + "/v1",
+		APIKey:    "ey-rate-limited-token",
+		TimeoutMs: 5000,
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/upstreams/check", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var resp UpstreamCheckResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Healthy {
+		t.Fatalf("rate limited key must NOT be healthy: %+v", resp)
+	}
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("expected status code 429, got %d", resp.StatusCode)
+	}
+}
+
