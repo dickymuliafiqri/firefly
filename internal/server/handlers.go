@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tidwall/gjson"
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/httpx"
 	"github.com/dickymuliafiqri/firefly/internal/limits"
@@ -17,6 +16,7 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/openai"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
 	"github.com/dickymuliafiqri/firefly/internal/upstream"
+	"github.com/tidwall/gjson"
 )
 
 // maxRequestBodyBytes caps how much of a client body we buffer. Chat payloads
@@ -388,6 +388,7 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 					DurationMs:    0,
 					Model:         model,
 					Upstream:      target.Upstream.Name,
+					KeyRef:        keyRef,
 					Tenant:        tenant.Name,
 					Stream:        stream,
 					TokensIn:      tokensIn,
@@ -441,6 +442,7 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 			DurationMs:    0,
 			Model:         model,
 			Upstream:      upstreamName,
+			KeyRef:        keyRef,
 			Tenant:        tenant.Name,
 			Stream:        stream,
 			TokensIn:      tokensIn,
@@ -512,6 +514,7 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 			DurationMs:    elapsed.Milliseconds(),
 			Model:         model,
 			Upstream:      upstreamName,
+			KeyRef:        keyRef,
 			Tenant:        tenant.Name,
 			Stream:        stream,
 			TokensIn:      tokensIn,

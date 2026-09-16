@@ -1457,11 +1457,20 @@ export const UpstreamModal = React.memo(function UpstreamModal({
                   ) : (
                     <select
                       value={protocol}
-                      onChange={(e) => setProtocol(e.target.value as Protocol)}
+                      onChange={(e) => {
+                        const p = e.target.value as Protocol;
+                        setProtocol(p);
+                        if (p === 'grok-cli') {
+                          setBaseUrl('https://cli-chat-proxy.grok.com/v1');
+                        } else if (baseUrl === 'https://cli-chat-proxy.grok.com/v1') {
+                          setBaseUrl('https://api.openai.com/v1');
+                        }
+                      }}
                       className="w-full px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] text-neutral-200 font-mono text-xs focus:outline-none focus:border-white/20"
                     >
                       <option value="openai" className="bg-[#090b10]">OpenAI (Wire Compatible SSE / Chat)</option>
                       <option value="anthropic" className="bg-[#090b10]">Anthropic (/v1/messages Translation)</option>
+                      <option value="grok-cli" className="bg-[#090b10]">Grok CLI / Grok Build (xAI OAuth)</option>
                     </select>
                   )}
                   <span className="text-[10px] text-neutral-500">

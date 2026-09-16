@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/dickymuliafiqri/firefly/internal/domain"
+	"github.com/dickymuliafiqri/firefly/internal/grok"
 	"github.com/dickymuliafiqri/firefly/internal/openai"
 	"github.com/tidwall/gjson"
 )
@@ -101,6 +102,8 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 		protocol = "codebuddy-cn"
 	} else if protocol == "codebuddy_intl" {
 		protocol = "codebuddy-intl"
+	} else if protocol == "grok_cli" || protocol == "grok" || protocol == "gcli" || protocol == "grok-build" {
+		protocol = "grok-cli"
 	}
 
 	// If an existing upstream name is provided, resolve missing or masked fields from snapshot
@@ -218,12 +221,14 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 					Message:    fmt.Sprintf("Antigravity Cloud Code supports model %q", reqModel),
 				})
 			} else {
+				// Custom / unlisted models are allowed: the curated list is not
+				// exhaustive, so an unknown id is accepted and routed as-is.
 				w.WriteHeader(http.StatusOK)
 				_ = json.NewEncoder(w).Encode(UpstreamCheckResponse{
-					Healthy:    false,
-					StatusCode: http.StatusBadRequest,
+					Healthy:    true,
+					StatusCode: 200,
 					LatencyMs:  1,
-					Message:    fmt.Sprintf("Antigravity does not support model %q (available: %s)", reqModel, strings.Join(models, ", ")),
+					Message:    fmt.Sprintf("Antigravity accepts custom model %q (not in the curated list; routed as-is)", reqModel),
 				})
 			}
 			return
@@ -235,6 +240,72 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 			StatusCode: 200,
 			LatencyMs:  1,
 			Message:    fmt.Sprintf("Antigravity Cloud Code upstream (%d models available)", len(models)),
+			ModelCount: len(models),
+			Models:     models,
+		})
+		return
+	}
+
+	if protocol == "grok-cli" {
+		// Prefer live discovery from the Grok CLI /models endpoint when a bearer
+		// token is available; fall back to the curated static list otherwise (or on
+		// any failure). apiKey has already been resolved from the key ring / OAuth above.
+		staticModels := grok.SupportedModels()
+		models := staticModels
+		discovered := false
+		if strings.TrimSpace(apiKey) != "" {
+			client := &http.Client{
+				Timeout: timeout,
+				CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+					return http.ErrUseLastResponse
+				},
+			}
+			if live, err := grok.FetchModels(ctx, client, baseURL, apiKey); err == nil && len(live) > 0 {
+				models = live
+				discovered = true
+			} else if err != nil {
+				deps.Logger.Debug("grok-cli live model discovery failed; using static list", "err", err)
+			}
+		}
+
+		source := "curated"
+		if discovered {
+			source = "live"
+		}
+
+		if reqModel := strings.TrimSpace(req.Model); reqModel != "" {
+			// A model is "supported" if the live/curated list contains it; any other
+			// id is still accepted as a custom model (routed to grok as-is).
+			known := false
+			for _, m := range models {
+				if strings.EqualFold(m, reqModel) {
+					known = true
+					break
+				}
+			}
+			if !known {
+				known = grok.SupportsModel(reqModel)
+			}
+			msg := fmt.Sprintf("Grok CLI supports model %q", reqModel)
+			if !known {
+				msg = fmt.Sprintf("Grok CLI accepts custom model %q (not in the %s list; routed as-is)", reqModel, source)
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(UpstreamCheckResponse{
+				Healthy:    true,
+				StatusCode: 200,
+				LatencyMs:  1,
+				Message:    msg,
+			})
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(UpstreamCheckResponse{
+			Healthy:    true,
+			StatusCode: 200,
+			LatencyMs:  1,
+			Message:    fmt.Sprintf("Grok CLI upstream (%d models available, %s)", len(models), source),
 			ModelCount: len(models),
 			Models:     models,
 		})

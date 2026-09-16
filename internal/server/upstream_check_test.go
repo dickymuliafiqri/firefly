@@ -476,7 +476,8 @@ func TestUpstreamCheck_Model_Antigravity(t *testing.T) {
 		t.Errorf("expected gemini-2.5-pro to be healthy, got %v", res)
 	}
 
-	// Invalid Antigravity model
+	// Custom / unlisted Antigravity model: now ACCEPTED (custom models allowed),
+	// not rejected. The curated list is not exhaustive.
 	payload = UpstreamCheckRequest{
 		Protocol: "antigravity",
 		BaseURL:  "https://cloudsandbox-pa.googleapis.com",
@@ -488,8 +489,8 @@ func TestUpstreamCheck_Model_Antigravity(t *testing.T) {
 	s.Handler().ServeHTTP(w, req)
 
 	_ = json.NewDecoder(w.Body).Decode(&res)
-	if res.Healthy || res.StatusCode != 400 {
-		t.Errorf("expected random-nonexistent-model to be rejected with 400, got %v", res)
+	if !res.Healthy || res.StatusCode == http.StatusBadRequest {
+		t.Errorf("expected custom model to be accepted (healthy, no 400), got %v", res)
 	}
 }
 
@@ -571,4 +572,189 @@ func TestUpstreamCheck_KeyRefResolutionFromSnapshot(t *testing.T) {
 	}
 }
 
+func TestUpstreamCheck_GrokCLIModelList(t *testing.T) {
+	deps := RouterDeps{}
+	s := New(Config{Addr: "0.0.0.0:8080"}, deps, context.Background(), nil)
 
+	// No base_url reachability needed: grok-cli returns a static curated list.
+	payload := UpstreamCheckRequest{
+		Protocol: "grok-cli",
+		BaseURL:  "https://cli-chat-proxy.grok.com/v1",
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/upstreams/check", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("grok-cli probe status = %d, want 200", w.Code)
+	}
+	var resp UpstreamCheckResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !resp.Healthy {
+		t.Fatalf("grok-cli probe not healthy: %s", resp.Message)
+	}
+	if resp.ModelCount == 0 || len(resp.Models) == 0 {
+		t.Fatalf("grok-cli probe returned no models: %+v", resp)
+	}
+	found := false
+	for _, m := range resp.Models {
+		if m == "grok-build" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected grok-build in models, got %v", resp.Models)
+	}
+}
+
+func TestUpstreamCheck_GrokCLILiveModelDiscovery(t *testing.T) {
+	// A mock Grok CLI server that serves /models when the bearer token is present.
+	var gotAuth, gotPath string
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"grok-build"},{"id":"grok-4.5"},{"id":"grok-live-only"}]}`))
+	}))
+	defer mockServer.Close()
+
+	keySlot := &domain.KeySlot{Ref: "grok-key-1156", Secret: "ey-live-access-token"}
+	up := &domain.Upstream{
+		Name:     "grok",
+		Protocol: domain.ProtocolGrokCLI,
+		BaseURL:  mockServer.URL + "/v1",
+		KeyRing:  domain.NewKeyRing(domain.KeyStrategyRoundRobin, []*domain.KeySlot{keySlot}),
+	}
+	snap := domain.NewCatalogSnapshot(
+		1,
+		map[string]*domain.Upstream{"grok": up},
+		[]string{"grok"},
+		map[string]*domain.ModelEntry{},
+		nil,
+		map[string]*domain.Tenant{},
+		nil,
+	)
+
+	deps := RouterDeps{Snapshots: fakeProvider{snap}}
+	s := New(Config{Addr: "0.0.0.0:8080"}, deps, context.Background(), nil)
+
+	// Existing upstream by name; the token is resolved from the key ring.
+	payload := UpstreamCheckRequest{
+		Name:      "grok",
+		Protocol:  "grok-cli",
+		TimeoutMs: 5000,
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/upstreams/check", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("live discovery probe status = %d, want 200", w.Code)
+	}
+	var resp UpstreamCheckResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !resp.Healthy {
+		t.Fatalf("live discovery not healthy: %s", resp.Message)
+	}
+	// The live-only model proves the list came from the upstream, not the static set.
+	found := false
+	for _, m := range resp.Models {
+		if m == "grok-live-only" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected live-discovered model in list, got %v (msg: %s)", resp.Models, resp.Message)
+	}
+	if gotAuth != "Bearer ey-live-access-token" {
+		t.Errorf("expected /models called with resolved bearer, got %q", gotAuth)
+	}
+	if gotPath != "/v1/models" {
+		t.Errorf("expected /v1/models path, got %q", gotPath)
+	}
+}
+
+func TestUpstreamCheck_GrokCLIProtocolAlias(t *testing.T) {
+	deps := RouterDeps{}
+	s := New(Config{Addr: "0.0.0.0:8080"}, deps, context.Background(), nil)
+
+	// The "grok" alias (as stored by the harvester provider) must resolve to grok-cli.
+	payload := UpstreamCheckRequest{
+		Protocol: "grok",
+		BaseURL:  "https://cli-chat-proxy.grok.com/v1",
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/upstreams/check", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("grok alias probe status = %d, want 200", w.Code)
+	}
+	var resp UpstreamCheckResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !resp.Healthy || len(resp.Models) == 0 {
+		t.Fatalf("grok alias probe failed: %+v", resp)
+	}
+}
+
+func TestUpstreamCheck_GrokCLICustomModelAccepted(t *testing.T) {
+	deps := RouterDeps{}
+	s := New(Config{Addr: "0.0.0.0:8080"}, deps, context.Background(), nil)
+
+	// A model not in the curated list must be ACCEPTED as a custom model, not rejected.
+	payload := UpstreamCheckRequest{
+		Protocol: "grok-cli",
+		BaseURL:  "https://cli-chat-proxy.grok.com/v1",
+		Model:    "grok-5-preview",
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/upstreams/check", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("custom-model probe status = %d, want 200", w.Code)
+	}
+	var resp UpstreamCheckResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !resp.Healthy {
+		t.Fatalf("custom model must be accepted (healthy), got: %s", resp.Message)
+	}
+	if resp.StatusCode == http.StatusBadRequest {
+		t.Fatalf("custom model must not return 400: %+v", resp)
+	}
+}
+
+func TestUpstreamCheck_AntigravityCustomModelAccepted(t *testing.T) {
+	deps := RouterDeps{}
+	s := New(Config{Addr: "0.0.0.0:8080"}, deps, context.Background(), nil)
+
+	payload := UpstreamCheckRequest{
+		Protocol: "antigravity",
+		BaseURL:  "https://cloudsandbox-pa.googleapis.com",
+		Model:    "gemini-9-ultra",
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/upstreams/check", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+
+	var resp UpstreamCheckResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if !resp.Healthy {
+		t.Fatalf("antigravity custom model must be accepted, got: %s", resp.Message)
+	}
+}

@@ -10,6 +10,7 @@ type RequestLog struct {
 	DurationMs    int64   `json:"durationMs"`
 	Model         string  `json:"model"`
 	Upstream      string  `json:"upstream"`
+	KeyRef        string  `json:"keyRef,omitempty"`
 	Tenant        string  `json:"tenant"`
 	Stream        bool    `json:"stream"`
 	TokensIn      int     `json:"tokensIn"`

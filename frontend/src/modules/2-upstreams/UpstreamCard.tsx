@@ -52,6 +52,8 @@ export const UpstreamCard = React.memo(function UpstreamCard({
         return 'CODEBUDDY (INTL)';
       case 'anthropic':
         return 'ANTHROPIC';
+      case 'grok-cli':
+        return 'GROK CLI';
       default:
         return 'OPENAI';
     }

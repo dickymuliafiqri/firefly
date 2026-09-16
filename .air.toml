@@ -39,7 +39,8 @@ tmp_dir = "tmp"
     ".gemini",
     ".idea",
     ".vscode",
-    ".git"
+    ".git",
+    "configs"
   ]
   # Exclude volatile runtime state and telemetry files that frequently mutate
   exclude_file = [

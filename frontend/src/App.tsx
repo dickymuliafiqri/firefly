@@ -308,6 +308,11 @@ export default function App() {
             <div className="text-neutral-400">
               Host: <span className="text-neutral-200">{String(drawerPayload?.upstream || '')}</span>
             </div>
+            {drawerPayload?.keyRef ? (
+              <div className="text-neutral-400">
+                Credential: <span className="text-neutral-200">{String(drawerPayload.keyRef)}</span>
+              </div>
+            ) : null}
           </div>
 
           <div className="p-3.5 rounded-xl bg-transparent border border-white/[0.06] flex flex-col gap-1.5">

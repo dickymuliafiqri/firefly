@@ -37,8 +37,10 @@ const (
 	ProtocolCodeBuddyCN Protocol = "codebuddy-cn"
 	// ProtocolCodeBuddyIntl is the CodeBuddy International (codebuddy.ai) wire format.
 	ProtocolCodeBuddyIntl Protocol = "codebuddy-intl"
+	// ProtocolGrokCLI is the Grok CLI / Grok Build wire format (OpenAI Responses API
+	// on cli-chat-proxy.grok.com, authenticated with an xAI OAuth bearer token).
+	ProtocolGrokCLI Protocol = "grok-cli"
 )
-
 
 // KeyStrategy defines how a KeyRing selects credentials from its pool.
 type KeyStrategy string
@@ -53,7 +55,7 @@ const (
 // It tracks in-flight concurrency and cooldown status atomically.
 type KeySlot struct {
 	Ref               string
-	APIKeyID          int64 // Database row ID in api_keys (if loaded from Turso)
+	APIKeyID          int64  // Database row ID in api_keys (if loaded from Turso)
 	Secret            string // Resolved secret plaintext from ENV
 	RPS               float64
 	MaxConcurrent     int

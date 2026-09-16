@@ -183,10 +183,12 @@ func translateUpstream(i int, d UpstreamDTO, envLookup func(string) (string, boo
 		proto = string(domain.ProtocolCodeBuddyCN)
 	} else if proto == "codebuddy_intl" {
 		proto = string(domain.ProtocolCodeBuddyIntl)
+	} else if proto == "grok_cli" || proto == "grok" || proto == "gcli" || proto == "grok-build" {
+		proto = string(domain.ProtocolGrokCLI)
 	}
 
 	switch domain.Protocol(proto) {
-	case domain.ProtocolOpenAI, domain.ProtocolAnthropic, domain.ProtocolAntigravity, domain.ProtocolCline, domain.ProtocolCodeBuddyCN, domain.ProtocolCodeBuddyIntl:
+	case domain.ProtocolOpenAI, domain.ProtocolAnthropic, domain.ProtocolAntigravity, domain.ProtocolCline, domain.ProtocolCodeBuddyCN, domain.ProtocolCodeBuddyIntl, domain.ProtocolGrokCLI:
 		// Valid protocol
 	default:
 		return nil, &ValidationError{Field: fmt.Sprintf("upstreams[%d].protocol", i), Msg: "unsupported protocol: " + proto}

@@ -1,0 +1,33 @@
+# VCS / CI
+.git
+.github
+.gitignore
+
+# Local runtime state & secrets (never bake into the image)
+configs/
+!configs.example/
+tmp/
+bin/
+data/
+*.log
+build-errors.log
+
+# Prebuilt binaries
+firefly
+firefly.exe
+loadtest
+
+# Frontend deps & any stale local build (dist is rebuilt in the frontend stage)
+frontend/node_modules/
+frontend/dist/
+
+# Editor / OS cruft
+.vscode/
+.idea/
+.gemini/
+.DS_Store
+
+# Docs & dev tooling not needed for the build
+.air.toml
+Dockerfile
+.dockerignore

@@ -80,6 +80,14 @@ export const LiveHistoryRow = React.memo(function LiveHistoryRow({
         <span className="text-neutral-500 text-[11px] tabular-nums">{timeStr}</span>
         <span className="text-neutral-200 font-medium text-[12px]">{log.upstream}</span>
         <span className="text-neutral-500 text-[11px] truncate">{log.model}</span>
+        {log.keyRef ? (
+          <span
+            className="text-neutral-600 text-[10px] truncate"
+            title={`Credential used: ${log.keyRef}`}
+          >
+            key:{log.keyRef}
+          </span>
+        ) : null}
       </div>
       <div className="flex items-baseline gap-2 flex-shrink-0 text-[11px] tabular-nums">
         {isInFlight ? (

@@ -25,6 +25,7 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/cline"
 	"github.com/dickymuliafiqri/firefly/internal/codebuddy"
 	"github.com/dickymuliafiqri/firefly/internal/domain"
+	"github.com/dickymuliafiqri/firefly/internal/grok"
 	"github.com/dickymuliafiqri/firefly/internal/oauth"
 	antigravityProvider "github.com/dickymuliafiqri/firefly/internal/oauth/providers/antigravity"
 	clineProvider "github.com/dickymuliafiqri/firefly/internal/oauth/providers/cline"
@@ -397,6 +398,18 @@ func run() error {
 	}
 	if err := adapterRegistry.Register(domain.ProtocolCodeBuddyIntl, codebuddyAdapter); err != nil {
 		return fmt.Errorf("register codebuddy-intl adapter: %w", err)
+	}
+	grokAdapter := grok.NewAdapter(pool, breakers, grok.Config{
+		TokenResolver:    oauthMgr.ResolveToken,
+		SecretLookup:     os.LookupEnv,
+		Retry:            retry,
+		Logger:           logger,
+		MaxBufferedBytes: 32 << 20,
+		Metrics:          mx,
+		Notifier:         usageFlusher,
+	})
+	if err := adapterRegistry.Register(domain.ProtocolGrokCLI, grokAdapter); err != nil {
+		return fmt.Errorf("register grok-cli adapter: %w", err)
 	}
 
 	// 4. Analytics, Token Ledger, and Request History Persistent Storage.

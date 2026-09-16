@@ -9,7 +9,8 @@ export type Protocol =
   | 'antigravity'
   | 'cline'
   | 'codebuddy_cn'
-  | 'codebuddy_intl';
+  | 'codebuddy_intl'
+  | 'grok-cli';
 export type KeyStrategy = 'round_robin' | 'least_inflight';
 export type BreakerState = 'CLOSED' | 'OPEN' | 'HALF-OPEN';
 export type TenantStatus = 'active' | 'suspended' | 'revoked';
@@ -215,6 +216,7 @@ export interface LiveConnectionLog {
   durationMs: number;
   model: string;
   upstream: string;
+  keyRef?: string;
   tenant: string;
   stream: boolean;
   tokensIn?: number;
