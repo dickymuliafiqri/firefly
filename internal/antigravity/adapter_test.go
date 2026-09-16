@@ -2,7 +2,9 @@ package antigravity
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -270,3 +272,63 @@ func TestAdapter_Forward_429CooldownAndFailover(t *testing.T) {
 	// First key should be in cooldown
 	assert.True(t, ring.Slots[0].IsInCooldown(time.Now().UnixNano()))
 }
+
+func TestAdapter_Forward_ProjectIDResolution(t *testing.T) {
+	t.Parallel()
+
+	var receivedProject string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		receivedProject = gjson.GetBytes(body, "project").String()
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"response": {"candidates": [{"content": {"parts": [{"text": "OK"}]}}]}}`))
+	}))
+	defer server.Close()
+
+	breaker := &mockBreaker{}
+	pool := &mockClientPool{client: server.Client()}
+
+	adapter := NewAdapter(pool, breaker, Config{
+		TokenResolver: func(ctx context.Context, ref string) (string, error) {
+			return "tok-123", nil
+		},
+		ConnectionLookup: func(ctx context.Context, ref string) (*domain.OAuthConnection, error) {
+			if ref == "oauth:my-ag-conn" {
+				return &domain.OAuthConnection{
+					ID: "my-ag-conn",
+					ProviderSpecificData: map[string]string{
+						"project_id": "google-companion-project-888",
+					},
+				}, nil
+			}
+			return nil, errors.New("not found")
+		},
+	})
+
+	u := &domain.Upstream{
+		Name:          "antigravity-proj-test",
+		BaseURL:       server.URL,
+		CredentialRef: "oauth:my-ag-conn",
+	}
+	target := &domain.Target{
+		Upstream:      u,
+		UpstreamModel: "gemini-3.8-flash-high",
+		CredentialRef: "oauth:my-ag-conn",
+	}
+
+	reqBody := []byte(`{"model": "gemini-3.8-flash-high", "messages": [{"role": "user", "content": "Hi"}]}`)
+	rec := httptest.NewRecorder()
+	req := ports.ForwardRequest{
+		Method:    http.MethodPost,
+		Path:      "/v1/chat/completions",
+		BodyBytes: reqBody,
+	}
+
+	err := adapter.Forward(context.Background(), target, req, rec)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "google-companion-project-888", receivedProject)
+}
+

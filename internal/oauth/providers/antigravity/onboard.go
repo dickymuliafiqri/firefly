@@ -95,13 +95,19 @@ func LoadCodeAssist(ctx context.Context, client *http.Client, accessToken, prodB
 	}, nil
 }
 
+// DefaultOnboardMaxAttempts matches 9router's anti-abuse protection threshold.
+const DefaultOnboardMaxAttempts = 2
+
+// DefaultOnboardBaseDelay is the inter-attempt backoff delay.
+const DefaultOnboardBaseDelay = 12 * time.Second
+
 // OnboardUser polls Google Cloud Code PA (PROD) until project onboarding completes.
 func OnboardUser(ctx context.Context, client *http.Client, accessToken, prodBaseURL, tierID string, maxAttempts int) (string, error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
 	if maxAttempts <= 0 {
-		maxAttempts = 10
+		maxAttempts = DefaultOnboardMaxAttempts
 	}
 	url := strings.TrimRight(prodBaseURL, "/") + "/v1internal:onboardUser"
 
@@ -152,15 +158,18 @@ func OnboardUser(ctx context.Context, client *http.Client, accessToken, prodBase
 			return strings.TrimSpace(projectID), nil
 		}
 
-		// Wait before polling again
-		timer := time.NewTimer(5 * time.Second)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return "", ctx.Err()
-		case <-timer.C:
+		if attempt < maxAttempts {
+			delay := DefaultOnboardBaseDelay
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return "", ctx.Err()
+			case <-timer.C:
+			}
 		}
 	}
 
 	return "", errors.New("onboardUser timed out waiting for completion")
 }
+

@@ -389,3 +389,13 @@ func (m *Manager) ResolveToken(ctx context.Context, ref string) (string, error) 
 	connID := strings.TrimPrefix(ref, "oauth:")
 	return m.TokenSource(connID).Token(ctx)
 }
+
+// ResolveConnection resolves an OAuth connection matching the ref (e.g. "oauth:antigravity" or "antigravity").
+func (m *Manager) ResolveConnection(ctx context.Context, ref string) (*domain.OAuthConnection, error) {
+	if m.store == nil {
+		return nil, errors.New("no token store configured")
+	}
+	connID := strings.TrimPrefix(ref, "oauth:")
+	return m.store.Get(ctx, connID)
+}
+

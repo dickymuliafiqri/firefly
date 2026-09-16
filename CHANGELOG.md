@@ -5,6 +5,21 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.2] - 2026-09-16
+
+### Fixed
+- **Config Watcher Burst Debounce Coalescing (`internal/watch`)**:
+  - Fixed an issue where `w.debounce` did not actively drain incoming file-change triggers while waiting for the quiet window timer, causing bursts of rapid file writes in CI runners to execute multiple spurious reloads (`burst of 4 writes caused 3 reloads; debounce did not coalesce`) instead of coalescing into one reload.
+  - Implemented an active quiet-window timer drain and reset loop that restarts the debounce timer upon every subsequent file change, ensuring exactly one clean reload per burst.
+
+### Changed & Improved
+- **Google Antigravity OAuth & Runtime Parity with 9Router (`internal/oauth`, `internal/antigravity`)**:
+  - Made `OnboardUser` non-blocking via a detached background goroutine (`go func() { ... }()`), preventing OAuth code exchange callback timeouts during browser authentication.
+  - Added Google anti-abuse rate limit protection matching 9router PR #3813 (`DefaultOnboardMaxAttempts = 2`, `DefaultOnboardBaseDelay = 12s` with random jitter).
+  - Added `ResolveConnection` to `oauth.Manager` to allow protocol adapters to resolve stored connection metadata without storage coupling.
+  - Updated `internal/antigravity.Adapter` to dynamically resolve and propagate the authentic Google Cloud Companion `project_id` from OAuth connection credentials into outbound inference requests, with automatic re-resolution on KeySlot failover.
+  - Added Antigravity upstream (`google-antigravity`) and model definitions (`gemini-3.8-flash`, `gemini-3.7-flash`, `claude-sonnet-4-6`) to `configs.example/upstreams.json` and `configs.example/models.json`.
+
 ## [1.3.1] - 2026-09-16
 
 ### Fixed

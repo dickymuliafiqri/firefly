@@ -145,24 +145,42 @@ func (w *Watcher) signal(ch chan<- trigger, reason string) {
 // timer stopped, with a race check) before reuse, and a stale tick leaking into
 // the next window would fire a premature reload. A per-burst timer sidesteps
 // that contract entirely and is cheap (one alloc per event burst, not per file).
+// debounce waits for quiet time before invoking reload.
+//
+// It coalesces a burst of file-change triggers: each new trigger restarts the
+// quiet window, and reload runs once when the window elapses.
 func (w *Watcher) debounce(ctx context.Context, in <-chan trigger, reload func(context.Context) error) {
 	for {
-		var timer *time.Timer
 		select {
 		case <-ctx.Done():
 			return
 		case t := <-in:
-			timer = time.NewTimer(w.opts.Debounce)
-			select {
-			case <-timer.C:
-				if err := reload(ctx); err != nil {
-					w.logger.Error("config reload failed; keeping previous snapshot", "reason", t.reason, "err", err)
-				} else {
-					w.logger.Info("config reloaded", "reason", t.reason, "generation", w.generation())
+			timer := time.NewTimer(w.opts.Debounce)
+			lastReason := t.reason
+		drain:
+			for {
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				case next := <-in:
+					lastReason = next.reason
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
+					timer.Reset(w.opts.Debounce)
+				case <-timer.C:
+					break drain
 				}
-			case <-ctx.Done():
-				timer.Stop()
-				return
+			}
+
+			if err := reload(ctx); err != nil {
+				w.logger.Error("config reload failed; keeping previous snapshot", "reason", lastReason, "err", err)
+			} else {
+				w.logger.Info("config reloaded", "reason", lastReason, "generation", w.generation())
 			}
 		}
 	}

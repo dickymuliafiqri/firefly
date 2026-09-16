@@ -48,11 +48,11 @@ Before modifying or adding code to Firefly, every AI Agent **must understand and
 | `analytics` | `internal/analytics/` | Persistent disk store for request execution logs, token ledger metrics, and manual/automatic circuit breaker overrides. |
 | `auth` | `internal/auth/` | Master password vault, PBKDF2/salted SHA-256 session token manager, and tenant key verification. |
 | `oauth` | `internal/oauth/` | Third-party AI OAuth manager, token refresh lifecycle, encrypted JSON credential vault (`oauth.json`), and provider implementations. |
-| `antigravity` | `internal/antigravity/` | Google Antigravity Cloud Code adapter, translating OpenAI requests to Google Cloud Code internal protobuf/JSON protocols. |
+| `antigravity` | `internal/antigravity/` | Google Antigravity Cloud Code adapter, translating OpenAI requests to Google Cloud Code internal protobuf/JSON protocols with authentic Google Cloud companion project ID binding and non-blocking OAuth onboarding. |
 | `cline` | `internal/cline/` | Cline OAuth adapter, request rewriting with `HTTP-Referer`/`X-Title` headers, envelope unwrapping, and SSE streaming relay. |
 | `codebuddy` | `internal/codebuddy/` | CodeBuddy (CN & Intl) adapter supporting device authorization flows, request forwarding, and SSE relays. |
 | `grok` | `internal/grok/` | Grok CLI / Grok Build adapter (`grok-cli` protocol) for the xAI Grok CLI inference API (`cli-chat-proxy.grok.com/v1/responses`, OpenAI Responses API). Authenticates with an xAI OAuth bearer token (harvested into the key ring as `KeySlot.Secret`), translates OpenAI Chat Completions → Responses `input`, sends the `x-grok-*` client fingerprint headers, and translates the Responses-API SSE stream back to OpenAI SSE/JSON. Tokens are harvester-managed key-pool credentials, so 401/403/429 stay in Layer 1 (cooldown/failover) and never trip the breaker. |
-| `watch` | `internal/watch/` | File watcher combining `fsnotify`, periodic polling, and SIGHUP signals for atomic configuration hot-reloading. |
+| `watch` | `internal/watch/` | File watcher combining `fsnotify`, periodic polling, and SIGHUP signals for atomic configuration hot-reloading with quiet-window debounce coalescing. |
 | `turso` | `internal/turso/` | Optional Turso/libSQL backing store: catalog + settings persistence (`SaveSettings`/`LoadSettings`), provider/key harvester, periodic syncer, and the usage flusher that persists key lifecycle actions. Deletes are gated by authoritative `manage_*` flags so a partial/stale save never wipes the catalog. Coordinated via `Client.Lock`/`RLock` with single-connection pooling, exponential busy backoff, and self-healing rollback to prevent stale transaction deadlocks. |
 
 ---

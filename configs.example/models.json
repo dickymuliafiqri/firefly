@@ -5,6 +5,24 @@
       "upstream": "openai-primary",
       "upstream_model": "gpt-4o-mini",
       "enabled": true
+    },
+    {
+      "public_name": "gemini-3.8-flash",
+      "upstream": "google-antigravity",
+      "upstream_model": "gemini-3.8-flash-medium(medium)",
+      "enabled": true
+    },
+    {
+      "public_name": "gemini-3.7-flash",
+      "upstream": "google-antigravity",
+      "upstream_model": "gemini-3.7-flash-tiered(medium)",
+      "enabled": true
+    },
+    {
+      "public_name": "claude-sonnet-4-6",
+      "upstream": "google-antigravity",
+      "upstream_model": "claude-sonnet-4-6",
+      "enabled": true
     }
   ]
 }

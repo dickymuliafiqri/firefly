@@ -7,6 +7,14 @@
       "credential_ref": "OPENAI_API_KEY",
       "key_strategy": "round_robin",
       "enabled": true
+    },
+    {
+      "name": "google-antigravity",
+      "protocol": "antigravity",
+      "base_url": "https://daily-cloudcode-pa.googleapis.com",
+      "credential_ref": "oauth:antigravity",
+      "key_strategy": "least_inflight",
+      "enabled": true
     }
   ]
 }

@@ -251,13 +251,16 @@ func (p *Provider) ExchangeCode(ctx context.Context, code string, session *ports
 		}
 	}
 
-	// 3. If Project ID not found, trigger onboarding
-	if projectID == "" {
-		onboardedProj, oErr := OnboardUser(ctx, p.httpClient, tokResp.AccessToken, p.prodBaseURL, tierID, 10)
-		if oErr == nil && onboardedProj != "" {
-			projectID = onboardedProj
-		}
-	}
+	// 3. Fire-and-forget background onboarding (matching 9router PR #3813).
+	// Non-blocking so OAuth code exchange returns immediately to client.
+	client := p.httpClient
+	baseURL := p.prodBaseURL
+	token := tokResp.AccessToken
+	go func() {
+		bgCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		_, _ = OnboardUser(bgCtx, client, token, baseURL, tierID, DefaultOnboardMaxAttempts)
+	}()
 
 	now := time.Now()
 	expiresAt := now.Add(time.Duration(tokResp.ExpiresIn) * time.Second)

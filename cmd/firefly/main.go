@@ -362,6 +362,7 @@ func run() error {
 
 	antigravityAdapter := antigravity.NewAdapter(pool, breakers, antigravity.Config{
 		TokenResolver:    oauthMgr.ResolveToken,
+		ConnectionLookup: oauthMgr.ResolveConnection,
 		SecretLookup:     os.LookupEnv,
 		Retry:            retry,
 		Logger:           logger,

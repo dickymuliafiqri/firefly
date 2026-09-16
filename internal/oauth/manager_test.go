@@ -224,3 +224,42 @@ func TestManager_StatelessCallback_And_Polling(t *testing.T) {
 		t.Fatal("expected error on consumed session, got nil")
 	}
 }
+
+func TestManager_ResolveConnection(t *testing.T) {
+	store, _ := NewStore("")
+	mgr := NewManager(store)
+	ctx := context.Background()
+
+	conn := &domain.OAuthConnection{
+		ID:       "ag-test-conn",
+		Provider: "antigravity",
+		Token: domain.OAuthToken{
+			AccessToken: "ya29.sample-token",
+		},
+		ProviderSpecificData: map[string]string{
+			"project_id": "google-companion-123",
+		},
+	}
+	if err := store.Save(ctx, conn); err != nil {
+		t.Fatalf("Save error: %v", err)
+	}
+
+	// 1. Resolve with oauth: prefix
+	resolved, err := mgr.ResolveConnection(ctx, "oauth:ag-test-conn")
+	if err != nil {
+		t.Fatalf("ResolveConnection error: %v", err)
+	}
+	if resolved.ID != "ag-test-conn" || resolved.ProviderSpecificData["project_id"] != "google-companion-123" {
+		t.Fatalf("unexpected connection: %+v", resolved)
+	}
+
+	// 2. Resolve without prefix
+	resolved2, err := mgr.ResolveConnection(ctx, "ag-test-conn")
+	if err != nil {
+		t.Fatalf("ResolveConnection without prefix error: %v", err)
+	}
+	if resolved2.ID != "ag-test-conn" {
+		t.Fatalf("unexpected connection: %+v", resolved2)
+	}
+}
+

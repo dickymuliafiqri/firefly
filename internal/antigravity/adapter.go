@@ -41,9 +41,13 @@ type KeyMetricsObserver interface {
 // TokenResolver resolves dynamic tokens, such as OAuth connection access tokens.
 type TokenResolver func(ctx context.Context, ref string) (string, error)
 
+// ConnectionLookup yields the OAuth connection metadata matching a reference.
+type ConnectionLookup func(ctx context.Context, ref string) (*domain.OAuthConnection, error)
+
 // Config tunes the Antigravity adapter.
 type Config struct {
 	TokenResolver    TokenResolver
+	ConnectionLookup ConnectionLookup
 	SecretLookup     func(ref string) (string, bool)
 	Retry            openai.RetryPolicy
 	Logger           *slog.Logger
@@ -111,7 +115,7 @@ func (a *Adapter) Forward(ctx context.Context, t *domain.Target, req ports.Forwa
 		bodyBytes = b
 	}
 
-	projectID := GenerateProjectID()
+	projectID := a.resolveProjectID(ctx, u, t)
 
 	antigravityBody, err := TranslateOpenAIToAntigravity(bodyBytes, t.UpstreamModel, projectID)
 	if err != nil {
@@ -161,6 +165,13 @@ func (a *Adapter) Forward(ctx context.Context, t *domain.Target, req ports.Forwa
 			return res.err
 		case decision.Failover:
 			lastErr = &openai.ErrUpstream{Status: res.status, Retried: true, Body: res.body, Header: res.headers}
+			newProjectID := a.resolveProjectID(ctx, u, t)
+			if newProjectID != projectID {
+				projectID = newProjectID
+				if updatedBody, uErr := TranslateOpenAIToAntigravity(bodyBytes, t.UpstreamModel, projectID); uErr == nil {
+					antigravityBody = updatedBody
+				}
+			}
 			continue
 		case decision.Relay:
 			relayError(respW, res.status, res.headers, res.body)
@@ -207,6 +218,21 @@ func (a *Adapter) resolveToken(ctx context.Context, u *domain.Upstream, t *domai
 	}
 
 	return "", false
+}
+
+func (a *Adapter) resolveProjectID(ctx context.Context, u *domain.Upstream, t *domain.Target) string {
+	if a.cfg.ConnectionLookup != nil {
+		ref := u.CredentialRef
+		if t != nil && t.CredentialRef != "" {
+			ref = t.CredentialRef
+		}
+		if conn, err := a.cfg.ConnectionLookup(ctx, ref); err == nil && conn != nil {
+			if pid := conn.ProviderSpecificData["project_id"]; pid != "" {
+				return pid
+			}
+		}
+	}
+	return GenerateProjectID()
 }
 
 func (a *Adapter) attempt(ctx context.Context, u *domain.Upstream, req ports.ForwardRequest, t *domain.Target, body []byte, w http.ResponseWriter, attempt int) attemptResult {
