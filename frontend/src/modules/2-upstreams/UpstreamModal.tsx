@@ -9,6 +9,7 @@ import {
   useTursoProvidersQuery,
   useSettingsQuery,
   checkUpstreamHealth,
+  fetchUpstreamModels,
   fetchTursoProviderKeys,
   type UpstreamCheckResponse,
 } from '@/services/api';
@@ -23,6 +24,7 @@ import {
   StopCircle,
   UserCheck,
   Database,
+  Play,
 } from 'lucide-react';
 import { cn, copyToClipboard } from '@/lib/utils';
 import { OAuthConnectDialog } from './OAuthConnectDialog';
@@ -76,6 +78,17 @@ export interface KeyItem {
   statusCode?: number;
   latencyMs?: number;
   message?: string;
+}
+
+export type ModelBatchStatus = 'idle' | 'testing' | 'success' | 'failed';
+
+export interface ModelBatchItemResult {
+  model: string;
+  status: ModelBatchStatus;
+  statusCode?: number;
+  latencyMs?: number;
+  errorMessage?: string;
+  testedAt?: number;
 }
 
 type TabType = 'general' | 'keys' | 'models' | 'load_balancing' | 'network';
@@ -172,9 +185,9 @@ const KeyRowItem = React.memo(function KeyRowItem({
         ) : item.status === 'valid' ? (
           <span
             className="text-[10px] text-emerald-400 font-mono tabular-nums"
-            title={item.message || 'Key valid'}
+            title={item.message || 'Key active and verified via inference'}
           >
-            valid · {item.latencyMs ?? 0}ms
+            Active · {item.latencyMs ?? 0}ms
           </span>
         ) : item.status === 'invalid' ? (
           <span
@@ -229,14 +242,61 @@ const KeyRowItem = React.memo(function KeyRowItem({
 });
 
 /**
+ * Pick optimal free/lightweight probe model from a list of discovered models.
+ * Prioritizes:
+ * 1. Contains 'free' (case-insensitive, e.g. 'meta-llama/llama-3-8b-instruct:free')
+ * 2. Contains 'flash' (case-insensitive, e.g. 'gemini-2.0-flash', 'gemini-1.5-flash')
+ * 3. Fallback: contains 'mini', 'haiku', 'chat' (excluding embedding/moderation models)
+ * 4. Fallback: first non-embedding model
+ */
+export function pickOptimalProbeModel(models: string[]): string | undefined {
+  if (!models || models.length === 0) return undefined;
+
+  // Filter out non-chat models (embeddings, moderation, rerank)
+  const chatCandidates = models.filter((m) => {
+    const lower = m.toLowerCase();
+    return !lower.includes('embed') && !lower.includes('moderation') && !lower.includes('rerank');
+  });
+  const candidates = chatCandidates.length > 0 ? chatCandidates : models;
+
+  // 1. Primary choice: keyword 'free'
+  const freeModel = candidates.find((m) => m.toLowerCase().includes('free'));
+  if (freeModel) return freeModel;
+
+  // 2. Secondary choice: keyword 'flash'
+  const flashModel = candidates.find((m) => m.toLowerCase().includes('flash'));
+  if (flashModel) return flashModel;
+
+  // 3. Fallbacks: lightweight standard models
+  const miniModel = candidates.find((m) => m.toLowerCase().includes('mini'));
+  if (miniModel) return miniModel;
+  const haikuModel = candidates.find((m) => m.toLowerCase().includes('haiku'));
+  if (haikuModel) return haikuModel;
+  const chatModel = candidates.find((m) => m.toLowerCase().includes('chat'));
+  if (chatModel) return chatModel;
+
+  return candidates[0];
+}
+
+/**
  * ModelRowItem — Memoized model item
  */
 const ModelRowItem = React.memo(function ModelRowItem({
   modelId,
   isInCatalog,
+  isProbeModel,
+  batchResult,
+  onSetProbeModel,
+  onCreateRoute,
+  onTestModel,
 }: {
   modelId: string;
   isInCatalog: boolean;
+  isProbeModel?: boolean;
+  batchResult?: ModelBatchItemResult;
+  onSetProbeModel?: (modelId: string) => void;
+  onCreateRoute?: (modelId: string) => void;
+  onTestModel?: (modelId: string) => void;
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -251,19 +311,81 @@ const ModelRowItem = React.memo(function ModelRowItem({
   return (
     <div
       style={{ contentVisibility: 'auto', containIntrinsicSize: '0 36px' }}
-      className="flex items-center justify-between p-2 rounded-lg border border-white/[0.04] bg-white/[0.01] hover:bg-white/[0.025] transition-colors font-mono text-xs"
+      className="flex items-center justify-between p-2 rounded-lg border border-white/[0.04] bg-white/[0.01] hover:bg-white/[0.025] transition-colors font-mono text-xs gap-2"
     >
-      <div className="flex items-center gap-2 truncate">
+      <div className="flex items-center gap-2 truncate min-w-0 flex-1">
         <span className="text-neutral-200 font-medium text-[11px] truncate">
           {modelId}
         </span>
       </div>
 
-      <div className="flex items-center gap-3 shrink-0">
-        {isInCatalog ? (
-          <span className="text-[10px] text-emerald-400 font-mono">
-            mapped
+      <div className="flex items-center gap-2 shrink-0">
+        {/* Verification Status Badge */}
+        {batchResult && batchResult.status === 'testing' ? (
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/10 border border-cyan-500/20 text-cyan-300 font-mono flex items-center gap-1">
+            <Loader2 className="w-2.5 h-2.5 animate-spin text-cyan-400" />
+            <span>testing...</span>
           </span>
+        ) : batchResult && batchResult.status === 'success' ? (
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-mono flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+            <span>Active{batchResult.latencyMs != null ? ` · ${batchResult.latencyMs}ms` : ''}</span>
+          </span>
+        ) : batchResult && batchResult.status === 'failed' ? (
+          <span
+            className="text-[10px] px-1.5 py-0.5 rounded bg-rose-500/10 border border-rose-500/20 text-rose-400 font-mono flex items-center gap-1"
+            title={batchResult.errorMessage || 'Model verification failed'}
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />
+            <span>Failed{batchResult.statusCode ? ` (${batchResult.statusCode})` : ''}</span>
+          </span>
+        ) : null}
+
+        {/* Single Model Test Button */}
+        {onTestModel ? (
+          <button
+            type="button"
+            onClick={() => onTestModel(modelId)}
+            disabled={batchResult?.status === 'testing'}
+            className="text-neutral-400 hover:text-white transition-colors p-1 rounded hover:bg-white/[0.06] disabled:opacity-40 cursor-pointer"
+            title="Test model inference"
+          >
+            <RotateCw className="w-3 h-3" />
+          </button>
+        ) : null}
+
+        {/* Probe Model Designation */}
+        {isProbeModel ? (
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 text-amber-300 font-mono font-medium">
+            PROBE MODEL
+          </span>
+        ) : onSetProbeModel ? (
+          <button
+            type="button"
+            onClick={() => onSetProbeModel(modelId)}
+            className="text-[10px] px-1.5 py-0.5 rounded text-neutral-400 hover:text-white hover:bg-white/[0.06] border border-white/[0.04] transition-colors cursor-pointer"
+            title="Designate as health check probe model"
+          >
+            Set as Probe
+          </button>
+        ) : null}
+
+        {/* Route Status in Catalog */}
+        {isInCatalog ? (
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-mono flex items-center gap-1">
+            <Check className="w-2.5 h-2.5" />
+            <span>Route Active</span>
+          </span>
+        ) : onCreateRoute ? (
+          <button
+            type="button"
+            onClick={() => onCreateRoute(modelId)}
+            className="text-[10px] px-2 py-0.5 rounded bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 hover:border-cyan-500/50 transition-colors font-mono cursor-pointer flex items-center gap-1"
+            title="Add this model as a routing entry in Models catalog"
+          >
+            <Plus className="w-2.5 h-2.5" />
+            <span>Add Route</span>
+          </button>
         ) : (
           <span className="text-[10px] text-neutral-500 font-mono">
             unmapped
@@ -293,7 +415,7 @@ export const UpstreamModal = React.memo(function UpstreamModal({
   upstreamToEdit,
   onDelete,
 }: UpstreamModalProps) {
-  const { addOrUpdateUpstream, addToast } = useStoreActions();
+  const { addOrUpdateUpstream, addOrUpdateModel, addToast } = useStoreActions();
   const saveMutation = useSaveSettingsMutation();
   const adminToken = useAppStore((s) => s.adminToken);
   const catalogModels = useAppStore((s) => s.models);
@@ -308,6 +430,7 @@ export const UpstreamModal = React.memo(function UpstreamModal({
   const [baseUrls, setBaseUrls] = useState<string[]>([]);
   const [newBaseUrlInput, setNewBaseUrlInput] = useState('');
   const [providerId, setProviderId] = useState('');
+  const [probeModel, setProbeModel] = useState('');
 
   // OAuth tab state
   const [boundAccounts, setBoundAccounts] = useState<BoundAccountItem[]>([]);
@@ -378,6 +501,11 @@ export const UpstreamModal = React.memo(function UpstreamModal({
   const [isLoadingModels, setIsLoadingModels] = useState(false);
   const [modelSearch, setModelSearch] = useState('');
   const deferredModelSearch = useDeferredValue(modelSearch);
+  const [isManualProbeInput, setIsManualProbeInput] = useState(false);
+  const [safeRps, setSafeRps] = useState<number>(2);
+  const [isBatchTesting, setIsBatchTesting] = useState<boolean>(false);
+  const [batchResults, setBatchResults] = useState<Record<string, ModelBatchItemResult>>({});
+  const batchAbortControllerRef = useRef<AbortController | null>(null);
 
   // Load balancing tab state
   const [keyStrategy, setKeyStrategy] = useState<'round_robin' | 'least_inflight'>('round_robin');
@@ -429,6 +557,7 @@ export const UpstreamModal = React.memo(function UpstreamModal({
         setKeyErrorThreshold(numericDraft(upstreamToEdit.key_error_threshold, 0));
         setKeyErrorAction((upstreamToEdit.key_error_action as 'deactivate' | 'delete' | 'cooldown') || 'deactivate');
         setKeyCooldownSec(numericDraft(upstreamToEdit.key_cooldown_duration_ms != null ? Math.round(upstreamToEdit.key_cooldown_duration_ms / 1000) : null, 300));
+        setProbeModel(upstreamToEdit.probe_model || '');
 
         // Format extra headers
         if (upstreamToEdit.extra_headers) {
@@ -517,6 +646,8 @@ export const UpstreamModal = React.memo(function UpstreamModal({
         setKeyErrorThreshold('0');
         setKeyErrorAction('deactivate');
         setKeyCooldownSec('300');
+        setProbeModel('');
+        setIsManualProbeInput(false);
         setActiveTab('general');
       }
 
@@ -530,13 +661,24 @@ export const UpstreamModal = React.memo(function UpstreamModal({
       setUpstreamModels([]);
       setIsLoadingModels(false);
       setModelSearch('');
+      setIsManualProbeInput(false);
+      if (batchAbortControllerRef.current) {
+        batchAbortControllerRef.current.abort();
+        batchAbortControllerRef.current = null;
+      }
+      setIsBatchTesting(false);
+      setBatchResults({});
     }
   }, [upstreamToEdit, isOpen]);
 
-  // Clean up worker pool on unmount
+  // Clean up worker pool & batch testing on unmount
   useEffect(() => {
     return () => {
       stopCheckRef.current = true;
+      if (batchAbortControllerRef.current) {
+        batchAbortControllerRef.current.abort();
+        batchAbortControllerRef.current = null;
+      }
     };
   }, []);
 
@@ -773,11 +915,12 @@ export const UpstreamModal = React.memo(function UpstreamModal({
           base_url: baseUrl.trim(),
           api_key: item.secret,
           timeout_ms: 8000,
+          model: probeModel.trim() || undefined,
         },
         adminToken
       );
     },
-    [name, protocol, baseUrl, adminToken]
+    [name, protocol, baseUrl, adminToken, probeModel]
   );
 
   const handleTestSingleKey = useCallback(
@@ -1005,9 +1148,16 @@ export const UpstreamModal = React.memo(function UpstreamModal({
       ? oauthRef
       : (keys.find((k) => k.status === 'valid')?.secret || (keys[0]?.secret || ''));
 
+    if (batchAbortControllerRef.current) {
+      batchAbortControllerRef.current.abort();
+      batchAbortControllerRef.current = null;
+    }
+    setIsBatchTesting(false);
+    setBatchResults({});
+
     setIsLoadingModels(true);
     try {
-      const res = await checkUpstreamHealth(
+      const res = await fetchUpstreamModels(
         {
           name: name.trim(),
           key_ref: oauthRef || undefined,
@@ -1021,6 +1171,20 @@ export const UpstreamModal = React.memo(function UpstreamModal({
 
       if (res.models && res.models.length > 0) {
         setUpstreamModels(res.models);
+
+        // Auto-select probe model based on 'free' (priority 1) or 'flash' (priority 2)
+        if (!probeModel.trim()) {
+          const optimal = pickOptimalProbeModel(res.models);
+          if (optimal) {
+            setProbeModel(optimal);
+            addToast({
+              title: 'Probe Model Selected',
+              message: `Auto-selected "${optimal}" as designated health check model.`,
+              type: 'info',
+            });
+          }
+        }
+
         addToast({
           title: 'Models Loaded',
           message: `Discovered ${res.models.length} models from upstream host.`,
@@ -1042,7 +1206,7 @@ export const UpstreamModal = React.memo(function UpstreamModal({
     } finally {
       setIsLoadingModels(false);
     }
-  }, [baseUrl, keys, boundAccounts, isOAuth, name, protocol, adminToken, addToast]);
+  }, [baseUrl, keys, boundAccounts, isOAuth, name, protocol, adminToken, addToast, probeModel]);
 
   const filteredModels = useMemo(() => {
     if (!deferredModelSearch) return upstreamModels;
@@ -1060,6 +1224,439 @@ export const UpstreamModal = React.memo(function UpstreamModal({
     },
     [catalogModels, name]
   );
+
+  const unmappedCount = useMemo(() => {
+    return filteredModels.filter((m) => !isModelInCatalog(m)).length;
+  }, [filteredModels, isModelInCatalog]);
+
+  const ensureUpstreamInStore = useCallback(() => {
+    const upstreamName = name.trim();
+    if (!upstreamName) return false;
+
+    const existing = useAppStore.getState().upstreams.find((u) => u.name === upstreamName);
+    if (!existing) {
+      const currentUpstreamDto: UpstreamDTO = {
+        name: upstreamName,
+        base_url: baseUrl.trim(),
+        protocol,
+        enabled: true,
+        api_key: keys[0]?.secret || undefined,
+        credential_ref: keys[0]?.ref || undefined,
+        credential_pool: keys.map((k) => ({
+          ref: k.ref,
+          secret: k.secret,
+          max_concurrent: k.max_concurrent ?? undefined,
+          rps: k.rps ?? undefined,
+        })),
+        probe_model: probeModel.trim() || undefined,
+      };
+      addOrUpdateUpstream(currentUpstreamDto);
+    }
+    return true;
+  }, [name, baseUrl, protocol, keys, probeModel, addOrUpdateUpstream]);
+
+  const handleCreateRoute = useCallback(
+    (modelId: string) => {
+      const upstreamName = name.trim();
+      if (!upstreamName) {
+        addToast({
+          title: 'Upstream Name Required',
+          message: 'Please provide an Upstream Name in the General tab first before adding routes.',
+          type: 'warning',
+        });
+        return;
+      }
+
+      ensureUpstreamInStore();
+
+      addOrUpdateModel({
+        public_name: modelId,
+        upstream: upstreamName,
+        upstream_model: modelId,
+        enabled: true,
+        max_context: 128000,
+        capabilities: {
+          stream: true,
+          tools: true,
+          json_mode: true,
+          vision: false,
+          embeddings: modelId.toLowerCase().includes('embed'),
+        },
+      });
+
+      saveMutation.mutate(buildSettingsPayload());
+
+      addToast({
+        title: 'Route Created',
+        message: `Model "${modelId}" added to active routes.`,
+        type: 'success',
+      });
+    },
+    [name, ensureUpstreamInStore, addOrUpdateModel, saveMutation, addToast]
+  );
+
+  const handleCreateAllUnmappedRoutes = useCallback(() => {
+    const upstreamName = name.trim();
+    if (!upstreamName) {
+      addToast({
+        title: 'Upstream Name Required',
+        message: 'Please provide an Upstream Name in the General tab first.',
+        type: 'warning',
+      });
+      return;
+    }
+
+    const unmapped = filteredModels.filter((m) => !isModelInCatalog(m));
+    if (unmapped.length === 0) return;
+
+    ensureUpstreamInStore();
+
+    for (const modelId of unmapped) {
+      addOrUpdateModel({
+        public_name: modelId,
+        upstream: upstreamName,
+        upstream_model: modelId,
+        enabled: true,
+        max_context: 128000,
+        capabilities: {
+          stream: true,
+          tools: true,
+          json_mode: true,
+          vision: false,
+          embeddings: modelId.toLowerCase().includes('embed'),
+        },
+      });
+    }
+
+    saveMutation.mutate(buildSettingsPayload());
+
+    addToast({
+      title: 'Batch Routes Created',
+      message: `Added ${unmapped.length} models as routes for ${upstreamName}.`,
+      type: 'success',
+    });
+  }, [name, filteredModels, isModelInCatalog, ensureUpstreamInStore, addOrUpdateModel, saveMutation, addToast]);
+
+  // -------------------------------------------------------------
+  // Rate-Paced Batch Model Verification Runner
+  // -------------------------------------------------------------
+  const handleStopBatchTest = useCallback(() => {
+    if (batchAbortControllerRef.current) {
+      batchAbortControllerRef.current.abort();
+      batchAbortControllerRef.current = null;
+    }
+    setIsBatchTesting(false);
+  }, []);
+
+  const handleStartBatchTest = useCallback(async () => {
+    if (upstreamModels.length === 0 || !baseUrl.trim()) return;
+
+    const oauthRef = isOAuth ? (boundAccounts[0]?.ref || '') : '';
+    const validKey = isOAuth
+      ? oauthRef
+      : (keys.find((k) => k.status === 'valid')?.secret || (keys[0]?.secret || ''));
+
+    if (batchAbortControllerRef.current) {
+      batchAbortControllerRef.current.abort();
+    }
+    const abortController = new AbortController();
+    batchAbortControllerRef.current = abortController;
+    const signal = abortController.signal;
+
+    setIsBatchTesting(true);
+
+    const initialMap: Record<string, ModelBatchItemResult> = {};
+    for (const m of upstreamModels) {
+      initialMap[m] = {
+        model: m,
+        status: 'idle',
+      };
+    }
+    setBatchResults(initialMap);
+
+    const intervalMs = Math.max(50, Math.round(1000 / safeRps));
+    const maxConcurrency = Math.max(safeRps * 2, 2);
+
+    let activeCount = 0;
+    let nextIndex = 0;
+
+    const runModelTest = async (modelName: string) => {
+      if (signal.aborted) {
+        activeCount--;
+        return;
+      }
+
+      setBatchResults((prev) => ({
+        ...prev,
+        [modelName]: {
+          model: modelName,
+          status: 'testing',
+        },
+      }));
+
+      try {
+        const res = await checkUpstreamHealth(
+          {
+            name: name.trim(),
+            key_ref: oauthRef || (keys.find((k) => k.status === 'valid')?.ref || (keys[0]?.ref || undefined)),
+            protocol,
+            base_url: baseUrl.trim(),
+            api_key: validKey,
+            timeout_ms: 8000,
+            model: modelName,
+          },
+          adminToken,
+          signal
+        );
+
+        if (signal.aborted) return;
+
+        if (res.healthy || res.status_code === 200) {
+          setBatchResults((prev) => ({
+            ...prev,
+            [modelName]: {
+              model: modelName,
+              status: 'success',
+              statusCode: res.status_code || 200,
+              latencyMs: res.latency_ms,
+              testedAt: Date.now(),
+            },
+          }));
+        } else {
+          setBatchResults((prev) => ({
+            ...prev,
+            [modelName]: {
+              model: modelName,
+              status: 'failed',
+              statusCode: res.status_code,
+              latencyMs: res.latency_ms,
+              errorMessage: res.message || 'Verification failed',
+              testedAt: Date.now(),
+            },
+          }));
+        }
+      } catch (err) {
+        if (signal.aborted) return;
+        setBatchResults((prev) => ({
+          ...prev,
+          [modelName]: {
+            model: modelName,
+            status: 'failed',
+            errorMessage: err instanceof Error ? err.message : 'Network error',
+            testedAt: Date.now(),
+          },
+        }));
+      } finally {
+        activeCount--;
+      }
+    };
+
+    try {
+      while (nextIndex < upstreamModels.length) {
+        if (signal.aborted) break;
+
+        while (activeCount >= maxConcurrency && !signal.aborted) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        if (signal.aborted) break;
+
+        const currentModel = upstreamModels[nextIndex++];
+        activeCount++;
+
+        runModelTest(currentModel);
+
+        if (nextIndex < upstreamModels.length && !signal.aborted) {
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, intervalMs);
+            signal.addEventListener(
+              'abort',
+              () => {
+                clearTimeout(timer);
+                resolve();
+              },
+              { once: true }
+            );
+          });
+        }
+      }
+
+      while (activeCount > 0 && !signal.aborted) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    } finally {
+      if (!signal.aborted) {
+        setIsBatchTesting(false);
+      }
+    }
+  }, [upstreamModels, baseUrl, isOAuth, boundAccounts, keys, safeRps, name, protocol, adminToken]);
+
+  const handleTestSingleModel = useCallback(
+    async (modelId: string) => {
+      if (!baseUrl.trim()) return;
+
+      const oauthRef = isOAuth ? (boundAccounts[0]?.ref || '') : '';
+      const validKey = isOAuth
+        ? oauthRef
+        : (keys.find((k) => k.status === 'valid')?.secret || (keys[0]?.secret || ''));
+
+      setBatchResults((prev) => ({
+        ...prev,
+        [modelId]: {
+          model: modelId,
+          status: 'testing',
+        },
+      }));
+
+      try {
+        const res = await checkUpstreamHealth(
+          {
+            name: name.trim(),
+            key_ref: oauthRef || (keys.find((k) => k.status === 'valid')?.ref || (keys[0]?.ref || undefined)),
+            protocol,
+            base_url: baseUrl.trim(),
+            api_key: validKey,
+            timeout_ms: 8000,
+            model: modelId,
+          },
+          adminToken
+        );
+
+        if (res.healthy || res.status_code === 200) {
+          setBatchResults((prev) => ({
+            ...prev,
+            [modelId]: {
+              model: modelId,
+              status: 'success',
+              statusCode: res.status_code || 200,
+              latencyMs: res.latency_ms,
+              testedAt: Date.now(),
+            },
+          }));
+        } else {
+          setBatchResults((prev) => ({
+            ...prev,
+            [modelId]: {
+              model: modelId,
+              status: 'failed',
+              statusCode: res.status_code,
+              latencyMs: res.latency_ms,
+              errorMessage: res.message || 'Verification failed',
+              testedAt: Date.now(),
+            },
+          }));
+        }
+      } catch (err) {
+        setBatchResults((prev) => ({
+          ...prev,
+          [modelId]: {
+            model: modelId,
+            status: 'failed',
+            errorMessage: err instanceof Error ? err.message : 'Network error',
+            testedAt: Date.now(),
+          },
+        }));
+      }
+    },
+    [baseUrl, isOAuth, boundAccounts, keys, name, protocol, adminToken]
+  );
+
+  const testedModelsCount = useMemo(() => {
+    return Object.values(batchResults).filter((r) => r.status === 'success' || r.status === 'failed').length;
+  }, [batchResults]);
+
+  const availableModelsCount = useMemo(() => {
+    return Object.values(batchResults).filter((r) => r.status === 'success').length;
+  }, [batchResults]);
+
+  const failedModelsCount = useMemo(() => {
+    return Object.values(batchResults).filter((r) => r.status === 'failed').length;
+  }, [batchResults]);
+
+  const inFlightModelsCount = useMemo(() => {
+    return Object.values(batchResults).filter((r) => r.status === 'testing').length;
+  }, [batchResults]);
+
+  const activeUnmappedModels = useMemo(() => {
+    const uName = name.trim();
+    return upstreamModels.filter(
+      (m) =>
+        batchResults[m]?.status === 'success' &&
+        !catalogModels.some(
+          (cm) => cm.upstream === uName && (cm.upstream_model === m || cm.public_name === m)
+        )
+    );
+  }, [upstreamModels, batchResults, catalogModels, name]);
+
+  const handleCreateAllActiveRoutes = useCallback(() => {
+    const upstreamName = name.trim();
+    if (!upstreamName) {
+      addToast({
+        title: 'Upstream Name Required',
+        message: 'Please provide an Upstream Name in the General tab first.',
+        type: 'warning',
+      });
+      return;
+    }
+
+    if (activeUnmappedModels.length === 0) return;
+
+    ensureUpstreamInStore();
+
+    for (const modelId of activeUnmappedModels) {
+      addOrUpdateModel({
+        public_name: modelId,
+        upstream: upstreamName,
+        upstream_model: modelId,
+        enabled: true,
+        max_context: 128000,
+        capabilities: {
+          stream: true,
+          tools: true,
+          json_mode: true,
+          vision: false,
+          embeddings: modelId.toLowerCase().includes('embed'),
+        },
+      });
+    }
+
+    saveMutation.mutate(buildSettingsPayload());
+
+    addToast({
+      title: 'Routes Created',
+      message: `${activeUnmappedModels.length} active models added as routes in catalog.`,
+      type: 'success',
+    });
+  }, [name, activeUnmappedModels, ensureUpstreamInStore, addOrUpdateModel, saveMutation, addToast]);
+
+  const probeModelSuggestions = useMemo(() => {
+    const set = new Set<string>();
+    for (const m of upstreamModels) {
+      if (m.trim()) set.add(m.trim());
+    }
+    for (const m of catalogModels) {
+      if (m.upstream === name) {
+        if (m.upstream_model?.trim()) set.add(m.upstream_model.trim());
+        if (m.public_name?.trim()) set.add(m.public_name.trim());
+      }
+    }
+    return Array.from(set);
+  }, [upstreamModels, catalogModels, name]);
+
+  const hasModelList = probeModelSuggestions.length > 0;
+
+  const handleSetProbeModel = useCallback((modelId: string) => {
+    setProbeModel(modelId);
+    setIsManualProbeInput(false);
+  }, []);
+
+  const handleSelectProbeModel = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
+    const val = e.target.value;
+    if (val === '__custom__') {
+      setIsManualProbeInput(true);
+    } else {
+      setProbeModel(val);
+    }
+  }, []);
 
   // -------------------------------------------------------------
   // Header and URL helpers
@@ -1273,6 +1870,7 @@ export const UpstreamModal = React.memo(function UpstreamModal({
       max_idle_conns_per_host: maxIdleConnsValue === null ? null : Math.trunc(maxIdleConnsValue),
       allow_insecure: allowInsecure,
       extra_headers: Object.keys(headersMap).length > 0 ? headersMap : undefined,
+      probe_model: probeModel.trim() || undefined,
       enabled: upstreamToEdit?.enabled ?? true,
     };
 
@@ -2092,31 +2690,241 @@ export const UpstreamModal = React.memo(function UpstreamModal({
           {/* ============================================================== */}
           {activeTab === 'models' ? (
             <div className="space-y-4">
-              <div className="p-3 rounded-xl border border-white/[0.06] bg-white/[0.015] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-white font-medium text-xs">Live Upstream Models</span>
-                    <span className="px-2 py-0.5 rounded text-[10px] bg-white/[0.06] text-neutral-300 font-mono tabular-nums">
-                      {upstreamModels.length} models
+              <div className="p-3 rounded-xl border border-white/[0.06] bg-white/[0.015] flex flex-col gap-2.5">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-white font-medium text-xs">Live Upstream Models</span>
+                      <span className="px-2 py-0.5 rounded text-[10px] bg-white/[0.06] text-neutral-300 font-mono tabular-nums">
+                        {upstreamModels.length} models
+                      </span>
+                    </div>
+                    <span className="text-[10px] text-neutral-500">
+                      Discovered directly from {baseUrl || 'upstream host'} via /v1/models
                     </span>
                   </div>
-                  <span className="text-[10px] text-neutral-500">
-                    Discovered directly from {baseUrl || 'upstream host'} via /v1/models
-                  </span>
+
+                  <Button
+                    type="button"
+                    variant="minimal"
+                    size="sm"
+                    onClick={handleFetchUpstreamModels}
+                    isLoading={isLoadingModels}
+                    disabled={!baseUrl.trim()}
+                    leftIcon={<RotateCw className="w-3.5 h-3.5 text-neutral-400" />}
+                  >
+                    {isLoadingModels ? 'Fetching...' : 'Fetch Models'}
+                  </Button>
                 </div>
 
-                <Button
-                  type="button"
-                  variant="minimal"
-                  size="sm"
-                  onClick={handleFetchUpstreamModels}
-                  isLoading={isLoadingModels}
-                  disabled={!baseUrl.trim()}
-                  leftIcon={<RotateCw className="w-3.5 h-3.5 text-neutral-400" />}
-                >
-                  {isLoadingModels ? 'Fetching...' : 'Fetch Models'}
-                </Button>
+                {/* Probe Model (Health & Quota Check) Selector */}
+                <div className="pt-3 border-t border-white/[0.06] flex flex-col gap-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <label className="text-neutral-300 font-medium text-xs">
+                        Probe Model (Health & Quota Check)
+                      </label>
+                      {probeModel ? (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 text-amber-300 font-mono">
+                          ACTIVE: {probeModel}
+                        </span>
+                      ) : (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/[0.04] text-neutral-500 font-mono">
+                          NOT CONFIGURED
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-2.5">
+                      {hasModelList && (
+                        <button
+                          type="button"
+                          onClick={() => setIsManualProbeInput((prev) => !prev)}
+                          className="text-[10px] text-neutral-400 hover:text-white underline cursor-pointer"
+                        >
+                          {isManualProbeInput ? 'Select from dropdown' : 'Manual input'}
+                        </button>
+                      )}
+                      {probeModel && (
+                        <button
+                          type="button"
+                          onClick={() => setProbeModel('')}
+                          className="text-[10px] text-neutral-500 hover:text-neutral-300 underline cursor-pointer"
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {hasModelList && !isManualProbeInput ? (
+                    <select
+                      value={probeModel}
+                      onChange={handleSelectProbeModel}
+                      className="w-full px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] text-neutral-200 font-mono text-xs focus:outline-none focus:border-white/20"
+                    >
+                      <option value="" className="bg-[#090b10]">
+                        -- None (falls back to reachability / catalog) --
+                      </option>
+                      {probeModel && !probeModelSuggestions.includes(probeModel) && (
+                        <option value={probeModel} className="bg-[#090b10]">
+                          {probeModel} (Custom)
+                        </option>
+                      )}
+                      {probeModelSuggestions.map((m) => (
+                        <option key={m} value={m} className="bg-[#090b10]">
+                          {m}
+                        </option>
+                      ))}
+                      <option value="__custom__" className="bg-[#090b10]">
+                        ✏️ Type custom model ID manually...
+                      </option>
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      list="upstream-probe-model-suggestions"
+                      value={probeModel}
+                      onChange={(e) => setProbeModel(e.target.value)}
+                      placeholder="e.g. gpt-4o-mini, claude-3-haiku-20240307, deepseek-chat..."
+                      className="w-full px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] text-white font-mono text-xs focus:outline-none focus:border-white/20"
+                    />
+                  )}
+
+                  <datalist id="upstream-probe-model-suggestions">
+                    {probeModelSuggestions.map((m) => (
+                      <option key={m} value={m} />
+                    ))}
+                  </datalist>
+
+                  <span className="text-[10px] text-neutral-500">
+                    Designated lightweight model used for active 1-token health checks and key validation. Prevents false positives from $0-balance or expired trial keys.
+                    {!hasModelList && ' Fetch models above to choose from a dropdown, or type any model ID manually.'}
+                  </span>
+                </div>
               </div>
+
+              {/* Batch Verification Toolbar */}
+              {upstreamModels.length > 0 && (
+                <div className="p-3 rounded-xl border border-white/[0.06] bg-white/[0.015] space-y-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2.5">
+                    <div className="flex items-center gap-2">
+                      {isBatchTesting ? (
+                        <Button
+                          type="button"
+                          variant="danger"
+                          size="sm"
+                          onClick={handleStopBatchTest}
+                          leftIcon={<StopCircle className="w-3.5 h-3.5" />}
+                          className="text-xs"
+                        >
+                          Stop Testing
+                        </Button>
+                      ) : (
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="sm"
+                          onClick={handleStartBatchTest}
+                          leftIcon={<Play className="w-3.5 h-3.5 text-cyan-400" />}
+                          className="text-xs border-cyan-500/30 hover:border-cyan-500/50 text-cyan-200"
+                        >
+                          Test All Models
+                        </Button>
+                      )}
+
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[11px] text-neutral-400">Safe Rate:</span>
+                        <select
+                          value={safeRps}
+                          disabled={isBatchTesting}
+                          onChange={(e) => setSafeRps(Number(e.target.value))}
+                          className="px-2 py-1 rounded bg-black/40 border border-white/[0.08] text-neutral-200 font-mono text-xs focus:outline-none focus:border-white/20 disabled:opacity-50"
+                        >
+                          <option value={1}>1 req/s (Gentle)</option>
+                          <option value={2}>2 req/s (Standard)</option>
+                          <option value={5}>5 req/s (Fast)</option>
+                          <option value={10}>10 req/s (High Throughput)</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      {availableModelsCount > 0 ? (
+                        <Button
+                          type="button"
+                          variant="minimal"
+                          size="sm"
+                          onClick={handleCreateAllActiveRoutes}
+                          disabled={activeUnmappedModels.length === 0}
+                          className="text-[11px] px-2.5 py-1 text-emerald-300 border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 disabled:opacity-40"
+                          leftIcon={<Plus className="w-3 h-3 text-emerald-400" />}
+                          title="Add all verified active models to catalog routes"
+                        >
+                          Add All Active as Routes ({activeUnmappedModels.length})
+                        </Button>
+                      ) : unmappedCount > 0 ? (
+                        <Button
+                          type="button"
+                          variant="minimal"
+                          size="sm"
+                          onClick={handleCreateAllUnmappedRoutes}
+                          className="text-[11px] px-2.5 py-1 text-cyan-300 border-cyan-500/30 bg-cyan-500/10 hover:bg-cyan-500/20"
+                          leftIcon={<Plus className="w-3 h-3 text-cyan-400" />}
+                          title="Add all unmapped models as routes in catalog"
+                        >
+                          Add All as Routes ({unmappedCount})
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  {/* Real-time Progress and Stats */}
+                  {(isBatchTesting || testedModelsCount > 0) && (
+                    <div className="space-y-1.5 pt-1.5 border-t border-white/[0.04]">
+                      <div className="flex items-center justify-between text-[11px] font-mono text-neutral-400">
+                        <div className="flex items-center gap-2">
+                          <span>
+                            {isBatchTesting
+                              ? `Testing: ${testedModelsCount}/${upstreamModels.length} (${Math.round((testedModelsCount / upstreamModels.length) * 100)}%)`
+                              : `Completed: ${testedModelsCount}/${upstreamModels.length} tested`}
+                          </span>
+                          {inFlightModelsCount > 0 && (
+                            <span className="px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 animate-pulse text-[10px]">
+                              {inFlightModelsCount} in-flight
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {availableModelsCount > 0 && (
+                            <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/25 text-[10px]">
+                              {availableModelsCount} Active
+                            </span>
+                          )}
+                          {failedModelsCount > 0 && (
+                            <span className="px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-400 border border-rose-500/25 text-[10px]">
+                              {failedModelsCount} Failed
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Progress Bar */}
+                      <div className="w-full h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
+                        <div
+                          className={cn(
+                            "h-full transition-all duration-300 rounded-full",
+                            isBatchTesting ? "bg-gradient-to-r from-cyan-500 to-emerald-400" : "bg-emerald-500"
+                          )}
+                          style={{
+                            width: `${Math.min(100, Math.round((testedModelsCount / upstreamModels.length) * 100))}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Model Search & Stats */}
               {upstreamModels.length > 0 ? (
@@ -2131,8 +2939,8 @@ export const UpstreamModal = React.memo(function UpstreamModal({
                       className="w-full pl-7 pr-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] text-white font-mono text-xs focus:outline-none focus:border-white/20"
                     />
                   </div>
-                  <span className="text-[11px] text-neutral-500 tabular-nums shrink-0">
-                    {filteredModels.length} of {upstreamModels.length}
+                  <span className="text-[11px] text-neutral-500 tabular-nums shrink-0 font-mono">
+                    {filteredModels.length} of {upstreamModels.length} models
                   </span>
                 </div>
               ) : null}
@@ -2150,6 +2958,11 @@ export const UpstreamModal = React.memo(function UpstreamModal({
                       key={modelId}
                       modelId={modelId}
                       isInCatalog={isModelInCatalog(modelId)}
+                      isProbeModel={modelId === probeModel}
+                      batchResult={batchResults[modelId]}
+                      onSetProbeModel={handleSetProbeModel}
+                      onCreateRoute={handleCreateRoute}
+                      onTestModel={handleTestSingleModel}
                     />
                   ))
                 ) : (

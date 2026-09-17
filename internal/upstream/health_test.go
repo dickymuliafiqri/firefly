@@ -277,3 +277,261 @@ func TestHealthChecker_RunLifecycleAndCleanShutdown(t *testing.T) {
 		t.Fatal("expected at least 1 probe to execute during Run")
 	}
 }
+
+func TestHealthChecker_ProbeModel_RevokesKeyOn401(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	var receivedPath string
+	var receivedAuth string
+	var receivedBody []byte
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		receivedAuth = r.Header.Get("Authorization")
+		receivedBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"error":{"message":"Invalid API key","type":"invalid_request_error"}}`)
+	}))
+	defer srv.Close()
+
+	slot := &domain.KeySlot{
+		Ref:    "k1",
+		Secret: "sk-test-secret-401",
+	}
+	kr := domain.NewKeyRing(domain.KeyStrategyRoundRobin, []*domain.KeySlot{slot})
+
+	up := &domain.Upstream{
+		Name:       "probe-up-401",
+		BaseURL:    srv.URL,
+		ProbeModel: "gpt-4o-mini",
+		KeyRing:    kr,
+	}
+
+	reporter := newMockBreakerReporter()
+	checker := NewHealthCheckerWithStaticUpstreams(
+		HealthCheckConfig{
+			Timeout:     1 * time.Second,
+			Concurrency: 2,
+		},
+		[]*domain.Upstream{up},
+		nil,
+		reporter,
+	)
+
+	ctx := context.Background()
+	if err := checker.ProbeOnce(ctx); err != nil {
+		t.Fatalf("ProbeOnce failed: %v", err)
+	}
+
+	if receivedPath != "/v1/chat/completions" {
+		t.Errorf("expected path /v1/chat/completions, got %s", receivedPath)
+	}
+	if receivedAuth != "Bearer sk-test-secret-401" {
+		t.Errorf("expected Authorization header Bearer sk-test-secret-401, got %s", receivedAuth)
+	}
+	expectedBody := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"ping"}],"max_tokens":1}`
+	if string(receivedBody) != expectedBody {
+		t.Errorf("expected body %s, got %s", expectedBody, string(receivedBody))
+	}
+
+	// Layer 1: Slot must be marked revoked
+	if !slot.Revoked.Load() {
+		t.Fatal("expected key slot to be marked revoked on 401")
+	}
+
+	// Layer 2: Host must be reported as healthy (ok=true) to breaker
+	reps := reporter.getReports("probe-up-401")
+	if len(reps) != 1 || !reps[0] {
+		t.Fatalf("expected breaker to report host healthy (true), got %v", reps)
+	}
+}
+
+func TestHealthChecker_ProbeModel_CooldownOn429(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "60")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":{"message":"Rate limit reached"}}`)
+	}))
+	defer srv.Close()
+
+	slot := &domain.KeySlot{
+		Ref:    "k1",
+		Secret: "sk-test-secret-429",
+	}
+	kr := domain.NewKeyRing(domain.KeyStrategyRoundRobin, []*domain.KeySlot{slot})
+
+	up := &domain.Upstream{
+		Name:       "probe-up-429",
+		BaseURL:    srv.URL,
+		ProbeModel: "gpt-4o-mini",
+		KeyRing:    kr,
+	}
+
+	reporter := newMockBreakerReporter()
+	checker := NewHealthCheckerWithStaticUpstreams(
+		HealthCheckConfig{
+			Timeout:     1 * time.Second,
+			Concurrency: 2,
+		},
+		[]*domain.Upstream{up},
+		nil,
+		reporter,
+	)
+
+	ctx := context.Background()
+	if err := checker.ProbeOnce(ctx); err != nil {
+		t.Fatalf("ProbeOnce failed: %v", err)
+	}
+
+	// Layer 1: Slot must be placed in cooldown, but NOT revoked
+	if slot.Revoked.Load() {
+		t.Fatal("key slot must not be marked revoked on 429")
+	}
+	if !slot.IsInCooldown(time.Now().UnixNano()) {
+		t.Fatal("expected key slot to be in cooldown on 429")
+	}
+
+	// Layer 2: Host must be reported as healthy (ok=true) to breaker
+	reps := reporter.getReports("probe-up-429")
+	if len(reps) != 1 || !reps[0] {
+		t.Fatalf("expected breaker to report host healthy (true), got %v", reps)
+	}
+}
+
+func TestHealthChecker_ProbeModel_AnthropicProtocol(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	var receivedPath string
+	var receivedKey string
+	var receivedVersion string
+	var receivedBody []byte
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		receivedKey = r.Header.Get("x-api-key")
+		receivedVersion = r.Header.Get("anthropic-version")
+		receivedBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"content":[{"text":"pong"}]}`)
+	}))
+	defer srv.Close()
+
+	slot := &domain.KeySlot{
+		Ref:    "k_anthropic",
+		Secret: "sk-ant-test-key",
+	}
+	kr := domain.NewKeyRing(domain.KeyStrategyRoundRobin, []*domain.KeySlot{slot})
+
+	up := &domain.Upstream{
+		Name:       "probe-up-anthropic",
+		Protocol:   domain.ProtocolAnthropic,
+		BaseURL:    srv.URL,
+		ProbeModel: "claude-3-haiku-20240307",
+		KeyRing:    kr,
+	}
+
+	reporter := newMockBreakerReporter()
+	checker := NewHealthCheckerWithStaticUpstreams(
+		HealthCheckConfig{
+			Timeout:     1 * time.Second,
+			Concurrency: 2,
+		},
+		[]*domain.Upstream{up},
+		nil,
+		reporter,
+	)
+
+	ctx := context.Background()
+	if err := checker.ProbeOnce(ctx); err != nil {
+		t.Fatalf("ProbeOnce failed: %v", err)
+	}
+
+	if receivedPath != "/v1/messages" {
+		t.Errorf("expected path /v1/messages, got %s", receivedPath)
+	}
+	if receivedKey != "sk-ant-test-key" {
+		t.Errorf("expected x-api-key sk-ant-test-key, got %s", receivedKey)
+	}
+	if receivedVersion != "2023-06-01" {
+		t.Errorf("expected anthropic-version 2023-06-01, got %s", receivedVersion)
+	}
+	expectedBody := `{"model":"claude-3-haiku-20240307","messages":[{"role":"user","content":"ping"}],"max_tokens":1}`
+	if string(receivedBody) != expectedBody {
+		t.Errorf("expected body %s, got %s", expectedBody, string(receivedBody))
+	}
+
+	if slot.Revoked.Load() {
+		t.Fatal("key slot must not be revoked on 200 OK")
+	}
+
+	reps := reporter.getReports("probe-up-anthropic")
+	if len(reps) != 1 || !reps[0] {
+		t.Fatalf("expected breaker to report host healthy (true), got %v", reps)
+	}
+}
+
+func TestHealthChecker_RotatesKeySlotsAcrossIntervals(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	var mu sync.Mutex
+	var receivedAuths []string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		receivedAuths = append(receivedAuths, r.Header.Get("Authorization"))
+		mu.Unlock()
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"pong"}}]}`)
+	}))
+	defer srv.Close()
+
+	slot1 := &domain.KeySlot{Ref: "k1", Secret: "sk-probe-1"}
+	slot2 := &domain.KeySlot{Ref: "k2", Secret: "sk-probe-2"}
+	kr := domain.NewKeyRing(domain.KeyStrategyRoundRobin, []*domain.KeySlot{slot1, slot2})
+
+	up := &domain.Upstream{
+		Name:       "probe-rotates",
+		BaseURL:    srv.URL,
+		ProbeModel: "gpt-4o-mini",
+		KeyRing:    kr,
+	}
+
+	checker := NewHealthCheckerWithStaticUpstreams(
+		HealthCheckConfig{
+			Timeout:     1 * time.Second,
+			Concurrency: 2,
+		},
+		[]*domain.Upstream{up},
+		nil,
+		newMockBreakerReporter(),
+	)
+
+	ctx := context.Background()
+	// Run 4 consecutive probes
+	for i := 0; i < 4; i++ {
+		if err := checker.ProbeOnce(ctx); err != nil {
+			t.Fatalf("ProbeOnce probe %d failed: %v", i, err)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	expected := []string{
+		"Bearer sk-probe-1",
+		"Bearer sk-probe-2",
+		"Bearer sk-probe-1",
+		"Bearer sk-probe-2",
+	}
+	if len(receivedAuths) != len(expected) {
+		t.Fatalf("expected %d probes, got %d", len(expected), len(receivedAuths))
+	}
+	for i, want := range expected {
+		if receivedAuths[i] != want {
+			t.Errorf("probe %d: got %s, want %s", i, receivedAuths[i], want)
+		}
+	}
+}

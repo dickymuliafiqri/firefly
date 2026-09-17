@@ -17,6 +17,7 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/grok"
 	"github.com/dickymuliafiqri/firefly/internal/openai"
+	"github.com/dickymuliafiqri/firefly/internal/upstream"
 	"github.com/tidwall/gjson"
 )
 
@@ -37,6 +38,24 @@ type UpstreamCheckResponse struct {
 	Message    string   `json:"message"`
 	ModelCount int      `json:"model_count,omitempty"`
 	Models     []string `json:"models,omitempty"`
+	KeyRef     string   `json:"key_ref,omitempty"`
+}
+
+type UpstreamModelsRequest struct {
+	Name      string `json:"name,omitempty"`
+	KeyRef    string `json:"key_ref,omitempty"`
+	Protocol  string `json:"protocol"`
+	BaseURL   string `json:"base_url"`
+	APIKey    string `json:"api_key,omitempty"`
+	TimeoutMs int    `json:"timeout_ms,omitempty"`
+}
+
+type UpstreamModelsResponse struct {
+	Models     []string `json:"models"`
+	ModelCount int      `json:"model_count"`
+	LatencyMs  int64    `json:"latency_ms"`
+	Message    string   `json:"message,omitempty"`
+	KeyRef     string   `json:"key_ref,omitempty"`
 }
 
 // handleOptionsUpstreamCheck serves CORS preflight requests for upstream health check.
@@ -106,11 +125,16 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 		protocol = "grok-cli"
 	}
 
+	var existingUp *domain.Upstream
+	var targetSlot *domain.KeySlot
+	resolvedKeyRef := ""
+
 	// If an existing upstream name is provided, resolve missing or masked fields from snapshot
 	if req.Name != "" {
 		snap := deps.currentSnapshot()
 		if snap != nil {
-			if existingUp, ok := snap.Upstream(req.Name); ok && existingUp != nil {
+			if up, ok := snap.Upstream(req.Name); ok && up != nil {
+				existingUp = up
 				if baseURL == "" {
 					baseURL = existingUp.BaseURL
 				}
@@ -118,7 +142,6 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 					protocol = string(existingUp.Protocol)
 				}
 				if existingUp.KeyRing != nil {
-					var targetSlot *domain.KeySlot
 					if req.KeyRef != "" {
 						targetSlot = existingUp.KeyRing.SlotByRef(req.KeyRef)
 					}
@@ -133,10 +156,17 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 							}
 						}
 					}
+					// If no specific key slot was pinned, select an available key according to the KeyRing's load balancing strategy!
 					if targetSlot == nil && (apiKey == "" || isMasked(apiKey) || strings.HasPrefix(apiKey, "env:") || strings.HasPrefix(apiKey, "oauth:")) {
-						targetSlot = existingUp.KeyRing.PrimarySlot()
+						selected, err := existingUp.KeyRing.SelectKey(time.Now().UnixNano())
+						if err == nil && selected != nil {
+							targetSlot = selected
+						} else {
+							targetSlot = existingUp.KeyRing.PrimarySlot()
+						}
 					}
 					if targetSlot != nil {
+						resolvedKeyRef = targetSlot.Ref
 						if targetSlot.Secret != "" {
 							apiKey = targetSlot.Secret
 						} else if targetSlot.Ref != "" {
@@ -148,6 +178,9 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
+	if resolvedKeyRef == "" && req.KeyRef != "" {
+		resolvedKeyRef = req.KeyRef
+	}
 	if apiKey == "" && req.KeyRef != "" {
 		apiKey = req.KeyRef
 	}
@@ -219,6 +252,7 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 					StatusCode: 200,
 					LatencyMs:  1,
 					Message:    fmt.Sprintf("Antigravity Cloud Code supports model %q", reqModel),
+					KeyRef:     resolvedKeyRef,
 				})
 			} else {
 				// Custom / unlisted models are allowed: the curated list is not
@@ -229,6 +263,7 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 					StatusCode: 200,
 					LatencyMs:  1,
 					Message:    fmt.Sprintf("Antigravity accepts custom model %q (not in the curated list; routed as-is)", reqModel),
+					KeyRef:     resolvedKeyRef,
 				})
 			}
 			return
@@ -242,6 +277,7 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 			Message:    fmt.Sprintf("Antigravity Cloud Code upstream (%d models available)", len(models)),
 			ModelCount: len(models),
 			Models:     models,
+			KeyRef:     resolvedKeyRef,
 		})
 		return
 	}
@@ -299,12 +335,22 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 					msg = fmt.Sprintf("Upstream returned HTTP %d: %s", statusCode, errMsg)
 				}
 
+				if targetSlot != nil {
+					if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden {
+						targetSlot.Revoked.Store(true)
+					} else if statusCode == http.StatusTooManyRequests && existingUp != nil && existingUp.KeyRing != nil {
+						kr := &upstream.KeyRing{KeyRing: existingUp.KeyRing}
+						kr.Handle429(targetSlot.Ref, "")
+					}
+				}
+
 				w.WriteHeader(http.StatusOK)
 				_ = json.NewEncoder(w).Encode(UpstreamCheckResponse{
 					Healthy:    false,
 					StatusCode: statusCode,
 					LatencyMs:  latencyMs,
 					Message:    msg,
+					KeyRef:     resolvedKeyRef,
 				})
 				return
 			}
@@ -331,6 +377,7 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 					StatusCode: 200,
 					LatencyMs:  latencyMs,
 					Message:    msg,
+					KeyRef:     resolvedKeyRef,
 				})
 				return
 			}
@@ -343,6 +390,7 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 				Message:    fmt.Sprintf("Grok CLI upstream (%d models available, live)", len(live)),
 				ModelCount: len(live),
 				Models:     live,
+				KeyRef:     resolvedKeyRef,
 			})
 			return
 		}
@@ -370,6 +418,7 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 				StatusCode: 200,
 				LatencyMs:  1,
 				Message:    msg,
+				KeyRef:     resolvedKeyRef,
 			})
 			return
 		}
@@ -382,6 +431,7 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 			Message:    fmt.Sprintf("Grok CLI upstream (%d models available, curated)", len(staticModels)),
 			ModelCount: len(staticModels),
 			Models:     staticModels,
+			KeyRef:     resolvedKeyRef,
 		})
 		return
 	}
@@ -408,6 +458,29 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 	var probeURL string
 	trimmedBase := strings.TrimRight(baseURL, "/")
 	reqModel := strings.TrimSpace(req.Model)
+
+	// If no model was explicitly provided in the check request, resolve from the existing upstream's ProbeModel
+	// or fallback to the first enabled catalog model targeting this upstream.
+	if reqModel == "" && req.Name != "" {
+		snap := deps.currentSnapshot()
+		if snap != nil {
+			if existingUp, ok := snap.Upstream(req.Name); ok && existingUp != nil {
+				if existingUp.ProbeModel != "" {
+					reqModel = existingUp.ProbeModel
+				} else {
+					for _, modelID := range snap.EnabledModels() {
+						if m, ok := snap.Model(modelID); ok && m != nil && m.Upstream == existingUp.Name {
+							reqModel = m.UpstreamModel
+							if reqModel == "" {
+								reqModel = m.PublicName
+							}
+							break
+						}
+					}
+				}
+			}
+		}
+	}
 
 	var httpReq *http.Request
 	if reqModel != "" {
@@ -558,6 +631,7 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 			StatusCode: 0,
 			LatencyMs:  latencyMs,
 			Message:    msg,
+			KeyRef:     resolvedKeyRef,
 		})
 		return
 	}
@@ -569,6 +643,20 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 
 	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
 
+	// Update Layer 1 key status if a specific slot from an existing upstream was used
+	if targetSlot != nil {
+		switch resp.StatusCode {
+		case http.StatusUnauthorized, http.StatusForbidden:
+			targetSlot.Revoked.Store(true)
+		case http.StatusTooManyRequests:
+			if existingUp != nil && existingUp.KeyRing != nil {
+				retryAfter := resp.Header.Get("Retry-After")
+				kr := &upstream.KeyRing{KeyRing: existingUp.KeyRing}
+				kr.Handle429(targetSlot.Ref, retryAfter)
+			}
+		}
+	}
+
 	if reqModel != "" {
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			w.WriteHeader(http.StatusOK)
@@ -577,6 +665,7 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 				StatusCode: resp.StatusCode,
 				LatencyMs:  latencyMs,
 				Message:    fmt.Sprintf("Model %q connected successfully (%dms)", reqModel, latencyMs),
+				KeyRef:     resolvedKeyRef,
 			})
 			return
 		}
@@ -622,74 +711,18 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 			StatusCode: resp.StatusCode,
 			LatencyMs:  latencyMs,
 			Message:    msg,
+			KeyRef:     resolvedKeyRef,
 		})
 		return
 	}
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		var parsed struct {
-			Data   []json.RawMessage `json:"data"`
-			Models []json.RawMessage `json:"models"`
-		}
-		_ = json.Unmarshal(bodyBytes, &parsed)
-
-		var modelIDs []string
-		seen := make(map[string]bool)
-
-		extractID := func(raw json.RawMessage) {
-			if len(raw) == 0 {
-				return
-			}
-			var s string
-			if err := json.Unmarshal(raw, &s); err == nil {
-				s = strings.TrimSpace(s)
-				if s != "" && !seen[s] {
-					seen[s] = true
-					modelIDs = append(modelIDs, s)
-				}
-				return
-			}
-			var obj struct {
-				ID   string `json:"id"`
-				Name string `json:"name"`
-			}
-			if err := json.Unmarshal(raw, &obj); err == nil {
-				id := strings.TrimSpace(obj.ID)
-				if id == "" {
-					id = strings.TrimSpace(obj.Name)
-				}
-				if id != "" && !seen[id] {
-					seen[id] = true
-					modelIDs = append(modelIDs, id)
-				}
-			}
-		}
-
-		for _, item := range parsed.Data {
-			extractID(item)
-		}
-		for _, item := range parsed.Models {
-			extractID(item)
-		}
-
-		if len(modelIDs) == 0 {
-			var topArray []json.RawMessage
-			if err := json.Unmarshal(bodyBytes, &topArray); err == nil {
-				for _, item := range topArray {
-					extractID(item)
-				}
-			}
-		}
-
-		slices.Sort(modelIDs)
+		modelIDs := parseModelIDsFromBody(bodyBytes)
 		modelCount := len(modelIDs)
-		if modelCount == 0 && len(parsed.Data) > 0 {
-			modelCount = len(parsed.Data)
-		}
 
-		msg := fmt.Sprintf("Upstream is healthy (%dms)", latencyMs)
+		msg := fmt.Sprintf("Upstream is reachable (%dms)", latencyMs)
 		if modelCount > 0 {
-			msg = fmt.Sprintf("Upstream is healthy (%dms, %d models available)", latencyMs, modelCount)
+			msg = fmt.Sprintf("Upstream is reachable (%dms, %d models discovered via /models). Set a probe model to verify live inference quota.", latencyMs, modelCount)
 		}
 
 		w.WriteHeader(http.StatusOK)
@@ -700,6 +733,7 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 			Message:    msg,
 			ModelCount: modelCount,
 			Models:     modelIDs,
+			KeyRef:     resolvedKeyRef,
 		})
 		return
 	}
@@ -717,6 +751,7 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 			StatusCode: resp.StatusCode,
 			LatencyMs:  latencyMs,
 			Message:    fmt.Sprintf("Authentication failed (HTTP %d): %s", resp.StatusCode, errMsg),
+			KeyRef:     resolvedKeyRef,
 		})
 		return
 	}
@@ -729,6 +764,7 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 			StatusCode: resp.StatusCode,
 			LatencyMs:  latencyMs,
 			Message:    "Endpoint not found (HTTP 404). Check Base URL path.",
+			KeyRef:     resolvedKeyRef,
 		})
 		return
 	}
@@ -741,6 +777,7 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 			StatusCode: resp.StatusCode,
 			LatencyMs:  latencyMs,
 			Message:    fmt.Sprintf("Upstream server error (HTTP %d)", resp.StatusCode),
+			KeyRef:     resolvedKeyRef,
 		})
 		return
 	}
@@ -752,5 +789,387 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 		StatusCode: resp.StatusCode,
 		LatencyMs:  latencyMs,
 		Message:    fmt.Sprintf("Upstream returned HTTP %d", resp.StatusCode),
+		KeyRef:     resolvedKeyRef,
+	})
+}
+
+// parseModelIDsFromBody parses model IDs from OpenAI, Anthropic, or compatible models JSON payload.
+func parseModelIDsFromBody(bodyBytes []byte) []string {
+	var parsed struct {
+		Data   []json.RawMessage `json:"data"`
+		Models []json.RawMessage `json:"models"`
+	}
+	_ = json.Unmarshal(bodyBytes, &parsed)
+
+	var modelIDs []string
+	seen := make(map[string]bool)
+
+	extractID := func(raw json.RawMessage) {
+		if len(raw) == 0 {
+			return
+		}
+		var s string
+		if err := json.Unmarshal(raw, &s); err == nil {
+			s = strings.TrimSpace(s)
+			if s != "" && !seen[s] {
+				seen[s] = true
+				modelIDs = append(modelIDs, s)
+			}
+			return
+		}
+		var obj struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(raw, &obj); err == nil {
+			id := strings.TrimSpace(obj.ID)
+			if id == "" {
+				id = strings.TrimSpace(obj.Name)
+			}
+			if id != "" && !seen[id] {
+				seen[id] = true
+				modelIDs = append(modelIDs, id)
+			}
+		}
+	}
+
+	for _, item := range parsed.Data {
+		extractID(item)
+	}
+	for _, item := range parsed.Models {
+		extractID(item)
+	}
+
+	if len(modelIDs) == 0 {
+		var topArray []json.RawMessage
+		if err := json.Unmarshal(bodyBytes, &topArray); err == nil {
+			for _, item := range topArray {
+				extractID(item)
+			}
+		}
+	}
+
+	slices.Sort(modelIDs)
+	return modelIDs
+}
+
+// handleFetchUpstreamModels queries an upstream provider exclusively for its available models list (GET /models).
+// It NEVER executes inference or consumes LLM generation tokens.
+func (deps RouterDeps) handleFetchUpstreamModels(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Content-Type", "application/json")
+
+	if !deps.authorizeAdmin(r) {
+		openai.WriteError(w, http.StatusUnauthorized, openai.TypeAuthentication, "unauthorized: valid dashboard session or admin token required")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	defer r.Body.Close()
+
+	var req UpstreamModelsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(UpstreamModelsResponse{
+			Message: "invalid request payload: " + err.Error(),
+		})
+		return
+	}
+
+	baseURL := strings.TrimSpace(req.BaseURL)
+	apiKey := strings.TrimSpace(req.APIKey)
+	protocol := strings.ToLower(strings.TrimSpace(req.Protocol))
+	if protocol == "codebuddy_cn" {
+		protocol = "codebuddy-cn"
+	} else if protocol == "codebuddy_intl" {
+		protocol = "codebuddy-intl"
+	} else if protocol == "grok_cli" || protocol == "grok" || protocol == "gcli" || protocol == "grok-build" {
+		protocol = "grok-cli"
+	}
+
+	var existingUp *domain.Upstream
+	var targetSlot *domain.KeySlot
+	resolvedKeyRef := ""
+
+	if req.Name != "" {
+		snap := deps.currentSnapshot()
+		if snap != nil {
+			if up, ok := snap.Upstream(req.Name); ok && up != nil {
+				existingUp = up
+				if baseURL == "" {
+					baseURL = existingUp.BaseURL
+				}
+				if protocol == "" {
+					protocol = string(existingUp.Protocol)
+				}
+				if existingUp.KeyRing != nil {
+					if req.KeyRef != "" {
+						targetSlot = existingUp.KeyRing.SlotByRef(req.KeyRef)
+					}
+					if targetSlot == nil && apiKey != "" {
+						targetSlot = existingUp.KeyRing.SlotByRef(apiKey)
+					}
+					if targetSlot == nil && isMasked(apiKey) {
+						for _, slot := range existingUp.KeyRing.Slots {
+							if slot != nil && maskSecret(slot.Secret) == apiKey {
+								targetSlot = slot
+								break
+							}
+						}
+					}
+					// If no specific key slot was pinned, select an available key according to the KeyRing's load balancing strategy!
+					if targetSlot == nil && (apiKey == "" || isMasked(apiKey) || strings.HasPrefix(apiKey, "env:") || strings.HasPrefix(apiKey, "oauth:")) {
+						selected, err := existingUp.KeyRing.SelectKey(time.Now().UnixNano())
+						if err == nil && selected != nil {
+							targetSlot = selected
+						} else {
+							targetSlot = existingUp.KeyRing.PrimarySlot()
+						}
+					}
+					if targetSlot != nil {
+						resolvedKeyRef = targetSlot.Ref
+						if targetSlot.Secret != "" {
+							apiKey = targetSlot.Secret
+						} else if targetSlot.Ref != "" {
+							apiKey = targetSlot.Ref
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if resolvedKeyRef == "" && req.KeyRef != "" {
+		resolvedKeyRef = req.KeyRef
+	}
+	if apiKey == "" && req.KeyRef != "" {
+		apiKey = req.KeyRef
+	}
+
+	if protocol == "" {
+		protocol = "openai"
+	}
+
+	timeout := 10 * time.Second
+	if req.TimeoutMs > 0 {
+		timeout = time.Duration(req.TimeoutMs) * time.Millisecond
+		if timeout > 30*time.Second {
+			timeout = 30 * time.Second
+		} else if timeout < 1*time.Second {
+			timeout = 1 * time.Second
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+
+	// Resolve OAuth dynamic token references
+	if deps.OAuthManager != nil {
+		if strings.HasPrefix(apiKey, "oauth:") {
+			if tok, err := deps.OAuthManager.ResolveToken(ctx, apiKey); err == nil && tok != "" {
+				apiKey = tok
+			}
+		} else if strings.HasPrefix(req.KeyRef, "oauth:") && (apiKey == "" || strings.HasPrefix(apiKey, "oauth:")) {
+			if tok, err := deps.OAuthManager.ResolveToken(ctx, req.KeyRef); err == nil && tok != "" {
+				apiKey = tok
+			}
+		} else if apiKey == "" && (protocol == "cline" || protocol == "antigravity" || strings.HasPrefix(protocol, "codebuddy")) {
+			if conns, err := deps.OAuthManager.ListConnections(ctx); err == nil {
+				for _, c := range conns {
+					if c.Provider == protocol || (strings.HasPrefix(protocol, "codebuddy") && strings.HasPrefix(c.Provider, "codebuddy")) {
+						if tok, err := deps.OAuthManager.ResolveToken(ctx, c.ID); err == nil && tok != "" {
+							apiKey = tok
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if protocol == "antigravity" {
+		models := []string{
+			"gemini-2.5-pro",
+			"gemini-2.5-flash",
+			"gemini-2.0-flash",
+			"gemini-1.5-pro",
+			"gemini-1.5-flash",
+			"claude-3-5-sonnet-20241022",
+			"claude-3-7-sonnet-20250219",
+			"claude-3-5-haiku-20241022",
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(UpstreamModelsResponse{
+			Models:     models,
+			ModelCount: len(models),
+			LatencyMs:  1,
+			Message:    fmt.Sprintf("Antigravity Cloud Code (%d models available)", len(models)),
+			KeyRef:     resolvedKeyRef,
+		})
+		return
+	}
+
+	if protocol == "grok-cli" {
+		if strings.TrimSpace(apiKey) != "" {
+			client := &http.Client{
+				Timeout: timeout,
+				CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+					return http.ErrUseLastResponse
+				},
+			}
+			start := time.Now()
+			live, err := grok.FetchModels(ctx, client, baseURL, apiKey)
+			latencyMs := time.Since(start).Milliseconds()
+			if err == nil && len(live) > 0 {
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(UpstreamModelsResponse{
+					Models:     live,
+					ModelCount: len(live),
+					LatencyMs:  latencyMs,
+					Message:    fmt.Sprintf("Discovered %d models live from Grok CLI", len(live)),
+					KeyRef:     resolvedKeyRef,
+				})
+				return
+			}
+		}
+		staticModels := grok.SupportedModels()
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(UpstreamModelsResponse{
+			Models:     staticModels,
+			ModelCount: len(staticModels),
+			LatencyMs:  1,
+			Message:    fmt.Sprintf("Grok CLI (%d models available, curated)", len(staticModels)),
+			KeyRef:     resolvedKeyRef,
+		})
+		return
+	}
+
+	if baseURL == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(UpstreamModelsResponse{
+			Message: "base_url is required",
+		})
+		return
+	}
+
+	parsedURL, err := url.Parse(baseURL)
+	if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") || parsedURL.Host == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(UpstreamModelsResponse{
+			Message: "invalid base_url: must be a valid URL starting with http:// or https://",
+		})
+		return
+	}
+
+	trimmedBase := strings.TrimRight(baseURL, "/")
+	var probeURL string
+	if protocol == "anthropic" {
+		probePath := "/v1/models"
+		if strings.HasSuffix(trimmedBase, "/v1") {
+			probePath = "/models"
+		}
+		probeURL = trimmedBase + probePath
+	} else if protocol == "cline" {
+		if strings.Contains(trimmedBase, "api.cline.bot") && !strings.HasSuffix(trimmedBase, "/api/v1") && !strings.HasSuffix(trimmedBase, "/v1") {
+			trimmedBase += "/api/v1"
+		}
+		probeURL = trimmedBase + "/models"
+	} else {
+		probePath := "/models"
+		if strings.Contains(trimmedBase, "api.openai.com") && !strings.HasSuffix(trimmedBase, "/v1") {
+			probePath = "/v1/models"
+		}
+		probeURL = trimmedBase + probePath
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, probeURL, nil)
+	if err != nil {
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(UpstreamModelsResponse{
+			Message: "failed to construct models request: " + err.Error(),
+		})
+		return
+	}
+
+	httpReq.Header.Set("Accept", "application/json")
+	httpReq.Header.Set("User-Agent", "firefly-models/1.0")
+
+	if apiKey != "" {
+		if protocol == "anthropic" {
+			httpReq.Header.Set("x-api-key", apiKey)
+			httpReq.Header.Set("anthropic-version", "2023-06-01")
+		} else {
+			httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+		}
+	}
+
+	client := &http.Client{
+		Timeout: timeout,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	start := time.Now()
+	resp, err := client.Do(httpReq)
+	latencyMs := time.Since(start).Milliseconds()
+
+	if err != nil {
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(UpstreamModelsResponse{
+			LatencyMs: latencyMs,
+			Message:   fmt.Sprintf("Failed to query models from %s: %s", probeURL, err.Error()),
+			KeyRef:    resolvedKeyRef,
+		})
+		return
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		modelIDs := parseModelIDsFromBody(bodyBytes)
+		msg := fmt.Sprintf("Discovered %d models from upstream host (%dms)", len(modelIDs), latencyMs)
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(UpstreamModelsResponse{
+			Models:     modelIDs,
+			ModelCount: len(modelIDs),
+			LatencyMs:  latencyMs,
+			Message:    msg,
+			KeyRef:     resolvedKeyRef,
+		})
+		return
+	}
+
+	// If Anthropic returns 404, fallback to known Claude models
+	if protocol == "anthropic" && resp.StatusCode == http.StatusNotFound {
+		anthropicModels := []string{
+			"claude-3-7-sonnet-20250219",
+			"claude-3-5-sonnet-20241022",
+			"claude-3-5-haiku-20241022",
+			"claude-3-opus-20240229",
+			"claude-3-sonnet-20240229",
+			"claude-3-haiku-20240307",
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(UpstreamModelsResponse{
+			Models:     anthropicModels,
+			ModelCount: len(anthropicModels),
+			LatencyMs:  latencyMs,
+			Message:    fmt.Sprintf("Anthropic host does not expose /models (HTTP 404); loaded %d curated Claude models", len(anthropicModels)),
+			KeyRef:     resolvedKeyRef,
+		})
+		return
+	}
+
+	errMsg := extractUpstreamError(bodyBytes)
+	if errMsg == "" {
+		errMsg = http.StatusText(resp.StatusCode)
+	}
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(UpstreamModelsResponse{
+		LatencyMs: latencyMs,
+		Message:   fmt.Sprintf("Upstream returned HTTP %d: %s", resp.StatusCode, errMsg),
+		KeyRef:    resolvedKeyRef,
 	})
 }

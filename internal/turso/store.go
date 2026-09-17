@@ -273,6 +273,7 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 		       COALESCE(key_error_threshold, 0),
 		       COALESCE(key_error_action, 'deactivate'),
 		       COALESCE(key_cooldown_duration_ms, 300000),
+		       COALESCE(probe_model, ''),
 		       enabled
 		FROM upstreams
 		ORDER BY id ASC
@@ -307,6 +308,7 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 			credMaxConcur                                 sql.NullInt64
 			keyErrorThreshold, keyCooldownMs              sql.NullInt64
 			keyErrorAction                                sql.NullString
+			probeModel                                    sql.NullString
 		)
 
 		err := upRows.Scan(
@@ -314,7 +316,7 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 			&providerID, &credRef, &timeoutMs, &idleTimeoutMs, &streamIdleTimeoutMs,
 			&maxIdleConns, &maxConns, &extraHeadersJSON, &allowInsecure,
 			&credRPS, &credMaxConcur,
-			&keyErrorThreshold, &keyErrorAction, &keyCooldownMs,
+			&keyErrorThreshold, &keyErrorAction, &keyCooldownMs, &probeModel,
 			&enabled,
 		)
 		if err != nil {
@@ -424,6 +426,7 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 			KeyErrorThreshold:       kErrThresh,
 			KeyErrorAction:          kErrAct,
 			KeyCooldownDurationMs:   kCoolMs,
+			ProbeModel:              probeModel.String,
 		}
 
 		upstreams = append(upstreams, dto)
@@ -783,6 +786,7 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 					max_idle_conns_per_host = ?, max_conns_per_host = ?, extra_headers = ?,
 					allow_insecure = ?, credential_rps = ?, credential_max_concur = ?,
 					key_error_threshold = ?, key_error_action = ?, key_cooldown_duration_ms = ?,
+					probe_model = ?,
 					enabled = ?, version = version + 1, updated_at = ?
 				WHERE id = ?
 			`, u.Protocol, u.BaseURL, fallbacksJSON, u.KeyStrategy,
@@ -790,6 +794,7 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 				u.MaxIdleConnsPerHost, u.MaxConnsPerHost, headersJSON,
 				allowInsecureInt, u.CredentialRPS, u.CredentialMaxConcurrent,
 				keyErrorThresholdVal, keyErrorActionVal, keyCooldownMsVal,
+				u.ProbeModel,
 				enabledInt, now, existingID)
 			if err != nil {
 				return fmt.Errorf("update upstream %q: %w", u.Name, err)
@@ -802,13 +807,15 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 					max_idle_conns_per_host, max_conns_per_host, extra_headers,
 					allow_insecure, credential_rps, credential_max_concur,
 					key_error_threshold, key_error_action, key_cooldown_duration_ms,
+					probe_model,
 					enabled, version, created_at, updated_at
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
 			`, u.Name, u.Protocol, u.BaseURL, fallbacksJSON, u.KeyStrategy,
 				u.ProviderID, u.CredentialRef, u.TimeoutMs, u.IdleTimeoutMs, u.StreamIdleTimeoutMs,
 				u.MaxIdleConnsPerHost, u.MaxConnsPerHost, headersJSON,
 				allowInsecureInt, u.CredentialRPS, u.CredentialMaxConcurrent,
 				keyErrorThresholdVal, keyErrorActionVal, keyCooldownMsVal,
+				u.ProbeModel,
 				enabledInt, now, now)
 			if err != nil {
 				return fmt.Errorf("insert upstream %q: %w", u.Name, err)

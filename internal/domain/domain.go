@@ -345,6 +345,10 @@ type Upstream struct {
 	KeyErrorAction string
 	// KeyCooldownDurationMs is the cooldown duration in ms when KeyErrorAction is "cooldown".
 	KeyCooldownDurationMs int
+
+	// ProbeModel is the designated model to use for deep health and quota verification.
+	// When empty, health checks fall back to reachability checks or registered catalog models.
+	ProbeModel string
 }
 
 // RoutingStrategy dictates how requests for a model are distributed across candidate upstreams.

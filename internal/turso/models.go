@@ -21,6 +21,7 @@ type UpstreamRecord struct {
 	AllowInsecure       bool              `json:"allow_insecure"`
 	CredentialRPS       *float64          `json:"credential_rps,omitempty"`
 	CredentialMaxConcur *int              `json:"credential_max_concurrent,omitempty"`
+	ProbeModel          string            `json:"probe_model,omitempty"`
 	Enabled             bool              `json:"enabled"`
 	Version             int               `json:"version"`
 	CreatedAt           int64             `json:"created_at"`

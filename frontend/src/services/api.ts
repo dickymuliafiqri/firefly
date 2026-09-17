@@ -15,6 +15,8 @@ import type {
   TursoDTO,
   TursoProvidersResponse,
   TursoKeysResponse,
+  UpstreamModelsRequest,
+  UpstreamModelsResponse,
 } from './schema';
 import { useAdminToken, useAppStore } from '@/core/state/store';
 
@@ -415,6 +417,7 @@ export interface UpstreamCheckResponse {
   message: string;
   model_count?: number;
   models?: string[];
+  key_ref?: string;
 }
 
 /**
@@ -452,6 +455,41 @@ export async function checkUpstreamHealth(
   return res.json();
 }
 
+/**
+ * Fetch available models from an upstream host without inference: POST /api/upstreams/models
+ */
+export async function fetchUpstreamModels(
+  req: UpstreamModelsRequest,
+  adminToken?: string,
+  signal?: AbortSignal
+): Promise<UpstreamModelsResponse> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+  };
+  if (adminToken) {
+    headers['Authorization'] = `Bearer ${adminToken}`;
+  }
+
+  const res = await fetch(`${BASE_URL}/api/upstreams/models`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(req),
+    signal,
+  });
+
+  if (res.status === 401) {
+    throw new ApiError(401, 'Unauthorized: Valid Admin Token required');
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const message = body?.message || body?.error?.message || `Failed to fetch models: ${res.statusText}`;
+    throw new ApiError(res.status, message);
+  }
+
+  return res.json();
+}
+
 export function useCheckUpstreamMutation() {
   const adminToken = useAdminToken();
 
@@ -461,11 +499,11 @@ export function useCheckUpstreamMutation() {
 }
 
 /**
- * Query hook to fetch available models from an upstream using /api/upstreams/check
+ * Query hook to fetch available models from an upstream using POST /api/upstreams/models
  * Adheres to Vercel React Best Practices: client-swr-dedup with 60s staleTime.
  */
 export function useUpstreamModelsQuery(
-  upstream: { name?: string; protocol?: string; base_url?: string; api_key?: string } | undefined,
+  upstream: { name?: string; protocol?: string; base_url?: string; api_key?: string; key_ref?: string } | undefined,
   enabled = true
 ) {
   const adminToken = useAdminToken();
@@ -474,9 +512,10 @@ export function useUpstreamModelsQuery(
     queryKey: ['upstream-models', upstream?.name, upstream?.base_url],
     queryFn: async (): Promise<string[]> => {
       if (!upstream || (!upstream.name && !upstream.base_url)) return [];
-      const res = await checkUpstreamHealth(
+      const res = await fetchUpstreamModels(
         {
           name: upstream.name,
+          key_ref: upstream.key_ref,
           protocol: upstream.protocol || 'openai',
           base_url: upstream.base_url || '',
           api_key: upstream.api_key,

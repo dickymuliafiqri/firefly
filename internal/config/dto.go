@@ -55,6 +55,7 @@ type UpstreamDTO struct {
 	KeyErrorThreshold     *int   `json:"key_error_threshold,omitempty"`
 	KeyErrorAction        string `json:"key_error_action,omitempty"`
 	KeyCooldownDurationMs *int   `json:"key_cooldown_duration_ms,omitempty"`
+	ProbeModel            string `json:"probe_model,omitempty"`
 }
 
 // ModelsFile is the top-level shape of models.json.

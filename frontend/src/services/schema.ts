@@ -91,7 +91,25 @@ export interface UpstreamDTO {
   key_error_threshold?: number | null;
   key_error_action?: 'deactivate' | 'delete' | 'cooldown' | string | null;
   key_cooldown_duration_ms?: number | null;
+  probe_model?: string;
   enabled?: boolean | null;
+}
+
+export interface UpstreamModelsRequest {
+  name?: string;
+  key_ref?: string;
+  protocol?: Protocol | string;
+  base_url?: string;
+  api_key?: string;
+  timeout_ms?: number;
+}
+
+export interface UpstreamModelsResponse {
+  models: string[];
+  model_count: number;
+  latency_ms: number;
+  message?: string;
+  key_ref?: string;
 }
 
 export interface CapabilitiesDTO {

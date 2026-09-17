@@ -396,6 +396,7 @@ func translateUpstream(i int, d UpstreamDTO, envLookup func(string) (string, boo
 		KeyErrorThreshold:       pickInt(d.KeyErrorThreshold, 0),
 		KeyErrorAction:          d.KeyErrorAction,
 		KeyCooldownDurationMs:   pickInt(d.KeyCooldownDurationMs, 300000),
+		ProbeModel:              strings.TrimSpace(d.ProbeModel),
 	}, nil
 }
 

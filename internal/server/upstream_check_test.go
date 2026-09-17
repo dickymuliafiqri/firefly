@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -833,6 +835,403 @@ func TestUpstreamCheck_GrokCLIRateLimited(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusTooManyRequests {
 		t.Errorf("expected status code 429, got %d", resp.StatusCode)
+	}
+}
+
+func TestUpstreamCheck_ProbeModelFromSnapshot(t *testing.T) {
+	var receivedModel string
+	var receivedPath string
+
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if m, ok := body["model"].(string); ok {
+			receivedModel = m
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	defer mockServer.Close()
+
+	keySlot := &domain.KeySlot{
+		Ref:    "test-up-key-1",
+		Secret: "sk-real-secret-12345",
+	}
+	up := &domain.Upstream{
+		Name:       "test-up",
+		Protocol:   domain.ProtocolOpenAI,
+		BaseURL:    mockServer.URL,
+		ProbeModel: "deepseek-chat",
+		KeyRing:    domain.NewKeyRing(domain.KeyStrategyRoundRobin, []*domain.KeySlot{keySlot}),
+	}
+	snap := domain.NewCatalogSnapshot(
+		1,
+		map[string]*domain.Upstream{"test-up": up},
+		[]string{"test-up"},
+		map[string]*domain.ModelEntry{},
+		nil,
+		map[string]*domain.Tenant{},
+		nil,
+	)
+
+	deps := RouterDeps{Snapshots: fakeProvider{snap}}
+	s := New(Config{Addr: "0.0.0.0:8080"}, deps, context.Background(), nil)
+
+	// Caller provides Name but leaves Model empty. System must auto-resolve probe_model!
+	payload := UpstreamCheckRequest{
+		Name:      "test-up",
+		KeyRef:    "test-up-key-1",
+		Model:     "", // empty!
+		TimeoutMs: 5000,
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/upstreams/check", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var res UpstreamCheckResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if !res.Healthy {
+		t.Fatalf("expected healthy=true, got false: %s", res.Message)
+	}
+	if receivedPath != "/chat/completions" {
+		t.Errorf("expected path /chat/completions, got %s", receivedPath)
+	}
+	if receivedModel != "deepseek-chat" {
+		t.Errorf("expected probe model deepseek-chat, got %s", receivedModel)
+	}
+}
+
+func TestUpstreamModels_CORS(t *testing.T) {
+	deps := RouterDeps{}
+	s := New(Config{Addr: "0.0.0.0:8080"}, deps, context.Background(), nil)
+
+	req := httptest.NewRequest(http.MethodOptions, "/api/upstreams/models", nil)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("OPTIONS status = %d, want 204", w.Code)
+	}
+	if origin := w.Header().Get("Access-Control-Allow-Origin"); origin != "*" {
+		t.Errorf("CORS origin = %q, want *", origin)
+	}
+}
+
+func TestUpstreamModels_Success(t *testing.T) {
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" && r.URL.Path != "/models" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer sk-test-key-models" {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":{"message":"invalid key"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"object": "list",
+			"data": [
+				{"id": "gpt-4o"},
+				{"id": "gpt-4o-mini"},
+				{"id": "text-embedding-3-small"}
+			]
+		}`))
+	}))
+	defer mockServer.Close()
+
+	deps := RouterDeps{}
+	s := New(Config{Addr: "0.0.0.0:8080"}, deps, context.Background(), nil)
+
+	payload := UpstreamModelsRequest{
+		BaseURL:   mockServer.URL,
+		APIKey:    "sk-test-key-models",
+		Protocol:  "openai",
+		TimeoutMs: 5000,
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/upstreams/models", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var res UpstreamModelsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if res.ModelCount != 3 {
+		t.Fatalf("expected 3 models, got %d", res.ModelCount)
+	}
+	expected := []string{"gpt-4o", "gpt-4o-mini", "text-embedding-3-small"}
+	for _, exp := range expected {
+		if !slices.Contains(res.Models, exp) {
+			t.Errorf("missing expected model %q in %v", exp, res.Models)
+		}
+	}
+}
+
+func TestUpstreamModels_IgnoresProbeModel(t *testing.T) {
+	var receivedPaths []string
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPaths = append(receivedPaths, r.URL.Path)
+		if r.URL.Path == "/v1/models" || r.URL.Path == "/models" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"data": [
+					{"id": "deepseek-chat"},
+					{"id": "deepseek-coder"},
+					{"id": "deepseek-reasoner"}
+				]
+			}`))
+			return
+		}
+		if r.URL.Path == "/chat/completions" || r.URL.Path == "/v1/chat/completions" {
+			t.Errorf("ERROR: /api/upstreams/models must NEVER trigger inference! received path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer mockServer.Close()
+
+	up := &domain.Upstream{
+		Name:       "probe-up",
+		BaseURL:    mockServer.URL,
+		ProbeModel: "deepseek-chat", // Upstream has probe model configured!
+		KeyRing: domain.NewKeyRing(domain.KeyStrategyRoundRobin, []*domain.KeySlot{
+			{Ref: "probe-up-key-1", Secret: "sk-test-secret"},
+		}),
+	}
+	snap := domain.NewCatalogSnapshot(
+		1,
+		map[string]*domain.Upstream{up.Name: up},
+		[]string{up.Name},
+		map[string]*domain.ModelEntry{},
+		nil,
+		map[string]*domain.Tenant{},
+		nil,
+	)
+	deps := RouterDeps{Snapshots: fakeProvider{snap}}
+	s := New(Config{Addr: "0.0.0.0:8080"}, deps, context.Background(), nil)
+
+	payload := UpstreamModelsRequest{
+		Name:      "probe-up",
+		TimeoutMs: 5000,
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/upstreams/models", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var res UpstreamModelsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if res.ModelCount != 3 {
+		t.Fatalf("expected 3 models discovered, got %d: %v", res.ModelCount, res.Models)
+	}
+
+	// Verify no inference endpoints were called
+	for _, p := range receivedPaths {
+		if p == "/chat/completions" || p == "/v1/chat/completions" {
+			t.Fatalf("models endpoint called inference path %s!", p)
+		}
+	}
+}
+
+func TestUpstreamCheck_LoadBalancingRoundRobin(t *testing.T) {
+	var mu sync.Mutex
+	var authHeaders []string
+
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		authHeaders = append(authHeaders, r.Header.Get("Authorization"))
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	defer mockServer.Close()
+
+	slot1 := &domain.KeySlot{Ref: "k1", Secret: "sk-key-1"}
+	slot2 := &domain.KeySlot{Ref: "k2", Secret: "sk-key-2"}
+	kr := domain.NewKeyRing(domain.KeyStrategyRoundRobin, []*domain.KeySlot{slot1, slot2})
+
+	up := &domain.Upstream{
+		Name:       "lb-upstream",
+		BaseURL:    mockServer.URL,
+		Protocol:   domain.ProtocolOpenAI,
+		ProbeModel: "gpt-4o-mini",
+		KeyRing:    kr,
+	}
+
+	snap := domain.NewCatalogSnapshot(
+		1,
+		map[string]*domain.Upstream{"lb-upstream": up},
+		[]string{"lb-upstream"},
+		map[string]*domain.ModelEntry{},
+		nil,
+		map[string]*domain.Tenant{},
+		nil,
+	)
+	deps := RouterDeps{Snapshots: fakeProvider{snap}}
+	s := New(Config{Addr: "0.0.0.0:8080"}, deps, context.Background(), nil)
+
+	// Make 4 consecutive check requests without specifying key_ref
+	var resKeyRefs []string
+	for i := 0; i < 4; i++ {
+		payload := UpstreamCheckRequest{
+			Name:      "lb-upstream",
+			Model:     "gpt-4o-mini",
+			TimeoutMs: 5000,
+		}
+		body, _ := json.Marshal(payload)
+		req := httptest.NewRequest(http.MethodPost, "/api/upstreams/check", bytes.NewReader(body))
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("request %d: status = %d, want 200", i, w.Code)
+		}
+		var res UpstreamCheckResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+			t.Fatalf("request %d: unmarshal response: %v", i, err)
+		}
+		if !res.Healthy {
+			t.Fatalf("request %d: expected healthy, got false: %s", i, res.Message)
+		}
+		resKeyRefs = append(resKeyRefs, res.KeyRef)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	expectedAuths := []string{
+		"Bearer sk-key-1",
+		"Bearer sk-key-2",
+		"Bearer sk-key-1",
+		"Bearer sk-key-2",
+	}
+	for i, want := range expectedAuths {
+		if authHeaders[i] != want {
+			t.Errorf("request %d: got auth header %s, want %s", i, authHeaders[i], want)
+		}
+	}
+
+	expectedRefs := []string{"k1", "k2", "k1", "k2"}
+	for i, want := range expectedRefs {
+		if resKeyRefs[i] != want {
+			t.Errorf("request %d: got key_ref %s, want %s", i, resKeyRefs[i], want)
+		}
+	}
+}
+
+func TestUpstreamCheck_CooldownSkipsRateLimitedKey(t *testing.T) {
+	var mu sync.Mutex
+	var authHeaders []string
+
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		auth := r.Header.Get("Authorization")
+		authHeaders = append(authHeaders, auth)
+		mu.Unlock()
+
+		if auth == "Bearer sk-k1" {
+			w.Header().Set("Retry-After", "60")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"message":"Rate limit exceeded"}}`))
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	defer mockServer.Close()
+
+	slot1 := &domain.KeySlot{Ref: "k1", Secret: "sk-k1"}
+	slot2 := &domain.KeySlot{Ref: "k2", Secret: "sk-k2"}
+	kr := domain.NewKeyRing(domain.KeyStrategyRoundRobin, []*domain.KeySlot{slot1, slot2})
+
+	up := &domain.Upstream{
+		Name:       "cooldown-up",
+		BaseURL:    mockServer.URL,
+		Protocol:   domain.ProtocolOpenAI,
+		ProbeModel: "gpt-4o-mini",
+		KeyRing:    kr,
+	}
+
+	snap := domain.NewCatalogSnapshot(
+		1,
+		map[string]*domain.Upstream{"cooldown-up": up},
+		[]string{"cooldown-up"},
+		map[string]*domain.ModelEntry{},
+		nil,
+		map[string]*domain.Tenant{},
+		nil,
+	)
+	deps := RouterDeps{Snapshots: fakeProvider{snap}}
+	s := New(Config{Addr: "0.0.0.0:8080"}, deps, context.Background(), nil)
+
+	// First request hits k1 and gets 429
+	payload1 := UpstreamCheckRequest{
+		Name:      "cooldown-up",
+		Model:     "gpt-4o-mini",
+		TimeoutMs: 5000,
+	}
+	body1, _ := json.Marshal(payload1)
+	req1 := httptest.NewRequest(http.MethodPost, "/api/upstreams/check", bytes.NewReader(body1))
+	w1 := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w1, req1)
+
+	var res1 UpstreamCheckResponse
+	_ = json.Unmarshal(w1.Body.Bytes(), &res1)
+	if res1.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("first request expected status 429, got %d", res1.StatusCode)
+	}
+	if res1.KeyRef != "k1" {
+		t.Fatalf("first request expected key_ref k1, got %s", res1.KeyRef)
+	}
+
+	// Slot 1 must now be in cooldown
+	if !slot1.IsInCooldown(time.Now().UnixNano()) {
+		t.Fatal("expected slot1 to be in cooldown after 429")
+	}
+
+	// Next request should automatically skip slot 1 (in cooldown) and select slot 2!
+	payload2 := UpstreamCheckRequest{
+		Name:      "cooldown-up",
+		Model:     "gpt-4o-mini",
+		TimeoutMs: 5000,
+	}
+	body2, _ := json.Marshal(payload2)
+	req2 := httptest.NewRequest(http.MethodPost, "/api/upstreams/check", bytes.NewReader(body2))
+	w2 := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w2, req2)
+
+	var res2 UpstreamCheckResponse
+	_ = json.Unmarshal(w2.Body.Bytes(), &res2)
+	if !res2.Healthy || res2.StatusCode != 200 {
+		t.Fatalf("second request expected healthy 200, got status=%d: %s", res2.StatusCode, res2.Message)
+	}
+	if res2.KeyRef != "k2" {
+		t.Fatalf("second request expected key_ref k2, got %s", res2.KeyRef)
 	}
 }
 

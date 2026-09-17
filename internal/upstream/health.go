@@ -3,8 +3,10 @@
 package upstream
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -209,8 +211,76 @@ func (h *HealthChecker) probeOne(ctx context.Context, u *domain.Upstream) {
 	probeCtx, cancel := context.WithTimeout(ctx, h.cfg.Timeout)
 	defer cancel()
 
-	url := strings.TrimRight(u.BaseURL, "/") + h.cfg.Path
-	req, err := http.NewRequestWithContext(probeCtx, h.cfg.Method, url, nil)
+	trimmedBase := strings.TrimRight(u.BaseURL, "/")
+	var req *http.Request
+	var err error
+	var activeSlot *domain.KeySlot
+
+	if u.ProbeModel != "" && u.KeyRing != nil && len(u.KeyRing.Slots) > 0 {
+		activeSlot, _ = u.KeyRing.SelectKey(time.Now().UnixNano())
+		if activeSlot == nil {
+			activeSlot = u.KeyRing.PrimarySlot()
+			if activeSlot != nil && activeSlot.Revoked.Load() {
+				for _, s := range u.KeyRing.Slots {
+					if s != nil && !s.Revoked.Load() {
+						activeSlot = s
+						break
+					}
+				}
+			}
+		}
+
+		keySecret := ""
+		if activeSlot != nil {
+			if activeSlot.Secret != "" {
+				keySecret = activeSlot.Secret
+			} else {
+				keySecret = activeSlot.Ref
+			}
+		}
+
+		var probeURL string
+		var probeBody []byte
+
+		if u.Protocol == domain.ProtocolAnthropic {
+			probePath := "/v1/messages"
+			if strings.HasSuffix(trimmedBase, "/v1") {
+				probePath = "/messages"
+			}
+			probeURL = trimmedBase + probePath
+			probeBody = []byte(fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"ping"}],"max_tokens":1}`, u.ProbeModel))
+		} else {
+			probePath := "/v1/chat/completions"
+			if strings.HasSuffix(trimmedBase, "/v1") {
+				probePath = "/chat/completions"
+			}
+			probeURL = trimmedBase + probePath
+			probeBody = []byte(fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"ping"}],"max_tokens":1}`, u.ProbeModel))
+		}
+
+		req, err = http.NewRequestWithContext(probeCtx, http.MethodPost, probeURL, bytes.NewReader(probeBody))
+		if err == nil {
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json")
+			req.Header.Set("User-Agent", "firefly-healthcheck/1.0")
+
+			if u.Protocol == domain.ProtocolAnthropic {
+				req.Header.Set("anthropic-version", "2023-06-01")
+				if keySecret != "" {
+					req.Header.Set("x-api-key", keySecret)
+				}
+			} else if keySecret != "" {
+				req.Header.Set("Authorization", "Bearer "+keySecret)
+			}
+			for k, v := range u.ExtraHeaders {
+				req.Header.Set(k, v)
+			}
+		}
+	} else {
+		url := trimmedBase + h.cfg.Path
+		req, err = http.NewRequestWithContext(probeCtx, h.cfg.Method, url, nil)
+	}
+
 	if err != nil {
 		h.reportOutcome(u.Name, false, err, 0)
 		return
@@ -237,9 +307,23 @@ func (h *HealthChecker) probeOne(ctx context.Context, u *domain.Upstream) {
 	}
 
 	// Status < 500 indicates the host is reachable and healthy at Layer 2.
-	// 4xx client errors (401/404) are Layer 1 / key issues, NOT host failures.
+	// 4xx client errors (401/404/429) are Layer 1 / key issues, NOT host failures.
 	isHealthy := resp.StatusCode < 500
 	h.reportOutcome(u.Name, isHealthy, nil, resp.StatusCode)
+
+	// If we probed a specific key slot with ProbeModel, handle Layer 1 key status updates:
+	if activeSlot != nil {
+		switch resp.StatusCode {
+		case http.StatusUnauthorized, http.StatusForbidden:
+			activeSlot.Revoked.Store(true)
+			h.logger.Warn("key marked revoked during background probe", "upstream", u.Name, "key_ref", activeSlot.Ref, "status", resp.StatusCode)
+		case http.StatusTooManyRequests:
+			retryAfter := resp.Header.Get("Retry-After")
+			kr := &KeyRing{KeyRing: u.KeyRing}
+			dur := kr.Handle429(activeSlot.Ref, retryAfter)
+			h.logger.Warn("key placed in cooldown during background probe", "upstream", u.Name, "key_ref", activeSlot.Ref, "cooldown", dur)
+		}
+	}
 }
 
 func (h *HealthChecker) reportOutcome(name string, ok bool, err error, status int) {

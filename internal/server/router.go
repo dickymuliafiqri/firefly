@@ -172,9 +172,11 @@ func (s *Server) buildHandler(deps RouterDeps) http.Handler {
 	mux.HandleFunc("OPTIONS /api/turso/test", deps.handleOptionsSettings)
 	mux.HandleFunc("POST /api/turso/test", deps.handleTestTurso)
 
-	// Upstream Health Check Probe API
+	// Upstream Health Check Probe & Model Discovery API
 	mux.HandleFunc("OPTIONS /api/upstreams/check", deps.handleOptionsUpstreamCheck)
 	mux.HandleFunc("POST /api/upstreams/check", deps.handleCheckUpstream)
+	mux.HandleFunc("OPTIONS /api/upstreams/models", deps.handleOptionsUpstreamCheck)
+	mux.HandleFunc("POST /api/upstreams/models", deps.handleFetchUpstreamModels)
 
 	// Gateway Telemetry API (live Prometheus & admission stats)
 	mux.HandleFunc("OPTIONS /api/telemetry", deps.handleOptionsTelemetry)

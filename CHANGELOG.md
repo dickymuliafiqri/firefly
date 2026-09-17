@@ -5,6 +5,27 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-09-17
+
+### Added
+- **Designated Probe Model Architecture for Active Upstream Health Checks (`internal/domain`, `internal/server`, `internal/upstream`, `internal/turso`)**:
+  - Added optional `probe_model` field to upstream configuration, schema, database persistence, and DTOs.
+  - Implemented 1-token active inference probing (`/v1/chat/completions` or `/v1/messages`) against the designated probe model to verify real account quota/balance without false positives from empty-balance trial keys.
+  - Supported protocol-specific payload formatting for OpenAI and Anthropic.
+  - Auto-selects candidate probe models with keyword prioritization: `free` (1st preference) and `flash` (2nd preference).
+  - Preserved Layer 1 / Layer 2 resilience invariants: HTTP 401 revokes key slot, HTTP 429 triggers dynamic cooldown, and host breaker reports healthy (`ok=true`) so quota issues never trip upstream circuit breakers.
+- **Decoupled Zero-Token Model Discovery Endpoint (`POST /api/upstreams/models`)**:
+  - Separated model list query from health check probing so `/api/upstreams/models` purely queries provider `/v1/models` without triggering inference or consuming token balance.
+  - Integrated `useUpstreamModelsQuery` and `fetchUpstreamModels` in frontend services.
+- **Rate-Paced Concurrent Batch Model Verification in Upstream Dialog (`frontend`)**:
+  - Moved batch model testing out of the individual model route dialog into the Upstream dialog's **Live Models** tab.
+  - Implemented non-blocking **Paced Concurrent Dispatcher** with safe rate options (`1`, `2`, `5`, `10 req/s`) and dynamic concurrency cap `Math.max(safeRps * 2, 2)`.
+  - Added real-time visual progress indicators: in-flight badge (`[N in-flight]`), animated progress bar, and test result counts (`[Active]`, `[Failed]`).
+  - Added real-time per-model status badges (`Active · {latency}ms`, `Failed (HTTP status)`), single-model retest button, and `Set as Probe` designation.
+  - Added in-place one-click route creation (`+ Add Route`, `Route Active`, and `Add All Active as Routes`).
+- **Streamlined Models Dialog (`ModelModal.tsx`)**:
+  - Refactored model route configuration into a lean, focused dialog with a single connection test and retry fetch button.
+
 ## [1.3.3] - 2026-09-16
 
 ### Added
