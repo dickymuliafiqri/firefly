@@ -36,6 +36,7 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/limits"
 	"github.com/dickymuliafiqri/firefly/internal/logging"
 	"github.com/dickymuliafiqri/firefly/internal/metrics"
+	"github.com/dickymuliafiqri/firefly/internal/opencode"
 	"github.com/dickymuliafiqri/firefly/internal/openai"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
@@ -411,6 +412,20 @@ func run() error {
 	})
 	if err := adapterRegistry.Register(domain.ProtocolGrokCLI, grokAdapter); err != nil {
 		return fmt.Errorf("register grok-cli adapter: %w", err)
+	}
+	openCodeAdapter := opencode.NewAdapter(pool, breakers, opencode.Config{
+		SecretLookup:     os.LookupEnv,
+		Retry:            retry,
+		Logger:           logger,
+		MaxBufferedBytes: 32 << 20,
+		Metrics:          mx,
+		Notifier:         usageFlusher,
+	})
+	if err := adapterRegistry.Register(domain.ProtocolOpenCode, openCodeAdapter); err != nil {
+		return fmt.Errorf("register opencode adapter: %w", err)
+	}
+	if err := adapterRegistry.Register(domain.ProtocolOpenCodeGo, openCodeAdapter); err != nil {
+		return fmt.Errorf("register opencode-go adapter: %w", err)
 	}
 
 	// 4. Analytics, Token Ledger, and Request History Persistent Storage.

@@ -54,6 +54,9 @@ export const UpstreamCard = React.memo(function UpstreamCard({
         return 'ANTHROPIC';
       case 'grok-cli':
         return 'GROK CLI';
+      case 'opencode':
+      case 'opencode-go':
+        return 'OPENCODE';
       default:
         return 'OPENAI';
     }
@@ -69,6 +72,9 @@ export const UpstreamCard = React.memo(function UpstreamCard({
         return 'Tencent Cloud CodeBuddy (CN)';
       case 'codebuddy_intl':
         return 'CodeBuddy International';
+      case 'opencode':
+      case 'opencode-go':
+        return 'OpenCode Zen Gateway';
       default:
         return baseUrl || 'Default Provider Endpoint';
     }

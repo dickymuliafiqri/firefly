@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1234,4 +1236,140 @@ func TestUpstreamCheck_CooldownSkipsRateLimitedKey(t *testing.T) {
 		t.Fatalf("second request expected key_ref k2, got %s", res2.KeyRef)
 	}
 }
+
+func TestUpstreamCheck_OpenCode(t *testing.T) {
+	var (
+		receivedAuthHeader    string
+		receivedClientHeader  string
+		receivedSessionHeader string
+		receivedRequestHeader string
+		receivedPath          string
+		receivedBody          []byte
+	)
+
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedAuthHeader = r.Header.Get("Authorization")
+		receivedClientHeader = r.Header.Get("x-opencode-client")
+		receivedSessionHeader = r.Header.Get("x-opencode-session")
+		receivedRequestHeader = r.Header.Get("x-opencode-request")
+		receivedPath = r.URL.Path
+		receivedBody, _ = io.ReadAll(r.Body)
+
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/models" || r.URL.Path == "/models" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"object": "list",
+				"data": []map[string]any{
+					{"id": "deepseek-v3"},
+					{"id": "muse-spark-free"},
+				},
+			})
+			return
+		}
+
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "mock-resp-1",
+			"choices": []map[string]any{
+				{"message": map[string]string{"role": "assistant", "content": "pong"}},
+			},
+		})
+	}))
+	defer mockServer.Close()
+
+	deps := RouterDeps{}
+	s := New(Config{Addr: "0.0.0.0:8080"}, deps, context.Background(), nil)
+
+	t.Run("OpenCode Free standard probe", func(t *testing.T) {
+		payload := UpstreamCheckRequest{
+			Protocol:  "opencode",
+			BaseURL:   mockServer.URL + "/v1",
+			APIKey:    "", // Empty -> free tier
+			Model:     "deepseek-v3",
+			TimeoutMs: 5000,
+		}
+		body, _ := json.Marshal(payload)
+		req := httptest.NewRequest(http.MethodPost, "/api/upstreams/check", bytes.NewReader(body))
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+		var res UpstreamCheckResponse
+		_ = json.Unmarshal(w.Body.Bytes(), &res)
+		if !res.Healthy {
+			t.Fatalf("expected healthy=true, got false: %s", res.Message)
+		}
+		if receivedAuthHeader != "Bearer public" {
+			t.Errorf("expected Bearer public, got %s", receivedAuthHeader)
+		}
+		if receivedClientHeader != "desktop" {
+			t.Errorf("expected x-opencode-client: desktop, got %s", receivedClientHeader)
+		}
+		if !strings.HasPrefix(receivedSessionHeader, "ses_") {
+			t.Errorf("expected session header starting with ses_, got %s", receivedSessionHeader)
+		}
+		if !strings.HasPrefix(receivedRequestHeader, "msg_") {
+			t.Errorf("expected request header starting with msg_, got %s", receivedRequestHeader)
+		}
+		if receivedPath != "/v1/chat/completions" {
+			t.Errorf("expected /v1/chat/completions path, got %s", receivedPath)
+		}
+	})
+
+	t.Run("OpenCode Responses model probe", func(t *testing.T) {
+		payload := UpstreamCheckRequest{
+			Protocol:  "opencode",
+			BaseURL:   mockServer.URL + "/v1",
+			APIKey:    "public",
+			Model:     "muse-spark-pro",
+			TimeoutMs: 5000,
+		}
+		body, _ := json.Marshal(payload)
+		req := httptest.NewRequest(http.MethodPost, "/api/upstreams/check", bytes.NewReader(body))
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+		var res UpstreamCheckResponse
+		_ = json.Unmarshal(w.Body.Bytes(), &res)
+		if !res.Healthy {
+			t.Fatalf("expected healthy=true, got false: %s", res.Message)
+		}
+		if receivedPath != "/v1/responses" {
+			t.Errorf("expected /v1/responses path, got %s", receivedPath)
+		}
+		if !strings.Contains(string(receivedBody), `"input"`) {
+			t.Errorf("expected responses input field in body, got: %s", string(receivedBody))
+		}
+	})
+
+	t.Run("OpenCode Models fetch", func(t *testing.T) {
+		payload := UpstreamModelsRequest{
+			Protocol:  "opencode",
+			BaseURL:   mockServer.URL + "/v1",
+			APIKey:    "",
+			TimeoutMs: 5000,
+		}
+		body, _ := json.Marshal(payload)
+		req := httptest.NewRequest(http.MethodPost, "/api/upstreams/models", bytes.NewReader(body))
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+		var res UpstreamModelsResponse
+		_ = json.Unmarshal(w.Body.Bytes(), &res)
+		if res.ModelCount != 2 {
+			t.Fatalf("expected 2 models, got %d: %s", res.ModelCount, res.Message)
+		}
+		if receivedAuthHeader != "Bearer public" {
+			t.Errorf("expected Bearer public for models fetch, got %s", receivedAuthHeader)
+		}
+	})
+}
+
 

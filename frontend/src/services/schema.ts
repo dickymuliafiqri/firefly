@@ -10,7 +10,9 @@ export type Protocol =
   | 'cline'
   | 'codebuddy_cn'
   | 'codebuddy_intl'
-  | 'grok-cli';
+  | 'grok-cli'
+  | 'opencode'
+  | 'opencode-go';
 export type KeyStrategy = 'round_robin' | 'least_inflight';
 export type BreakerState = 'CLOSED' | 'OPEN' | 'HALF-OPEN';
 export type TenantStatus = 'active' | 'suspended' | 'revoked';

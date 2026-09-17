@@ -16,6 +16,7 @@ import (
 
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/grok"
+	"github.com/dickymuliafiqri/firefly/internal/opencode"
 	"github.com/dickymuliafiqri/firefly/internal/openai"
 	"github.com/dickymuliafiqri/firefly/internal/upstream"
 	"github.com/tidwall/gjson"
@@ -482,6 +483,15 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
+	if protocol == "opencode" || protocol == "opencode-go" {
+		isFree := apiKey == "" || strings.EqualFold(apiKey, "public")
+		if isFree && strings.Contains(trimmedBase, "/zen/go/v1") {
+			trimmedBase = strings.Replace(trimmedBase, "/zen/go/v1", "/zen/v1", 1)
+		} else if !isFree && strings.Contains(trimmedBase, "/zen/v1") && !strings.Contains(trimmedBase, "/zen/go/v1") {
+			trimmedBase = strings.Replace(trimmedBase, "/zen/v1", "/zen/go/v1", 1)
+		}
+	}
+
 	var httpReq *http.Request
 	if reqModel != "" {
 		// Specific model connectivity check via minimal inference request
@@ -511,6 +521,40 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 				},
 				"max_tokens": 10,
 			})
+		} else if protocol == "opencode" || protocol == "opencode-go" {
+			if opencode.IsResponsesModel(reqModel) {
+				probePath := "/responses"
+				if !strings.HasSuffix(trimmedBase, "/v1") {
+					probePath = "/v1/responses"
+				}
+				probeURL = trimmedBase + probePath
+				probeBody, _ = json.Marshal(map[string]any{
+					"model": reqModel,
+					"input": []map[string]any{
+						{
+							"type": "message",
+							"role": "user",
+							"content": []map[string]string{
+								{"type": "input_text", "text": "ping"},
+							},
+						},
+					},
+					"max_output_tokens": 10,
+				})
+			} else {
+				probePath := "/chat/completions"
+				if !strings.HasSuffix(trimmedBase, "/v1") {
+					probePath = "/v1/chat/completions"
+				}
+				probeURL = trimmedBase + probePath
+				probeBody, _ = json.Marshal(map[string]any{
+					"model": reqModel,
+					"messages": []map[string]string{
+						{"role": "user", "content": "ping"},
+					},
+					"max_tokens": 10,
+				})
+			}
 		} else {
 			// OpenAI compatible (including codebuddy)
 			if strings.Contains(strings.ToLower(reqModel), "embed") {
@@ -562,6 +606,12 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 				trimmedBase += "/api/v1"
 			}
 			probeURL = trimmedBase + "/models"
+		} else if protocol == "opencode" || protocol == "opencode-go" {
+			probePath := "/models"
+			if !strings.HasSuffix(trimmedBase, "/v1") {
+				probePath = "/v1/models"
+			}
+			probeURL = trimmedBase + probePath
 		} else {
 			// OpenAI compatible
 			probePath := "/models"
@@ -590,6 +640,17 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 		if apiKey != "" {
 			httpReq.Header.Set("x-api-key", apiKey)
 		}
+	} else if protocol == "opencode" || protocol == "opencode-go" {
+		effectiveKey := apiKey
+		if effectiveKey == "" || strings.EqualFold(effectiveKey, "public") {
+			effectiveKey = "public"
+		}
+		httpReq.Header.Set("Authorization", "Bearer "+effectiveKey)
+		httpReq.Header.Set("User-Agent", "opencode")
+		httpReq.Header.Set("x-opencode-client", "desktop")
+		httpReq.Header.Set("x-opencode-project", "global")
+		httpReq.Header.Set("x-opencode-request", opencode.GenerateRequestID())
+		httpReq.Header.Set("x-opencode-session", opencode.ResolveSessionID(nil, "", ""))
 	} else {
 		if apiKey != "" {
 			httpReq.Header.Set("Authorization", "Bearer "+apiKey)
@@ -1062,6 +1123,14 @@ func (deps RouterDeps) handleFetchUpstreamModels(w http.ResponseWriter, r *http.
 	}
 
 	trimmedBase := strings.TrimRight(baseURL, "/")
+	if protocol == "opencode" || protocol == "opencode-go" {
+		isFree := apiKey == "" || strings.EqualFold(apiKey, "public")
+		if isFree && strings.Contains(trimmedBase, "/zen/go/v1") {
+			trimmedBase = strings.Replace(trimmedBase, "/zen/go/v1", "/zen/v1", 1)
+		} else if !isFree && strings.Contains(trimmedBase, "/zen/v1") && !strings.Contains(trimmedBase, "/zen/go/v1") {
+			trimmedBase = strings.Replace(trimmedBase, "/zen/v1", "/zen/go/v1", 1)
+		}
+	}
 	var probeURL string
 	if protocol == "anthropic" {
 		probePath := "/v1/models"
@@ -1074,6 +1143,12 @@ func (deps RouterDeps) handleFetchUpstreamModels(w http.ResponseWriter, r *http.
 			trimmedBase += "/api/v1"
 		}
 		probeURL = trimmedBase + "/models"
+	} else if protocol == "opencode" || protocol == "opencode-go" {
+		probePath := "/models"
+		if !strings.HasSuffix(trimmedBase, "/v1") {
+			probePath = "/v1/models"
+		}
+		probeURL = trimmedBase + probePath
 	} else {
 		probePath := "/models"
 		if strings.Contains(trimmedBase, "api.openai.com") && !strings.HasSuffix(trimmedBase, "/v1") {
@@ -1094,11 +1169,24 @@ func (deps RouterDeps) handleFetchUpstreamModels(w http.ResponseWriter, r *http.
 	httpReq.Header.Set("Accept", "application/json")
 	httpReq.Header.Set("User-Agent", "firefly-models/1.0")
 
-	if apiKey != "" {
-		if protocol == "anthropic" {
+	if protocol == "anthropic" {
+		if apiKey != "" {
 			httpReq.Header.Set("x-api-key", apiKey)
 			httpReq.Header.Set("anthropic-version", "2023-06-01")
-		} else {
+		}
+	} else if protocol == "opencode" || protocol == "opencode-go" {
+		effectiveKey := apiKey
+		if effectiveKey == "" || strings.EqualFold(effectiveKey, "public") {
+			effectiveKey = "public"
+		}
+		httpReq.Header.Set("Authorization", "Bearer "+effectiveKey)
+		httpReq.Header.Set("User-Agent", "opencode")
+		httpReq.Header.Set("x-opencode-client", "desktop")
+		httpReq.Header.Set("x-opencode-project", "global")
+		httpReq.Header.Set("x-opencode-request", opencode.GenerateRequestID())
+		httpReq.Header.Set("x-opencode-session", opencode.ResolveSessionID(nil, "", ""))
+	} else {
+		if apiKey != "" {
 			httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 		}
 	}

@@ -171,6 +171,7 @@ Firefly provides clean interface contracts (`ports.UpstreamAdapter`) for multi-p
 - **Cline OAuth Adapter (`internal/cline`):** Proxies completions to Cline API endpoints (`api.cline.bot`), automatically attaching client identification headers (`HTTP-Referer`, `X-Title`), unwrapping payload envelopes, and relaying SSE streams.
 - **CodeBuddy China & International Adapters (`internal/codebuddy`):** Manages RFC 8628 device authorization grants, payload rewrites, and completion streaming for CodeBuddy China and International endpoints.
 - **Grok CLI / Grok Build Adapter (`internal/grok`):** Routes to the xAI Grok CLI inference API (`cli-chat-proxy.grok.com`, OpenAI Responses API) with an xAI OAuth bearer token, translating OpenAI Chat Completions to/from the Responses wire format (including reasoning/thinking output) and pooling harvested account tokens across the key ring.
+- **OpenCode & OpenCode Go Adapter (`internal/opencode`):** Routes to OpenCode Zen gateways (`https://opencode.ai/zen/v1` for keyless Free tier and `https://opencode.ai/zen/go/v1` for OpenCode Go subscription API keys). Supports deterministic session isolation (`x-opencode-session`), dual-route dispatching (translating OpenAI Chat Completions to/from Responses API for `muse-*`, `grok-*`, and `gpt-5.6-luna`, while routing standard chat models to `/chat/completions`), tool schema sanitization, and automatic endpoint tier cross-correction.
 
 ---
 

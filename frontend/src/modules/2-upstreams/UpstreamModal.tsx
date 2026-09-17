@@ -1775,6 +1775,18 @@ export const UpstreamModal = React.memo(function UpstreamModal({
     setProtocol(newProto);
     if (isOAuthProtocol(newProto)) {
       setBaseUrl(getOAuthDefaultUrl(newProto));
+    } else if (newProto === 'grok-cli') {
+      setBaseUrl('https://cli-chat-proxy.grok.com/v1');
+    } else if (newProto === 'opencode') {
+      setBaseUrl('https://opencode.ai/zen/v1');
+    } else if (newProto === 'opencode-go') {
+      setBaseUrl('https://opencode.ai/zen/go/v1');
+    } else if (
+      baseUrl === 'https://cli-chat-proxy.grok.com/v1' ||
+      baseUrl === 'https://opencode.ai/zen/go/v1' ||
+      baseUrl === 'https://opencode.ai/zen/v1'
+    ) {
+      setBaseUrl('https://api.openai.com/v1');
     }
   };
 
@@ -2055,19 +2067,13 @@ export const UpstreamModal = React.memo(function UpstreamModal({
                   ) : (
                     <select
                       value={protocol}
-                      onChange={(e) => {
-                        const p = e.target.value as Protocol;
-                        setProtocol(p);
-                        if (p === 'grok-cli') {
-                          setBaseUrl('https://cli-chat-proxy.grok.com/v1');
-                        } else if (baseUrl === 'https://cli-chat-proxy.grok.com/v1') {
-                          setBaseUrl('https://api.openai.com/v1');
-                        }
-                      }}
+                      onChange={(e) => handleProtocolChange(e.target.value as Protocol)}
                       className="w-full px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] text-neutral-200 font-mono text-xs focus:outline-none focus:border-white/20"
                     >
                       <option value="openai" className="bg-[#090b10]">OpenAI (Wire Compatible SSE / Chat)</option>
                       <option value="anthropic" className="bg-[#090b10]">Anthropic (/v1/messages Translation)</option>
+                      <option value="opencode" className="bg-[#090b10]">OpenCode Free (zen/v1 - Community / Keyless)</option>
+                      <option value="opencode-go" className="bg-[#090b10]">OpenCode Go (zen/go/v1 - Subscription Key)</option>
                       <option value="grok-cli" className="bg-[#090b10]">Grok CLI / Grok Build (xAI OAuth)</option>
                     </select>
                   )}
@@ -2095,7 +2101,15 @@ export const UpstreamModal = React.memo(function UpstreamModal({
                   disabled={isOAuth}
                   value={baseUrl}
                   onChange={(e) => setBaseUrl(e.target.value)}
-                  placeholder={isOAuth ? getOAuthDefaultUrl(protocol) : 'https://api.openai.com/v1'}
+                  placeholder={
+                    isOAuth
+                      ? getOAuthDefaultUrl(protocol)
+                      : protocol === 'opencode'
+                      ? 'https://opencode.ai/zen/v1'
+                      : protocol === 'opencode-go'
+                      ? 'https://opencode.ai/zen/go/v1'
+                      : 'https://api.openai.com/v1'
+                  }
                   className={cn(
                     'w-full px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] font-mono text-xs focus:outline-none focus:border-white/20',
                     isOAuth ? 'text-neutral-400 opacity-80 cursor-not-allowed' : 'text-white'
@@ -2568,7 +2582,13 @@ export const UpstreamModal = React.memo(function UpstreamModal({
                       handleAddSingleKey();
                     }
                   }}
-                  placeholder="Paste a single API key to add (sk-...)"
+                  placeholder={
+                    protocol === 'opencode'
+                      ? "Free tier uses 'public' (no key needed)"
+                      : protocol === 'opencode-go'
+                      ? 'Paste OpenCode Go subscription API key'
+                      : 'Paste a single API key to add (sk-...)'
+                  }
                   className="flex-1 px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] text-white font-mono text-xs focus:outline-none focus:border-white/20"
                 />
                 <Button

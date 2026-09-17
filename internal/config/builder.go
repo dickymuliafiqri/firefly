@@ -205,13 +205,32 @@ func translateUpstream(i int, d UpstreamDTO, envLookup func(string) (string, boo
 		proto = string(domain.ProtocolCodeBuddyIntl)
 	} else if proto == "grok_cli" || proto == "grok" || proto == "gcli" || proto == "grok-build" {
 		proto = string(domain.ProtocolGrokCLI)
+	} else if proto == "opencode_go" || proto == "opencode-go" || proto == "ocg" || proto == "oc" {
+		proto = string(domain.ProtocolOpenCode)
 	}
 
 	switch domain.Protocol(proto) {
-	case domain.ProtocolOpenAI, domain.ProtocolAnthropic, domain.ProtocolAntigravity, domain.ProtocolCline, domain.ProtocolCodeBuddyCN, domain.ProtocolCodeBuddyIntl, domain.ProtocolGrokCLI:
+	case domain.ProtocolOpenAI, domain.ProtocolAnthropic, domain.ProtocolAntigravity, domain.ProtocolCline, domain.ProtocolCodeBuddyCN, domain.ProtocolCodeBuddyIntl, domain.ProtocolGrokCLI, domain.ProtocolOpenCode:
 		// Valid protocol
 	default:
 		return nil, &ValidationError{Field: fmt.Sprintf("upstreams[%d].protocol", i), Msg: "unsupported protocol: " + proto}
+	}
+
+	if domain.Protocol(proto) == domain.ProtocolOpenCode || domain.Protocol(proto) == domain.ProtocolOpenCodeGo {
+		isFree := len(d.CredentialPool) == 0 && len(d.APIKeys) == 0 && d.APIKey == ""
+		if d.BaseURL == "" && len(d.BaseURLs) == 0 {
+			if !isFree || domain.Protocol(proto) == domain.ProtocolOpenCodeGo {
+				d.BaseURL = "https://opencode.ai/zen/go/v1"
+			} else {
+				d.BaseURL = "https://opencode.ai/zen/v1"
+			}
+			d.BaseURLs = []string{d.BaseURL}
+		} else if isFree && d.BaseURL == "https://opencode.ai/zen/go/v1" {
+			d.BaseURL = "https://opencode.ai/zen/v1"
+			if len(d.BaseURLs) == 1 && d.BaseURLs[0] == "https://opencode.ai/zen/go/v1" {
+				d.BaseURLs = []string{d.BaseURL}
+			}
+		}
 	}
 
 	if d.BaseURL == "" && len(d.BaseURLs) > 0 {

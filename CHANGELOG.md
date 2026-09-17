@@ -5,6 +5,24 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-09-17
+
+### Added
+- **OpenCode & OpenCode Go First-Class Upstream Adapter (`internal/opencode`, `cmd/firefly`, `frontend`)**:
+  - Full support for both **OpenCode Free** (`Authorization: Bearer public`, `x-opencode-client: desktop`, `x-opencode-project: global`, `https://opencode.ai/zen/v1`) and **OpenCode Go** (paid subscription key, `https://opencode.ai/zen/go/v1`).
+  - Keyless Free tier auto-provisioning: automatically injects a `opencode-free-public` key slot (`KeySlot.Secret = "public"`) when no credentials are provided.
+  - **Deterministic Session Isolation (`x-opencode-session`)**: Preserves client-supplied session headers (up to 256 chars) or deterministically derives opaque SHA-256 session IDs (`ses_<hash>`) based on tenant name and request ID, completely preventing cross-tenant session leaks.
+  - **Dual-Route Model Dispatching**:
+    - **OpenAI Responses API Models** (`muse-*`, `grok-4.6`, `gpt-5.6-luna`, `responses/*`): Dispatches to `/responses` with automatic payload translation (`messages` -> typed `input` array, `max_tokens` -> `max_output_tokens`, `reasoning_effort` normalization, tool parameter schema sanitization) and translates Responses SSE streams back into OpenAI Chat Completion chunks.
+    - **Standard Chat Models** (GLM, Kimi, Qwen, DeepSeek, Claude, etc.): Dispatches to `/chat/completions` with object parameter fallback (`properties: {}`), tool name clamping (128 chars), and standard SSE relay with idle watchdog and client-disconnect abort.
+  - **Defensive Endpoint Tier Cross-Correction**:
+    - Automatically normalizes `/zen/go/v1` to `/zen/v1` for keyless/free requests, and `/zen/v1` to `/zen/go/v1` for subscription keys across both the runtime adapter, health check prober, and model fetcher to prevent upstream 401 errors.
+  - **Management Dashboard & Health Probing**:
+    - Differentiated dropdown options in Upstream Modal for `OpenCode Free (zen/v1 - Community / Keyless)` and `OpenCode Go (zen/go/v1 - Subscription Key)` with respective auto-filled default URLs.
+    - Added dedicated model probing (`/chat/completions` or `/responses`) and zero-token model catalog discovery for OpenCode in `internal/server/upstream_check.go`.
+    - Added `OPENCODE` badge styling and provider description in `UpstreamCard.tsx`.
+    - Preserved Layer 1 (Key/429/401) and Layer 2 (Host/5xx) error separation invariants via `upstream.ProcessAttemptOutcome`.
+
 ## [1.5.0] - 2026-09-17
 
 ### Added

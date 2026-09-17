@@ -40,6 +40,11 @@ const (
 	// ProtocolGrokCLI is the Grok CLI / Grok Build wire format (OpenAI Responses API
 	// on cli-chat-proxy.grok.com, authenticated with an xAI OAuth bearer token).
 	ProtocolGrokCLI Protocol = "grok-cli"
+	// ProtocolOpenCode is the OpenCode (Free and Go subscription) wire format
+	// (opencode.ai, supporting chat/completions and responses endpoints with session isolation).
+	ProtocolOpenCode Protocol = "opencode"
+	// ProtocolOpenCodeGo is an alias for OpenCode Go subscription.
+	ProtocolOpenCodeGo Protocol = "opencode-go"
 )
 
 // KeyStrategy defines how a KeyRing selects credentials from its pool.
