@@ -274,6 +274,9 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 		       COALESCE(key_error_action, 'deactivate'),
 		       COALESCE(key_cooldown_duration_ms, 300000),
 		       COALESCE(probe_model, ''),
+		       COALESCE(egress_mode, 'direct'),
+		       COALESCE(proxy_url, ''),
+		       COALESCE(warp_auto_rotate_on_429, 0),
 		       enabled
 		FROM upstreams
 		ORDER BY id ASC
@@ -309,6 +312,8 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 			keyErrorThreshold, keyCooldownMs              sql.NullInt64
 			keyErrorAction                                sql.NullString
 			probeModel                                    sql.NullString
+			egressMode, proxyURL                          sql.NullString
+			warpAutoRotateOn429Int                        sql.NullInt64
 		)
 
 		err := upRows.Scan(
@@ -317,6 +322,7 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 			&maxIdleConns, &maxConns, &extraHeadersJSON, &allowInsecure,
 			&credRPS, &credMaxConcur,
 			&keyErrorThreshold, &keyErrorAction, &keyCooldownMs, &probeModel,
+			&egressMode, &proxyURL, &warpAutoRotateOn429Int,
 			&enabled,
 		)
 		if err != nil {
@@ -427,6 +433,15 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 			KeyErrorAction:          kErrAct,
 			KeyCooldownDurationMs:   kCoolMs,
 			ProbeModel:              probeModel.String,
+			EgressMode:              egressMode.String,
+			ProxyURL:                proxyURL.String,
+			WarpAutoRotateOn429: func() *bool {
+				if warpAutoRotateOn429Int.Valid {
+					v := warpAutoRotateOn429Int.Int64 != 0
+					return &v
+				}
+				return nil
+			}(),
 		}
 
 		upstreams = append(upstreams, dto)
@@ -786,6 +801,16 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 			keyCooldownMsVal = *u.KeyCooldownDurationMs
 		}
 
+		egressModeVal := strings.ToLower(strings.TrimSpace(u.EgressMode))
+		if egressModeVal == "" {
+			egressModeVal = "direct"
+		}
+		proxyURLVal := strings.TrimSpace(u.ProxyURL)
+		warpAutoRotateVal := 0
+		if u.WarpAutoRotateOn429 != nil && *u.WarpAutoRotateOn429 {
+			warpAutoRotateVal = 1
+		}
+
 		existingID, exists := upstreamNameToID[u.Name]
 		if exists {
 			activeUpstreamIDs[existingID] = true
@@ -797,6 +822,7 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 					allow_insecure = ?, credential_rps = ?, credential_max_concur = ?,
 					key_error_threshold = ?, key_error_action = ?, key_cooldown_duration_ms = ?,
 					probe_model = ?,
+					egress_mode = ?, proxy_url = ?, warp_auto_rotate_on_429 = ?,
 					enabled = ?, version = version + 1, updated_at = ?
 				WHERE id = ?
 			`, u.Protocol, u.BaseURL, fallbacksJSON, u.KeyStrategy,
@@ -805,6 +831,7 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 				allowInsecureInt, u.CredentialRPS, u.CredentialMaxConcurrent,
 				keyErrorThresholdVal, keyErrorActionVal, keyCooldownMsVal,
 				u.ProbeModel,
+				egressModeVal, proxyURLVal, warpAutoRotateVal,
 				enabledInt, now, existingID)
 			if err != nil {
 				return fmt.Errorf("update upstream %q: %w", u.Name, err)
@@ -817,15 +844,16 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 					max_idle_conns_per_host, max_conns_per_host, extra_headers,
 					allow_insecure, credential_rps, credential_max_concur,
 					key_error_threshold, key_error_action, key_cooldown_duration_ms,
-					probe_model,
+					probe_model, egress_mode, proxy_url, warp_auto_rotate_on_429,
 					enabled, version, created_at, updated_at
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
 			`, u.Name, u.Protocol, u.BaseURL, fallbacksJSON, u.KeyStrategy,
 				u.ProviderID, u.CredentialRef, u.TimeoutMs, u.IdleTimeoutMs, u.StreamIdleTimeoutMs,
 				u.MaxIdleConnsPerHost, u.MaxConnsPerHost, headersJSON,
 				allowInsecureInt, u.CredentialRPS, u.CredentialMaxConcurrent,
 				keyErrorThresholdVal, keyErrorActionVal, keyCooldownMsVal,
 				u.ProbeModel,
+				egressModeVal, proxyURLVal, warpAutoRotateVal,
 				enabledInt, now, now)
 			if err != nil {
 				return fmt.Errorf("insert upstream %q: %w", u.Name, err)

@@ -19,17 +19,20 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/opencode"
 	"github.com/dickymuliafiqri/firefly/internal/openai"
 	"github.com/dickymuliafiqri/firefly/internal/upstream"
+	"github.com/dickymuliafiqri/firefly/internal/warp"
 	"github.com/tidwall/gjson"
 )
 
 type UpstreamCheckRequest struct {
-	Name      string `json:"name,omitempty"`
-	KeyRef    string `json:"key_ref,omitempty"`
-	Protocol  string `json:"protocol"` // "openai" or "anthropic"
-	BaseURL   string `json:"base_url"`
-	APIKey    string `json:"api_key,omitempty"`
-	TimeoutMs int    `json:"timeout_ms,omitempty"`
-	Model     string `json:"model,omitempty"`
+	Name       string `json:"name,omitempty"`
+	KeyRef     string `json:"key_ref,omitempty"`
+	Protocol   string `json:"protocol"` // "openai" or "anthropic"
+	BaseURL    string `json:"base_url"`
+	APIKey     string `json:"api_key,omitempty"`
+	TimeoutMs  int    `json:"timeout_ms,omitempty"`
+	Model      string `json:"model,omitempty"`
+	EgressMode string `json:"egress_mode,omitempty"`
+	ProxyURL   string `json:"proxy_url,omitempty"`
 }
 
 type UpstreamCheckResponse struct {
@@ -43,12 +46,14 @@ type UpstreamCheckResponse struct {
 }
 
 type UpstreamModelsRequest struct {
-	Name      string `json:"name,omitempty"`
-	KeyRef    string `json:"key_ref,omitempty"`
-	Protocol  string `json:"protocol"`
-	BaseURL   string `json:"base_url"`
-	APIKey    string `json:"api_key,omitempty"`
-	TimeoutMs int    `json:"timeout_ms,omitempty"`
+	Name       string `json:"name,omitempty"`
+	KeyRef     string `json:"key_ref,omitempty"`
+	Protocol   string `json:"protocol"`
+	BaseURL    string `json:"base_url"`
+	APIKey     string `json:"api_key,omitempty"`
+	TimeoutMs  int    `json:"timeout_ms,omitempty"`
+	EgressMode string `json:"egress_mode,omitempty"`
+	ProxyURL   string `json:"proxy_url,omitempty"`
 }
 
 type UpstreamModelsResponse struct {
@@ -57,6 +62,34 @@ type UpstreamModelsResponse struct {
 	LatencyMs  int64    `json:"latency_ms"`
 	Message    string   `json:"message,omitempty"`
 	KeyRef     string   `json:"key_ref,omitempty"`
+}
+
+// makeCheckClient builds an http.Client bound to the configured egress mode (warp, proxy, or direct).
+func (deps RouterDeps) makeCheckClient(timeout time.Duration, egressMode, proxyURL string) *http.Client {
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	tr := &http.Transport{
+		MaxIdleConns:          50,
+		IdleConnTimeout:       30 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: time.Second,
+		ForceAttemptHTTP2:     true,
+	}
+	warp.ConfigureTransportEgress(tr, warp.EgressConfig{
+		Mode:        egressMode,
+		ProxyURL:    proxyURL,
+		WarpDialer:  deps.WarpManager,
+		DialTimeout: timeout,
+	})
+
+	return &http.Client{
+		Transport: tr,
+		Timeout:   timeout,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 }
 
 // handleOptionsUpstreamCheck serves CORS preflight requests for upstream health check.
@@ -126,6 +159,9 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 		protocol = "grok-cli"
 	}
 
+	egressMode := strings.TrimSpace(req.EgressMode)
+	proxyURL := strings.TrimSpace(req.ProxyURL)
+
 	var existingUp *domain.Upstream
 	var targetSlot *domain.KeySlot
 	resolvedKeyRef := ""
@@ -141,6 +177,12 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 				}
 				if protocol == "" {
 					protocol = string(existingUp.Protocol)
+				}
+				if egressMode == "" && existingUp.EgressMode != "" {
+					egressMode = existingUp.EgressMode
+				}
+				if proxyURL == "" && existingUp.ProxyURL != "" {
+					proxyURL = existingUp.ProxyURL
 				}
 				if existingUp.KeyRing != nil {
 					if req.KeyRef != "" {
@@ -287,12 +329,7 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 		// When an apiKey is provided (e.g. testing an individual key or keyring check in Upstream Modal),
 		// actively probe the live Grok CLI /models endpoint to verify credentials.
 		if strings.TrimSpace(apiKey) != "" {
-			client := &http.Client{
-				Timeout: timeout,
-				CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-					return http.ErrUseLastResponse
-				},
-			}
+			client := deps.makeCheckClient(timeout, egressMode, proxyURL)
 			start := time.Now()
 			live, err := grok.FetchModels(ctx, client, baseURL, apiKey)
 			latencyMs := time.Since(start).Milliseconds()
@@ -522,25 +559,39 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 				"max_tokens": 10,
 			})
 		} else if protocol == "opencode" || protocol == "opencode-go" {
-			if opencode.IsResponsesModel(reqModel) {
+			isFree := apiKey == "" || strings.EqualFold(apiKey, "public")
+			if isFree && !opencode.IsResponsesModel(reqModel) {
+				probePath := "/chat/completions"
+				if !strings.HasSuffix(trimmedBase, "/v1") {
+					probePath = "/v1/chat/completions"
+				}
+				probeURL = trimmedBase + probePath
+				probeBody = opencode.OfficialTitleProbePayload(reqModel)
+			} else if opencode.IsResponsesModel(reqModel) {
 				probePath := "/responses"
 				if !strings.HasSuffix(trimmedBase, "/v1") {
 					probePath = "/v1/responses"
 				}
 				probeURL = trimmedBase + probePath
-				probeBody, _ = json.Marshal(map[string]any{
-					"model": reqModel,
-					"input": []map[string]any{
-						{
-							"type": "message",
-							"role": "user",
-							"content": []map[string]string{
-								{"type": "input_text", "text": "ping"},
+				if isFree {
+					probeBody = opencode.OfficialResponsesProbePayload(reqModel)
+				} else {
+					probeBody, _ = json.Marshal(map[string]any{
+						"model": reqModel,
+						"input": []map[string]any{
+							{
+								"type": "message",
+								"role": "user",
+								"content": []map[string]string{
+									{"type": "input_text", "text": "ping"},
+								},
 							},
 						},
-					},
-					"max_output_tokens": 10,
-				})
+						"max_output_tokens": 16,
+						"stream":            true,
+						"store":             false,
+					})
+				}
 			} else {
 				probePath := "/chat/completions"
 				if !strings.HasSuffix(trimmedBase, "/v1") {
@@ -552,7 +603,7 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 					"messages": []map[string]string{
 						{"role": "user", "content": "ping"},
 					},
-					"max_tokens": 10,
+					"max_tokens": 16,
 				})
 			}
 		} else {
@@ -646,11 +697,14 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 			effectiveKey = "public"
 		}
 		httpReq.Header.Set("Authorization", "Bearer "+effectiveKey)
-		httpReq.Header.Set("User-Agent", "opencode")
-		httpReq.Header.Set("x-opencode-client", "desktop")
+		httpReq.Header.Set("User-Agent", opencode.OpenCodeUserAgent)
+		httpReq.Header.Set("x-opencode-client", "cli")
 		httpReq.Header.Set("x-opencode-project", "global")
 		httpReq.Header.Set("x-opencode-request", opencode.GenerateRequestID())
-		httpReq.Header.Set("x-opencode-session", opencode.ResolveSessionID(nil, "", ""))
+		httpReq.Header.Set("x-opencode-session", opencode.GenerateSessionID())
+		if effectiveKey == "public" {
+			httpReq.Header.Set("Accept", "text/event-stream")
+		}
 	} else {
 		if apiKey != "" {
 			httpReq.Header.Set("Authorization", "Bearer "+apiKey)
@@ -665,12 +719,7 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	client := &http.Client{
-		Timeout: timeout,
-		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
+	client := deps.makeCheckClient(timeout, egressMode, proxyURL)
 
 	start := time.Now()
 	resp, err := client.Do(httpReq)
@@ -708,7 +757,11 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 	if targetSlot != nil {
 		switch resp.StatusCode {
 		case http.StatusUnauthorized, http.StatusForbidden:
-			targetSlot.Revoked.Store(true)
+			isFreeTierErr := strings.Contains(string(bodyBytes), "FreeTierError") || strings.Contains(string(bodyBytes), "free tier can only be used")
+			isPublicKey := targetSlot.Ref == "public" || targetSlot.Secret == "public" || strings.HasPrefix(targetSlot.Ref, "public:")
+			if !isFreeTierErr && !isPublicKey {
+				targetSlot.Revoked.Store(true)
+			}
 		case http.StatusTooManyRequests:
 			if existingUp != nil && existingUp.KeyRing != nil {
 				retryAfter := resp.Header.Get("Retry-After")
@@ -735,7 +788,9 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 		var msg string
 		switch {
 		case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
-			if errMsg == "" {
+			if strings.Contains(string(bodyBytes), "FreeTierError") || strings.Contains(string(bodyBytes), "free tier can only be used") {
+				errMsg = "OpenCode Free Tier is restricted by provider console to official client sessions. For production use or third-party proxies, configure an OpenCode Go subscription API key (https://opencode.ai/zen/go/v1)."
+			} else if errMsg == "" {
 				errMsg = "Invalid, expired, or unauthorized API key"
 			}
 			msg = fmt.Sprintf("Authentication failed (HTTP %d): %s", resp.StatusCode, errMsg)
@@ -802,7 +857,9 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 	// 401 / 403 Authentication failure
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		errMsg := extractUpstreamError(bodyBytes)
-		if errMsg == "" {
+		if strings.Contains(string(bodyBytes), "FreeTierError") || strings.Contains(string(bodyBytes), "free tier can only be used") {
+			errMsg = "OpenCode Free Tier is restricted by provider console to official client sessions. For production use or third-party proxies, configure an OpenCode Go subscription API key (https://opencode.ai/zen/go/v1)."
+		} else if errMsg == "" {
 			errMsg = "Invalid or expired API key"
 		}
 
@@ -948,6 +1005,9 @@ func (deps RouterDeps) handleFetchUpstreamModels(w http.ResponseWriter, r *http.
 		protocol = "grok-cli"
 	}
 
+	egressMode := strings.TrimSpace(req.EgressMode)
+	proxyURL := strings.TrimSpace(req.ProxyURL)
+
 	var existingUp *domain.Upstream
 	var targetSlot *domain.KeySlot
 	resolvedKeyRef := ""
@@ -962,6 +1022,12 @@ func (deps RouterDeps) handleFetchUpstreamModels(w http.ResponseWriter, r *http.
 				}
 				if protocol == "" {
 					protocol = string(existingUp.Protocol)
+				}
+				if egressMode == "" && existingUp.EgressMode != "" {
+					egressMode = existingUp.EgressMode
+				}
+				if proxyURL == "" && existingUp.ProxyURL != "" {
+					proxyURL = existingUp.ProxyURL
 				}
 				if existingUp.KeyRing != nil {
 					if req.KeyRef != "" {
@@ -1072,12 +1138,7 @@ func (deps RouterDeps) handleFetchUpstreamModels(w http.ResponseWriter, r *http.
 
 	if protocol == "grok-cli" {
 		if strings.TrimSpace(apiKey) != "" {
-			client := &http.Client{
-				Timeout: timeout,
-				CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-					return http.ErrUseLastResponse
-				},
-			}
+			client := deps.makeCheckClient(timeout, egressMode, proxyURL)
 			start := time.Now()
 			live, err := grok.FetchModels(ctx, client, baseURL, apiKey)
 			latencyMs := time.Since(start).Milliseconds()
@@ -1180,8 +1241,8 @@ func (deps RouterDeps) handleFetchUpstreamModels(w http.ResponseWriter, r *http.
 			effectiveKey = "public"
 		}
 		httpReq.Header.Set("Authorization", "Bearer "+effectiveKey)
-		httpReq.Header.Set("User-Agent", "opencode")
-		httpReq.Header.Set("x-opencode-client", "desktop")
+		httpReq.Header.Set("User-Agent", opencode.OpenCodeUserAgent)
+		httpReq.Header.Set("x-opencode-client", "cli")
 		httpReq.Header.Set("x-opencode-project", "global")
 		httpReq.Header.Set("x-opencode-request", opencode.GenerateRequestID())
 		httpReq.Header.Set("x-opencode-session", opencode.ResolveSessionID(nil, "", ""))
@@ -1191,12 +1252,7 @@ func (deps RouterDeps) handleFetchUpstreamModels(w http.ResponseWriter, r *http.
 		}
 	}
 
-	client := &http.Client{
-		Timeout: timeout,
-		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
+	client := deps.makeCheckClient(timeout, egressMode, proxyURL)
 
 	start := time.Now()
 	resp, err := client.Do(httpReq)

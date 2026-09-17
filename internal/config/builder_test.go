@@ -596,3 +596,94 @@ func TestBuild_OAuthProtocolsAndDynamicRefs(t *testing.T) {
 	}
 }
 
+func TestBuild_EgressModeAndProxy(t *testing.T) {
+	t.Parallel()
+
+	modelsJSON := `{"models": []}`
+	tenantsJSON := `{"tenants": []}`
+
+	// 1. Valid Direct, Warp, and Proxy upstreams
+	validJSON := `{
+		"upstreams": [
+			{
+				"name": "u-direct",
+				"base_url": "https://api.openai.com/v1",
+				"api_key": "sk-test",
+				"egress_mode": "direct"
+			},
+			{
+				"name": "u-warp",
+				"base_url": "https://opencode.ai/zen/go/v1",
+				"api_key": "public",
+				"egress_mode": "warp",
+				"warp_auto_rotate_on_429": true
+			},
+			{
+				"name": "u-proxy",
+				"base_url": "https://api.anthropic.com/v1",
+				"api_key": "sk-ant",
+				"egress_mode": "proxy",
+				"proxy_url": "socks5://127.0.0.1:1080"
+			}
+		]
+	}`
+
+	res, err := Build(FileSet{
+		Upstreams: []byte(validJSON),
+		Models:    []byte(modelsJSON),
+		Tenants:   []byte(tenantsJSON),
+	}, fakeEnv(nil))
+	if err != nil {
+		t.Fatalf("unexpected error building valid egress configs: %v", err)
+	}
+
+	uDirect := res.Upstreams["u-direct"]
+	if uDirect.EgressMode != "direct" {
+		t.Errorf("expected direct egress, got %s", uDirect.EgressMode)
+	}
+
+	uWarp := res.Upstreams["u-warp"]
+	if uWarp.EgressMode != "warp" || !uWarp.WarpAutoRotateOn429 {
+		t.Errorf("expected warp with auto-rotate, got mode=%s autoRotate=%v", uWarp.EgressMode, uWarp.WarpAutoRotateOn429)
+	}
+
+	uProxy := res.Upstreams["u-proxy"]
+	if uProxy.EgressMode != "proxy" || uProxy.ProxyURL != "socks5://127.0.0.1:1080" {
+		t.Errorf("expected proxy with socks5 URL, got mode=%s url=%s", uProxy.EgressMode, uProxy.ProxyURL)
+	}
+
+	// 2. Reject invalid egress_mode
+	invalidModeJSON := `{
+		"upstreams": [
+			{"name": "u-bad", "base_url": "https://a.com", "api_key": "k", "egress_mode": "tor"}
+		]
+	}`
+	_, err = Build(FileSet{Upstreams: []byte(invalidModeJSON), Models: []byte(modelsJSON), Tenants: []byte(tenantsJSON)}, fakeEnv(nil))
+	if err == nil {
+		t.Fatal("expected error for invalid egress_mode 'tor', got nil")
+	}
+
+	// 3. Reject proxy without proxy_url
+	missingProxyJSON := `{
+		"upstreams": [
+			{"name": "u-bad", "base_url": "https://a.com", "api_key": "k", "egress_mode": "proxy"}
+		]
+	}`
+	_, err = Build(FileSet{Upstreams: []byte(missingProxyJSON), Models: []byte(modelsJSON), Tenants: []byte(tenantsJSON)}, fakeEnv(nil))
+	if err == nil {
+		t.Fatal("expected error for missing proxy_url, got nil")
+	}
+
+	// 4. Reject invalid scheme for proxy_url
+	badSchemeJSON := `{
+		"upstreams": [
+			{"name": "u-bad", "base_url": "https://a.com", "api_key": "k", "egress_mode": "proxy", "proxy_url": "ftp://127.0.0.1:21"}
+		]
+	}`
+	_, err = Build(FileSet{Upstreams: []byte(badSchemeJSON), Models: []byte(modelsJSON), Tenants: []byte(tenantsJSON)}, fakeEnv(nil))
+	if err == nil {
+		t.Fatal("expected error for invalid proxy scheme ftp, got nil")
+	}
+}
+
+

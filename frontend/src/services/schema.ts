@@ -94,7 +94,21 @@ export interface UpstreamDTO {
   key_error_action?: 'deactivate' | 'delete' | 'cooldown' | string | null;
   key_cooldown_duration_ms?: number | null;
   probe_model?: string;
+  egress_mode?: 'direct' | 'warp' | 'proxy' | string;
+  proxy_url?: string;
+  warp_auto_rotate_on_429?: boolean | null;
   enabled?: boolean | null;
+}
+
+export interface WarpStatusDTO {
+  enabled: boolean;
+  public_ip?: string;
+  colo?: string;
+  endpoint?: string;
+  latency_ms?: number;
+  active_sessions?: number;
+  last_rotated_at?: string;
+  error?: string;
 }
 
 export interface UpstreamModelsRequest {
@@ -104,6 +118,8 @@ export interface UpstreamModelsRequest {
   base_url?: string;
   api_key?: string;
   timeout_ms?: number;
+  egress_mode?: string;
+  proxy_url?: string;
 }
 
 export interface UpstreamModelsResponse {

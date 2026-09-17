@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"context"
+	"net/http"
 	"testing"
 	"time"
 
@@ -78,3 +79,68 @@ func TestPoolNilUpstreamIsSafe(t *testing.T) {
 		t.Fatal("nil upstream should return a usable default client")
 	}
 }
+
+type mockWarpRotator struct {
+	rotatedUpstream string
+	called          bool
+}
+
+func (m *mockWarpRotator) RotateAsync(upstreamName string) {
+	m.rotatedUpstream = upstreamName
+	m.called = true
+}
+
+func TestPool_EgressTransport_WarpAndProxy(t *testing.T) {
+	t.Parallel()
+
+	pool := NewPool()
+	// 1. Direct mode
+	uDirect := &domain.Upstream{Name: "direct", EgressMode: "direct"}
+	cDirect := pool.Client(uDirect)
+	if cDirect == nil || cDirect.Transport == nil {
+		t.Fatal("expected valid client for direct egress")
+	}
+
+	// 2. Warp mode
+	uWarp := &domain.Upstream{Name: "warp", EgressMode: "warp"}
+	cWarp := pool.Client(uWarp)
+	if cWarp == nil || cWarp.Transport == nil {
+		t.Fatal("expected valid client for warp egress")
+	}
+
+	// 3. Proxy mode
+	uProxy := &domain.Upstream{Name: "proxy", EgressMode: "proxy", ProxyURL: "socks5://127.0.0.1:1080"}
+	cProxy := pool.Client(uProxy)
+	if cProxy == nil || cProxy.Transport == nil {
+		t.Fatal("expected valid client for proxy egress")
+	}
+}
+
+func TestProcessAttemptOutcome_WarpAutoRotateOn429(t *testing.T) {
+	mockRot := &mockWarpRotator{}
+	SetGlobalWarpRotator(mockRot)
+	defer SetGlobalWarpRotator(nil)
+
+	u := &domain.Upstream{
+		Name:                "opencode-free",
+		WarpAutoRotateOn429: true,
+	}
+	target := &domain.Target{
+		Upstream: u,
+	}
+
+	outcome := AttemptOutcome{
+		Status: http.StatusTooManyRequests,
+	}
+
+	decision := ProcessAttemptOutcome(u, target, outcome, nil, nil, nil, nil)
+	if !decision.Relay {
+		t.Errorf("expected decision Relay, got %+v", decision)
+	}
+
+	if !mockRot.called || mockRot.rotatedUpstream != "opencode-free" {
+		t.Errorf("expected RotateAsync to be called for opencode-free, got called=%v upstream=%s",
+			mockRot.called, mockRot.rotatedUpstream)
+	}
+}
+

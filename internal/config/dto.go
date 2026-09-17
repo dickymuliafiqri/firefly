@@ -57,6 +57,10 @@ type UpstreamDTO struct {
 	KeyErrorAction        string `json:"key_error_action,omitempty"`
 	KeyCooldownDurationMs *int   `json:"key_cooldown_duration_ms,omitempty"`
 	ProbeModel            string `json:"probe_model,omitempty"`
+
+	EgressMode          string `json:"egress_mode,omitempty"`
+	ProxyURL            string `json:"proxy_url,omitempty"`
+	WarpAutoRotateOn429 *bool  `json:"warp_auto_rotate_on_429,omitempty"`
 }
 
 // ModelsFile is the top-level shape of models.json.

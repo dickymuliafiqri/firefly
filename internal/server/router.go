@@ -20,6 +20,7 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/ports"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
 	"github.com/dickymuliafiqri/firefly/internal/turso"
+	"github.com/dickymuliafiqri/firefly/internal/warp"
 )
 
 // RouterDeps carries everything the HTTP routes need.
@@ -44,6 +45,7 @@ type RouterDeps struct {
 	OAuthManager *oauth.Manager
 	TursoStore   *turso.Store
 	TursoManager *TursoManager
+	WarpManager  *warp.Manager
 
 	// GlobalLimiter manages server-wide in-flight concurrency with a bounded wait queue.
 	// If nil and DisableGlobalAdmission is false, a default 1500-slot limiter is used.
@@ -209,6 +211,12 @@ func (s *Server) buildHandler(deps RouterDeps) http.Handler {
 	mux.HandleFunc("GET /api/oauth/connections", deps.handleListOAuthConnections)
 	mux.HandleFunc("OPTIONS /api/oauth/connections/{id}", deps.handleOptionsOAuth)
 	mux.HandleFunc("DELETE /api/oauth/connections/{id}", deps.handleDeleteOAuthConnection)
+
+	// Cloudflare WARP Userspace Egress API
+	mux.HandleFunc("OPTIONS /api/warp/status", deps.handleOptionsSettings)
+	mux.HandleFunc("GET /api/warp/status", deps.handleGetWarpStatus)
+	mux.HandleFunc("OPTIONS /api/warp/rotate", deps.handleOptionsSettings)
+	mux.HandleFunc("POST /api/warp/rotate", deps.handleRotateWarp)
 
 	// /v1/models is auth-protected but needs no upstream.
 	mux.Handle("GET /v1/models", deps.protected(http.HandlerFunc(deps.handleListModels)))

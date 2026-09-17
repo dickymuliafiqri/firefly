@@ -29,7 +29,7 @@ import (
 const (
 	DefaultFreeBaseURL = "https://opencode.ai/zen/v1"
 	DefaultGoBaseURL   = "https://opencode.ai/zen/go/v1"
-	OpenCodeUserAgent  = "opencode"
+	OpenCodeUserAgent  = "opencode/1.18.31 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14"
 )
 
 type flusher interface {
@@ -291,7 +291,7 @@ func (a *Adapter) attempt(ctx context.Context, u *domain.Upstream, req ports.For
 
 	var outboundBody []byte
 	if isResponses {
-		transformed, err := TransformChatToResponses(body, targetModel)
+		transformed, err := TransformChatToResponses(body, targetModel, isFree)
 		if err != nil {
 			return attemptResult{err: fmt.Errorf("opencode: transform to responses: %w", err)}
 		}
@@ -304,6 +304,9 @@ func (a *Adapter) attempt(ctx context.Context, u *domain.Upstream, req ports.For
 		}
 		out, _ = SanitizeTools(out)
 		out, _ = NormalizeReasoning(out)
+		if isFree {
+			out = EnforceFreeSessionPayload(out)
+		}
 		outboundBody = out
 	}
 
@@ -328,7 +331,7 @@ func (a *Adapter) attempt(ctx context.Context, u *domain.Upstream, req ports.For
 	sessionID := ResolveSessionID(clientHeaders, tenant, reqID)
 
 	httpReq.Header.Set("Content-Type", "application/json")
-	if req.Stream {
+	if req.Stream || isFree {
 		httpReq.Header.Set("Accept", "text/event-stream")
 	} else {
 		httpReq.Header.Set("Accept", "application/json")
@@ -336,20 +339,26 @@ func (a *Adapter) attempt(ctx context.Context, u *domain.Upstream, req ports.For
 
 	httpReq.Header.Set(HeaderSession, sessionID)
 	httpReq.Header.Set(HeaderProject, "global")
-	httpReq.Header.Set(HeaderClient, "desktop")
+	clientVal := clientHeaders.Get(HeaderClient)
+	if clientVal == "" {
+		clientVal = "cli"
+	}
+	httpReq.Header.Set(HeaderClient, clientVal)
 
 	if isFree {
 		httpReq.Header.Set("Authorization", "Bearer public")
 		httpReq.Header.Set(HeaderRequest, GenerateRequestID())
-		clientUA := clientHeaders.Get("User-Agent")
-		if strings.Contains(strings.ToLower(clientUA), "opencode") {
-			httpReq.Header.Set("User-Agent", clientUA)
-		} else {
-			httpReq.Header.Set("User-Agent", OpenCodeUserAgent)
-		}
 	} else {
 		httpReq.Header.Set("Authorization", "Bearer "+secret)
 	}
+
+	ua := OpenCodeUserAgent
+	if clientUA := clientHeaders.Get("User-Agent"); clientUA != "" {
+		if !isFree || strings.Contains(strings.ToLower(clientUA), "opencode/") {
+			ua = clientUA
+		}
+	}
+	httpReq.Header.Set("User-Agent", ua)
 
 	if reqID != "" {
 		httpReq.Header.Set("X-Request-Id", reqID)
@@ -418,6 +427,21 @@ func (a *Adapter) attempt(ctx context.Context, u *domain.Upstream, req ports.For
 		}
 	}
 
+	if isFree && strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+		aggregated, aErr := a.aggregateChatSSE(ctx, resp.Body, publicModel)
+		if aErr != nil {
+			return attemptResult{status: http.StatusInternalServerError, err: aErr}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(aggregated)
+		return attemptResult{
+			status:   http.StatusOK,
+			headers:  resp.Header.Clone(),
+			streamed: true,
+		}
+	}
+
 	buf, rErr := openai.RelayBuffered(reader, a.maxBytes())
 	if rErr != nil {
 		return attemptResult{status: resp.StatusCode, err: rErr}
@@ -432,10 +456,19 @@ func (a *Adapter) attempt(ctx context.Context, u *domain.Upstream, req ports.For
 	}
 }
 
+// responsesToolCall holds function call info from Responses API events.
+type responsesToolCall struct {
+	Index int
+	ID    string
+	Name  string
+	Args  string
+}
+
 // Normalized Responses API event for SSE streaming
 type responsesEvent struct {
 	Delta     string
 	Reasoning string
+	ToolCall  *responsesToolCall
 	Error     string
 	Done      bool
 	InputTok  int
@@ -467,7 +500,18 @@ func parseResponsesEvent(eventType string, data []byte) (responsesEvent, bool) {
 		}
 		return responsesEvent{Reasoning: d}, true
 
-	case "response.completed", "response.done":
+	case "response.output_item.done":
+		if root.Get("item.type").String() == "function_call" {
+			tc := &responsesToolCall{
+				Index: int(root.Get("output_index").Int()),
+				ID:    root.Get("item.call_id").String(),
+				Name:  root.Get("item.name").String(),
+				Args:  root.Get("item.arguments").String(),
+			}
+			return responsesEvent{ToolCall: tc}, true
+		}
+
+	case "response.completed", "response.done", "response.incomplete":
 		ev := responsesEvent{Done: true}
 		if u := root.Get("response.usage"); u.Exists() {
 			in := int(u.Get("input_tokens").Int())
@@ -618,6 +662,7 @@ func (a *Adapter) relayResponsesStream(ctx context.Context, w http.ResponseWrite
 
 	var finalIn, finalOut int
 	var writeErr error
+	var hasToolCalls bool
 	scanErr := scanSSE(ctx, body, func(ev responsesEvent) (bool, error) {
 		switch {
 		case ev.Error != "":
@@ -630,6 +675,21 @@ func (a *Adapter) relayResponsesStream(ctx context.Context, w http.ResponseWrite
 			}
 		case ev.Delta != "":
 			if err := writeChunk(map[string]any{"content": ev.Delta}, "", 0, 0); err != nil {
+				writeErr = err
+				return true, err
+			}
+		case ev.ToolCall != nil:
+			hasToolCalls = true
+			tcChunk := map[string]any{
+				"index": ev.ToolCall.Index,
+				"id":    ev.ToolCall.ID,
+				"type":  "function",
+				"function": map[string]any{
+					"name":      ev.ToolCall.Name,
+					"arguments": ev.ToolCall.Args,
+				},
+			}
+			if err := writeChunk(map[string]any{"tool_calls": []any{tcChunk}}, "", 0, 0); err != nil {
 				writeErr = err
 				return true, err
 			}
@@ -649,8 +709,12 @@ func (a *Adapter) relayResponsesStream(ctx context.Context, w http.ResponseWrite
 		return written, scanErr
 	}
 
+	finishReason := "stop"
+	if hasToolCalls {
+		finishReason = "tool_calls"
+	}
 	// Terminal stop chunk + [DONE]
-	if err := writeChunk(map[string]any{}, "stop", finalIn, finalOut); err != nil {
+	if err := writeChunk(map[string]any{}, finishReason, finalIn, finalOut); err != nil {
 		return written, err
 	}
 	n, werr := io.WriteString(w, "data: [DONE]\n\n")
@@ -667,6 +731,7 @@ func (a *Adapter) aggregateResponsesStream(ctx context.Context, body io.Reader, 
 
 	var content strings.Builder
 	var reasoning strings.Builder
+	var toolCalls []map[string]any
 	var inTok, outTok int
 	var upstreamErr string
 
@@ -679,6 +744,15 @@ func (a *Adapter) aggregateResponsesStream(ctx context.Context, body io.Reader, 
 			reasoning.WriteString(ev.Reasoning)
 		case ev.Delta != "":
 			content.WriteString(ev.Delta)
+		case ev.ToolCall != nil:
+			toolCalls = append(toolCalls, map[string]any{
+				"id":   ev.ToolCall.ID,
+				"type": "function",
+				"function": map[string]any{
+					"name":      ev.ToolCall.Name,
+					"arguments": ev.ToolCall.Args,
+				},
+			})
 		}
 		if ev.Done {
 			inTok = ev.InputTok
@@ -701,6 +775,11 @@ func (a *Adapter) aggregateResponsesStream(ctx context.Context, body io.Reader, 
 	if reasoning.Len() > 0 {
 		msg["reasoning_content"] = reasoning.String()
 	}
+	finishReason := "stop"
+	if len(toolCalls) > 0 {
+		msg["tool_calls"] = toolCalls
+		finishReason = "tool_calls"
+	}
 
 	respObj := map[string]any{
 		"id":      id,
@@ -711,7 +790,7 @@ func (a *Adapter) aggregateResponsesStream(ctx context.Context, body io.Reader, 
 			{
 				"index":         0,
 				"message":       msg,
-				"finish_reason": "stop",
+				"finish_reason": finishReason,
 			},
 		},
 		"usage": map[string]int{
@@ -719,6 +798,109 @@ func (a *Adapter) aggregateResponsesStream(ctx context.Context, body io.Reader, 
 			"completion_tokens": outTok,
 			"total_tokens":      inTok + outTok,
 		},
+	}
+
+	return json.Marshal(respObj)
+}
+
+func (a *Adapter) aggregateChatSSE(ctx context.Context, body io.Reader, publicModel string) ([]byte, error) {
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 8<<20)
+
+	var id string
+	var created int64
+	var content strings.Builder
+	var reasoning strings.Builder
+	var finishReason string
+	var usage map[string]any
+
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "" || data == "[DONE]" {
+			continue
+		}
+		if !gjson.Valid(data) {
+			continue
+		}
+		parsed := gjson.Parse(data)
+		if parsed.Get("error").Exists() {
+			return nil, fmt.Errorf("opencode upstream error: %s", parsed.Get("error.message").String())
+		}
+		if id == "" {
+			id = parsed.Get("id").String()
+		}
+		if created == 0 {
+			created = parsed.Get("created").Int()
+		}
+		if u := parsed.Get("usage"); u.Exists() {
+			usage = map[string]any{
+				"prompt_tokens":     u.Get("prompt_tokens").Int(),
+				"completion_tokens": u.Get("completion_tokens").Int(),
+				"total_tokens":      u.Get("total_tokens").Int(),
+			}
+		}
+		choices := parsed.Get("choices").Array()
+		if len(choices) > 0 {
+			c0 := choices[0]
+			if delta := c0.Get("delta"); delta.Exists() {
+				if text := delta.Get("content").String(); text != "" {
+					content.WriteString(text)
+				}
+				if rText := delta.Get("reasoning_content").String(); rText != "" {
+					reasoning.WriteString(rText)
+				}
+			}
+			if fr := c0.Get("finish_reason").String(); fr != "" {
+				finishReason = fr
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	if id == "" {
+		id = "chatcmpl-opencode-" + GenerateRequestID()
+	}
+	if created == 0 {
+		created = time.Now().Unix()
+	}
+	if finishReason == "" {
+		finishReason = "stop"
+	}
+
+	msg := map[string]any{
+		"role":    "assistant",
+		"content": content.String(),
+	}
+	if reasoning.Len() > 0 {
+		msg["reasoning_content"] = reasoning.String()
+	}
+
+	respObj := map[string]any{
+		"id":      id,
+		"object":  "chat.completion",
+		"created": created,
+		"model":   publicModel,
+		"choices": []map[string]any{
+			{
+				"index":         0,
+				"message":       msg,
+				"finish_reason": finishReason,
+			},
+		},
+	}
+	if usage != nil {
+		respObj["usage"] = usage
 	}
 
 	return json.Marshal(respObj)

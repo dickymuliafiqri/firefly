@@ -4,8 +4,10 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
@@ -39,22 +41,42 @@ func (m *mockBreaker) Report(name string, ok bool) {
 }
 
 func TestResolveSessionID(t *testing.T) {
-	t.Run("preserves valid native header", func(t *testing.T) {
+	t.Run("preserves valid canonical native header", func(t *testing.T) {
+		canonical := "ses_f50b1e8a4175RyWGSMj14y2e90"
+		assert.True(t, IsValidSessionID(canonical))
 		h := make(http.Header)
-		h.Set(HeaderSession, "ses_custom_session_123")
+		h.Set(HeaderSession, canonical)
 		id := ResolveSessionID(h, "tenant1", "req1")
-		assert.Equal(t, "ses_custom_session_123", id)
+		assert.Equal(t, canonical, id)
 	})
 
-	t.Run("generates deterministic hash when missing", func(t *testing.T) {
+	t.Run("normalizes non-canonical header to valid format", func(t *testing.T) {
+		h := make(http.Header)
+		h.Set(HeaderSession, "custom-legacy-session-id")
+		id1 := ResolveSessionID(h, "tenant1", "req1")
+		id2 := ResolveSessionID(h, "tenant1", "req2")
+		assert.True(t, IsValidSessionID(id1))
+		assert.Equal(t, id1, id2, "same custom session should map to same canonical session")
+	})
+
+	t.Run("generates deterministic canonical hash when missing", func(t *testing.T) {
 		id1 := ResolveSessionID(nil, "tenant1", "req1")
 		id2 := ResolveSessionID(nil, "tenant1", "req1")
-		assert.True(t, strings.HasPrefix(id1, "ses_"))
+		assert.True(t, IsValidSessionID(id1))
 		assert.Equal(t, id1, id2)
 
 		// Different tenant produces different session
 		id3 := ResolveSessionID(nil, "tenant2", "req1")
+		assert.True(t, IsValidSessionID(id3))
 		assert.NotEqual(t, id1, id3)
+	})
+
+	t.Run("generates valid descending IDs", func(t *testing.T) {
+		ses := GenerateSessionID()
+		assert.True(t, IsValidSessionID(ses))
+		req := GenerateRequestID()
+		assert.True(t, strings.HasPrefix(req, "msg_"))
+		assert.Equal(t, 30, len(req))
 	})
 }
 
@@ -90,23 +112,51 @@ func TestNormalizeReasoning(t *testing.T) {
 }
 
 func TestTransformChatToResponses(t *testing.T) {
-	body := []byte(`{
-		"model": "muse-spark-1.2-contributor",
-		"messages": [
-			{"role": "system", "content": "You are an assistant"},
-			{"role": "user", "content": "Hello world"}
-		],
-		"max_tokens": 1024,
-		"reasoning_effort": "medium"
-	}`)
+	t.Run("paid mode extracts instructions and leaves tools untouched", func(t *testing.T) {
+		body := []byte(`{
+			"model": "muse-spark-1.2-contributor",
+			"messages": [
+				{"role": "system", "content": "You are an assistant"},
+				{"role": "user", "content": "Hello world"}
+			],
+			"max_tokens": 1024,
+			"reasoning_effort": "medium"
+		}`)
 
-	out, err := TransformChatToResponses(body, "muse-spark-1.2-contributor")
-	require.NoError(t, err)
+		out, err := TransformChatToResponses(body, "muse-spark-1.2-contributor", false)
+		require.NoError(t, err)
 
-	assert.Equal(t, "muse-spark-1.2-contributor", gjson.GetBytes(out, "model").String())
-	assert.Equal(t, int64(1024), gjson.GetBytes(out, "max_output_tokens").Int())
-	assert.Equal(t, "medium", gjson.GetBytes(out, "reasoning.effort").String())
-	assert.Equal(t, 2, len(gjson.GetBytes(out, "input").Array()))
+		assert.Equal(t, "muse-spark-1.2-contributor", gjson.GetBytes(out, "model").String())
+		assert.Equal(t, int64(1024), gjson.GetBytes(out, "max_output_tokens").Int())
+		assert.Equal(t, "medium", gjson.GetBytes(out, "reasoning.effort").String())
+		assert.Equal(t, "You are an assistant", gjson.GetBytes(out, "instructions").String())
+		assert.Equal(t, 1, len(gjson.GetBytes(out, "input").Array()))
+	})
+
+	t.Run("free mode injects official prompt and official tools", func(t *testing.T) {
+		body := []byte(`{
+			"model": "muse-spark-1.3-contributor-free",
+			"messages": [
+				{"role": "user", "content": "hi"}
+			]
+		}`)
+
+		out, err := TransformChatToResponses(body, "muse-spark-1.3-contributor-free", true)
+		require.NoError(t, err)
+
+		assert.Equal(t, "muse-spark-1.3-contributor-free", gjson.GetBytes(out, "model").String())
+		assert.Contains(t, gjson.GetBytes(out, "instructions").String(), "You are opencode")
+		assert.Contains(t, gjson.GetBytes(out, "instructions").String(), "muse-spark-1.3-contributor-free")
+		assert.Equal(t, int64(32000), gjson.GetBytes(out, "max_output_tokens").Int())
+		assert.NotEmpty(t, gjson.GetBytes(out, "tools").Array())
+	})
+
+	t.Run("clamps when max_tokens < 16", func(t *testing.T) {
+		lowTokensBody := []byte(`{"model":"muse-spark-1.2-contributor","messages":[{"role":"user","content":"hi"}],"max_tokens":5}`)
+		outClamped, err := TransformChatToResponses(lowTokensBody, "muse-spark-1.2-contributor", false)
+		require.NoError(t, err)
+		assert.Equal(t, int64(16), gjson.GetBytes(outClamped, "max_output_tokens").Int())
+	})
 }
 
 func TestAdapter_FreeMode(t *testing.T) {
@@ -152,7 +202,7 @@ func TestAdapter_FreeMode(t *testing.T) {
 
 	assert.Equal(t, "Bearer public", receivedAuth)
 	assert.Equal(t, OpenCodeUserAgent, receivedUA)
-	assert.Equal(t, "desktop", receivedClient)
+	assert.Equal(t, "cli", receivedClient)
 	assert.True(t, strings.HasPrefix(receivedSession, "ses_"))
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
@@ -261,4 +311,89 @@ func TestAdapter_FailoverOn429(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 2, attempts)
 	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestEnforceFreeSessionPayload(t *testing.T) {
+	t.Run("injects system prompt and tools for minimal body", func(t *testing.T) {
+		input := []byte(`{"model":"big-pickle","messages":[{"role":"user","content":"hi"}]}`)
+		out := EnforceFreeSessionPayload(input)
+
+		assert.True(t, gjson.GetBytes(out, "stream").Bool())
+		assert.True(t, gjson.GetBytes(out, "stream_options.include_usage").Bool())
+		assert.Equal(t, int64(32000), gjson.GetBytes(out, "max_tokens").Int())
+
+		msgs := gjson.GetBytes(out, "messages").Array()
+		require.Len(t, msgs, 2)
+		assert.Equal(t, "system", msgs[0].Get("role").String())
+		assert.Contains(t, msgs[0].Get("content").String(), "You are opencode")
+		assert.Equal(t, "user", msgs[1].Get("role").String())
+
+		tools := gjson.GetBytes(out, "tools").Array()
+		assert.NotEmpty(t, tools)
+		assert.Equal(t, "auto", gjson.GetBytes(out, "tool_choice").String())
+	})
+
+	t.Run("prepends official prompt to existing user system message", func(t *testing.T) {
+		input := []byte(`{"model":"big-pickle","messages":[{"role":"system","content":"Be very brief."},{"role":"user","content":"hi"}]}`)
+		out := EnforceFreeSessionPayload(input)
+
+		msgs := gjson.GetBytes(out, "messages").Array()
+		require.Len(t, msgs, 2)
+		assert.Equal(t, "system", msgs[0].Get("role").String())
+		content := msgs[0].Get("content").String()
+		assert.Contains(t, content, "You are opencode")
+		assert.Contains(t, content, "Be very brief.")
+	})
+}
+
+func TestAdapter_LiveMuseSparkForward(t *testing.T) {
+	if os.Getenv("FIREFLY_LIVE_TESTS") != "1" {
+		t.Skip("skipping live test; set FIREFLY_LIVE_TESTS=1 to run")
+	}
+
+	u := &domain.Upstream{
+		Name:     "opencode-free",
+		Protocol: domain.ProtocolOpenCode,
+		BaseURL:  "https://opencode.ai/zen/v1",
+	}
+	target := &domain.Target{
+		Upstream:      u,
+		UpstreamModel: "muse-spark-1.3-contributor-free",
+	}
+
+	adapter := NewAdapter(&mockClientPool{client: &http.Client{Timeout: 30 * time.Second}}, &mockBreaker{allowed: true}, Config{})
+
+	t.Run("streaming", func(t *testing.T) {
+		req := ports.ForwardRequest{
+			Method:    http.MethodPost,
+			Path:      "/chat/completions",
+			Stream:    true,
+			BodyBytes: []byte(`{"model": "muse-spark-1.3-contributor-free", "messages": [{"role": "user", "content": "Write one short greeting."}], "stream": true}`),
+		}
+
+		rec := httptest.NewRecorder()
+		err := adapter.Forward(context.Background(), target, req, rec)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, rec.Code)
+		body := rec.Body.String()
+		assert.Contains(t, body, "chat.completion.chunk")
+		assert.Contains(t, body, "data: [DONE]")
+	})
+
+	t.Run("non-streaming", func(t *testing.T) {
+		req := ports.ForwardRequest{
+			Method:    http.MethodPost,
+			Path:      "/chat/completions",
+			Stream:    false,
+			BodyBytes: []byte(`{"model": "muse-spark-1.3-contributor-free", "messages": [{"role": "user", "content": "Say ping."}], "stream": false}`),
+		}
+
+		rec := httptest.NewRecorder()
+		err := adapter.Forward(context.Background(), target, req, rec)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, rec.Code)
+		body := rec.Body.String()
+		assert.Contains(t, body, "chat.completion")
+		assert.Contains(t, body, `"content":`)
+	})
 }

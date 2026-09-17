@@ -5,6 +5,40 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-09-18
+
+### Added
+- **Embedded Cloudflare WARP & Userspace WireGuard Egress Engine (`internal/warp`, `cmd/firefly`, `internal/server`, `internal/upstream`, `frontend`)**:
+  - **Zero-Privilege Userspace Tunnel**: Native userspace WireGuard implementation via `golang.zx2c4.com/wireguard` and `tun/netstack` (gVisor TCP/IP), requiring zero root/sudo permissions, host network TUN/TAP kernel device privileges, or external daemon dependencies.
+  - **Automated Cloudflare Device Registration**: Generates Curve25519 WireGuard keypairs on-the-fly and registers peers with Cloudflare Edge (`api.cloudflareclient.com/v0a3304/reg`) with optional WARP+ license key integration (`FIREFLY_WARP_LICENSE` / `WARP_LICENSE_KEY`).
+  - **Identity Persistence & Non-Disruptive Session Drain**: Persists tunnel identity to disk (`warp_identity.json`) for instant restart recovery. Concurrent rotations are coalesced with `singleflight.Group`, and previous WireGuard devices are gracefully drained in the background to prevent severed in-flight SSE streams.
+  - **Automated Upstream 429 IP Rotation (`warp_auto_rotate_on_429`)**: Upstreams configured with WARP egress can automatically trigger asynchronous background WireGuard IP rotations upon receiving HTTP 429 Too Many Requests, instantly renewing outbound IP reputation without blocking the caller.
+  - **Centralized Outbound Transport Routing (`warp.ConfigureTransportEgress`)**: Unified egress pipeline supporting `direct` host routing, `warp` userspace WireGuard tunneling, and custom `proxy` endpoints (SOCKS5/SOCKS5h/HTTP/HTTPS).
+  - **WARP Management Card (`WarpEngineCard.tsx`)**: Real-time status monitoring in Settings view displaying public IPv4, Cloudflare edge colo datacenter (e.g. `HKG`, `SIN`), handshake latency, active sessions count, and on-demand manual rotation.
+  - **Per-Upstream Egress Controls (`UpstreamModal.tsx`, `UpstreamCard.tsx`)**: Configurable egress mode dropdown (`Direct Host Network`, `Cloudflare WARP`, `Proxy`), proxy URL input, and auto-rotate toggle with persistence to local JSON snapshots and Turso database.
+
+- **OpenCode Free Tier Session & Responses API Engine (`internal/opencode`, `internal/server`)**:
+  - **Canonical OpenCode ID Specification**: Implemented exact timestamp-encoded 26-character identifiers matching the official OpenCode client: descending IDs for sessions (`ses_<26-chars>`) and ascending IDs for messages (`msg_<26-chars>`), strictly conforming to provider console regex validation.
+  - **Deterministic Session Mapping**: Non-canonical inbound session headers are deterministically mapped via SHA-256 to canonical 30-character IDs, completely eliminating upstream 403 `FreeTierError` while preserving tenant session isolation.
+  - **Official Client Session Emulation**: Embedded official prompt preamble (`free_prompt.txt`) and tool declarations (`free_tools.json`) into request bodies on OpenCode Free tier, fulfilling provider console authorization requirements.
+  - **Full OpenAI Responses API Compatibility (`muse-spark-1.3-contributor-free`, `muse-*`, `grok-*`)**:
+    - Extracted system/developer instructions to top-level `instructions` parameter.
+    - Clamped `max_output_tokens >= 16` to prevent Responses API validation errors.
+    - Added comprehensive event parsing for `response.incomplete` and `response.output_item.done` (function call tool invocations), relaying streaming tool calls and finish reasons (`tool_calls`, `stop`) faithfully to OpenAI-compatible clients.
+    - Implemented streaming SSE to non-streaming response aggregator (`aggregateChatSSE`) for free tier inference.
+  - **Egress-Aware Active Health Checking & Model Probing**:
+    - Automated probe payload dispatching: standard Chat Completions for chat models, and Responses API format for `muse-*` models.
+    - Health checks and zero-token model catalog discovery execute through the upstream's configured egress mode (WARP, proxy, or direct).
+
+### Changed & Improved
+- **Code Style & Architecture Refactoring (`golang-code-style`)**:
+  - Centralized egress transport configuration in `warp.ConfigureTransportEgress`, eliminating duplicated transport setup across `upstream.Pool` and `server.RouterDeps`.
+  - Replaced Wall-clock `time.Now()` inside `deriveCanonicalID` with pure cryptographic seed derivation for 100% deterministic hash output across concurrent runs.
+  - Standardized header assignment using default-then-override patterns in `internal/opencode/adapter.go`.
+  - Refactored function signatures to maintain parameter count $\le 4$ with dedicated configuration structs (`warp.EgressConfig`).
+- **Frontend Version Bump**:
+  - Updated frontend package and constant identifiers to `v1.7.0`.
+
 ## [1.6.0] - 2026-09-17
 
 ### Added

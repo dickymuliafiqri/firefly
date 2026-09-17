@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"regexp"
 	"sort"
@@ -414,6 +415,33 @@ func translateUpstream(i int, d UpstreamDTO, envLookup func(string) (string, boo
 		baseURLs[idx] = strings.TrimRight(u, "/")
 	}
 
+	egressMode := strings.ToLower(strings.TrimSpace(d.EgressMode))
+	if egressMode == "" {
+		egressMode = "direct"
+	}
+	if egressMode != "direct" && egressMode != "warp" && egressMode != "proxy" {
+		return nil, &ValidationError{
+			Field: fmt.Sprintf("upstreams[%d].egress_mode", i),
+			Msg:   "invalid egress_mode (must be 'direct', 'warp', or 'proxy')",
+		}
+	}
+	proxyURL := strings.TrimSpace(d.ProxyURL)
+	if egressMode == "proxy" {
+		if proxyURL == "" {
+			return nil, &ValidationError{
+				Field: fmt.Sprintf("upstreams[%d].proxy_url", i),
+				Msg:   "proxy_url is required when egress_mode is 'proxy'",
+			}
+		}
+		pu, err := url.Parse(proxyURL)
+		if err != nil || (pu.Scheme != "http" && pu.Scheme != "https" && pu.Scheme != "socks5" && pu.Scheme != "socks5h") {
+			return nil, &ValidationError{
+				Field: fmt.Sprintf("upstreams[%d].proxy_url", i),
+				Msg:   "proxy_url must be a valid http, https, socks5, or socks5h URL",
+			}
+		}
+	}
+
 	return &domain.Upstream{
 		Name:                    d.Name,
 		Protocol:                domain.Protocol(proto),
@@ -436,6 +464,9 @@ func translateUpstream(i int, d UpstreamDTO, envLookup func(string) (string, boo
 		KeyErrorAction:          d.KeyErrorAction,
 		KeyCooldownDurationMs:   pickInt(d.KeyCooldownDurationMs, 300000),
 		ProbeModel:              strings.TrimSpace(d.ProbeModel),
+		EgressMode:              egressMode,
+		ProxyURL:                proxyURL,
+		WarpAutoRotateOn429:     pickBool(d.WarpAutoRotateOn429, false),
 	}, nil
 }
 

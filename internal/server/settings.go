@@ -58,6 +58,9 @@ func sanitizePublicSettings(src config.SettingsDTO) config.SettingsDTO {
 			StreamIdleTimeoutMs: u.StreamIdleTimeoutMs,
 			KeyStrategy:         u.KeyStrategy,
 			Enabled:             u.Enabled,
+			EgressMode:          u.EgressMode,
+			ProxyURL:            u.ProxyURL,
+			WarpAutoRotateOn429: u.WarpAutoRotateOn429,
 		})
 	}
 

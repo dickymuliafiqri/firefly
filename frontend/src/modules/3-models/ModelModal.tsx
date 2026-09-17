@@ -194,6 +194,8 @@ export const ModelModal = React.memo(function ModelModal({
           api_key: isSavedUpstream ? undefined : selectedUpstreamObj.api_key,
           model: targetModel,
           timeout_ms: 10000,
+          egress_mode: selectedUpstreamObj.egress_mode,
+          proxy_url: selectedUpstreamObj.proxy_url,
         },
         adminToken
       );

@@ -1,0 +1,189 @@
+package warp
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+
+	"golang.org/x/crypto/curve25519"
+)
+
+// CloudflareDefaults holds canonical WARP endpoints and peer public keys.
+const (
+	DefaultRegistrationURL = "https://api.cloudflareclient.com/v0a3304/reg"
+	DefaultPeerPublicKey   = "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
+	DefaultPeerEndpoint    = "162.159.192.1:2408"
+)
+
+// KeyPair stores private and public Curve25519 WireGuard keys in both raw and base64 formats.
+type KeyPair struct {
+	PrivateKey   [32]byte
+	PublicKey    [32]byte
+	PrivateKeyB64 string
+	PublicKeyB64  string
+	PrivateKeyHex string
+}
+
+// GenerateKeyPair generates a new cryptographically secure Curve25519 keypair for WireGuard.
+func GenerateKeyPair() (*KeyPair, error) {
+	var priv [32]byte
+	if _, err := io.ReadFull(rand.Reader, priv[:]); err != nil {
+		return nil, fmt.Errorf("read random bytes: %w", err)
+	}
+
+	// Clamp the private key according to Curve25519 / RFC 7748
+	priv[0] &= 248
+	priv[31] = (priv[31] & 127) | 64
+
+	var pub [32]byte
+	curve25519.ScalarBaseMult(&pub, &priv)
+
+	return &KeyPair{
+		PrivateKey:    priv,
+		PublicKey:     pub,
+		PrivateKeyB64: base64.StdEncoding.EncodeToString(priv[:]),
+		PublicKeyB64:  base64.StdEncoding.EncodeToString(pub[:]),
+		PrivateKeyHex: hex.EncodeToString(priv[:]),
+	}, nil
+}
+
+// PeerEndpoint stores peer network address details.
+type PeerEndpoint struct {
+	V4   string `json:"v4"`
+	V6   string `json:"v6"`
+	Host string `json:"host"`
+}
+
+// PeerConfig describes a WireGuard peer from Cloudflare.
+type PeerConfig struct {
+	PublicKey string       `json:"public_key"`
+	Endpoint  PeerEndpoint `json:"endpoint"`
+}
+
+// InterfaceAddresses stores assigned internal tunnel IP addresses.
+type InterfaceAddresses struct {
+	V4 string `json:"v4"`
+	V6 string `json:"v6"`
+}
+
+// RegistrationResponse represents the JSON payload from api.cloudflareclient.com/reg.
+type RegistrationResponse struct {
+	ID      string `json:"id"`
+	Type    string `json:"type"`
+	Name    string `json:"name"`
+	Key     string `json:"key"`
+	Account struct {
+		ID          string `json:"id"`
+		AccountType string `json:"account_type"`
+		Warp        bool   `json:"warp"`
+	} `json:"account"`
+	Config struct {
+		ClientID string       `json:"client_id"`
+		Peers    []PeerConfig `json:"peers"`
+		Interface struct {
+			Addresses InterfaceAddresses `json:"addresses"`
+		} `json:"interface"`
+	} `json:"config"`
+	Token string `json:"token"`
+}
+
+// RegisterDevice calls Cloudflare WARP client API to register a new WireGuard peer.
+func RegisterDevice(ctx context.Context, httpClient *http.Client, keys *KeyPair, licenseKey string) (*RegistrationResponse, error) {
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 15 * time.Second}
+	}
+
+	reqBody := map[string]any{
+		"key":           keys.PublicKeyB64,
+		"install_id":    "",
+		"fcm_token":     "",
+		"tos":           time.Now().UTC().Format(time.RFC3339Nano),
+		"model":         "Firefly Gateway",
+		"serial_number": "",
+		"locale":        "en_US",
+	}
+
+	jsonBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal registration request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, DefaultRegistrationURL, bytes.NewReader(jsonBytes))
+	if err != nil {
+		return nil, fmt.Errorf("create registration request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	req.Header.Set("User-Agent", "okhttp/3.12.1")
+	req.Header.Set("CF-Client-Version", "a-6.3-2020")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("execute registration request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read registration response: %w", err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("registration failed with status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var regResp RegistrationResponse
+	if err := json.Unmarshal(bodyBytes, &regResp); err != nil {
+		return nil, fmt.Errorf("unmarshal registration response: %w", err)
+	}
+
+	if len(regResp.Config.Peers) == 0 {
+		// Fallback to default peer if empty
+		regResp.Config.Peers = []PeerConfig{
+			{
+				PublicKey: DefaultPeerPublicKey,
+				Endpoint: PeerEndpoint{
+					V4: DefaultPeerEndpoint,
+				},
+			},
+		}
+	}
+
+	// Apply optional license key (WARP+) if supplied
+	if licenseKey != "" && regResp.ID != "" && regResp.Token != "" {
+		_ = updateLicenseKey(ctx, httpClient, &regResp, licenseKey)
+	}
+
+	return &regResp, nil
+}
+
+func updateLicenseKey(ctx context.Context, httpClient *http.Client, reg *RegistrationResponse, license string) error {
+	if reg == nil || reg.ID == "" || reg.Token == "" {
+		return nil
+	}
+	url := fmt.Sprintf("https://api.cloudflareclient.com/v0a3304/reg/%s/account", reg.ID)
+	payload := map[string]string{"license": strings.TrimSpace(license)}
+	data, _ := json.Marshal(payload)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+reg.Token)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return nil
+}

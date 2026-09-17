@@ -44,6 +44,7 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/turso"
 	"github.com/dickymuliafiqri/firefly/internal/upstream"
 	"github.com/dickymuliafiqri/firefly/internal/usage"
+	"github.com/dickymuliafiqri/firefly/internal/warp"
 	"github.com/dickymuliafiqri/firefly/internal/watch"
 )
 
@@ -277,7 +278,14 @@ func run() error {
 	}()
 
 	// 3. Outbound transport: per-upstream client pool + circuit breakers.
-	pool := upstream.NewPool()
+	warpLicense := os.Getenv("FIREFLY_WARP_LICENSE")
+	if warpLicense == "" {
+		warpLicense = os.Getenv("WARP_LICENSE_KEY")
+	}
+	warpManager := warp.NewManager(logger, warpLicense, filepath.Join(*configDir, "data", "warp_identity.json"))
+	upstream.SetGlobalWarpRotator(warpManager)
+
+	pool := upstream.NewPool(warpManager)
 	breakers := upstream.NewBreakerRegistry(upstream.BreakerConfig{
 		FailureThreshold: 5,
 		SuccessThreshold: 2,
@@ -474,6 +482,7 @@ func run() error {
 		OAuthManager: oauthMgr,
 		TursoStore:   tursoStore,
 		TursoManager: server.NewTursoManager(*configDir, tursoStore, logger),
+		WarpManager:  warpManager,
 		Logger:       logger,
 		Metrics:      mx,
 	}
@@ -537,6 +546,9 @@ func run() error {
 	flushCancel()
 	if tursoClient != nil {
 		_ = tursoClient.Close()
+	}
+	if warpManager != nil {
+		warpManager.Close()
 	}
 	logger.Info("bye")
 	return nil

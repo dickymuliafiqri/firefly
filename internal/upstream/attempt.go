@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/dickymuliafiqri/firefly/internal/domain"
@@ -22,6 +23,22 @@ type AttemptMetrics interface {
 // value is safe.
 type BreakerReporter interface {
 	Report(name string, ok bool)
+}
+
+// WarpRotator triggers asynchronous IP rotation for Cloudflare WARP.
+type WarpRotator interface {
+	RotateAsync(upstreamName string)
+}
+
+var globalWarpRotator atomic.Pointer[WarpRotator]
+
+// SetGlobalWarpRotator sets the package-level WARP rotator for automated 429 IP rotations.
+func SetGlobalWarpRotator(wr WarpRotator) {
+	if wr == nil {
+		globalWarpRotator.Store(nil)
+		return
+	}
+	globalWarpRotator.Store(&wr)
 }
 
 // AttemptOutcome describes the result of a single upstream attempt, expressed
@@ -135,6 +152,13 @@ func ProcessAttemptOutcome(
 			metrics.ObserveKeyCooldown(u.Name, target.KeySlot.Ref)
 		}
 		metrics.ObserveKeyRequest(u.Name, target.KeySlot.Ref, outcome.Status)
+	}
+
+	// Auto-rotate Cloudflare WARP IP if enabled for this upstream
+	if outcome.Status == http.StatusTooManyRequests && u != nil && u.WarpAutoRotateOn429 {
+		if ptr := globalWarpRotator.Load(); ptr != nil && *ptr != nil {
+			(*ptr).RotateAsync(u.Name)
+		}
 	}
 
 	// Failover: rotate to another available key and retry.

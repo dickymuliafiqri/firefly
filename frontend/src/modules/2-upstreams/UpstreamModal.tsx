@@ -8,6 +8,8 @@ import {
   useOAuthConnectionsQuery,
   useTursoProvidersQuery,
   useSettingsQuery,
+  useWarpStatusQuery,
+  useRotateWarpMutation,
   checkUpstreamHealth,
   fetchUpstreamModels,
   fetchTursoProviderKeys,
@@ -25,6 +27,8 @@ import {
   UserCheck,
   Database,
   Play,
+  Shield,
+  Globe,
 } from 'lucide-react';
 import { cn, copyToClipboard } from '@/lib/utils';
 import { OAuthConnectDialog } from './OAuthConnectDialog';
@@ -80,6 +84,11 @@ export interface KeyItem {
   message?: string;
 }
 
+export interface CredentialSlot {
+  ref?: string;
+  secret?: string;
+}
+
 export type ModelBatchStatus = 'idle' | 'testing' | 'success' | 'failed';
 
 export interface ModelBatchItemResult {
@@ -89,6 +98,7 @@ export interface ModelBatchItemResult {
   latencyMs?: number;
   errorMessage?: string;
   testedAt?: number;
+  keyRef?: string;
 }
 
 type TabType = 'general' | 'keys' | 'models' | 'load_balancing' | 'network';
@@ -327,9 +337,20 @@ const ModelRowItem = React.memo(function ModelRowItem({
             <span>testing...</span>
           </span>
         ) : batchResult && batchResult.status === 'success' ? (
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-mono flex items-center gap-1">
+          <span
+            className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-mono flex items-center gap-1"
+            title={batchResult.keyRef ? `Verified via ${batchResult.keyRef}` : undefined}
+          >
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
             <span>Active{batchResult.latencyMs != null ? ` · ${batchResult.latencyMs}ms` : ''}</span>
+            {batchResult.keyRef ? (
+              <span
+                className="text-[9px] text-emerald-400/70 border-l border-emerald-500/20 pl-1 ml-0.5 max-w-[120px] truncate"
+                title={`Account: ${batchResult.keyRef}`}
+              >
+                {batchResult.keyRef.startsWith('oauth:') ? batchResult.keyRef.slice(6) : batchResult.keyRef}
+              </span>
+            ) : null}
           </span>
         ) : batchResult && batchResult.status === 'failed' ? (
           <span
@@ -338,6 +359,14 @@ const ModelRowItem = React.memo(function ModelRowItem({
           >
             <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />
             <span>Failed{batchResult.statusCode ? ` (${batchResult.statusCode})` : ''}</span>
+            {batchResult.keyRef ? (
+              <span
+                className="text-[9px] text-rose-400/70 border-l border-rose-500/20 pl-1 ml-0.5 max-w-[120px] truncate"
+                title={`Account: ${batchResult.keyRef}`}
+              >
+                {batchResult.keyRef.startsWith('oauth:') ? batchResult.keyRef.slice(6) : batchResult.keyRef}
+              </span>
+            ) : null}
           </span>
         ) : null}
 
@@ -432,6 +461,13 @@ export const UpstreamModal = React.memo(function UpstreamModal({
   const [providerId, setProviderId] = useState('');
   const [probeModel, setProbeModel] = useState('');
 
+  // Egress & WARP tab state
+  const [egressMode, setEgressMode] = useState<'direct' | 'warp' | 'proxy'>('direct');
+  const [proxyUrl, setProxyUrl] = useState('');
+  const [warpAutoRotateOn429, setWarpAutoRotateOn429] = useState(false);
+  const { data: warpStatus } = useWarpStatusQuery();
+  const rotateWarpMutation = useRotateWarpMutation();
+
   // OAuth tab state
   const [boundAccounts, setBoundAccounts] = useState<BoundAccountItem[]>([]);
   const [connectDialogOpen, setConnectDialogOpen] = useState(false);
@@ -506,6 +542,7 @@ export const UpstreamModal = React.memo(function UpstreamModal({
   const [isBatchTesting, setIsBatchTesting] = useState<boolean>(false);
   const [batchResults, setBatchResults] = useState<Record<string, ModelBatchItemResult>>({});
   const batchAbortControllerRef = useRef<AbortController | null>(null);
+  const singleTestIndexRef = useRef<number>(0);
 
   // Load balancing tab state
   const [keyStrategy, setKeyStrategy] = useState<'round_robin' | 'least_inflight'>('round_robin');
@@ -558,6 +595,9 @@ export const UpstreamModal = React.memo(function UpstreamModal({
         setKeyErrorAction((upstreamToEdit.key_error_action as 'deactivate' | 'delete' | 'cooldown') || 'deactivate');
         setKeyCooldownSec(numericDraft(upstreamToEdit.key_cooldown_duration_ms != null ? Math.round(upstreamToEdit.key_cooldown_duration_ms / 1000) : null, 300));
         setProbeModel(upstreamToEdit.probe_model || '');
+        setEgressMode((upstreamToEdit.egress_mode as 'direct' | 'warp' | 'proxy') || 'direct');
+        setProxyUrl(upstreamToEdit.proxy_url || '');
+        setWarpAutoRotateOn429(Boolean(upstreamToEdit.warp_auto_rotate_on_429));
 
         // Format extra headers
         if (upstreamToEdit.extra_headers) {
@@ -648,6 +688,9 @@ export const UpstreamModal = React.memo(function UpstreamModal({
         setKeyCooldownSec('300');
         setProbeModel('');
         setIsManualProbeInput(false);
+        setEgressMode('direct');
+        setProxyUrl('');
+        setWarpAutoRotateOn429(false);
         setActiveTab('general');
       }
 
@@ -916,11 +959,13 @@ export const UpstreamModal = React.memo(function UpstreamModal({
           api_key: item.secret,
           timeout_ms: 8000,
           model: probeModel.trim() || undefined,
+          egress_mode: egressMode,
+          proxy_url: proxyUrl.trim() || undefined,
         },
         adminToken
       );
     },
-    [name, protocol, baseUrl, adminToken, probeModel]
+    [name, protocol, baseUrl, adminToken, probeModel, egressMode, proxyUrl]
   );
 
   const handleTestSingleKey = useCallback(
@@ -1137,16 +1182,53 @@ export const UpstreamModal = React.memo(function UpstreamModal({
   }, [keys, keyFilter, deferredKeySearch]);
 
   // -------------------------------------------------------------
+  // Load Balancing Credential Pool Helper
+  // -------------------------------------------------------------
+  const getCandidatePool = useCallback((): CredentialSlot[] => {
+    if (isOAuth) {
+      const active = boundAccounts.filter((a) => !a.isExpired && Boolean(a.ref));
+      if (active.length > 0) {
+        return active.map((a) => ({ ref: a.ref, secret: a.ref }));
+      }
+      const anyAcc = boundAccounts.filter((a) => Boolean(a.ref));
+      if (anyAcc.length > 0) {
+        return anyAcc.map((a) => ({ ref: a.ref, secret: a.ref }));
+      }
+      return [{ ref: undefined, secret: undefined }];
+    }
+
+    // Direct API Keys
+    const validKeys = keys.filter(
+      (k) => k.status !== 'invalid' && (Boolean(k.secret.trim()) || Boolean(k.ref.trim()))
+    );
+    if (validKeys.length > 0) {
+      return validKeys.map((k) => ({
+        ref: k.ref.trim() || undefined,
+        secret: k.secret.trim() || (k.ref.trim() || undefined),
+      }));
+    }
+    const anyKeys = keys.filter((k) => Boolean(k.secret.trim()) || Boolean(k.ref.trim()));
+    if (anyKeys.length > 0) {
+      return anyKeys.map((k) => ({
+        ref: k.ref.trim() || undefined,
+        secret: k.secret.trim() || (k.ref.trim() || undefined),
+      }));
+    }
+    return [{ ref: undefined, secret: undefined }];
+  }, [isOAuth, boundAccounts, keys]);
+
+  const candidateCount = useMemo(() => {
+    return getCandidatePool().filter((c) => Boolean(c.ref || c.secret)).length;
+  }, [getCandidatePool]);
+
+  // -------------------------------------------------------------
   // Fetch Models from Upstream
   // -------------------------------------------------------------
   const handleFetchUpstreamModels = useCallback(async () => {
     if (!baseUrl.trim()) return;
 
-    // Pick first valid key or any key (or OAuth bound account ref)
-    const oauthRef = isOAuth ? (boundAccounts[0]?.ref || '') : '';
-    const validKey = isOAuth
-      ? oauthRef
-      : (keys.find((k) => k.status === 'valid')?.secret || (keys[0]?.secret || ''));
+    const candidates = getCandidatePool();
+    let selectedSlot = candidates[0] || {};
 
     if (batchAbortControllerRef.current) {
       batchAbortControllerRef.current.abort();
@@ -1157,22 +1239,48 @@ export const UpstreamModal = React.memo(function UpstreamModal({
 
     setIsLoadingModels(true);
     try {
-      const res = await fetchUpstreamModels(
+      let res = await fetchUpstreamModels(
         {
           name: name.trim(),
-          key_ref: oauthRef || undefined,
+          key_ref: selectedSlot.ref,
           protocol,
           base_url: baseUrl.trim(),
-          api_key: validKey,
+          api_key: selectedSlot.secret,
           timeout_ms: 10000,
+          egress_mode: egressMode,
+          proxy_url: proxyUrl.trim() || undefined,
         },
         adminToken
       );
 
+      // If failed on first candidate, failover to second candidate if available
+      if ((!res.models || res.models.length === 0) && candidates.length > 1) {
+        const altSlot = candidates[1];
+        if (altSlot.ref !== selectedSlot.ref) {
+          const altRes = await fetchUpstreamModels(
+            {
+              name: name.trim(),
+              key_ref: altSlot.ref,
+              protocol,
+              base_url: baseUrl.trim(),
+              api_key: altSlot.secret,
+              timeout_ms: 10000,
+              egress_mode: egressMode,
+              proxy_url: proxyUrl.trim() || undefined,
+            },
+            adminToken
+          );
+          if (altRes.models && altRes.models.length > 0) {
+            res = altRes;
+            selectedSlot = altSlot;
+          }
+        }
+      }
+
       if (res.models && res.models.length > 0) {
         setUpstreamModels(res.models);
 
-        // Auto-select probe model based on 'free' (priority 1) or 'flash' (priority 2)
+        // Intelligently auto-populate designated Probe Model if none configured
         if (!probeModel.trim()) {
           const optimal = pickOptimalProbeModel(res.models);
           if (optimal) {
@@ -1187,7 +1295,11 @@ export const UpstreamModal = React.memo(function UpstreamModal({
 
         addToast({
           title: 'Models Loaded',
-          message: `Discovered ${res.models.length} models from upstream host.`,
+          message: `Discovered ${res.models.length} models from upstream host${
+            selectedSlot.ref
+              ? ` (${selectedSlot.ref.startsWith('oauth:') ? selectedSlot.ref.slice(6) : selectedSlot.ref})`
+              : ''
+          }.`,
           type: 'success',
         });
       } else {
@@ -1206,7 +1318,7 @@ export const UpstreamModal = React.memo(function UpstreamModal({
     } finally {
       setIsLoadingModels(false);
     }
-  }, [baseUrl, keys, boundAccounts, isOAuth, name, protocol, adminToken, addToast, probeModel]);
+  }, [baseUrl, getCandidatePool, name, protocol, adminToken, addToast, probeModel, egressMode, proxyUrl]);
 
   const filteredModels = useMemo(() => {
     if (!deferredModelSearch) return upstreamModels;
@@ -1235,25 +1347,34 @@ export const UpstreamModal = React.memo(function UpstreamModal({
 
     const existing = useAppStore.getState().upstreams.find((u) => u.name === upstreamName);
     if (!existing) {
+      const pool = isOAuth
+        ? boundAccounts.map((a) => ({
+            ref: a.ref,
+            max_concurrent: a.maxConcurrent ?? undefined,
+            rps: a.rps ?? undefined,
+          }))
+        : keys.map((k) => ({
+            ref: k.ref,
+            secret: k.secret,
+            max_concurrent: k.max_concurrent ?? undefined,
+            rps: k.rps ?? undefined,
+          }));
+
       const currentUpstreamDto: UpstreamDTO = {
         name: upstreamName,
         base_url: baseUrl.trim(),
         protocol,
         enabled: true,
-        api_key: keys[0]?.secret || undefined,
-        credential_ref: keys[0]?.ref || undefined,
-        credential_pool: keys.map((k) => ({
-          ref: k.ref,
-          secret: k.secret,
-          max_concurrent: k.max_concurrent ?? undefined,
-          rps: k.rps ?? undefined,
-        })),
+        api_key: isOAuth ? undefined : keys[0]?.secret || undefined,
+        credential_ref: isOAuth ? boundAccounts[0]?.ref || undefined : keys[0]?.ref || undefined,
+        key_strategy: keyStrategy,
+        credential_pool: pool,
         probe_model: probeModel.trim() || undefined,
       };
       addOrUpdateUpstream(currentUpstreamDto);
     }
     return true;
-  }, [name, baseUrl, protocol, keys, probeModel, addOrUpdateUpstream]);
+  }, [name, baseUrl, protocol, keys, boundAccounts, isOAuth, keyStrategy, probeModel, addOrUpdateUpstream]);
 
   const handleCreateRoute = useCallback(
     (modelId: string) => {
@@ -1351,11 +1472,6 @@ export const UpstreamModal = React.memo(function UpstreamModal({
   const handleStartBatchTest = useCallback(async () => {
     if (upstreamModels.length === 0 || !baseUrl.trim()) return;
 
-    const oauthRef = isOAuth ? (boundAccounts[0]?.ref || '') : '';
-    const validKey = isOAuth
-      ? oauthRef
-      : (keys.find((k) => k.status === 'valid')?.secret || (keys[0]?.secret || ''));
-
     if (batchAbortControllerRef.current) {
       batchAbortControllerRef.current.abort();
     }
@@ -1373,6 +1489,50 @@ export const UpstreamModal = React.memo(function UpstreamModal({
       };
     }
     setBatchResults(initialMap);
+
+    const candidates = getCandidatePool();
+    let rrCounter = 0;
+    const inFlightMap = new Map<string, number>();
+    const cooldownMap = new Map<string, number>();
+
+    const pickCandidate = (now = Date.now()): CredentialSlot => {
+      if (candidates.length <= 1) return candidates[0] || {};
+
+      // Filter out candidates currently under 429 quota cooldown
+      let available = candidates.filter((c) => {
+        if (!c.ref) return true;
+        const cd = cooldownMap.get(c.ref) || 0;
+        return cd <= now;
+      });
+
+      if (available.length === 0) {
+        // All candidates are under cooldown; sort by earliest cooldown expiration
+        available = [...candidates].sort((a, b) => {
+          const cdA = cooldownMap.get(a.ref || '') || 0;
+          const cdB = cooldownMap.get(b.ref || '') || 0;
+          return cdA - cdB;
+        });
+      }
+
+      if (keyStrategy === 'least_inflight') {
+        let best = available[0];
+        let minInFlight = inFlightMap.get(best.ref || '') || 0;
+        for (let i = 1; i < available.length; i++) {
+          const cand = available[i];
+          const count = inFlightMap.get(cand.ref || '') || 0;
+          if (count < minInFlight) {
+            minInFlight = count;
+            best = cand;
+          }
+        }
+        return best;
+      }
+
+      // Default: round_robin
+      const chosen = available[rrCounter % available.length];
+      rrCounter++;
+      return chosen;
+    };
 
     const intervalMs = Math.max(50, Math.round(1000 / safeRps));
     const maxConcurrency = Math.max(safeRps * 2, 2);
@@ -1394,22 +1554,70 @@ export const UpstreamModal = React.memo(function UpstreamModal({
         },
       }));
 
+      let slot = pickCandidate();
+      const slotRef = slot.ref || '';
+      if (slotRef) {
+        inFlightMap.set(slotRef, (inFlightMap.get(slotRef) || 0) + 1);
+      }
+
       try {
-        const res = await checkUpstreamHealth(
+        let res = await checkUpstreamHealth(
           {
             name: name.trim(),
-            key_ref: oauthRef || (keys.find((k) => k.status === 'valid')?.ref || (keys[0]?.ref || undefined)),
+            key_ref: slot.ref,
             protocol,
             base_url: baseUrl.trim(),
-            api_key: validKey,
+            api_key: slot.secret,
             timeout_ms: 8000,
             model: modelName,
+            egress_mode: egressMode,
+            proxy_url: proxyUrl.trim() || undefined,
           },
           adminToken,
           signal
         );
 
         if (signal.aborted) return;
+
+        // Layer 1 Dynamic Cooldown & Failover (AGENTS.md Invariant):
+        // If an account/key returns 429 Too Many Requests (or 401 on multi-account pool),
+        // place it in 30s cooldown and failover to the next available account in the pool!
+        if (
+          (res.status_code === 429 || res.status_code === 401) &&
+          candidates.length > 1 &&
+          slotRef
+        ) {
+          cooldownMap.set(slotRef, Date.now() + 30000);
+          const failoverSlot = pickCandidate();
+          if (failoverSlot.ref !== slot.ref && !signal.aborted) {
+            inFlightMap.set(slotRef, Math.max(0, (inFlightMap.get(slotRef) || 0) - 1));
+            slot = failoverSlot;
+            const newSlotRef = slot.ref || '';
+            if (newSlotRef) {
+              inFlightMap.set(newSlotRef, (inFlightMap.get(newSlotRef) || 0) + 1);
+            }
+
+            res = await checkUpstreamHealth(
+              {
+                name: name.trim(),
+                key_ref: slot.ref,
+                protocol,
+                base_url: baseUrl.trim(),
+                api_key: slot.secret,
+                timeout_ms: 8000,
+                model: modelName,
+                egress_mode: egressMode,
+                proxy_url: proxyUrl.trim() || undefined,
+              },
+              adminToken,
+              signal
+            );
+          }
+        }
+
+        if (signal.aborted) return;
+
+        const effectiveRef = res.key_ref || slot.ref;
 
         if (res.healthy || res.status_code === 200) {
           setBatchResults((prev) => ({
@@ -1419,6 +1627,8 @@ export const UpstreamModal = React.memo(function UpstreamModal({
               status: 'success',
               statusCode: res.status_code || 200,
               latencyMs: res.latency_ms,
+              errorMessage: undefined,
+              keyRef: effectiveRef,
               testedAt: Date.now(),
             },
           }));
@@ -1431,6 +1641,7 @@ export const UpstreamModal = React.memo(function UpstreamModal({
               statusCode: res.status_code,
               latencyMs: res.latency_ms,
               errorMessage: res.message || 'Verification failed',
+              keyRef: effectiveRef,
               testedAt: Date.now(),
             },
           }));
@@ -1443,10 +1654,15 @@ export const UpstreamModal = React.memo(function UpstreamModal({
             model: modelName,
             status: 'failed',
             errorMessage: err instanceof Error ? err.message : 'Network error',
+            keyRef: slot.ref,
             testedAt: Date.now(),
           },
         }));
       } finally {
+        const currentRef = slot.ref || '';
+        if (currentRef) {
+          inFlightMap.set(currentRef, Math.max(0, (inFlightMap.get(currentRef) || 0) - 1));
+        }
         activeCount--;
       }
     };
@@ -1488,16 +1704,29 @@ export const UpstreamModal = React.memo(function UpstreamModal({
         setIsBatchTesting(false);
       }
     }
-  }, [upstreamModels, baseUrl, isOAuth, boundAccounts, keys, safeRps, name, protocol, adminToken]);
+  }, [
+    upstreamModels,
+    baseUrl,
+    safeRps,
+    name,
+    protocol,
+    adminToken,
+    getCandidatePool,
+    keyStrategy,
+    egressMode,
+    proxyUrl,
+  ]);
 
   const handleTestSingleModel = useCallback(
     async (modelId: string) => {
       if (!baseUrl.trim()) return;
 
-      const oauthRef = isOAuth ? (boundAccounts[0]?.ref || '') : '';
-      const validKey = isOAuth
-        ? oauthRef
-        : (keys.find((k) => k.status === 'valid')?.secret || (keys[0]?.secret || ''));
+      const candidates = getCandidatePool();
+      let slot = candidates[0] || {};
+      if (candidates.length > 1) {
+        slot = candidates[singleTestIndexRef.current % candidates.length];
+        singleTestIndexRef.current++;
+      }
 
       setBatchResults((prev) => ({
         ...prev,
@@ -1508,18 +1737,48 @@ export const UpstreamModal = React.memo(function UpstreamModal({
       }));
 
       try {
-        const res = await checkUpstreamHealth(
+        let res = await checkUpstreamHealth(
           {
             name: name.trim(),
-            key_ref: oauthRef || (keys.find((k) => k.status === 'valid')?.ref || (keys[0]?.ref || undefined)),
+            key_ref: slot.ref,
             protocol,
             base_url: baseUrl.trim(),
-            api_key: validKey,
+            api_key: slot.secret,
             timeout_ms: 8000,
             model: modelId,
+            egress_mode: egressMode,
+            proxy_url: proxyUrl.trim() || undefined,
           },
           adminToken
         );
+
+        // Immediate failover if rate limited and multiple candidates exist
+        if (
+          (res.status_code === 429 || res.status_code === 401) &&
+          candidates.length > 1
+        ) {
+          const failoverSlot = candidates[singleTestIndexRef.current % candidates.length];
+          singleTestIndexRef.current++;
+          if (failoverSlot.ref !== slot.ref) {
+            slot = failoverSlot;
+            res = await checkUpstreamHealth(
+              {
+                name: name.trim(),
+                key_ref: slot.ref,
+                protocol,
+                base_url: baseUrl.trim(),
+                api_key: slot.secret,
+                timeout_ms: 8000,
+                model: modelId,
+                egress_mode: egressMode,
+                proxy_url: proxyUrl.trim() || undefined,
+              },
+              adminToken
+            );
+          }
+        }
+
+        const effectiveRef = res.key_ref || slot.ref;
 
         if (res.healthy || res.status_code === 200) {
           setBatchResults((prev) => ({
@@ -1529,6 +1788,8 @@ export const UpstreamModal = React.memo(function UpstreamModal({
               status: 'success',
               statusCode: res.status_code || 200,
               latencyMs: res.latency_ms,
+              errorMessage: undefined,
+              keyRef: effectiveRef,
               testedAt: Date.now(),
             },
           }));
@@ -1541,6 +1802,7 @@ export const UpstreamModal = React.memo(function UpstreamModal({
               statusCode: res.status_code,
               latencyMs: res.latency_ms,
               errorMessage: res.message || 'Verification failed',
+              keyRef: effectiveRef,
               testedAt: Date.now(),
             },
           }));
@@ -1552,12 +1814,13 @@ export const UpstreamModal = React.memo(function UpstreamModal({
             model: modelId,
             status: 'failed',
             errorMessage: err instanceof Error ? err.message : 'Network error',
+            keyRef: slot.ref,
             testedAt: Date.now(),
           },
         }));
       }
     },
-    [baseUrl, isOAuth, boundAccounts, keys, name, protocol, adminToken]
+    [baseUrl, getCandidatePool, name, protocol, adminToken, egressMode, proxyUrl]
   );
 
   const testedModelsCount = useMemo(() => {
@@ -1883,6 +2146,9 @@ export const UpstreamModal = React.memo(function UpstreamModal({
       allow_insecure: allowInsecure,
       extra_headers: Object.keys(headersMap).length > 0 ? headersMap : undefined,
       probe_model: probeModel.trim() || undefined,
+      egress_mode: egressMode,
+      proxy_url: egressMode === 'proxy' ? proxyUrl.trim() || undefined : undefined,
+      warp_auto_rotate_on_429: egressMode === 'warp' ? warpAutoRotateOn429 : false,
       enabled: upstreamToEdit?.enabled ?? true,
     };
 
@@ -2867,6 +3133,18 @@ export const UpstreamModal = React.memo(function UpstreamModal({
                           <option value={10}>10 req/s (High Throughput)</option>
                         </select>
                       </div>
+
+                      {/* Load Balancing Strategy Indicator */}
+                      <div
+                        className="hidden sm:flex items-center gap-1.5 text-[11px] font-mono text-neutral-400 bg-white/[0.03] px-2.5 py-1 rounded border border-white/[0.06]"
+                        title={`Load balancing requests using ${keyStrategy} strategy across configured ${isOAuth ? 'accounts' : 'keys'}`}
+                      >
+                        <span className="text-neutral-500">LB:</span>
+                        <span className="text-cyan-300 font-medium">{keyStrategy}</span>
+                        <span className="text-neutral-500">
+                          ({candidateCount} {isOAuth ? (candidateCount === 1 ? 'account' : 'accounts') : (candidateCount === 1 ? 'key' : 'keys')})
+                        </span>
+                      </div>
                     </div>
 
                     <div className="flex items-center gap-2">
@@ -3410,6 +3688,147 @@ export const UpstreamModal = React.memo(function UpstreamModal({
                     Keeps pre-warmed HTTP/2 TLS sockets for zero-latency consecutive calls.
                   </span>
                 </div>
+              </div>
+
+              {/* Egress Transport & IP Routing */}
+              <div className="pt-3 border-t border-white/[0.04] space-y-3">
+                <div>
+                  <h4 className="text-white font-medium text-xs tracking-tight">
+                    Egress Transport & IP Routing
+                  </h4>
+                  <p className="text-[10px] text-neutral-500">
+                    Controls the outbound network interface and IP routing used to connect to this upstream provider.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setEgressMode('direct')}
+                    className={cn(
+                      'p-2.5 rounded-lg border text-left flex flex-col gap-0.5 transition-all cursor-pointer font-mono',
+                      egressMode === 'direct'
+                        ? 'border-white/[0.2] bg-white/[0.06] text-white'
+                        : 'border-white/[0.04] bg-transparent text-neutral-400 hover:text-neutral-200 hover:bg-white/[0.02]'
+                    )}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium text-xs">Direct Host</span>
+                      {egressMode === 'direct' && <Check className="w-3 h-3 text-emerald-400" />}
+                    </div>
+                    <span className="text-[10px] text-neutral-500">Standard host network IP</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setEgressMode('warp')}
+                    className={cn(
+                      'p-2.5 rounded-lg border text-left flex flex-col gap-0.5 transition-all cursor-pointer font-mono',
+                      egressMode === 'warp'
+                        ? 'border-cyan-500/40 bg-cyan-500/[0.06] text-white'
+                        : 'border-white/[0.04] bg-transparent text-neutral-400 hover:text-neutral-200 hover:bg-white/[0.02]'
+                    )}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium text-xs flex items-center gap-1.5">
+                        <Shield className="w-3 h-3 text-cyan-400" />
+                        Cloudflare WARP
+                      </span>
+                      {egressMode === 'warp' && <Check className="w-3 h-3 text-cyan-400" />}
+                    </div>
+                    <span className="text-[10px] text-neutral-500">Built-in IP rotation tunnel</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setEgressMode('proxy')}
+                    className={cn(
+                      'p-2.5 rounded-lg border text-left flex flex-col gap-0.5 transition-all cursor-pointer font-mono',
+                      egressMode === 'proxy'
+                        ? 'border-amber-500/40 bg-amber-500/[0.06] text-white'
+                        : 'border-white/[0.04] bg-transparent text-neutral-400 hover:text-neutral-200 hover:bg-white/[0.02]'
+                    )}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium text-xs flex items-center gap-1.5">
+                        <Globe className="w-3 h-3 text-amber-400" />
+                        Custom Proxy
+                      </span>
+                      {egressMode === 'proxy' && <Check className="w-3 h-3 text-amber-400" />}
+                    </div>
+                    <span className="text-[10px] text-neutral-500">HTTP / SOCKS5 upstream</span>
+                  </button>
+                </div>
+
+                {egressMode === 'warp' && (
+                  <div className="p-3 rounded-lg border border-cyan-500/20 bg-cyan-500/[0.02] space-y-3 font-mono text-xs animate-in fade-in duration-150">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="relative flex h-2 w-2">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
+                          <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-500" />
+                        </span>
+                        <span className="text-[11px] text-cyan-300 font-medium">WARP Tunnel Active</span>
+                        <span className="text-[10px] px-1.5 py-0.2 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
+                          WireGuard Userspace
+                        </span>
+                      </div>
+
+                      <Button
+                        type="button"
+                        variant="minimal"
+                        size="sm"
+                        onClick={() => rotateWarpMutation.mutate()}
+                        isLoading={rotateWarpMutation.isPending}
+                        leftIcon={<RotateCw className="w-3 h-3 text-cyan-400" />}
+                      >
+                        Rotate IP Now
+                      </Button>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[10px] text-neutral-400 bg-white/[0.02] p-2 rounded border border-white/[0.04]">
+                      <div>
+                        <span className="text-neutral-500">Egress Public IPv4: </span>
+                        <span className="text-neutral-200">{warpStatus?.public_ip || 'Negotiating on dial...'}</span>
+                      </div>
+                      <div>
+                        <span className="text-neutral-500">Cloudflare Edge: </span>
+                        <span className="text-neutral-200">{warpStatus?.colo ? `${warpStatus.colo} (${warpStatus.latency_ms ?? 0}ms)` : 'Global Edge'}</span>
+                      </div>
+                    </div>
+
+                    <label className="flex items-start gap-2 pt-1 text-neutral-300 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={warpAutoRotateOn429}
+                        onChange={(e) => setWarpAutoRotateOn429(e.target.checked)}
+                        className="mt-0.5 h-3.5 w-3.5 rounded border-white/20 bg-transparent text-cyan-500 focus:ring-0 cursor-pointer accent-cyan-500"
+                      />
+                      <div className="flex flex-col">
+                        <span className="text-xs text-neutral-200">Auto-rotate IP on HTTP 429 (Too Many Requests)</span>
+                        <span className="text-[10px] text-neutral-500">
+                          Automatically negotiates a new WireGuard session key when upstream rate limits by IP (e.g. OpenCode Free).
+                        </span>
+                      </div>
+                    </label>
+                  </div>
+                )}
+
+                {egressMode === 'proxy' && (
+                  <div className="space-y-1.5 pt-1 animate-in fade-in duration-150">
+                    <label className="text-neutral-400 font-medium text-[11px]">Upstream Proxy URL</label>
+                    <input
+                      type="url"
+                      value={proxyUrl}
+                      onChange={(e) => setProxyUrl(e.target.value)}
+                      placeholder="socks5://127.0.0.1:1080 or http://user:pass@proxy.example.com:8080"
+                      className="w-full px-3 py-1.5 rounded-lg bg-transparent border border-white/[0.08] text-white font-mono text-xs focus:outline-none focus:border-white/20"
+                    />
+                    <span className="text-[10px] text-neutral-500">
+                      Supports HTTP, HTTPS, SOCKS5, and SOCKS5h (DNS resolved via remote proxy).
+                    </span>
+                  </div>
+                )}
               </div>
 
               {/* Allow Insecure HTTP */}

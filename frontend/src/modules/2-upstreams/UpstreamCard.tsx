@@ -2,7 +2,7 @@ import React from 'react';
 import type { UpstreamDTO, ConnectionDTO } from '@/services/schema';
 import { KeyRingSlotList } from './KeyRingSlotList';
 import { AccountRingSlotList } from './AccountRingSlotList';
-import { Edit3, Trash2 } from 'lucide-react';
+import { Edit3, Trash2, Shield, Globe } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export interface UpstreamCardProps {
@@ -91,6 +91,24 @@ export const UpstreamCard = React.memo(function UpstreamCard({
           <span className="text-[11px] text-neutral-500 uppercase">
             {getProtocolLabel()}
           </span>
+          {upstream.egress_mode === 'warp' && (
+            <span
+              className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded font-mono bg-cyan-500/10 text-cyan-300 border border-cyan-500/20"
+              title={upstream.warp_auto_rotate_on_429 ? 'Cloudflare WARP (Auto-Rotate on 429)' : 'Cloudflare WARP'}
+            >
+              <Shield className="w-2.5 h-2.5 text-cyan-400" />
+              WARP
+              {upstream.warp_auto_rotate_on_429 && <span className="text-[9px] text-cyan-400/70 font-semibold">AUTO</span>}
+            </span>
+          )}
+          {upstream.egress_mode === 'proxy' && (
+            <span
+              className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded font-mono bg-amber-500/10 text-amber-300 border border-amber-500/20"
+              title={upstream.proxy_url ? `Proxy: ${upstream.proxy_url}` : 'Egress Proxy'}
+            >
+              <Globe className="w-2.5 h-2.5 text-amber-400" /> PROXY
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-2.5 flex-shrink-0">

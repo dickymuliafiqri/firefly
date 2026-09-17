@@ -28,6 +28,7 @@ import { useSaveSettingsMutation, useSettingsQuery, useTestTursoMutation } from 
 import { RawJsonEditor } from './RawJsonEditor';
 import { DiffModal } from './DiffModal';
 import { TokenSaverCard } from './TokenSaverCard';
+import { WarpEngineCard } from './WarpEngineCard';
 import type { AutoTLSDTO, SettingsDTO, TursoDTO, TokenSaverDTO } from '@/services/schema';
 import { cn } from '@/lib/utils';
 
@@ -576,6 +577,9 @@ export default React.memo(function SettingsView() {
               onSave={handleSaveTokenSaver}
               isSaving={saveMutation.isPending}
             />
+
+            {/* Cloudflare WARP Egress Engine */}
+            <WarpEngineCard />
 
             {/* Native Auto-TLS Card */}
             <div className="p-5 rounded-xl bg-transparent border border-white/[0.06] space-y-4 font-mono text-xs select-none">

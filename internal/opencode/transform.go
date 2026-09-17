@@ -100,7 +100,7 @@ func NormalizeReasoning(body []byte) ([]byte, bool) {
 
 // TransformChatToResponses transforms an OpenAI Chat Completions payload into
 // an OpenAI Responses API payload suitable for OpenCode's /responses endpoint.
-func TransformChatToResponses(body []byte, upstreamModel string) ([]byte, error) {
+func TransformChatToResponses(body []byte, upstreamModel string, isFree bool) ([]byte, error) {
 	parsed := gjson.ParseBytes(body)
 
 	// Determine output token limits
@@ -113,14 +113,33 @@ func TransformChatToResponses(body []byte, upstreamModel string) ([]byte, error)
 		maxOutputTokens = parsed.Get("max_tokens").Int()
 	}
 
-	// Build responses input array from messages
+	// Build responses input array from messages and extract system instructions
 	messages := parsed.Get("messages")
 	var inputs []map[string]any
+	var systemInstructions []string
 
 	if messages.Exists() && messages.IsArray() {
 		for _, msg := range messages.Array() {
 			role := msg.Get("role").String()
 			content := msg.Get("content")
+
+			// System or developer prompt must go to top-level instructions in Responses API schema
+			if role == "system" || role == "developer" {
+				sysText := ""
+				if content.Type == gjson.String {
+					sysText = content.String()
+				} else if content.IsArray() {
+					for _, part := range content.Array() {
+						if part.Get("type").String() == "text" {
+							sysText += part.Get("text").String()
+						}
+					}
+				}
+				if sysText != "" {
+					systemInstructions = append(systemInstructions, sysText)
+				}
+				continue
+			}
 
 			// Handle tool response
 			if role == "tool" {
@@ -201,8 +220,31 @@ func TransformChatToResponses(body []byte, upstreamModel string) ([]byte, error)
 		"store":  false,
 	}
 
+	// Instructions handling
+	userInstructions := strings.Join(systemInstructions, "\n\n")
+	instructions := userInstructions
+	if isFree {
+		if !strings.HasPrefix(userInstructions, "You are opencode") && !strings.Contains(userInstructions, "You are a title generator") {
+			adaptedPrompt := OfficialFreePromptFor(upstreamModel)
+			if userInstructions != "" {
+				instructions = adaptedPrompt + "\n\n# User Instructions\n" + userInstructions
+			} else {
+				instructions = adaptedPrompt
+			}
+		}
+	}
+	if instructions != "" {
+		payload["instructions"] = instructions
+	}
+
 	if maxOutputTokens > 0 {
+		// OpenCode /responses API strictly requires max_output_tokens >= 16.
+		if maxOutputTokens < 16 {
+			maxOutputTokens = 16
+		}
 		payload["max_output_tokens"] = maxOutputTokens
+	} else if isFree {
+		payload["max_output_tokens"] = 32000
 	}
 
 	// Reasoning
@@ -216,17 +258,21 @@ func TransformChatToResponses(body []byte, upstreamModel string) ([]byte, error)
 			payload["reasoning"] = rObj
 		}
 	} else if parsed.Get("reasoning_effort").Exists() {
+		effort := parsed.Get("reasoning_effort").String()
+		if effort == "max" || effort == "ultra" {
+			effort = "xhigh"
+		}
 		payload["reasoning"] = map[string]string{
-			"effort":  parsed.Get("reasoning_effort").String(),
+			"effort":  effort,
 			"summary": "auto",
 		}
 	}
 
 	// Tools
+	var validTools []map[string]any
 	if parsed.Get("tools").Exists() && parsed.Get("tools").IsArray() {
 		var rawTools []any
 		_ = json.Unmarshal([]byte(parsed.Get("tools").Raw), &rawTools)
-		var validTools []map[string]any
 		for _, rawT := range rawTools {
 			tObj, ok := rawT.(map[string]any)
 			if !ok {
@@ -265,8 +311,13 @@ func TransformChatToResponses(body []byte, upstreamModel string) ([]byte, error)
 				"parameters":  params,
 			})
 		}
-		if len(validTools) > 0 {
-			payload["tools"] = validTools
+	}
+
+	if len(validTools) > 0 {
+		payload["tools"] = validTools
+	} else if isFree {
+		if freeTools := OfficialResponsesTools(); len(freeTools) > 0 {
+			payload["tools"] = freeTools
 		}
 	}
 

@@ -354,6 +354,19 @@ type Upstream struct {
 	// ProbeModel is the designated model to use for deep health and quota verification.
 	// When empty, health checks fall back to reachability checks or registered catalog models.
 	ProbeModel string
+
+	// EgressMode defines the outbound transport routing for this upstream:
+	// "direct" (default host interface), "warp" (built-in Cloudflare WARP),
+	// or "proxy" (custom HTTP/SOCKS5 proxy URL).
+	EgressMode string
+
+	// ProxyURL is the target proxy endpoint when EgressMode is "proxy"
+	// (e.g. "socks5://user:pass@host:port" or "http://host:port").
+	ProxyURL string
+
+	// WarpAutoRotateOn429 indicates whether Cloudflare WARP WireGuard session
+	// should automatically rotate its IP upon receiving an HTTP 429 Too Many Requests.
+	WarpAutoRotateOn429 bool
 }
 
 // RoutingStrategy dictates how requests for a model are distributed across candidate upstreams.

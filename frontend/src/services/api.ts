@@ -17,6 +17,7 @@ import type {
   TursoKeysResponse,
   UpstreamModelsRequest,
   UpstreamModelsResponse,
+  WarpStatusDTO,
 } from './schema';
 import { useAdminToken, useAppStore } from '@/core/state/store';
 
@@ -408,6 +409,8 @@ export interface UpstreamCheckRequest {
   api_key?: string;
   timeout_ms?: number;
   model?: string;
+  egress_mode?: string;
+  proxy_url?: string;
 }
 
 export interface UpstreamCheckResponse {
@@ -503,13 +506,13 @@ export function useCheckUpstreamMutation() {
  * Adheres to Vercel React Best Practices: client-swr-dedup with 60s staleTime.
  */
 export function useUpstreamModelsQuery(
-  upstream: { name?: string; protocol?: string; base_url?: string; api_key?: string; key_ref?: string } | undefined,
+  upstream: { name?: string; protocol?: string; base_url?: string; api_key?: string; key_ref?: string; egress_mode?: string; proxy_url?: string } | undefined,
   enabled = true
 ) {
   const adminToken = useAdminToken();
 
   return useQuery({
-    queryKey: ['upstream-models', upstream?.name, upstream?.base_url],
+    queryKey: ['upstream-models', upstream?.name, upstream?.base_url, upstream?.egress_mode],
     queryFn: async (): Promise<string[]> => {
       if (!upstream || (!upstream.name && !upstream.base_url)) return [];
       const res = await fetchUpstreamModels(
@@ -520,6 +523,8 @@ export function useUpstreamModelsQuery(
           base_url: upstream.base_url || '',
           api_key: upstream.api_key,
           timeout_ms: 10000,
+          egress_mode: upstream.egress_mode,
+          proxy_url: upstream.proxy_url,
         },
         adminToken
       );
@@ -938,4 +943,73 @@ export function useFetchTursoKeysMutation() {
     mutationFn: (providerId?: number) => fetchTursoProviderKeys(providerId, adminToken),
   });
 }
+
+/**
+ * Fetch Cloudflare WARP tunnel status: GET /api/warp/status
+ */
+export async function fetchWarpStatus(adminToken?: string | null): Promise<WarpStatusDTO> {
+  const headers: Record<string, string> = { Accept: 'application/json' };
+  if (adminToken) {
+    headers['Authorization'] = `Bearer ${adminToken}`;
+  }
+  const res = await fetch(`${BASE_URL}/api/warp/status`, { headers });
+  if (!res.ok) {
+    throw new ApiError(res.status, 'Failed to fetch WARP status');
+  }
+  return res.json();
+}
+
+export function useWarpStatusQuery() {
+  const adminToken = useAdminToken();
+  return useQuery({
+    queryKey: ['warp_status', adminToken],
+    queryFn: () => fetchWarpStatus(adminToken),
+    refetchInterval: 10000,
+  });
+}
+
+/**
+ * Trigger on-demand Cloudflare WARP session rotation: POST /api/warp/rotate
+ */
+export async function rotateWarp(adminToken?: string | null): Promise<WarpStatusDTO> {
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+  };
+  if (adminToken) {
+    headers['Authorization'] = `Bearer ${adminToken}`;
+  }
+  const res = await fetch(`${BASE_URL}/api/warp/rotate`, {
+    method: 'POST',
+    headers,
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, body?.error || 'Failed to rotate WARP session');
+  }
+  return res.json();
+}
+
+export function useRotateWarpMutation() {
+  const adminToken = useAdminToken();
+  return useMutation({
+    mutationFn: () => rotateWarp(adminToken),
+    onSuccess: (status) => {
+      queryClient.invalidateQueries({ queryKey: ['warp_status'] });
+      useAppStore.getState().addToast({
+        title: 'WARP Session Rotated',
+        message: `New egress public IP assigned: ${status.public_ip || 'Unknown'} (${status.colo || 'Cloudflare Edge'})`,
+        type: 'success',
+      });
+    },
+    onError: (err: unknown) => {
+      useAppStore.getState().addToast({
+        title: 'Rotation Failed',
+        message: err instanceof Error ? err.message : 'Could not negotiate new WARP session',
+        type: 'error',
+      });
+    },
+  });
+}
+
 

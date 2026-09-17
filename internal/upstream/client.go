@@ -11,23 +11,35 @@
 package upstream
 
 import (
-	"net"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/dickymuliafiqri/firefly/internal/domain"
+	"github.com/dickymuliafiqri/firefly/internal/warp"
 )
 
 // Pool caches one *http.Client per upstream name. It is safe for concurrent use.
 type Pool struct {
 	mu      sync.RWMutex
 	clients map[string]*http.Client
+	warpMgr *warp.Manager
 }
 
-// NewPool returns an empty Pool.
-func NewPool() *Pool {
-	return &Pool{clients: make(map[string]*http.Client)}
+// NewPool returns a new Pool, optionally wired with an embedded WARP manager.
+func NewPool(warpMgr ...*warp.Manager) *Pool {
+	p := &Pool{clients: make(map[string]*http.Client)}
+	if len(warpMgr) > 0 {
+		p.warpMgr = warpMgr[0]
+	}
+	return p
+}
+
+// SetWarpManager configures the WARP manager for the pool.
+func (p *Pool) SetWarpManager(wm *warp.Manager) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.warpMgr = wm
 }
 
 // Client returns the pooled client for the upstream, building it on first use.
@@ -37,6 +49,7 @@ func (p *Pool) Client(u *domain.Upstream) *http.Client {
 	}
 	p.mu.RLock()
 	c, ok := p.clients[u.Name]
+	wm := p.warpMgr
 	p.mu.RUnlock()
 	if ok {
 		return c
@@ -47,7 +60,7 @@ func (p *Pool) Client(u *domain.Upstream) *http.Client {
 	if c, ok := p.clients[u.Name]; ok { // lost the race; reuse
 		return c
 	}
-	c = buildClient(u)
+	c = buildClient(u, wm)
 	p.clients[u.Name] = c
 	return c
 }
@@ -64,7 +77,7 @@ func (p *Pool) Client(u *domain.Upstream) *http.Client {
 // the ENTIRE request including response body read, which would truncate long
 // SSE streams. Instead we bound connection establishment (dial/header) via the
 // transport and leave body streaming to per-request context deadlines.
-func buildClient(u *domain.Upstream) *http.Client {
+func buildClient(u *domain.Upstream, warpMgr *warp.Manager) *http.Client {
 	idle := time.Duration(u.IdleTimeoutMs) * time.Millisecond
 	if idle <= 0 {
 		idle = 90 * time.Second
@@ -90,11 +103,6 @@ func buildClient(u *domain.Upstream) *http.Client {
 	}
 
 	tr := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
 		MaxIdleConns:          maxIdle,
 		MaxIdleConnsPerHost:   maxIdlePerHost,
 		MaxConnsPerHost:       maxConnsPerHost,
@@ -105,6 +113,13 @@ func buildClient(u *domain.Upstream) *http.Client {
 		ResponseHeaderTimeout: headerTimeout,
 		ForceAttemptHTTP2:     true,
 	}
+
+	warp.ConfigureTransportEgress(tr, warp.EgressConfig{
+		Mode:        u.EgressMode,
+		ProxyURL:    u.ProxyURL,
+		WarpDialer:  warpMgr,
+		DialTimeout: 30 * time.Second,
+	})
 	return &http.Client{
 		Transport: tr,
 		// No overall Timeout: see doc comment.
