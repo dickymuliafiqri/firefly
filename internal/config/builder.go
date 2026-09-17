@@ -36,6 +36,7 @@ type BuildResult struct {
 	TenantOrder     []string
 	Combos          map[string]*domain.Combo
 	ComboOrder      []string
+	TokenSaver      domain.TokenSaverConfig
 	Warnings        []string
 }
 
@@ -75,11 +76,30 @@ func Build(fs FileSet, envLookup func(string) (string, bool)) (*BuildResult, err
 		}
 	}
 
+	tokenSaverCfg := domain.DefaultTokenSaverConfig()
+	if len(bytes.TrimSpace(fs.TokenSaver)) > 0 {
+		var tsFile TokenSaverDTO
+		if err := decodeStrict("tokensaver", fs.TokenSaver, &tsFile); err == nil {
+			tokenSaverCfg.Enabled = tsFile.Enabled
+			tokenSaverCfg.CompressToolOutput = tsFile.CompressToolOutput
+			tokenSaverCfg.TerseOutput = tsFile.TerseOutput
+			tokenSaverCfg.MinimalCode = tsFile.MinimalCode
+			tokenSaverCfg.CompressContext = tsFile.CompressContext
+			if tsFile.MaxToolOutputChars != nil && *tsFile.MaxToolOutputChars > 0 {
+				tokenSaverCfg.MaxToolOutputChars = *tsFile.MaxToolOutputChars
+			}
+			if tsFile.ContextThreshold != nil && *tsFile.ContextThreshold > 0 {
+				tokenSaverCfg.ContextThreshold = *tsFile.ContextThreshold
+			}
+		}
+	}
+
 	res := &BuildResult{
 		Upstreams:     make(map[string]*domain.Upstream, len(upFile.Upstreams)),
 		Models:        make(map[string]*domain.ModelEntry, len(modelFile.Models)),
 		TenantsByHash: make(map[string]*domain.Tenant, len(tenantFile.Tenants)),
 		Combos:        make(map[string]*domain.Combo, len(comboFile.Combos)),
+		TokenSaver:    tokenSaverCfg,
 	}
 
 	for i, d := range upFile.Upstreams {

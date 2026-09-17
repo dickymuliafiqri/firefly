@@ -43,15 +43,64 @@ func isMasked(s string) bool {
 	return strings.Contains(s, "...") || s == "[REDACTED]"
 }
 
+// sanitizePublicSettings extracts safe public metadata for dashboard display,
+// strictly redacting sensitive credentials (API keys, pool, tenants, turso, autoTLS).
+func sanitizePublicSettings(src config.SettingsDTO) config.SettingsDTO {
+	publicUpstreams := make([]config.UpstreamDTO, 0, len(src.Upstreams))
+	for _, u := range src.Upstreams {
+		publicUpstreams = append(publicUpstreams, config.UpstreamDTO{
+			Name:                u.Name,
+			Protocol:            u.Protocol,
+			BaseURL:             u.BaseURL,
+			BaseURLs:            u.BaseURLs,
+			TimeoutMs:           u.TimeoutMs,
+			IdleTimeoutMs:       u.IdleTimeoutMs,
+			StreamIdleTimeoutMs: u.StreamIdleTimeoutMs,
+			KeyStrategy:         u.KeyStrategy,
+			Enabled:             u.Enabled,
+		})
+	}
+
+	publicModels := make([]config.ModelDTO, 0, len(src.Models))
+	for _, m := range src.Models {
+		publicModels = append(publicModels, config.ModelDTO{
+			PublicName:    m.PublicName,
+			Upstream:      m.Upstream,
+			UpstreamModel: m.UpstreamModel,
+			Capabilities:  m.Capabilities,
+			MaxContext:    m.MaxContext,
+			Enabled:       m.Enabled,
+		})
+	}
+
+	publicCombos := make([]config.ComboDTO, 0, len(src.Combos))
+	for _, c := range src.Combos {
+		publicCombos = append(publicCombos, config.ComboDTO{
+			Name:     c.Name,
+			Strategy: c.Strategy,
+			Models:   c.Models,
+			Enabled:  c.Enabled,
+		})
+	}
+
+	return config.SettingsDTO{
+		Upstreams:  publicUpstreams,
+		Models:     publicModels,
+		Combos:     publicCombos,
+		Tenants:    []config.TenantDTO{},
+		TokenSaver: src.TokenSaver,
+		AutoTLS:    nil,
+		Turso:      nil,
+	}
+}
+
 // handleGetSettings retrieves current configuration, safely redacting sensitive secrets.
+// Unauthenticated requests receive a sanitized public view containing only display metadata.
 func (deps RouterDeps) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Content-Type", "application/json")
 
-	if !deps.authorizeAdmin(r) {
-		openai.WriteError(w, http.StatusUnauthorized, openai.TypeAuthentication, "unauthorized: valid dashboard session or admin token required")
-		return
-	}
+	isAdmin := deps.authorizeAdmin(r)
 
 	snap := deps.currentSnapshot()
 
@@ -83,6 +132,12 @@ func (deps RouterDeps) handleGetSettings(w http.ResponseWriter, r *http.Request)
 				_ = json.Unmarshal(raw["models"], &modFile)
 				_ = json.Unmarshal(raw["tenants"], &tenFile)
 				_ = json.Unmarshal(raw["combos"], &combFile)
+				if len(raw["tokensaver"]) > 0 {
+					var tsDTO config.TokenSaverDTO
+					if err := json.Unmarshal(raw["tokensaver"], &tsDTO); err == nil {
+						settings.TokenSaver = &tsDTO
+					}
+				}
 
 				if len(upFile.Upstreams) > 0 || len(modFile.Models) > 0 || len(tenFile.Tenants) > 0 || len(combFile.Combos) > 0 {
 					settings.Upstreams = upFile.Upstreams
@@ -215,6 +270,24 @@ func (deps RouterDeps) handleGetSettings(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	if !isAdmin {
+		publicSettings := sanitizePublicSettings(settings)
+		if publicSettings.Upstreams == nil {
+			publicSettings.Upstreams = []config.UpstreamDTO{}
+		}
+		if publicSettings.Models == nil {
+			publicSettings.Models = []config.ModelDTO{}
+		}
+		if publicSettings.Combos == nil {
+			publicSettings.Combos = []config.ComboDTO{}
+		}
+		if publicSettings.Tenants == nil {
+			publicSettings.Tenants = []config.TenantDTO{}
+		}
+		_ = json.NewEncoder(w).Encode(publicSettings)
+		return
+	}
+
 	// Always mask any secrets in loaded settings
 	for i := range settings.Upstreams {
 		u := &settings.Upstreams[i]
@@ -252,6 +325,35 @@ func (deps RouterDeps) handleGetSettings(w http.ResponseWriter, r *http.Request)
 	}
 	if settings.Combos == nil {
 		settings.Combos = []config.ComboDTO{}
+	}
+	if settings.TokenSaver == nil {
+		if snap != nil {
+			ts := snap.TokenSaver()
+			maxTool := ts.MaxToolOutputChars
+			ctxThresh := ts.ContextThreshold
+			settings.TokenSaver = &config.TokenSaverDTO{
+				Enabled:            ts.Enabled,
+				CompressToolOutput: ts.CompressToolOutput,
+				TerseOutput:        ts.TerseOutput,
+				MinimalCode:        ts.MinimalCode,
+				CompressContext:    ts.CompressContext,
+				MaxToolOutputChars: &maxTool,
+				ContextThreshold:   &ctxThresh,
+			}
+		} else {
+			defTS := domain.DefaultTokenSaverConfig()
+			maxTool := defTS.MaxToolOutputChars
+			ctxThresh := defTS.ContextThreshold
+			settings.TokenSaver = &config.TokenSaverDTO{
+				Enabled:            defTS.Enabled,
+				CompressToolOutput: defTS.CompressToolOutput,
+				TerseOutput:        defTS.TerseOutput,
+				MinimalCode:        defTS.MinimalCode,
+				CompressContext:    defTS.CompressContext,
+				MaxToolOutputChars: &maxTool,
+				ContextThreshold:   &ctxThresh,
+			}
+		}
 	}
 	if autoTLS, err := config.LoadAutoTLS(deps.ConfigDir); err == nil {
 		settings.AutoTLS = &autoTLS
@@ -440,11 +542,21 @@ func (deps RouterDeps) handleUpdateSettings(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	var tsRaw []byte
+	if payload.TokenSaver != nil {
+		tsRaw, err = json.Marshal(payload.TokenSaver)
+		if err != nil {
+			openai.WriteError(w, http.StatusInternalServerError, openai.TypeAPI, "marshal tokensaver: "+err.Error())
+			return
+		}
+	}
+
 	fs := config.FileSet{
-		Upstreams: upRaw,
-		Models:    modRaw,
-		Tenants:   tenRaw,
-		Combos:    combRaw,
+		Upstreams:  upRaw,
+		Models:     modRaw,
+		Tenants:    tenRaw,
+		Combos:     combRaw,
+		TokenSaver: tsRaw,
 	}
 
 	// Validate configuration
@@ -544,6 +656,14 @@ func (deps RouterDeps) handleUpdateSettings(w http.ResponseWriter, r *http.Reque
 			openai.WriteError(w, http.StatusInternalServerError, openai.TypeAPI, "write combos config: "+err.Error())
 			return
 		}
+		if payload.TokenSaver != nil {
+			tsIndent, _ := json.MarshalIndent(payload.TokenSaver, "", "  ")
+			if err := os.WriteFile(filepath.Join(deps.ConfigDir, config.FileNameTokenSaver), tsIndent, 0o644); err != nil {
+				rollbackTLS()
+				openai.WriteError(w, http.StatusInternalServerError, openai.TypeAPI, "write tokensaver config: "+err.Error())
+				return
+			}
+		}
 		if err := config.SaveAutoTLS(deps.ConfigDir, nextTLS); err != nil {
 			rollbackTLS()
 			openai.WriteError(w, http.StatusInternalServerError, openai.TypeAPI, "write TLS config: "+err.Error())
@@ -564,6 +684,7 @@ func (deps RouterDeps) handleUpdateSettings(w http.ResponseWriter, r *http.Reque
 			res.TenantsByHash,
 			res.TenantOrder,
 			domain.WithCombos(res.Combos, res.ComboOrder),
+			domain.WithTokenSaver(res.TokenSaver),
 		)
 		deps.Registry.Store(snap)
 		if deps.Metrics != nil {

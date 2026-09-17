@@ -7,9 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dickymuliafiqri/firefly/internal/auth"
 	"github.com/dickymuliafiqri/firefly/internal/metrics"
-	"github.com/dickymuliafiqri/firefly/internal/openai"
 )
 
 // TelemetryDTO is the structured real-time observability snapshot.
@@ -96,13 +94,7 @@ func (deps RouterDeps) handleGetTelemetry(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Content-Type", "application/json")
 
-	if deps.AdminToken != "" {
-		token, ok := auth.ExtractBearer(r.Header.Get("Authorization"))
-		if !ok || token != deps.AdminToken {
-			openai.WriteError(w, http.StatusUnauthorized, openai.TypeAuthentication, "invalid or missing admin token")
-			return
-		}
-	}
+	isAdmin := deps.authorizeAdmin(r)
 
 	snapCatalog := deps.currentSnapshot()
 	var metricsSnap metrics.MetricsSnapshot
@@ -309,6 +301,22 @@ func (deps RouterDeps) handleGetTelemetry(w http.ResponseWriter, r *http.Request
 		recentLogs = []LiveLog{}
 	}
 
+	if !isAdmin {
+		usageDTO = []TenantUsageDTO{}
+		sanitizedLogs := make([]LiveLog, len(recentLogs))
+		for i, l := range recentLogs {
+			l.Tenant = "public"
+			l.KeyRef = ""
+			sanitizedLogs[i] = l
+		}
+		recentLogs = sanitizedLogs
+		for i := range upstreamsDTO {
+			for j := range upstreamsDTO[i].Slots {
+				upstreamsDTO[i].Slots[j].Ref = ""
+			}
+		}
+	}
+
 	out := TelemetryDTO{
 		Timestamp:       time.Now().UnixMilli(),
 		GlobalAdmission: adm,
@@ -332,15 +340,12 @@ func (deps RouterDeps) handleTelemetryEvents(w http.ResponseWriter, r *http.Requ
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	if deps.AdminToken != "" {
-		token, ok := auth.ExtractBearer(r.Header.Get("Authorization"))
-		if !ok {
-			token = r.URL.Query().Get("token")
-			ok = token != ""
-		}
-		if !ok || token != deps.AdminToken {
-			openai.WriteError(w, http.StatusUnauthorized, openai.TypeAuthentication, "invalid or missing admin token")
-			return
+	isAdmin := deps.authorizeAdmin(r)
+	if !isAdmin {
+		if queryToken := r.URL.Query().Get("token"); queryToken != "" {
+			reqWithBearer := r.Clone(r.Context())
+			reqWithBearer.Header.Set("Authorization", "Bearer "+queryToken)
+			isAdmin = deps.authorizeAdmin(reqWithBearer)
 		}
 	}
 
@@ -378,6 +383,10 @@ func (deps RouterDeps) handleTelemetryEvents(w http.ResponseWriter, r *http.Requ
 		case log, ok := <-ch:
 			if !ok {
 				return
+			}
+			if !isAdmin {
+				log.Tenant = "public"
+				log.KeyRef = ""
 			}
 			data, err := json.Marshal(log)
 			if err != nil {

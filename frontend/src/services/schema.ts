@@ -196,6 +196,16 @@ export interface TursoKeysResponse {
   keys: TursoKeyDTO[];
 }
 
+export interface TokenSaverDTO {
+  enabled: boolean;
+  compress_tool_output: boolean;
+  terse_output: boolean;
+  minimal_code: boolean;
+  compress_context: boolean;
+  max_tool_output_chars?: number | null;
+  context_threshold?: number | null;
+}
+
 export interface SettingsDTO {
   upstreams: UpstreamDTO[];
   models: ModelDTO[];
@@ -216,6 +226,7 @@ export interface SettingsDTO {
   auto_tls?: AutoTLSDTO;
   storage_engine?: string;
   turso?: TursoDTO;
+  token_saver?: TokenSaverDTO;
 }
 
 export interface HealthStatus {

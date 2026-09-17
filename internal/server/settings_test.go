@@ -195,12 +195,20 @@ func TestSettingsAdminAuth(t *testing.T) {
 	}
 	s := New(Config{Addr: "0.0.0.0:8080"}, deps, context.Background(), nil)
 
-	// Unauthorized GET
+	// Unauthenticated GET returns 200 OK with sanitized public view
 	req := httptest.NewRequest("GET", "/api/settings", nil)
 	w := httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, req)
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("want 401 without admin token, got %d", w.Code)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200 without admin token, got %d", w.Code)
+	}
+
+	// Unauthorized PUT returns 401
+	putReq := httptest.NewRequest("PUT", "/api/settings", strings.NewReader(`{}`))
+	putW := httptest.NewRecorder()
+	s.Handler().ServeHTTP(putW, putReq)
+	if putW.Code != http.StatusUnauthorized {
+		t.Fatalf("want 401 for PUT without admin token, got %d", putW.Code)
 	}
 
 	// Authorized GET
@@ -309,7 +317,7 @@ func TestTursoProvidersConfiguredFlow(t *testing.T) {
 		Turso: &config.TursoDTO{
 			DatabaseURL: "libsql://test-db.turso.io",
 			AuthToken:   "dummy-token",
-			LocalPath:   filepath.Join(tmpDir, "test.db"),
+			LocalPath:   filepath.Join(os.TempDir(), "firefly_turso_test", "test.db"),
 		},
 	}
 	body, _ := json.Marshal(settingsUpdate)
@@ -382,6 +390,143 @@ func TestSettingsAutoTLSApplyFailureReturns400(t *testing.T) {
 		t.Fatalf("expected error body to contain 'apply auto TLS:', got %s", w.Body.String())
 	}
 }
+
+func TestPublicSanitizedSettingsAndTelemetry(t *testing.T) {
+	reg := registry.New()
+	adminToken := "secret-admin-token"
+	authMgr := auth.NewManager("", adminToken, "pass1234")
+
+	liveLogs := NewLiveLogHub()
+	liveLogs.Publish(LiveLog{
+		ID:       "req-1",
+		Tenant:   "tenant-private-corp",
+		KeyRef:   "slot-private-key",
+		Model:    "gpt-4o",
+		Upstream: "openai",
+		Status:   200,
+	})
+
+	deps := RouterDeps{
+		Snapshots:  reg,
+		Registry:   reg,
+		AdminToken: adminToken,
+		Auth:       authMgr,
+		LiveLogs:   liveLogs,
+	}
+	s := New(Config{Addr: "127.0.0.1:0"}, deps, context.Background(), nil)
+
+	// Populate catalog with upstream and model
+	authReq := httptest.NewRequest("POST", "/api/settings", strings.NewReader(`{
+		"upstreams": [{
+			"name": "openai-primary",
+			"protocol": "openai",
+			"base_url": "https://api.openai.com/v1",
+			"api_key": "sk-secret-123456789"
+		}],
+		"models": [{
+			"public_name": "gpt-4o",
+			"upstream": "openai-primary",
+			"upstream_model": "gpt-4o"
+		}],
+		"tenants": [{
+			"name": "tenant-corp",
+			"api_key": "sk-tenant-secret"
+		}]
+	}`))
+	authReq.Header.Set("Authorization", "Bearer "+adminToken)
+	authW := httptest.NewRecorder()
+	s.Handler().ServeHTTP(authW, authReq)
+	if authW.Code != http.StatusOK {
+		t.Fatalf("setup catalog failed: %d, body: %s", authW.Code, authW.Body.String())
+	}
+
+	// 1. Guest / Unauthenticated GET /api/settings
+	guestReq := httptest.NewRequest("GET", "/api/settings", nil)
+	guestW := httptest.NewRecorder()
+	s.Handler().ServeHTTP(guestW, guestReq)
+	if guestW.Code != http.StatusOK {
+		t.Fatalf("guest GET /api/settings = %d, want 200", guestW.Code)
+	}
+	var guestSettings config.SettingsDTO
+	if err := json.Unmarshal(guestW.Body.Bytes(), &guestSettings); err != nil {
+		t.Fatalf("unmarshal guest settings: %v", err)
+	}
+	if len(guestSettings.Upstreams) != 1 || guestSettings.Upstreams[0].Name != "openai-primary" {
+		t.Fatalf("expected 1 public upstream, got: %+v", guestSettings.Upstreams)
+	}
+	if guestSettings.Upstreams[0].APIKey != "" || len(guestSettings.Upstreams[0].CredentialPool) != 0 {
+		t.Fatalf("guest upstream leaked credentials: %+v", guestSettings.Upstreams[0])
+	}
+	if len(guestSettings.Tenants) != 0 {
+		t.Fatalf("guest settings leaked tenants: %+v", guestSettings.Tenants)
+	}
+	if guestSettings.Turso != nil || guestSettings.AutoTLS != nil {
+		t.Fatalf("guest settings leaked turso or autotls")
+	}
+
+	// 2. Admin GET /api/settings
+	adminReq := httptest.NewRequest("GET", "/api/settings", nil)
+	adminReq.Header.Set("Authorization", "Bearer "+adminToken)
+	adminW := httptest.NewRecorder()
+	s.Handler().ServeHTTP(adminW, adminReq)
+	if adminW.Code != http.StatusOK {
+		t.Fatalf("admin GET /api/settings = %d, want 200", adminW.Code)
+	}
+	var adminSettings config.SettingsDTO
+	if err := json.Unmarshal(adminW.Body.Bytes(), &adminSettings); err != nil {
+		t.Fatalf("unmarshal admin settings: %v", err)
+	}
+	if len(adminSettings.Tenants) != 1 {
+		t.Fatalf("admin settings should include tenants: %+v", adminSettings.Tenants)
+	}
+	if adminSettings.Upstreams[0].APIKey == "" {
+		t.Fatalf("admin settings should include masked API key")
+	}
+
+	// 3. Guest GET /api/telemetry
+	guestTelemReq := httptest.NewRequest("GET", "/api/telemetry", nil)
+	guestTelemW := httptest.NewRecorder()
+	s.Handler().ServeHTTP(guestTelemW, guestTelemReq)
+	if guestTelemW.Code != http.StatusOK {
+		t.Fatalf("guest GET /api/telemetry = %d, want 200", guestTelemW.Code)
+	}
+	var guestTelem TelemetryDTO
+	if err := json.Unmarshal(guestTelemW.Body.Bytes(), &guestTelem); err != nil {
+		t.Fatalf("unmarshal guest telemetry: %v", err)
+	}
+	if len(guestTelem.TenantsUsage) != 0 {
+		t.Fatalf("guest telemetry leaked tenants usage")
+	}
+	if len(guestTelem.RecentLogs) > 0 {
+		for _, l := range guestTelem.RecentLogs {
+			if l.Tenant != "public" || l.KeyRef != "" {
+				t.Fatalf("guest telemetry log leaked tenant/keyRef: %+v", l)
+			}
+		}
+	}
+
+	// 4. Guest GET /api/history
+	guestHistReq := httptest.NewRequest("GET", "/api/history", nil)
+	guestHistW := httptest.NewRecorder()
+	s.Handler().ServeHTTP(guestHistW, guestHistReq)
+	if guestHistW.Code != http.StatusOK {
+		t.Fatalf("guest GET /api/history = %d, want 200", guestHistW.Code)
+	}
+	var histResp struct {
+		History []LiveLog `json:"history"`
+	}
+	if err := json.Unmarshal(guestHistW.Body.Bytes(), &histResp); err != nil {
+		t.Fatalf("unmarshal guest history: %v", err)
+	}
+	if len(histResp.History) > 0 {
+		for _, l := range histResp.History {
+			if l.Tenant != "public" || l.KeyRef != "" {
+				t.Fatalf("guest history leaked tenant/keyRef: %+v", l)
+			}
+		}
+	}
+}
+
 
 
 

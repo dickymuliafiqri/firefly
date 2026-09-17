@@ -24,6 +24,8 @@ type CatalogSnapshot struct {
 
 	combos     map[string]*Combo
 	comboOrder []string
+
+	tokenSaver TokenSaverConfig
 }
 
 // SnapshotOption configures optional fields on a CatalogSnapshot.
@@ -37,6 +39,18 @@ func WithCombos(combos map[string]*Combo, comboOrder []string) SnapshotOption {
 		}
 		s.comboOrder = comboOrder
 	}
+}
+
+// WithTokenSaver attaches token saver configuration to the snapshot.
+func WithTokenSaver(cfg TokenSaverConfig) SnapshotOption {
+	return func(s *CatalogSnapshot) {
+		s.tokenSaver = cfg
+	}
+}
+
+// TokenSaver returns the token saver configuration for this snapshot.
+func (s *CatalogSnapshot) TokenSaver() TokenSaverConfig {
+	return s.tokenSaver
 }
 
 // NewCatalogSnapshot constructs a snapshot from already-validated parts. It

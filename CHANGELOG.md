@@ -5,6 +5,29 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-09-17
+
+### Added
+- **Public Overview & Sanitized Settings Architecture (`internal/server`, `frontend`)**:
+  - Unauthenticated visitors can view real-time overview analytics, active models, upstreams, latency charts, and live request logs on the dashboard.
+  - Implemented strict server-side sanitization (`sanitizePublicSettings`): sensitive credentials (upstream API keys, credential pools, tenant keys, rate limits, Turso database credentials, and Auto-TLS certificates) are redacted or omitted for unauthenticated requests.
+  - Sanitized public telemetry logs: tenant identifiers are masked as `"public"` and key references are cleared.
+  - Added full test coverage for public versus authenticated settings and telemetry endpoints (`TestSettings_PublicSanitizationAndAdminAuth`).
+- **Token Saver Optimization Suite (`internal/tokensaver`, `internal/domain`, `internal/server`, `internal/turso`, `frontend`)**:
+  - **Compress Tool Output (RTK)**: Strips ANSI escape sequences, deduplicates consecutive repetitive log/progress lines, compacts unmodified git diff context lines, and applies smart head-and-tail truncation on tool results (default 12,000 chars), achieving 60-90% input token savings.
+  - **Compress LLM Output (Caveman)**: Injects brevity directives into system prompts to eliminate pleasantries, preambles, and conversational filler, cutting ~65% of output tokens.
+  - **Lazy Senior Dev (Ponytail)**: Biases model generation toward minimal code, YAGNI, standard library reuse, and deletion over addition.
+  - **Compress Context (Headroom)**: Prunes excessive older middle tool outputs and messages when conversation history approaches configured token thresholds (default 32,000 tokens).
+  - **Direct Compression Endpoint (`POST /v1/compress`)**: Standalone authenticated API for compressing arbitrary prompts and chat messages.
+  - **Visual Configuration Card (`TokenSaverCard.tsx`)**: Embedded in the Settings tab with master enable toggle, granular sub-feature toggles, threshold inputs, and instant hot-swap persistence to local files or Turso database.
+  - Zero-overhead fast path: when disabled, requests pass through with zero allocations.
+
+### Changed & Improved
+- **Settings Card Visual Consistency (`frontend`)**:
+  - Standardized `TokenSaverCard` to strictly conform to established Settings page aesthetic: neutral uppercase mono headers, emerald/neutral status dots, standard checkboxes matching Auto-TLS, clean input borders, and minimal button styling.
+- **English-Only Documentation & Repository Standardization**:
+  - Removed `README_ID.md` and consolidated all documentation, UI, and diagnostics to 100% standard English.
+
 ## [1.4.0] - 2026-09-17
 
 ### Added

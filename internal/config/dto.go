@@ -5,10 +5,11 @@ package config
 
 // FileSet groups the raw bytes of the logical config files.
 type FileSet struct {
-	Upstreams []byte
-	Models    []byte
-	Tenants   []byte
-	Combos    []byte
+	Upstreams  []byte
+	Models     []byte
+	Tenants    []byte
+	Combos     []byte
+	TokenSaver []byte
 }
 
 // --- DTOs mirroring the JSON schema. All fields are pointers or have explicit
@@ -147,6 +148,19 @@ type SettingsDTO struct {
 	StorageEngine string `json:"storage_engine,omitempty"`
 	// Turso credentials and replica options.
 	Turso *TursoDTO `json:"turso,omitempty"`
+	// TokenSaver configures prompt and tool output optimization.
+	TokenSaver *TokenSaverDTO `json:"token_saver,omitempty"`
+}
+
+// TokenSaverDTO mirrors tokensaver.json and configures optimization features.
+type TokenSaverDTO struct {
+	Enabled            bool `json:"enabled"`
+	CompressToolOutput bool `json:"compress_tool_output"`
+	TerseOutput        bool `json:"terse_output"`
+	MinimalCode        bool `json:"minimal_code"`
+	CompressContext    bool `json:"compress_context"`
+	MaxToolOutputChars *int `json:"max_tool_output_chars,omitempty"`
+	ContextThreshold   *int `json:"context_threshold,omitempty"`
 }
 
 // RateLimitDTO mirrors the rate_limit object.

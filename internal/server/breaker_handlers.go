@@ -154,6 +154,16 @@ func (deps RouterDeps) handleGetHistory(w http.ResponseWriter, r *http.Request) 
 		history = []LiveLog{}
 	}
 
+	if !deps.authorizeAdmin(r) {
+		sanitized := make([]LiveLog, len(history))
+		for i, l := range history {
+			l.Tenant = "public"
+			l.KeyRef = ""
+			sanitized[i] = l
+		}
+		history = sanitized
+	}
+
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"status":  "ok",
 		"history": history,

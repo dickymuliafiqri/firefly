@@ -23,11 +23,12 @@ func NewFileConfigSource(dir string) *FileConfigSource {
 
 // Filenames for each logical config file.
 const (
-	FileNameUpstreams = "upstreams.json"
-	FileNameModels    = "models.json"
-	FileNameTenants   = "tenants.json"
-	FileNameCombos    = "combos.json"
-	FileNameTLS       = "tls.json"
+	FileNameUpstreams  = "upstreams.json"
+	FileNameModels     = "models.json"
+	FileNameTenants    = "tenants.json"
+	FileNameCombos     = "combos.json"
+	FileNameTLS        = "tls.json"
+	FileNameTokenSaver = "tokensaver.json"
 )
 
 // IsConfigFile reports whether base (a filename, not a path) is one of the
@@ -35,7 +36,7 @@ const (
 // config directory (log files, editor swap files, etc.).
 func IsConfigFile(base string) bool {
 	switch base {
-	case FileNameUpstreams, FileNameModels, FileNameTenants, FileNameCombos:
+	case FileNameUpstreams, FileNameModels, FileNameTenants, FileNameCombos, FileNameTokenSaver:
 		return true
 	default:
 		return false
@@ -53,6 +54,7 @@ func (s *FileConfigSource) Load(ctx context.Context) (map[string][]byte, error) 
 		{"models", FileNameModels},
 		{"tenants", FileNameTenants},
 		{"combos", FileNameCombos},
+		{"tokensaver", FileNameTokenSaver},
 	}
 	out := make(map[string][]byte, len(fileOrder))
 	var errs []error
@@ -83,10 +85,11 @@ var _ ports.ConfigSource = (*FileConfigSource)(nil)
 // FileSetFromMap converts a ConfigSource map into a FileSet.
 func FileSetFromMap(m map[string][]byte) FileSet {
 	return FileSet{
-		Upstreams: m["upstreams"],
-		Models:    m["models"],
-		Tenants:   m["tenants"],
-		Combos:    m["combos"],
+		Upstreams:  m["upstreams"],
+		Models:     m["models"],
+		Tenants:    m["tenants"],
+		Combos:     m["combos"],
+		TokenSaver: m["tokensaver"],
 	}
 }
 
@@ -107,6 +110,7 @@ func EnsureConfigFiles(dir string) error {
 		{FileNameTenants, []byte("{\n  \"tenants\": []\n}\n")},
 		{FileNameCombos, []byte("{\n  \"combos\": []\n}\n")},
 		{FileNameTLS, []byte("{\n  \"enabled\": false\n}\n")},
+		{FileNameTokenSaver, []byte("{\n  \"enabled\": false,\n  \"compress_tool_output\": true,\n  \"terse_output\": false,\n  \"minimal_code\": false,\n  \"compress_context\": false,\n  \"max_tool_output_chars\": 12000,\n  \"context_threshold\": 32000\n}\n")},
 	}
 
 	for _, d := range defaults {

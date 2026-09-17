@@ -226,6 +226,10 @@ func (s *Server) buildHandler(deps RouterDeps) http.Handler {
 		mux.Handle("POST "+route.local, h)
 	}
 
+	// Native Token Saver prompt & context compression endpoint
+	mux.HandleFunc("OPTIONS /v1/compress", deps.handleOptionsCompress)
+	mux.Handle("POST /v1/compress", deps.protected(http.HandlerFunc(deps.handleCompress)))
+
 	// Middleware order (outermost first):
 	//   request-id        -> every log line has an id
 	//   metrics           -> latency/status/in-flight; outside the mux so r.Pattern is set

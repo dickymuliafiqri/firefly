@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/metrics"
 	"github.com/dickymuliafiqri/firefly/internal/openai"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
+	"github.com/dickymuliafiqri/firefly/internal/tokensaver"
 	"github.com/dickymuliafiqri/firefly/internal/upstream"
 	"github.com/tidwall/gjson"
 )
@@ -411,6 +413,14 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 			releaseCred()
 		}()
 
+		// Apply Token Saver optimizations if enabled and routing to chat completions
+		if upstreamPath == "/chat/completions" && snap.TokenSaver().Enabled {
+			if transformedBody, modified := tokensaver.Process(body, snap.TokenSaver()); modified {
+				body = transformedBody
+				tokensIn = estimateInputTokens(body)
+			}
+		}
+
 		// 5. Forward. The adapter scrubs headers, injects the secret, rewrites
 		//    the model, relays the response, and drives the breaker/retry.
 		fwdReq := ports.ForwardRequest{
@@ -644,4 +654,57 @@ func (deps RouterDeps) logForwardFailure(ctx context.Context, t *domain.Target, 
 		return
 	}
 	deps.Logger.Error("upstream forward failed", attrs...)
+}
+
+// handleOptionsCompress handles preflight CORS for the compression endpoint.
+func (deps RouterDeps) handleOptionsCompress(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleCompress provides a standalone API for compressing prompts and tool outputs.
+func (deps RouterDeps) handleCompress(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Content-Type", "application/json")
+
+	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
+	defer r.Body.Close()
+
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		openai.WriteError(w, http.StatusBadRequest, openai.TypeInvalidRequest, "read body: "+err.Error())
+		return
+	}
+
+	prompt := gjson.GetBytes(bodyBytes, "prompt").String()
+	maxChars := int(gjson.GetBytes(bodyBytes, "max_chars").Int())
+	if maxChars <= 0 {
+		maxChars = 12000
+	}
+
+	if prompt != "" {
+		res := tokensaver.CompressText(prompt, maxChars)
+		_ = json.NewEncoder(w).Encode(res)
+		return
+	}
+
+	// If messages array was supplied, run Process directly on the payload
+	if gjson.GetBytes(bodyBytes, "messages").Exists() {
+		cfg := domain.TokenSaverConfig{
+			Enabled:            true,
+			CompressToolOutput: true,
+			TerseOutput:        gjson.GetBytes(bodyBytes, "terse").Bool(),
+			MinimalCode:        gjson.GetBytes(bodyBytes, "minimal_code").Bool(),
+			CompressContext:    true,
+			MaxToolOutputChars: maxChars,
+		}
+		transformed, _ := tokensaver.Process(bodyBytes, cfg)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(transformed)
+		return
+	}
+
+	openai.WriteError(w, http.StatusBadRequest, openai.TypeInvalidRequest, "provide either prompt or messages in payload")
 }

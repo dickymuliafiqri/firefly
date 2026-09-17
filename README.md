@@ -1,7 +1,5 @@
 # Firefly
 
-**English** | [Bahasa Indonesia](./README_ID.md)
-
 [![Go Version](https://img.shields.io/badge/go-1.22+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![CI Status](https://github.com/dickymuliafiqri/firefly/actions/workflows/ci.yml/badge.svg)](https://github.com/dickymuliafiqri/firefly/actions)
@@ -220,12 +218,29 @@ Virtual Combos aggregate multiple models across different upstreams into a singl
 
 ---
 
+## Token Saver Optimization Suite (Prompt & Output Reduction)
+
+Firefly includes a built-in, native optimization suite that transparently intercepts requests before forwarding to upstreams to reduce input/output token usage and provider costs by up to 60-90%:
+
+- **Compress Tool Output (RTK)**: Cleans massive shell/command outputs before feeding them back into inference context.
+  - Strips ANSI escape sequences and colors.
+  - Deduplicates consecutive repeated log/progress lines (`... [RTK: repeated N times] ...`).
+  - Compacts unmodified git diff context lines while keeping every hunk intact.
+  - Applies smart head-and-tail truncation (default: 12,000 chars) to preserve initial invocation commands and final execution errors/summaries.
+- **Compress LLM Output (Caveman)**: Injects targeted brevity directives into system prompts to eliminate conversational filler, pleasantries, and preambles, reducing model output tokens by ~65% (up to 87%).
+- **Lazy Senior Dev (Ponytail)**: Biases model code generation toward minimal implementations, standard library reuse, deletion over addition, and strict YAGNI principles.
+- **Compress Context (Headroom)**: Prunes older middle tool outputs and verbose conversation history when total body size exceeds configured thresholds (default: 32,000 tokens), preserving the system prompt and latest messages.
+- **Direct API Access (`POST /v1/compress`)**: Standalone authenticated endpoint for compressing arbitrary text prompts or chat message arrays on demand.
+- **Zero Overhead**: When disabled, requests pass through with zero heap allocations via fast-path routing. Configurable via **Settings → Token Saver Optimization Suite** with atomic hot-swapping.
+
+---
+
 ## Embedded Web Dashboard & Navigation Security
 
 Firefly ships with a nocturnal React 19 Single Page Application embedded directly into the standalone binary (`//go:embed all:dist`):
 - **Responsive Mobile & Desktop**: Clean, unified navigation across all viewports with a nocturnal bioluminescent mobile burger menu, adaptive viewport stability (`min-h-[100dvh]`), and touch-friendly controls.
-- **Public Overview**: Real-time traffic pulse, particle canvas physics, latency graphs, active connection counters, and ambient procedural lo-fi player.
-- **Protected Route Navigation**: Accessing configuration and diagnostic modules (*Upstreams, Models, Combos, Tenants, Telemetry, Settings, Playground*) is gated behind backend session token authentication (default: `12345678`).
+- **Public Overview & Sanitized Settings**: Unauthenticated visitors can view real-time traffic pulse, particle canvas physics, latency charts, active upstream/model names, and recent activity logs. Sensitive credentials (upstream API keys, credential pools, tenant keys, rate limits, Turso DB credentials, and Auto-TLS certificates) are strictly redacted or omitted on the backend until admin authentication.
+- **Protected Route Navigation**: Accessing management modules (*Upstreams, Models, Combos, Tenants, Telemetry, Settings, Playground*) is gated behind backend session token authentication (default: `12345678`).
 - **Backend Credential Vault**: Passwords and session tokens are stored and verified exclusively on the backend (`configs/auth.json`), eliminating sensitive credential storage in browser `localStorage`.
 - **In-Browser LLM Playground**: Test model endpoints, inspect token streaming waterfalls, and review raw SSE packet diagnostics.
 
@@ -329,7 +344,6 @@ For full workload profiles, metrics analysis, and CLI flags, see the [Load Testi
 
 ## Documentation & References
 
-- [Bahasa Indonesia (README_ID)](./README_ID.md)
 - [Production Deployment & Hardening Guide](./docs/production.md)
 - [Load Testing & Benchmark Guide](./docs/loadtest.md)
 - [Architecture & AI Agent Guidelines](./AGENTS.md)

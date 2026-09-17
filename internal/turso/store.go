@@ -693,11 +693,21 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 		})
 	}
 
+	var tokenSaver *config.TokenSaverDTO
+	var tsVal string
+	if err := s.db.QueryRowContext(ctx, "SELECT value FROM system_settings WHERE key = 'token_saver'").Scan(&tsVal); err == nil && tsVal != "" {
+		var ts config.TokenSaverDTO
+		if err := json.Unmarshal([]byte(tsVal), &ts); err == nil {
+			tokenSaver = &ts
+		}
+	}
+
 	return &config.SettingsDTO{
-		Upstreams: upstreams,
-		Models:    models,
-		Combos:    combos,
-		Tenants:   tenants,
+		Upstreams:  upstreams,
+		Models:     models,
+		Combos:     combos,
+		Tenants:    tenants,
+		TokenSaver: tokenSaver,
 	}, nil
 }
 
@@ -1104,6 +1114,17 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 			if !activeTenants[kh] {
 				_, _ = tx.ExecContext(ctx, "DELETE FROM tenants WHERE id = ?", id)
 			}
+		}
+	}
+
+	// 4b. Upsert TokenSaver configuration if provided
+	if settings.TokenSaver != nil {
+		if tsRaw, err := json.Marshal(settings.TokenSaver); err == nil {
+			_, _ = tx.ExecContext(ctx, `
+				INSERT INTO system_settings (key, value, version, updated_at)
+				VALUES ('token_saver', ?, 1, ?)
+				ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+			`, string(tsRaw), now)
 		}
 	}
 

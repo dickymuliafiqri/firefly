@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/dickymuliafiqri/firefly/internal/auth"
+	"github.com/dickymuliafiqri/firefly/internal/config"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
 )
 
@@ -75,12 +77,27 @@ func TestAuthEndpoints_CompleteLifecycle(t *testing.T) {
 		t.Fatalf("verify with token got status %d, want 200", wVerify.Code)
 	}
 
-	// 6. Access credentials (/api/settings) WITHOUT token -> 401 Unauthorized
+	// 6. Access settings WITHOUT token -> 200 OK with sanitized public data (tenants empty)
 	reqSettingsNoAuth := httptest.NewRequest("GET", "/api/settings", nil)
 	wSettingsNoAuth := httptest.NewRecorder()
 	s.Handler().ServeHTTP(wSettingsNoAuth, reqSettingsNoAuth)
-	if wSettingsNoAuth.Code != http.StatusUnauthorized {
-		t.Fatalf("GET /api/settings without auth got status %d, want 401", wSettingsNoAuth.Code)
+	if wSettingsNoAuth.Code != http.StatusOK {
+		t.Fatalf("GET /api/settings without auth got status %d, want 200", wSettingsNoAuth.Code)
+	}
+	var publicSettings config.SettingsDTO
+	if err := json.Unmarshal(wSettingsNoAuth.Body.Bytes(), &publicSettings); err != nil {
+		t.Fatalf("unmarshal public settings: %v", err)
+	}
+	if len(publicSettings.Tenants) != 0 || publicSettings.Turso != nil {
+		t.Fatalf("public settings leaked sensitive data: %+v", publicSettings)
+	}
+
+	// 6b. Mutating settings WITHOUT token -> 401 Unauthorized
+	reqMutateNoAuth := httptest.NewRequest("POST", "/api/settings", strings.NewReader(`{}`))
+	wMutateNoAuth := httptest.NewRecorder()
+	s.Handler().ServeHTTP(wMutateNoAuth, reqMutateNoAuth)
+	if wMutateNoAuth.Code != http.StatusUnauthorized {
+		t.Fatalf("POST /api/settings without auth got status %d, want 401", wMutateNoAuth.Code)
 	}
 
 	// 7. Access credentials (/api/settings) WITH session token -> 200 OK

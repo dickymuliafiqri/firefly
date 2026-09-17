@@ -103,13 +103,13 @@ func TestTelemetry_AuthGuarded(t *testing.T) {
 	}
 	s := New(Config{Addr: "0.0.0.0:8080"}, deps, context.Background(), nil)
 
-	// Case 1: Unauthorized
+	// Case 1: Unauthenticated GET returns 200 OK with sanitized public telemetry
 	req := httptest.NewRequest(http.MethodGet, "/api/telemetry", nil)
 	w := httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, req)
 
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("unauthorized status = %d, want 401", w.Code)
+	if w.Code != http.StatusOK {
+		t.Fatalf("unauthenticated status = %d, want 200", w.Code)
 	}
 
 	// Case 2: Authorized

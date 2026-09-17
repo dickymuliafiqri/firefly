@@ -27,7 +27,8 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useSaveSettingsMutation, useSettingsQuery, useTestTursoMutation } from '@/services/api';
 import { RawJsonEditor } from './RawJsonEditor';
 import { DiffModal } from './DiffModal';
-import type { AutoTLSDTO, SettingsDTO, TursoDTO } from '@/services/schema';
+import { TokenSaverCard } from './TokenSaverCard';
+import type { AutoTLSDTO, SettingsDTO, TursoDTO, TokenSaverDTO } from '@/services/schema';
 import { cn } from '@/lib/utils';
 
 /**
@@ -81,6 +82,7 @@ export default React.memo(function SettingsView() {
       combos: serverSettings?.combos || combos,
       auto_tls: serverSettings?.auto_tls,
       turso: serverSettings?.turso,
+      token_saver: serverSettings?.token_saver,
     };
     return JSON.stringify(config, null, 2);
   }, [serverSettings, upstreams, models, tenants, combos]);
@@ -148,6 +150,28 @@ export default React.memo(function SettingsView() {
       onSuccess: () => { void refetch(); },
     });
   }, [tlsDraft, addToast, serverSettings, upstreams, models, tenants, combos, saveMutation, refetch]);
+
+  // Save Token Saver optimization settings
+  const handleSaveTokenSaver = useCallback((tokenSaver: TokenSaverDTO) => {
+    saveMutation.mutate({
+      upstreams: serverSettings?.upstreams || upstreams,
+      models: serverSettings?.models || models,
+      tenants: serverSettings?.tenants || tenants,
+      combos: serverSettings?.combos || combos,
+      auto_tls: serverSettings?.auto_tls,
+      turso: serverSettings?.turso,
+      token_saver: tokenSaver,
+    }, {
+      onSuccess: () => {
+        void refetch();
+        addToast({
+          title: 'Token Saver Settings Saved',
+          message: 'Optimization suite successfully updated and hot-swapped.',
+          type: 'success',
+        });
+      },
+    });
+  }, [serverSettings, upstreams, models, tenants, combos, saveMutation, refetch, addToast]);
 
   // Save Turso database credentials
   const handleSaveTurso = useCallback(() => {
@@ -545,6 +569,13 @@ export default React.memo(function SettingsView() {
                 </p>
               </div>
             </div>
+
+            {/* Native Token Saver Optimization Suite */}
+            <TokenSaverCard
+              tokenSaver={serverSettings?.token_saver}
+              onSave={handleSaveTokenSaver}
+              isSaving={saveMutation.isPending}
+            />
 
             {/* Native Auto-TLS Card */}
             <div className="p-5 rounded-xl bg-transparent border border-white/[0.06] space-y-4 font-mono text-xs select-none">

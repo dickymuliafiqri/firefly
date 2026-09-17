@@ -1,6 +1,6 @@
 import type { StateCreator } from 'zustand';
 import type { UpstreamDTO, ModelDTO, TenantDTO, ComboDTO, SettingsDTO } from '@/services/schema';
-import { loginApi, verifyAuthApi, logoutApi, updatePasswordApi, updateBreakerApi } from '@/services/api';
+import { loginApi, verifyAuthApi, logoutApi, updatePasswordApi, updateBreakerApi, queryClient } from '@/services/api';
 
 export interface SettingsSlice {
   upstreams: UpstreamDTO[];
@@ -253,6 +253,8 @@ export const createSettingsSlice: StateCreator<SettingsSlice, [], [], SettingsSl
           adminToken: res.token,
           isAuthenticated: true,
         }));
+        queryClient.invalidateQueries({ queryKey: ['settings'] });
+        queryClient.invalidateQueries({ queryKey: ['telemetry'] });
         return true;
       }
       return false;
@@ -266,6 +268,8 @@ export const createSettingsSlice: StateCreator<SettingsSlice, [], [], SettingsSl
     if (!token) {
       if (get().isAuthenticated) {
         set(() => ({ isAuthenticated: false }));
+        queryClient.invalidateQueries({ queryKey: ['settings'] });
+        queryClient.invalidateQueries({ queryKey: ['telemetry'] });
       }
       return false;
     }
@@ -274,6 +278,8 @@ export const createSettingsSlice: StateCreator<SettingsSlice, [], [], SettingsSl
       if (res && res.authenticated) {
         if (!get().isAuthenticated) {
           set(() => ({ isAuthenticated: true }));
+          queryClient.invalidateQueries({ queryKey: ['settings'] });
+          queryClient.invalidateQueries({ queryKey: ['telemetry'] });
         }
         return true;
       }
@@ -286,6 +292,8 @@ export const createSettingsSlice: StateCreator<SettingsSlice, [], [], SettingsSl
     }
     if (get().isAuthenticated || get().adminToken !== '') {
       set(() => ({ adminToken: '', isAuthenticated: false }));
+      queryClient.invalidateQueries({ queryKey: ['settings'] });
+      queryClient.invalidateQueries({ queryKey: ['telemetry'] });
     }
     return false;
   },
@@ -304,6 +312,8 @@ export const createSettingsSlice: StateCreator<SettingsSlice, [], [], SettingsSl
       } catch {}
     }
     set(() => ({ adminToken: '', isAuthenticated: false }));
+    queryClient.invalidateQueries({ queryKey: ['settings'] });
+    queryClient.invalidateQueries({ queryKey: ['telemetry'] });
   },
 
   updatePassword: async (currentPassword: string, newPassword: string) => {
