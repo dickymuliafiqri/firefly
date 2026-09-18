@@ -19,14 +19,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dickymuliafiqri/firefly/internal/auth"
-	"github.com/dickymuliafiqri/firefly/internal/httpx"
+	"github.com/dickymuliafiqri/firefly/internal/security/auth"
+	"github.com/dickymuliafiqri/firefly/internal/transport/httpx"
 	"github.com/dickymuliafiqri/firefly/internal/limits"
-	"github.com/dickymuliafiqri/firefly/internal/openai"
+	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
 	"github.com/dickymuliafiqri/firefly/internal/server"
-	"github.com/dickymuliafiqri/firefly/internal/upstream"
-	"github.com/dickymuliafiqri/firefly/internal/usage"
+	"github.com/dickymuliafiqri/firefly/internal/transport/upstream"
+	"github.com/dickymuliafiqri/firefly/internal/observability/usage"
 )
 
 // fakeUpstream is a minimal OpenAI-compatible server used as the upstream.

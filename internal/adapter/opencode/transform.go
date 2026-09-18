@@ -1,0 +1,385 @@
+package opencode
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"github.com/dickymuliafiqri/firefly/internal/transport/upstream"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
+)
+
+const maxToolNameLen = 128
+
+// BaseModelID strips any thinking suffix such as "model(high)" or "model(medium)".
+func BaseModelID(model string) string {
+	m := strings.TrimSpace(model)
+	if idx := strings.LastIndex(m, "("); idx != -1 && strings.HasSuffix(m, ")") {
+		return strings.TrimSpace(m[:idx])
+	}
+	return m
+}
+
+// MapFreeModel maps public/standard model identifiers to their official
+// OpenCode contributor free tier aliases when authenticating keylessly (Bearer public).
+func MapFreeModel(model string) string {
+	return upstream.MapOpenCodeFreeModel(model)
+}
+
+// IsResponsesModel returns true if the model is served exclusively by the OpenAI Responses API
+// (/v1/responses) rather than /chat/completions on OpenCode backends.
+func IsResponsesModel(model string) bool {
+	return upstream.IsOpenCodeResponsesModel(model)
+}
+
+// SanitizeTools ensures tool parameters and function names adhere to OpenCode's strict schemas.
+// Specifically:
+// 1. Clamps tool function names to 128 characters.
+// 2. Fills missing "properties": {} if parameters.type == "object" to avoid InputValidationError.
+func SanitizeTools(body []byte) ([]byte, bool) {
+	tools := gjson.GetBytes(body, "tools")
+	if !tools.Exists() || !tools.IsArray() {
+		return body, false
+	}
+
+	toolArr := tools.Array()
+	if len(toolArr) == 0 {
+		return body, false
+	}
+
+	modified := false
+	out := body
+
+	for i, t := range toolArr {
+		// Tool function name clamp
+		fnName := t.Get("function.name").String()
+		if len(fnName) > maxToolNameLen {
+			path := fmt.Sprintf("tools.%d.function.name", i)
+			out, _ = sjson.SetBytes(out, path, fnName[:maxToolNameLen])
+			modified = true
+		}
+
+		// Tool parameters properties fix
+		paramType := t.Get("function.parameters.type").String()
+		if paramType == "object" && !t.Get("function.parameters.properties").Exists() {
+			path := fmt.Sprintf("tools.%d.function.parameters.properties", i)
+			out, _ = sjson.SetRawBytes(out, path, []byte("{}"))
+			modified = true
+		}
+	}
+
+	return out, modified
+}
+
+// NormalizeReasoning ensures reasoning/thinking parameters match OpenCode expectations.
+// If reasoning_effort is a string and reasoning is absent, wraps it into reasoning: { effort, summary: "auto" }.
+func NormalizeReasoning(body []byte) ([]byte, bool) {
+	effort := gjson.GetBytes(body, "reasoning_effort")
+	reasoning := gjson.GetBytes(body, "reasoning")
+
+	if effort.Exists() && !reasoning.Exists() {
+		rObj := map[string]string{
+			"effort":  effort.String(),
+			"summary": "auto",
+		}
+		raw, _ := json.Marshal(rObj)
+		out, _ := sjson.SetRawBytes(body, "reasoning", raw)
+		out, _ = sjson.DeleteBytes(out, "reasoning_effort")
+		return out, true
+	}
+
+	if reasoning.Exists() && reasoning.IsObject() && !reasoning.Get("summary").Exists() {
+		out, _ := sjson.SetBytes(body, "reasoning.summary", "auto")
+		return out, true
+	}
+
+	return body, false
+}
+
+// TransformChatToResponses transforms an OpenAI Chat Completions payload into
+// an OpenAI Responses API payload suitable for OpenCode's /responses endpoint.
+func TransformChatToResponses(body []byte, upstreamModel string, isFree bool) ([]byte, error) {
+	parsed := gjson.ParseBytes(body)
+
+	// Determine output token limits
+	maxOutputTokens := int64(0)
+	if parsed.Get("max_output_tokens").Exists() {
+		maxOutputTokens = parsed.Get("max_output_tokens").Int()
+	} else if parsed.Get("max_completion_tokens").Exists() {
+		maxOutputTokens = parsed.Get("max_completion_tokens").Int()
+	} else if parsed.Get("max_tokens").Exists() {
+		maxOutputTokens = parsed.Get("max_tokens").Int()
+	}
+
+	// Build responses input array from messages and extract system instructions
+	messages := parsed.Get("messages")
+	var inputs []map[string]any
+	var systemInstructions []string
+
+	if messages.Exists() && messages.IsArray() {
+		for _, msg := range messages.Array() {
+			role := msg.Get("role").String()
+			content := msg.Get("content")
+
+			// System or developer prompt must go to top-level instructions in Responses API schema
+			if role == "system" || role == "developer" {
+				sysText := ""
+				if content.Type == gjson.String {
+					sysText = content.String()
+				} else if content.IsArray() {
+					for _, part := range content.Array() {
+						if part.Get("type").String() == "text" {
+							sysText += part.Get("text").String()
+						}
+					}
+				}
+				if sysText != "" {
+					systemInstructions = append(systemInstructions, sysText)
+				}
+				continue
+			}
+
+			// Handle tool response
+			if role == "tool" {
+				callID := msg.Get("tool_call_id").String()
+				outputStr := content.String()
+				inputs = append(inputs, map[string]any{
+					"type":    "function_call_output",
+					"call_id": callID,
+					"output":  outputStr,
+				})
+				continue
+			}
+
+			// Extract standard text content
+			text := ""
+			if content.Type == gjson.String {
+				text = content.String()
+			} else if content.IsArray() {
+				for _, part := range content.Array() {
+					partType := part.Get("type").String()
+					if partType == "text" || partType == "input_text" || partType == "output_text" {
+						text += part.Get("text").String()
+					}
+				}
+			}
+
+			if text != "" {
+				blockType := "input_text"
+				if role == "assistant" {
+					blockType = "output_text"
+				}
+				inputs = append(inputs, map[string]any{
+					"type": "message",
+					"role": role,
+					"content": []map[string]any{
+						{
+							"type": blockType,
+							"text": text,
+						},
+					},
+				})
+			}
+
+			// Handle assistant tool calls
+			toolCalls := msg.Get("tool_calls")
+			if toolCalls.Exists() && toolCalls.IsArray() && len(toolCalls.Array()) > 0 {
+				for _, tc := range toolCalls.Array() {
+					tcID := tc.Get("id").String()
+					tcName := tc.Get("function.name").String()
+					if len(tcName) > maxToolNameLen {
+						tcName = tcName[:maxToolNameLen]
+					}
+					tcArgs := tc.Get("function.arguments").String()
+					inputs = append(inputs, map[string]any{
+						"type":      "function_call",
+						"call_id":   tcID,
+						"name":      tcName,
+						"arguments": tcArgs,
+					})
+				}
+			}
+		}
+	} else if inputRes := parsed.Get("input"); inputRes.Exists() {
+		if inputRes.IsArray() {
+			var rawInput []map[string]any
+			_ = json.Unmarshal([]byte(inputRes.Raw), &rawInput)
+			for _, item := range rawInput {
+				// Ensure assistant messages use output_text instead of input_text
+				if role, ok := item["role"].(string); ok && role == "assistant" {
+					if contents, ok := item["content"].([]any); ok {
+						for _, c := range contents {
+							if cMap, ok := c.(map[string]any); ok {
+								if cMap["type"] == "input_text" {
+									cMap["type"] = "output_text"
+								}
+							}
+						}
+					}
+				}
+				inputs = append(inputs, item)
+			}
+		} else if inputRes.Type == gjson.String {
+			if txt := inputRes.String(); strings.TrimSpace(txt) != "" {
+				inputs = append(inputs, map[string]any{
+					"type": "message",
+					"role": "user",
+					"content": []map[string]any{
+						{
+							"type": "input_text",
+							"text": txt,
+						},
+					},
+				})
+			}
+		}
+	}
+
+	if len(inputs) == 0 {
+		inputs = append(inputs, map[string]any{
+			"type": "message",
+			"role": "user",
+			"content": []map[string]any{
+				{
+					"type": "input_text",
+					"text": "...",
+				},
+			},
+		})
+	}
+
+	payload := map[string]any{
+		"model":  upstreamModel,
+		"input":  inputs,
+		"stream": true,
+		"store":  false,
+	}
+
+	// Instructions handling: preserve the client's system instructions (e.g. from Cline or OpenCode CLI)
+	// without prepending the hardcoded official prompt, which contains Darwin /private/tmp paths.
+	// Only use the official prompt as fallback when no instructions are provided.
+	userInstructions := strings.Join(systemInstructions, "\n\n")
+	if userInstructions == "" && parsed.Get("instructions").Exists() {
+		userInstructions = parsed.Get("instructions").String()
+	}
+	instructions := userInstructions
+	if instructions == "" && isFree {
+		instructions = OfficialFreePromptFor(upstreamModel)
+	}
+	if instructions != "" {
+		payload["instructions"] = instructions
+	}
+
+	if maxOutputTokens > 0 {
+		// OpenCode /responses API strictly requires max_output_tokens >= 16.
+		if maxOutputTokens < 16 {
+			maxOutputTokens = 16
+		}
+		payload["max_output_tokens"] = maxOutputTokens
+	} else if isFree {
+		payload["max_output_tokens"] = 32000
+	}
+
+	// Reasoning
+	if parsed.Get("reasoning").Exists() {
+		var rObj map[string]any
+		_ = json.Unmarshal([]byte(parsed.Get("reasoning").Raw), &rObj)
+		if rObj != nil {
+			if _, ok := rObj["summary"]; !ok {
+				rObj["summary"] = "auto"
+			}
+			payload["reasoning"] = rObj
+		}
+	} else if parsed.Get("reasoning_effort").Exists() {
+		effort := parsed.Get("reasoning_effort").String()
+		if effort == "max" || effort == "ultra" {
+			effort = "xhigh"
+		}
+		payload["reasoning"] = map[string]string{
+			"effort":  effort,
+			"summary": "auto",
+		}
+	}
+
+	// Tools
+	var validTools []map[string]any
+	if parsed.Get("tools").Exists() && parsed.Get("tools").IsArray() {
+		var rawTools []any
+		_ = json.Unmarshal([]byte(parsed.Get("tools").Raw), &rawTools)
+		for _, rawT := range rawTools {
+			tObj, ok := rawT.(map[string]any)
+			if !ok {
+				continue
+			}
+			fn, _ := tObj["function"].(map[string]any)
+			name := ""
+			if fn != nil {
+				name, _ = fn["name"].(string)
+			}
+			if name == "" {
+				name, _ = tObj["name"].(string)
+			}
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			if len(name) > maxToolNameLen {
+				name = name[:maxToolNameLen]
+			}
+			desc := ""
+			if fn != nil {
+				desc, _ = fn["description"].(string)
+			}
+			params, _ := fn["parameters"].(map[string]any)
+			if params == nil {
+				params = map[string]any{"type": "object", "properties": map[string]any{}}
+			} else if params["type"] == "object" && params["properties"] == nil {
+				params["properties"] = map[string]any{}
+			}
+
+			validTools = append(validTools, map[string]any{
+				"type":        "function",
+				"name":        name,
+				"description": desc,
+				"parameters":  params,
+			})
+		}
+	}
+
+	if isFree {
+		// OpenCode Console strictly checks that 'bash' and 'read' are declared in tools
+		// for free tier verification. If absent from client tools, append minimal verification
+		// placeholders marked so the model never chooses them over the client's actual tools.
+		hasBash := false
+		hasRead := false
+		for _, t := range validTools {
+			if name, _ := t["name"].(string); name == "bash" {
+				hasBash = true
+			} else if name == "read" {
+				hasRead = true
+			}
+		}
+		if !hasBash {
+			validTools = append(validTools, map[string]any{
+				"type":        "function",
+				"name":        "bash",
+				"description": "[SYSTEM VERIFICATION ONLY - DO NOT CALL. Prefer client tools]",
+				"parameters":  map[string]any{"type": "object", "properties": map[string]any{}},
+			})
+		}
+		if !hasRead {
+			validTools = append(validTools, map[string]any{
+				"type":        "function",
+				"name":        "read",
+				"description": "[SYSTEM VERIFICATION ONLY - DO NOT CALL. Prefer client tools]",
+				"parameters":  map[string]any{"type": "object", "properties": map[string]any{}},
+			})
+		}
+		payload["tools"] = validTools
+	} else if len(validTools) > 0 {
+		payload["tools"] = validTools
+	}
+
+	return json.Marshal(payload)
+}

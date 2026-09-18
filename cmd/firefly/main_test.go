@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dickymuliafiqri/firefly/internal/auth"
+	"github.com/dickymuliafiqri/firefly/internal/security/auth"
 )
 
 // TestGracefulShutdownEndToEnd builds and runs the gateway, drives a request,

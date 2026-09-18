@@ -15,11 +15,11 @@ import (
 	"time"
 
 	"github.com/dickymuliafiqri/firefly/internal/domain"
-	"github.com/dickymuliafiqri/firefly/internal/grok"
-	"github.com/dickymuliafiqri/firefly/internal/opencode"
-	"github.com/dickymuliafiqri/firefly/internal/openai"
-	"github.com/dickymuliafiqri/firefly/internal/upstream"
-	"github.com/dickymuliafiqri/firefly/internal/warp"
+	"github.com/dickymuliafiqri/firefly/internal/adapter/grok"
+	"github.com/dickymuliafiqri/firefly/internal/adapter/opencode"
+	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
+	"github.com/dickymuliafiqri/firefly/internal/transport/upstream"
+	"github.com/dickymuliafiqri/firefly/internal/transport/warp"
 	"github.com/tidwall/gjson"
 )
 

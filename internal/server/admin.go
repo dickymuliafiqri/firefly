@@ -12,7 +12,7 @@ import (
 	rpprof "runtime/pprof"
 	"time"
 
-	"github.com/dickymuliafiqri/firefly/internal/httpx"
+	"github.com/dickymuliafiqri/firefly/internal/transport/httpx"
 )
 
 // Admin bundles the admin-plane server (/metrics + guarded /debug/*). It is a

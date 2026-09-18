@@ -47,25 +47,19 @@ firefly/
 │   └── loadtest/         # Standalone high-concurrency CLI benchmark tool
 ├── frontend/             # React 19 + Vite + Tailwind SPA (embedded via //go:embed)
 ├── internal/
-│   ├── analytics/        # Persistent request history, token metrics & breaker overrides
-│   ├── anthropic/        # Anthropic Claude Messages protocol translation
-│   ├── antigravity/      # Google Antigravity Cloud Code protocol translation
-│   ├── auth/             # Master password, session manager & tenant key storage
-│   ├── cline/            # Cline OAuth adapter & SSE relay
-│   ├── codebuddy/        # CodeBuddy (CN & Intl) adapter & device auth
-│   ├── config/           # Dynamic JSON loader (upstreams, models, tenants, combos, tls)
-│   ├── domain/           # Pure domain models (CatalogSnapshot, Model, Tenant, Combo)
-│   ├── httpx/            # Global middleware pipeline (Admission, Auth, Log, Metrics)
-│   ├── limits/           # Token-bucket rate limiters & CAS concurrency gates
-│   ├── logging/          # Slog structured logging with secret masking
-│   ├── metrics/          # Prometheus telemetry registry
-│   ├── oauth/            # Third-party AI OAuth manager & credential store
-│   ├── openai/           # OpenAI adapter & SSE streaming relay engine (RelaySSE)
+│   ├── adapter/          # Multi-provider AI protocol adapters (openai, anthropic, opencode, grok, cline, codebuddy, antigravity)
+│   ├── transport/        # Ingress & egress networking (httpx middleware, upstream pool & breaker, warp WireGuard egress)
+│   ├── security/         # Authentication & identity (auth credential vault, oauth manager & providers)
+│   ├── observability/    # Telemetry & monitoring (slog logging, Prometheus metrics, usage tracking)
+│   ├── storage/          # Data persistence (turso/libSQL syncer, analytics & breaker state store)
+│   ├── domain/           # Pure domain models (CatalogSnapshot, Model, Tenant, Combo, KeyRing)
 │   ├── ports/            # Go interface contracts (UpstreamAdapter, OAuthProvider, TokenStore)
+│   ├── config/           # Dynamic JSON loader (upstreams, models, tenants, combos, tls)
 │   ├── registry/         # Atomic snapshot store (atomic.Pointer[CatalogSnapshot])
+│   ├── limits/           # Token-bucket rate limiters & CAS concurrency gates
+│   ├── tokensaver/       # Prompt & context token optimization engine (RTK, Caveman, Ponytail, Headroom)
 │   ├── server/           # HTTP mux routing, forwardEndpoint, autotls, and dashboard SPA
-│   ├── turso/            # Optional Turso/libSQL catalog & settings store, syncer, usage flusher
-│   ├── upstream/         # HTTP client pool, KeyRing (429/401 cooldown), Breakers, & shared attempt engine
+│   ├── reqid/            # Context-bound request ID leaf package
 │   └── watch/            # File watcher & atomic configuration hot-reloading
 ├── docs/                 # Detailed production & load testing documentation
 ├── install.sh            # Universal one-line installer for Linux distributions

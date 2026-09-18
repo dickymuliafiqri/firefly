@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dickymuliafiqri/firefly/internal/openai"
+	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
 )
 
 // ProviderInfoDTO describes an available OAuth provider for frontend display.

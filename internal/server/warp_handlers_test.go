@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/dickymuliafiqri/firefly/internal/warp"
+	"github.com/dickymuliafiqri/firefly/internal/transport/warp"
 )
 
 func TestHandleGetWarpStatus(t *testing.T) {

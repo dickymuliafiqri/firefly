@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/dickymuliafiqri/firefly/internal/openai"
-	"github.com/dickymuliafiqri/firefly/internal/upstream"
+	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
+	"github.com/dickymuliafiqri/firefly/internal/transport/upstream"
 )
 
 type UpdateBreakerRequest struct {

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dickymuliafiqri/firefly/internal/metrics"
+	"github.com/dickymuliafiqri/firefly/internal/observability/metrics"
 )
 
 // TelemetryDTO is the structured real-time observability snapshot.

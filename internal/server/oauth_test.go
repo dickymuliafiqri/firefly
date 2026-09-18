@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dickymuliafiqri/firefly/internal/auth"
+	"github.com/dickymuliafiqri/firefly/internal/security/auth"
 	"github.com/dickymuliafiqri/firefly/internal/domain"
-	"github.com/dickymuliafiqri/firefly/internal/oauth"
-	cline "github.com/dickymuliafiqri/firefly/internal/oauth/providers/cline"
+	"github.com/dickymuliafiqri/firefly/internal/security/oauth"
+	cline "github.com/dickymuliafiqri/firefly/internal/security/oauth/providers/cline"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

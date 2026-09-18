@@ -10,14 +10,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dickymuliafiqri/firefly/internal/analytics"
-	"github.com/dickymuliafiqri/firefly/internal/auth"
+	"github.com/dickymuliafiqri/firefly/internal/storage/analytics"
+	"github.com/dickymuliafiqri/firefly/internal/security/auth"
 	"github.com/dickymuliafiqri/firefly/internal/limits"
-	"github.com/dickymuliafiqri/firefly/internal/openai"
+	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
 	"github.com/dickymuliafiqri/firefly/internal/server"
-	"github.com/dickymuliafiqri/firefly/internal/upstream"
-	"github.com/dickymuliafiqri/firefly/internal/usage"
+	"github.com/dickymuliafiqri/firefly/internal/transport/upstream"
+	"github.com/dickymuliafiqri/firefly/internal/observability/usage"
 )
 
 func TestTokenTelemetryAndPersistence_Integration(t *testing.T) {

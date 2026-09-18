@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/dickymuliafiqri/firefly/internal/openai"
+	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
 )
 
 // Config holds server-level tuning. Zero values fall back to defaults.

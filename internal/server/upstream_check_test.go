@@ -16,8 +16,8 @@ import (
 	"time"
 
 	"github.com/dickymuliafiqri/firefly/internal/domain"
-	"github.com/dickymuliafiqri/firefly/internal/oauth"
-	"github.com/dickymuliafiqri/firefly/internal/opencode"
+	"github.com/dickymuliafiqri/firefly/internal/security/oauth"
+	"github.com/dickymuliafiqri/firefly/internal/adapter/opencode"
 )
 
 func TestUpstreamCheck_CORS(t *testing.T) {

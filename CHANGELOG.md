@@ -5,6 +5,23 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.2] - 2026-09-18
+
+### Changed & Refactored
+- **Internal Package Reorganization & Clean Architecture Migration**:
+  - Restructured 27 flat packages under `internal/` into cohesive, domain-driven subsystem directories:
+    - `internal/adapter/`: Multi-provider AI protocol adapters (`openai`, `anthropic`, `opencode`, `grok`, `cline`, `codebuddy`, `antigravity`).
+    - `internal/transport/`: Ingress & egress networking (`httpx` middleware, `upstream` client pool & circuit breaker, `warp` WireGuard egress).
+    - `internal/security/`: Credential vault and OAuth subsystem (`auth`, `oauth` and providers).
+    - `internal/observability/`: System telemetry and metering (`logging`, `metrics`, `usage`).
+    - `internal/storage/`: Database & disk persistence (`turso`, `analytics`).
+  - Preserved pure domain and core orchestrator packages at top-level `internal/`: `domain`, `ports`, `config`, `registry`, `limits`, `tokensaver`, `server`, `reqid`, `watch`, and `integration`.
+  - Maintained 100% Git commit lineage and history across all relocated files via `git mv`.
+  - Updated all import declarations, internal references, and architectural documentation (`AGENTS.md`, `README.md`, `CONTRIBUTING.md`, `llms.txt`, `BUSINESS.md`).
+
+- **Frontend Version Bump**:
+  - Updated frontend package and application constant identifiers to `v1.7.2`.
+
 ## [1.7.1] - 2026-09-18
 
 ### Fixed & Improved

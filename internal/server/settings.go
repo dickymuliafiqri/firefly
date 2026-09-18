@@ -14,9 +14,9 @@ import (
 
 	"github.com/dickymuliafiqri/firefly/internal/config"
 	"github.com/dickymuliafiqri/firefly/internal/domain"
-	"github.com/dickymuliafiqri/firefly/internal/httpx"
-	"github.com/dickymuliafiqri/firefly/internal/openai"
-	"github.com/dickymuliafiqri/firefly/internal/turso"
+	"github.com/dickymuliafiqri/firefly/internal/transport/httpx"
+	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
+	"github.com/dickymuliafiqri/firefly/internal/storage/turso"
 )
 
 // handleOptionsSettings serves CORS preflight requests for the settings API.

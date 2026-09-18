@@ -11,10 +11,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dickymuliafiqri/firefly/internal/auth"
+	"github.com/dickymuliafiqri/firefly/internal/security/auth"
 	"github.com/dickymuliafiqri/firefly/internal/config"
 	"github.com/dickymuliafiqri/firefly/internal/limits"
-	"github.com/dickymuliafiqri/firefly/internal/openai"
+	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
 )
 

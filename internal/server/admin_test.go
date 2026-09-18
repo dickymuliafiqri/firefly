@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dickymuliafiqri/firefly/internal/metrics"
+	"github.com/dickymuliafiqri/firefly/internal/observability/metrics"
 )
 
 // TestAdminServesMetrics verifies /metrics is reachable without a token.

@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/dickymuliafiqri/firefly/internal/auth"
-	"github.com/dickymuliafiqri/firefly/internal/openai"
+	"github.com/dickymuliafiqri/firefly/internal/security/auth"
+	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
 )
 
 type LoginRequest struct {

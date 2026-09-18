@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dickymuliafiqri/firefly/internal/analytics"
-	"github.com/dickymuliafiqri/firefly/internal/auth"
-	"github.com/dickymuliafiqri/firefly/internal/upstream"
+	"github.com/dickymuliafiqri/firefly/internal/storage/analytics"
+	"github.com/dickymuliafiqri/firefly/internal/security/auth"
+	"github.com/dickymuliafiqri/firefly/internal/transport/upstream"
 )
 
 func TestBreakerHandlers_GetAndUpdate(t *testing.T) {

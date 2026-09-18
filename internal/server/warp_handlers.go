@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/dickymuliafiqri/firefly/internal/warp"
+	"github.com/dickymuliafiqri/firefly/internal/transport/warp"
 )
 
 // handleGetWarpStatus retrieves real-time health and connection details for Cloudflare WARP.

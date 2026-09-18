@@ -12,7 +12,7 @@ import (
 
 	"github.com/dickymuliafiqri/firefly/internal/config"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
-	"github.com/dickymuliafiqri/firefly/internal/turso"
+	"github.com/dickymuliafiqri/firefly/internal/storage/turso"
 )
 
 // TursoManager manages the lifecycle of the active Turso embedded sync client and store.

@@ -112,7 +112,7 @@ flowchart TD
 > Do not deploy independent PostgreSQL, MySQL, or Redis instances. All business and proxy state lives inside the **single unified database**.
 
 ### A. Pre-Existing Firefly Native Tables (Do Not Alter Schemas)
-Defined in: `internal/turso/schema.go` and `internal/turso/store.go`.
+Defined in: `internal/storage/turso/schema.go` and `internal/storage/turso/store.go`.
 
 1. **`tenants`**: Client identities authorized to access Firefly.
    - Key columns: `id`, `name`, `key_hash` (format `sha256:<hex>`), `key_hint`, `status`, `rps`, `burst`, `max_concurrent`, `allowed_models`.

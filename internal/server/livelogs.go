@@ -5,7 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/dickymuliafiqri/firefly/internal/analytics"
+	"github.com/dickymuliafiqri/firefly/internal/storage/analytics"
 )
 
 // LiveLog represents a single inbound API request / upstream proxy transaction.

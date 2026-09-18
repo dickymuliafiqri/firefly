@@ -14,13 +14,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dickymuliafiqri/firefly/internal/auth"
+	"github.com/dickymuliafiqri/firefly/internal/security/auth"
 	"github.com/dickymuliafiqri/firefly/internal/config"
 	"github.com/dickymuliafiqri/firefly/internal/limits"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
 	"github.com/dickymuliafiqri/firefly/internal/server"
-	"github.com/dickymuliafiqri/firefly/internal/usage"
+	"github.com/dickymuliafiqri/firefly/internal/observability/usage"
 )
 
 const gatewayKey = "sk-gw-demo-000000000000000000000000"

@@ -9,18 +9,18 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/dickymuliafiqri/firefly/internal/analytics"
-	"github.com/dickymuliafiqri/firefly/internal/auth"
+	"github.com/dickymuliafiqri/firefly/internal/storage/analytics"
+	"github.com/dickymuliafiqri/firefly/internal/security/auth"
 	"github.com/dickymuliafiqri/firefly/internal/domain"
-	"github.com/dickymuliafiqri/firefly/internal/httpx"
+	"github.com/dickymuliafiqri/firefly/internal/transport/httpx"
 	"github.com/dickymuliafiqri/firefly/internal/limits"
-	"github.com/dickymuliafiqri/firefly/internal/metrics"
-	"github.com/dickymuliafiqri/firefly/internal/oauth"
-	"github.com/dickymuliafiqri/firefly/internal/openai"
+	"github.com/dickymuliafiqri/firefly/internal/observability/metrics"
+	"github.com/dickymuliafiqri/firefly/internal/security/oauth"
+	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
-	"github.com/dickymuliafiqri/firefly/internal/turso"
-	"github.com/dickymuliafiqri/firefly/internal/warp"
+	"github.com/dickymuliafiqri/firefly/internal/storage/turso"
+	"github.com/dickymuliafiqri/firefly/internal/transport/warp"
 )
 
 // RouterDeps carries everything the HTTP routes need.
