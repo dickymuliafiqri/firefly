@@ -368,3 +368,80 @@ func TestGlobalLimiterContextCancelWhileWaiting(t *testing.T) {
 		t.Fatalf("expected prompt return on context cancel, took %v", elapsed)
 	}
 }
+
+func TestAdmissionMiddleware_ExpiredKey(t *testing.T) {
+	key := "sk-gw-expired"
+	hash := auth.HashKey(key)
+	expiredTime := time.Now().Add(-1 * time.Hour).UnixMilli()
+	snap := domain.NewCatalogSnapshot(1, nil, nil, nil, nil,
+		map[string]*domain.Tenant{hash: {
+			APIKey:    key,
+			KeyHash:   hash,
+			Name:      "expired-client",
+			Status:    domain.TenantStatusActive,
+			ExpiresAt: expiredTime,
+			RateLimit: domain.RateLimit{RPS: 10, Burst: 20, MaxConcurrent: 5},
+		}},
+		[]string{hash})
+
+	store := auth.NewStore(fakeProvider{snap})
+	lim := limits.New()
+
+	base := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
+	h := Chain(base,
+		AuthMiddleware(store),
+		AdmissionMiddleware(lim),
+	)
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	req.Header.Set("Authorization", "Bearer "+key)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status 401 for expired key, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "expired") {
+		t.Fatalf("expected expired error message, got: %s", rec.Body.String())
+	}
+}
+
+func TestAdmissionMiddleware_QuotaExceeded(t *testing.T) {
+	key := "sk-gw-quota-depleted"
+	hash := auth.HashKey(key)
+	usedTokens := new(atomic.Int64)
+	usedTokens.Store(1000)
+
+	snap := domain.NewCatalogSnapshot(1, nil, nil, nil, nil,
+		map[string]*domain.Tenant{hash: {
+			APIKey:     key,
+			KeyHash:    hash,
+			Name:       "depleted-client",
+			Status:     domain.TenantStatusActive,
+			MaxTokens:  1000,
+			UsedTokens: usedTokens,
+			RateLimit:  domain.RateLimit{RPS: 10, Burst: 20, MaxConcurrent: 5},
+		}},
+		[]string{hash})
+
+	store := auth.NewStore(fakeProvider{snap})
+	lim := limits.New()
+
+	base := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
+	h := Chain(base,
+		AuthMiddleware(store),
+		AdmissionMiddleware(lim),
+	)
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	req.Header.Set("Authorization", "Bearer "+key)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected status 429 for depleted quota, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "insufficient_quota") {
+		t.Fatalf("expected insufficient_quota in body, got: %s", rec.Body.String())
+	}
+}

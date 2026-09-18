@@ -84,12 +84,17 @@ Every request entering Firefly follows a strict, deterministic lifecycle:
 ### 3. Route Multiplexing (`http.ServeMux` Go 1.22+)
 - `GET /healthz` -> Returns `HTTP 200 "ok"` immediately without authentication.
 - `GET /v1/models` & `GET /v1/models/{id}` -> Authenticated routes returning catalog models accessible to the requesting tenant.
+- `GET /v1/usage` -> Authenticated endpoint returning current token quota, consumed tokens, remaining balance, and validity/expiration.
 - `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/embeddings` -> Routed to the shared proxy execution engine `forwardEndpoint`.
+- `POST /api/tenants/topup` -> Admin/Webhook endpoint for topping up token balances and extending validity days.
 
 ### 4. Tenant Route Protection (`deps.protected`)
-Before parsing the request body, requests pass through two layers of tenant protection:
-1. **`AuthMiddleware`:** Validates `Authorization: Bearer sk-gw-...`. Tokens are verified against `TenantStore` using secure constant-time comparisons. Invalid tokens immediately yield `HTTP 401 Unauthorized` using standard OpenAI JSON error schemas. Dependency interfaces are guarded with `httpx.IsNil` to eliminate typed-nil panics.
-2. **`AdmissionMiddleware`:** Enforces tenant rate limits using Token Buckets (`golang.org/x/time/rate`) for requests per second (RPS) and enforces concurrent in-flight limits (`MaxConcurrent`). Exceeded limits return `HTTP 429`.
+Before parsing the request body, requests pass through tenant protection:
+1. **`AuthMiddleware`:** Validates `Authorization: Bearer sk-gw-...`. Tokens are verified against `TenantStore` via direct zero-allocation $O(1)$ memory lookup (`snap.TenantByKey`). Invalid tokens immediately yield `HTTP 401 Unauthorized` (`invalid_api_key`) using standard OpenAI JSON error schemas. Dependency interfaces are guarded with `httpx.IsNil` to eliminate typed-nil panics.
+2. **`AdmissionMiddleware`:**
+   - **Expiration Guard:** Checks if the key has expired (`expires_at < now`). Expired keys are rejected with `HTTP 401 Unauthorized` (`key_expired`).
+   - **Token Quota Guard:** Checks if the accumulated tokens have exceeded `max_tokens`. Exhausted quotas fail fast with `HTTP 429 Too Many Requests` (`insufficient_quota`).
+   - **Rate Limiting:** Enforces tenant RPS using Token Buckets (`golang.org/x/time/rate`) and limits concurrent in-flight requests (`MaxConcurrent`). Exceeded limits return `HTTP 429`.
 
 ### 5. Forward Handler Execution (`server.forwardEndpoint`)
 The unified handler for inference endpoints:
@@ -235,6 +240,37 @@ Firefly includes a built-in, native optimization suite that transparently interc
 - **Compress Context (Headroom)**: Prunes older middle tool outputs and verbose conversation history when total body size exceeds configured thresholds (default: 32,000 tokens), preserving the system prompt and latest messages.
 - **Direct API Access (`POST /v1/compress`)**: Standalone authenticated endpoint for compressing arbitrary text prompts or chat message arrays on demand.
 - **Zero Overhead**: When disabled, requests pass through with zero heap allocations via fast-path routing. Configurable via **Settings → Token Saver Optimization Suite** with atomic hot-swapping.
+
+---
+
+## Commercial Tenant Keys, Token Quotas, & Monetization
+
+Firefly provides out-of-the-box support for API key commercialization, allowing operators to issue, meter, and sell tenant API keys with strict token balance control and expiration dates:
+
+- **Plaintext API Key Storage**: Keys are generated (`sk-gw-...`) and stored directly in plaintext without SHA-256 hashing barriers, making it straightforward to distribute and resell API keys to customers or teams.
+- **Token Quota (Prompt + Completion)**: Enforce upper token limits (`max_tokens`) or allow unlimited consumption (`0`).
+- **High-Concurrency Lock-Free Accounting**: Post-request token deductions happen in memory via atomic CAS counters (`*atomic.Int64`). Firefly never executes synchronous database writes or locks on the inference data plane, guaranteeing zero `SQLITE_BUSY` lock contention across 1,000+ simultaneous streams.
+- **Asynchronous Batch Flusher**: An automated background worker periodically flushes accumulated token consumption to Turso/SQLite in micro-batches.
+- **Validity & Expiration Dates (`expires_at`)**: Keys can be provisioned with an expiration epoch timestamp (e.g. 7 days, 30 days, 1 year). Expired keys are rejected at pre-flight admission with `HTTP 401 Unauthorized` (`key_expired`).
+- **Quota Exhaustion**: Requests from tenants that exceed their token limit fail fast at admission with `HTTP 429 Too Many Requests` (`insufficient_quota`).
+- **Client Usage Endpoint (`GET /v1/usage`)**:
+  Tenants can programmatically inspect their quota balance, consumed tokens, remaining balance, and expiration timestamp:
+  ```bash
+  curl -X GET http://localhost:8080/v1/usage \
+    -H "Authorization: Bearer sk-gw-YOUR_KEY"
+  ```
+- **Automated Top-Up & Payment Webhooks (`POST /api/tenants/topup`)**:
+  Protected administrative endpoint for topping up token balances and extending validity days upon checkout completion (e.g. Stripe, Midtrans, Lemon Squeezy webhooks):
+  ```bash
+  curl -X POST http://localhost:8080/api/tenants/topup \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer <ADMIN_TOKEN>" \
+    -d '{
+      "api_key": "sk-gw-YOUR_KEY",
+      "add_tokens": 5000000,
+      "extend_days": 30
+    }'
+  ```
 
 ---
 

@@ -211,8 +211,8 @@ export const createSettingsSlice: StateCreator<SettingsSlice, [], [], SettingsSl
 
   addOrUpdateTenant: (tenant) =>
     set((state) => {
-      const identifier = tenant.key_hash || tenant.name;
-      const idx = state.tenants.findIndex((t) => (t.key_hash || t.name) === identifier);
+      const identifier = tenant.api_key || tenant.key_hash || tenant.name;
+      const idx = state.tenants.findIndex((t) => (t.api_key || t.key_hash || t.name) === identifier);
       if (idx >= 0) {
         const next = [...state.tenants];
         next[idx] = { ...next[idx], ...tenant };
@@ -221,9 +221,9 @@ export const createSettingsSlice: StateCreator<SettingsSlice, [], [], SettingsSl
       return { tenants: [...state.tenants, tenant] };
     }),
 
-  removeTenant: (keyHashOrName) =>
+  removeTenant: (keyOrHashOrName) =>
     set((state) => ({
-      tenants: state.tenants.filter((t) => (t.key_hash || t.name) !== keyHashOrName),
+      tenants: state.tenants.filter((t) => (t.api_key || t.key_hash || t.name) !== keyOrHashOrName),
     })),
 
   setAdminToken: (token) => {

@@ -75,9 +75,13 @@ type ComboRecord struct {
 type TenantRecord struct {
 	ID            int64             `json:"id"`
 	Name          string            `json:"name"`
-	KeyHash       string            `json:"key_hash"`
-	KeyHint       string            `json:"key_hint"`
+	APIKey        string            `json:"api_key"`
+	KeyHash       string            `json:"key_hash,omitempty"`
+	KeyHint       string            `json:"key_hint,omitempty"`
 	Status        string            `json:"status"`
+	MaxTokens     int64             `json:"max_tokens"`
+	UsedTokens    int64             `json:"used_tokens"`
+	ExpiresAt     *int64            `json:"expires_at,omitempty"`
 	RPS           *float64          `json:"rps,omitempty"`
 	Burst         *int              `json:"burst,omitempty"`
 	MaxConcurrent *int              `json:"max_concurrent,omitempty"`

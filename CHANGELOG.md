@@ -5,6 +5,26 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-09-18
+
+### Added
+- **Commercial Tenant Keys & Quota Management (`internal/domain`, `internal/storage/turso`, `internal/server`, `internal/transport/httpx`)**:
+  - **Plaintext Tenant API Keys**: Eliminated SHA-256 hashing barriers by saving and resolving keys in plaintext (`sk-gw-...`) directly via `snap.TenantByKey` with zero-allocation $O(1)$ memory lookup on the inference hot path, while maintaining backward compatibility with existing hashed keys.
+  - **Token Quota Enforcement (Prompt + Completion)**: Introduced configurable token quota limits (`max_tokens`) or unlimited (`0`), automatically tracking usage and returning HTTP 429 (`insufficient_quota`) once exhausted.
+  - **Validity & Expiration Dates (`expires_at`)**: Supported epoch timestamp expiration with pre-flight admission checks rejecting expired credentials with HTTP 401 (`key_expired`).
+  - **Lifecycle Statuses**: Added `exhausted` and `expired` statuses alongside existing `active` and `suspended` statuses.
+  - **Lock-Free Atomic In-Memory Accounting**: Post-request token usage updates occur exclusively in memory via atomic CAS counters (`tenant.UsedTokens.Add(totTokens)`), completely eliminating synchronous database writes and preventing `SQLITE_BUSY` database locking under high concurrency (1,000+ streams).
+  - **Asynchronous Batch Flusher**: Periodically flushes accumulated tenant token consumption to Turso/SQLite in background batches.
+  - **Client Quota Inspection Endpoint (`GET /v1/usage`)**: Dedicated OpenAI-compatible endpoint allowing tenants to inspect their token usage, remaining balance, and expiration date using `Authorization: Bearer <tenant_key>`.
+  - **Admin & Payment Gateway Top-Up API (`POST /api/tenants/topup`)**: Protected endpoint enabling automated token additions (`add_tokens`) and validity extensions (`extend_days`), fully compatible with webhook integrations (e.g., Stripe, Lemon Squeezy, Midtrans).
+  - **Database Migration**: Added automated `ALTER TABLE` schema migration in Turso/libSQL for `api_key`, `max_tokens`, `used_tokens`, and `expires_at`, with index `idx_tenants_api_key`.
+
+- **Commercial Tenant Dashboard Management (`frontend/src/modules/4-tenants`)**:
+  - **Commercial Key Generator Modal**: Simplified key provisioning with preset token quota choices (1M, 5M, 10M, 50M, Unlimited) and validity duration presets (7d, 30d, 90d, 1y, No Expiry) with instant clipboard copying.
+  - **Interactive Tenant Table**: Displays plain API keys with toggleable mask/reveal (`Eye`/`EyeOff`), one-click copying, token usage progress bars with percentage indicators, expiration dates with expired warnings, and dynamic status badges (`ACTIVE`, `EXPIRED`, `EXHAUSTED`, `SUSPENDED`).
+  - **Tenant Top-Up Modal**: Dedicated modal to instantly refill token balances and extend key expiration directly from the web interface.
+  - **Frontend Version Bump**: Updated frontend package and application constant identifiers to `v1.8.0`.
+
 ## [1.7.2] - 2026-09-18
 
 ### Changed & Refactored

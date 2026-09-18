@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 )
@@ -155,11 +156,15 @@ func Build(fs FileSet, envLookup func(string) (string, bool)) (*BuildResult, err
 			return nil, err
 		}
 		res.Warnings = append(res.Warnings, warns...)
-		if _, dup := res.TenantsByHash[t.KeyHash]; dup {
+		primaryKey := t.KeyHash
+		if primaryKey == "" {
+			primaryKey = t.APIKey
+		}
+		if _, dup := res.TenantsByHash[primaryKey]; dup {
 			return nil, &ValidationError{Field: "tenants", Msg: "duplicate key_hash"}
 		}
-		res.TenantsByHash[t.KeyHash] = t
-		res.TenantOrder = append(res.TenantOrder, t.KeyHash)
+		res.TenantsByHash[primaryKey] = t
+		res.TenantOrder = append(res.TenantOrder, primaryKey)
 	}
 	sort.Strings(res.TenantOrder)
 
@@ -552,13 +557,21 @@ func translateCombo(i int, d ComboDTO, models map[string]*domain.ModelEntry, com
 
 func translateTenant(i int, d TenantDTO, models map[string]*domain.ModelEntry, combos map[string]*domain.Combo, envLookup func(string) (string, bool)) (*domain.Tenant, []string, error) {
 	var warns []string
-	if d.KeyHash == "" && d.APIKey != "" {
-		sum := sha256.Sum256([]byte(d.APIKey))
-		d.KeyHash = "sha256:" + hex.EncodeToString(sum[:])
+	apiKey := d.APIKey
+	if apiKey != "" {
+		if d.KeyHash == "" {
+			sum := sha256.Sum256([]byte(apiKey))
+			d.KeyHash = "sha256:" + hex.EncodeToString(sum[:])
+		}
+	} else if d.KeyHash != "" {
+		if !keyHashRe.MatchString(d.KeyHash) {
+			return nil, nil, &ValidationError{Field: fmt.Sprintf("tenants[%d].key_hash", i), Msg: "must be sha256:<64 hex> (or provide api_key)"}
+		}
+		apiKey = d.KeyHash
+	} else {
+		return nil, nil, &ValidationError{Field: fmt.Sprintf("tenants[%d].api_key", i), Msg: "api_key or key_hash required"}
 	}
-	if !keyHashRe.MatchString(d.KeyHash) {
-		return nil, nil, &ValidationError{Field: fmt.Sprintf("tenants[%d].key_hash", i), Msg: "must be sha256:<64 hex> (or provide api_key)"}
-	}
+
 	if d.Name == "" {
 		return nil, nil, &ValidationError{Field: fmt.Sprintf("tenants[%d].name", i), Msg: "required"}
 	}
@@ -566,8 +579,11 @@ func translateTenant(i int, d TenantDTO, models map[string]*domain.ModelEntry, c
 	if status == "" {
 		status = string(domain.TenantStatusActive)
 	}
-	if status != string(domain.TenantStatusActive) && status != string(domain.TenantStatusSuspended) {
-		return nil, nil, &ValidationError{Field: fmt.Sprintf("tenants[%d].status", i), Msg: "must be active or suspended"}
+	switch domain.TenantStatus(status) {
+	case domain.TenantStatusActive, domain.TenantStatusSuspended, domain.TenantStatusExhausted, domain.TenantStatusExpired:
+		// Valid
+	default:
+		return nil, nil, &ValidationError{Field: fmt.Sprintf("tenants[%d].status", i), Msg: "must be active, suspended, exhausted, or expired"}
 	}
 	allowed := d.AllowedModels
 	if len(allowed) == 0 {
@@ -611,13 +627,32 @@ func translateTenant(i int, d TenantDTO, models map[string]*domain.ModelEntry, c
 		warns = append(warns, fmt.Sprintf("tenant %q: rps=0 disables rate limiting", d.Name))
 	}
 
+	if d.MaxTokens < 0 {
+		return nil, nil, &ValidationError{Field: fmt.Sprintf("tenants[%d].max_tokens", i), Msg: "must be non-negative"}
+	}
+	var exp int64
+	if d.ExpiresAt != nil {
+		if *d.ExpiresAt < 0 {
+			return nil, nil, &ValidationError{Field: fmt.Sprintf("tenants[%d].expires_at", i), Msg: "must be non-negative"}
+		}
+		exp = *d.ExpiresAt
+	}
+	usedTokens := new(atomic.Int64)
+	if d.UsedTokens > 0 {
+		usedTokens.Store(d.UsedTokens)
+	}
+
 	return &domain.Tenant{
+		APIKey:        apiKey,
 		KeyHash:       d.KeyHash,
 		Name:          d.Name,
 		Status:        domain.TenantStatus(status),
 		AllowedModels: allowed,
 		CredentialRef: d.CredentialRef,
 		RateLimit:     rl,
+		MaxTokens:     d.MaxTokens,
+		UsedTokens:    usedTokens,
+		ExpiresAt:     exp,
 		Metadata:      d.Metadata,
 	}, warns, nil
 }

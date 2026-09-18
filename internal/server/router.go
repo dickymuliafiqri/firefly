@@ -163,6 +163,8 @@ func (s *Server) buildHandler(deps RouterDeps) http.Handler {
 	mux.HandleFunc("GET /api/settings", deps.handleGetSettings)
 	mux.HandleFunc("POST /api/settings", deps.handleUpdateSettings)
 	mux.HandleFunc("PUT /api/settings", deps.handleUpdateSettings)
+	mux.HandleFunc("OPTIONS /api/tenants/topup", deps.handleOptionsSettings)
+	mux.HandleFunc("POST /api/tenants/topup", deps.handleTenantTopup)
 
 	// Turso Centralized Database API
 	mux.HandleFunc("OPTIONS /api/turso/providers", deps.handleOptionsSettings)
@@ -222,6 +224,8 @@ func (s *Server) buildHandler(deps RouterDeps) http.Handler {
 	mux.Handle("GET /v1/models", deps.protected(http.HandlerFunc(deps.handleListModels)))
 	// /v1/models/{id} returns a single model (OpenAI "retrieve model").
 	mux.Handle("GET /v1/models/{id}", deps.protected(http.HandlerFunc(deps.handleRetrieveModel)))
+	// /v1/usage returns tenant quota, consumption, and expiration details.
+	mux.Handle("GET /v1/usage", deps.protected(http.HandlerFunc(deps.handleClientUsage)))
 
 	// Upstream-backed endpoints. All three proxy to the OpenAI wire surface and
 	// differ only in path; they share one handler. Auth + admission run first.

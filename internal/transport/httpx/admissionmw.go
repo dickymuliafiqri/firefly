@@ -6,8 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dickymuliafiqri/firefly/internal/limits"
 	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
+	"github.com/dickymuliafiqri/firefly/internal/domain"
+	"github.com/dickymuliafiqri/firefly/internal/limits"
 )
 
 const (
@@ -156,6 +157,20 @@ func AdmissionMiddleware(lim *limits.Limiter) func(http.Handler) http.Handler {
 			if tenant == nil {
 				// Should not happen; AuthMiddleware runs first.
 				openai.WriteError(w, http.StatusUnauthorized, openai.TypeAuthentication, "unauthenticated")
+				return
+			}
+
+			// Pre-flight Commercial Checks: Expiration & Quota
+			now := time.Now().UnixMilli()
+			if tenant.IsExpired(now) || tenant.Status == domain.TenantStatusExpired {
+				openai.WriteError(w, http.StatusUnauthorized, openai.TypeAuthentication,
+					"Your API key has expired. Please renew your plan.")
+				return
+			}
+
+			if tenant.IsQuotaExceeded() || tenant.Status == domain.TenantStatusExhausted {
+				openai.WriteError(w, http.StatusTooManyRequests, "insufficient_quota",
+					"You have exceeded your token quota. Please top up your account.")
 				return
 			}
 

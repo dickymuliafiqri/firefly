@@ -16,6 +16,7 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/observability/metrics"
 	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
+	"github.com/dickymuliafiqri/firefly/internal/storage/turso"
 	"github.com/dickymuliafiqri/firefly/internal/tokensaver"
 	"github.com/dickymuliafiqri/firefly/internal/transport/upstream"
 	"github.com/tidwall/gjson"
@@ -514,6 +515,17 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 		}
 		totTokens := tokensIn + tokensOut
 		totCost := (float64(tokensIn) * 0.0000025) + (float64(tokensOut) * 0.0000100)
+
+		if totTokens > 0 && tenant != nil && tenant.UsedTokens != nil {
+			tenant.UsedTokens.Add(int64(totTokens))
+			if flusher, ok := deps.Usage.(*turso.UsageFlusher); ok && flusher != nil {
+				key := tenant.APIKey
+				if key == "" {
+					key = tenant.KeyHash
+				}
+				flusher.RecordTenantTokens(key, int64(totTokens))
+			}
+		}
 
 		deps.recordLog(LiveLog{
 			ID:            reqID,

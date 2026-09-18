@@ -88,8 +88,12 @@ func (s *Store) Lookup(ctx context.Context, plaintextKey string) (*domain.Tenant
 	if snap == nil {
 		return nil, false
 	}
-	t, ok := snap.TenantByHash(HashKey(plaintextKey))
-	if !ok || t.Status != domain.TenantStatusActive {
+	// Direct O(1) plaintext API key lookup (zero crypto allocations on hot path)
+	t, ok := snap.TenantByKey(plaintextKey)
+	if !ok {
+		t, ok = snap.TenantByHash(HashKey(plaintextKey))
+	}
+	if !ok || t.Status == domain.TenantStatusSuspended {
 		return nil, false
 	}
 	return t, true

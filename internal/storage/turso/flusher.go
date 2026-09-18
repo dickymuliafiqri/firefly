@@ -30,6 +30,11 @@ type keyActionEvent struct {
 	at           int64
 }
 
+type tenantUsageEvent struct {
+	key    string
+	tokens int64
+}
+
 // UsageFlusher records usage, aggregates request counts per key, and persists
 // metrics and key updates into Turso, pushing updates to the primary cloud.
 type UsageFlusher struct {
@@ -38,6 +43,7 @@ type UsageFlusher struct {
 	events        chan usageEvent
 	revocations   chan string
 	actions       chan keyActionEvent
+	tenantEvents  chan tenantUsageEvent
 	flushInterval time.Duration
 	logger        *slog.Logger
 	mu            sync.Mutex
@@ -57,8 +63,20 @@ func NewUsageFlusher(store *Store, inner ports.UsageRecorder, flushInterval time
 		events:        make(chan usageEvent, 10000),
 		revocations:   make(chan string, 1000),
 		actions:       make(chan keyActionEvent, 1000),
+		tenantEvents:  make(chan tenantUsageEvent, 10000),
 		flushInterval: flushInterval,
 		logger:        logger,
+	}
+}
+
+// RecordTenantTokens queues tenant token usage to be flushed in batch to Turso/SQLite.
+func (f *UsageFlusher) RecordTenantTokens(apiKey string, tokens int64) {
+	if f == nil || apiKey == "" || tokens <= 0 {
+		return
+	}
+	select {
+	case f.tenantEvents <- tenantUsageEvent{key: apiKey, tokens: tokens}:
+	default:
 	}
 }
 
@@ -200,7 +218,19 @@ DRAINED_REVOCATIONS:
 	}
 DRAINED_ACTIONS:
 
-	if len(usageAgg) == 0 && len(revocations) == 0 && len(actions) == 0 {
+	// 4. Drain queued tenant token usage
+	tenantTokensAgg := make(map[string]int64)
+	for {
+		select {
+		case ev := <-f.tenantEvents:
+			tenantTokensAgg[ev.key] += ev.tokens
+		default:
+			goto DRAINED_TENANTS
+		}
+	}
+DRAINED_TENANTS:
+
+	if len(usageAgg) == 0 && len(revocations) == 0 && len(actions) == 0 && len(tenantTokensAgg) == 0 {
 		return nil
 	}
 
@@ -299,6 +329,24 @@ DRAINED_ACTIONS:
 						updatedAny = true
 					}
 				}
+			}
+		}
+	}
+
+	// 4. Update tenant token usage
+	for key, delta := range tenantTokensAgg {
+		if delta <= 0 {
+			continue
+		}
+		res, err := tx.ExecContext(ctx, `
+			UPDATE tenants
+			SET used_tokens = used_tokens + ?,
+			    updated_at = ?
+			WHERE api_key = ? OR key_hash = ?
+		`, delta, now, key, key)
+		if err == nil {
+			if r, _ := res.RowsAffected(); r > 0 {
+				updatedAny = true
 			}
 		}
 	}

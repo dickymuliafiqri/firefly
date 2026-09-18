@@ -240,18 +240,35 @@ func (deps RouterDeps) handleGetSettings(w http.ResponseWriter, r *http.Request)
 			})
 		}
 
-		for _, hash := range snap.TenantHashes() {
-			t, ok := snap.TenantByHash(hash)
+		for _, key := range snap.TenantKeys() {
+			t, ok := snap.TenantByKey(key)
 			if !ok || t == nil {
 				continue
 			}
 			rps := t.RateLimit.RPS
 			burst := t.RateLimit.Burst
 			maxC := t.RateLimit.MaxConcurrent
+			var expPtr *int64
+			if t.ExpiresAt > 0 {
+				v := t.ExpiresAt
+				expPtr = &v
+			}
+			var used int64
+			if t.UsedTokens != nil {
+				used = t.UsedTokens.Load()
+			}
+			apiKey := t.APIKey
+			if apiKey == "" {
+				apiKey = t.KeyHash
+			}
 			settings.Tenants = append(settings.Tenants, config.TenantDTO{
+				APIKey:        apiKey,
 				KeyHash:       t.KeyHash,
 				Name:          t.Name,
 				Status:        string(t.Status),
+				MaxTokens:     t.MaxTokens,
+				UsedTokens:    used,
+				ExpiresAt:     expPtr,
 				AllowedModels: t.AllowedModels,
 				CredentialRef: t.CredentialRef,
 				RateLimit: &config.RateLimitDTO{

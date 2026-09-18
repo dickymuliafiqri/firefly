@@ -92,9 +92,13 @@ CREATE INDEX IF NOT EXISTS idx_combos_name ON combos(name);
 CREATE TABLE IF NOT EXISTS tenants (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     name           VARCHAR(128) NOT NULL,
-    key_hash       VARCHAR(128) NOT NULL UNIQUE,
-    key_hint       VARCHAR(32) NOT NULL,
+    api_key        VARCHAR(128),
+    key_hash       VARCHAR(128),
+    key_hint       VARCHAR(32),
     status         VARCHAR(20) NOT NULL DEFAULT 'active',
+    max_tokens     BIGINT NOT NULL DEFAULT 0,
+    used_tokens    BIGINT NOT NULL DEFAULT 0,
+    expires_at     BIGINT,
     rps            REAL,
     burst          INTEGER,
     max_concurrent INTEGER,
@@ -105,6 +109,7 @@ CREATE TABLE IF NOT EXISTS tenants (
     updated_at     BIGINT NOT NULL
 );
 
+CREATE INDEX IF NOT EXISTS idx_tenants_api_key ON tenants(api_key);
 CREATE INDEX IF NOT EXISTS idx_tenants_key_hash ON tenants(key_hash);
 
 CREATE TABLE IF NOT EXISTS oauth_connections (
@@ -148,6 +153,13 @@ func MigrateSchema(ctx context.Context, db *sql.DB) error {
 	_, _ = db.ExecContext(ctx, "ALTER TABLE upstreams ADD COLUMN egress_mode VARCHAR(32) DEFAULT 'direct'")
 	_, _ = db.ExecContext(ctx, "ALTER TABLE upstreams ADD COLUMN proxy_url VARCHAR(255)")
 	_, _ = db.ExecContext(ctx, "ALTER TABLE upstreams ADD COLUMN warp_auto_rotate_on_429 INTEGER DEFAULT 0")
+
+	// Upgrade tenants table if columns are not present
+	_, _ = db.ExecContext(ctx, "ALTER TABLE tenants ADD COLUMN api_key VARCHAR(128)")
+	_, _ = db.ExecContext(ctx, "ALTER TABLE tenants ADD COLUMN max_tokens BIGINT DEFAULT 0")
+	_, _ = db.ExecContext(ctx, "ALTER TABLE tenants ADD COLUMN used_tokens BIGINT DEFAULT 0")
+	_, _ = db.ExecContext(ctx, "ALTER TABLE tenants ADD COLUMN expires_at BIGINT")
+	_, _ = db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS idx_tenants_api_key ON tenants(api_key)")
 
 	now := time.Now().UnixMilli()
 	_, err := db.ExecContext(ctx, `

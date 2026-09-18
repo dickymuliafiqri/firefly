@@ -2,7 +2,9 @@ package turso
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -647,8 +649,8 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 
 	// 5. Load Tenants
 	tenRows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, key_hash, key_hint, status, rps, burst, max_concurrent,
-		       allowed_models, metadata
+		SELECT id, name, api_key, key_hash, key_hint, status, max_tokens, used_tokens, expires_at,
+		       rps, burst, max_concurrent, allowed_models, metadata
 		FROM tenants
 		ORDER BY id ASC
 	`)
@@ -661,13 +663,15 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 	for tenRows.Next() {
 		var (
 			id                                            int64
-			name, keyHash, keyHint, status                string
+			name, status                                  string
+			apiKey, keyHash, keyHint                      sql.NullString
+			maxTokens, usedTokens, expiresAt              sql.NullInt64
 			rps                                           sql.NullFloat64
 			burst, maxConcurrent                          sql.NullInt64
 			allowedModelsJSON, metadataJSON               sql.NullString
 		)
 
-		if err := tenRows.Scan(&id, &name, &keyHash, &keyHint, &status, &rps, &burst, &maxConcurrent, &allowedModelsJSON, &metadataJSON); err != nil {
+		if err := tenRows.Scan(&id, &name, &apiKey, &keyHash, &keyHint, &status, &maxTokens, &usedTokens, &expiresAt, &rps, &burst, &maxConcurrent, &allowedModelsJSON, &metadataJSON); err != nil {
 			return nil, fmt.Errorf("scan tenant: %w", err)
 		}
 
@@ -698,10 +702,25 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 			}
 		}
 
+		var expPtr *int64
+		if expiresAt.Valid && expiresAt.Int64 > 0 {
+			v := expiresAt.Int64
+			expPtr = &v
+		}
+
+		key := apiKey.String
+		if key == "" {
+			key = keyHash.String
+		}
+
 		tenants = append(tenants, config.TenantDTO{
+			APIKey:        key,
+			KeyHash:       keyHash.String,
 			Name:          name,
-			KeyHash:       keyHash,
 			Status:        status,
+			MaxTokens:     maxTokens.Int64,
+			UsedTokens:    usedTokens.Int64,
+			ExpiresAt:     expPtr,
 			AllowedModels: allowedModels,
 			RateLimit:     rl,
 			Metadata:      metadata,
@@ -1056,23 +1075,35 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 
 	// 4. Process Tenants
 	existingTenants := make(map[string]int64)
-	tRows, err := tx.QueryContext(ctx, "SELECT id, key_hash FROM tenants")
+	tRows, err := tx.QueryContext(ctx, "SELECT id, COALESCE(api_key, ''), COALESCE(key_hash, '') FROM tenants")
 	if err == nil {
 		for tRows.Next() {
 			var id int64
-			var kh string
-			_ = tRows.Scan(&id, &kh)
-			existingTenants[kh] = id
+			var ak, kh string
+			_ = tRows.Scan(&id, &ak, &kh)
+			if ak != "" {
+				existingTenants[ak] = id
+			}
+			if kh != "" {
+				existingTenants[kh] = id
+			}
 		}
 		tRows.Close()
 	}
 
 	activeTenants := make(map[string]bool)
 	for _, t := range settings.Tenants {
-		if t.KeyHash == "" {
+		key := t.APIKey
+		if key == "" {
+			key = t.KeyHash
+		}
+		if key == "" {
 			continue
 		}
-		activeTenants[t.KeyHash] = true
+		activeTenants[key] = true
+		if t.KeyHash != "" {
+			activeTenants[t.KeyHash] = true
+		}
 
 		allowedJSON := "[]"
 		if len(t.AllowedModels) > 0 {
@@ -1086,8 +1117,8 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 		}
 
 		keyHint := ""
-		if len(t.KeyHash) >= 12 {
-			keyHint = t.KeyHash[:12]
+		if len(key) >= 12 {
+			keyHint = key[:12]
 		}
 
 		var (
@@ -1106,15 +1137,34 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 			status = "active"
 		}
 
-		if existingID, ok := existingTenants[t.KeyHash]; ok {
+		var expVal *int64
+		if t.ExpiresAt != nil && *t.ExpiresAt > 0 {
+			expVal = t.ExpiresAt
+		}
+
+		keyHash := t.KeyHash
+		if keyHash == "" && strings.HasPrefix(key, "sk-gw-") {
+			sum := sha256.Sum256([]byte(key))
+			keyHash = "sha256:" + hex.EncodeToString(sum[:])
+		}
+
+		existingID, ok := existingTenants[key]
+		if !ok && keyHash != "" {
+			existingID, ok = existingTenants[keyHash]
+		}
+
+		if ok {
 			_, err = tx.ExecContext(ctx, `
 				UPDATE tenants SET
-					name = ?, key_hint = ?, status = ?,
+					name = ?, api_key = ?, key_hash = ?, key_hint = ?, status = ?,
+					max_tokens = ?, used_tokens = ?, expires_at = ?,
 					rps = ?, burst = ?, max_concurrent = ?,
 					allowed_models = ?, metadata = ?,
 					version = version + 1, updated_at = ?
 				WHERE id = ?
-			`, t.Name, keyHint, status, rpsVal, burstVal, maxConcurVal,
+			`, t.Name, key, keyHash, keyHint, status,
+				t.MaxTokens, t.UsedTokens, expVal,
+				rpsVal, burstVal, maxConcurVal,
 				allowedJSON, metaJSON, now, existingID)
 			if err != nil {
 				return fmt.Errorf("update tenant %q: %w", t.Name, err)
@@ -1122,11 +1172,14 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 		} else {
 			_, err = tx.ExecContext(ctx, `
 				INSERT INTO tenants (
-					name, key_hash, key_hint, status,
+					name, api_key, key_hash, key_hint, status,
+					max_tokens, used_tokens, expires_at,
 					rps, burst, max_concurrent, allowed_models, metadata,
 					version, created_at, updated_at
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-			`, t.Name, t.KeyHash, keyHint, status, rpsVal, burstVal, maxConcurVal,
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+			`, t.Name, key, keyHash, keyHint, status,
+				t.MaxTokens, t.UsedTokens, expVal,
+				rpsVal, burstVal, maxConcurVal,
 				allowedJSON, metaJSON, now, now)
 			if err != nil {
 				return fmt.Errorf("insert tenant %q: %w", t.Name, err)
@@ -1458,13 +1511,26 @@ func (s *Store) SaveTenant(ctx context.Context, t *TenantRecord) error {
 	allowedJSON, _ := json.Marshal(t.AllowedModels)
 	metadataJSON, _ := json.Marshal(t.Metadata)
 
+	key := t.APIKey
+	if key == "" {
+		key = t.KeyHash
+	}
+	keyHint := t.KeyHint
+	if keyHint == "" && len(key) >= 12 {
+		keyHint = key[:12]
+	}
+
 	if t.ID <= 0 {
 		res, err := s.db.ExecContext(ctx, `
 			INSERT INTO tenants (
-				name, key_hash, key_hint, status, rps, burst, max_concurrent,
+				name, api_key, key_hash, key_hint, status,
+				max_tokens, used_tokens, expires_at,
+				rps, burst, max_concurrent,
 				allowed_models, metadata, version, created_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-		`, t.Name, t.KeyHash, t.KeyHint, t.Status, t.RPS, t.Burst, t.MaxConcurrent,
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+		`, t.Name, key, t.KeyHash, keyHint, t.Status,
+			t.MaxTokens, t.UsedTokens, t.ExpiresAt,
+			t.RPS, t.Burst, t.MaxConcurrent,
 			string(allowedJSON), string(metadataJSON), now, now)
 		if err != nil {
 			return fmt.Errorf("insert tenant: %w", err)
@@ -1477,12 +1543,15 @@ func (s *Store) SaveTenant(ctx context.Context, t *TenantRecord) error {
 	} else {
 		res, err := s.db.ExecContext(ctx, `
 			UPDATE tenants SET
-				name = ?, key_hash = ?, key_hint = ?, status = ?,
+				name = ?, api_key = ?, key_hash = ?, key_hint = ?, status = ?,
+				max_tokens = ?, used_tokens = ?, expires_at = ?,
 				rps = ?, burst = ?, max_concurrent = ?,
 				allowed_models = ?, metadata = ?,
 				version = version + 1, updated_at = ?
 			WHERE id = ? AND version = ?
-		`, t.Name, t.KeyHash, t.KeyHint, t.Status, t.RPS, t.Burst, t.MaxConcurrent,
+		`, t.Name, key, t.KeyHash, keyHint, t.Status,
+			t.MaxTokens, t.UsedTokens, t.ExpiresAt,
+			t.RPS, t.Burst, t.MaxConcurrent,
 			string(allowedJSON), string(metadataJSON), now, t.ID, t.Version)
 		if err != nil {
 			return fmt.Errorf("update tenant: %w", err)

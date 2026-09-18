@@ -3,6 +3,7 @@ import { useTenants, useStoreActions, useAppStore, buildSettingsPayload } from '
 import type { TenantDTO } from '@/services/schema';
 import { TenantTable } from './TenantTable';
 import { KeyGeneratorModal } from './KeyGeneratorModal';
+import { TopupModal } from './TopupModal';
 import { Button } from '@/components/ui/Button';
 import { KeyRound } from 'lucide-react';
 import { useSaveSettingsMutation } from '@/services/api';
@@ -13,6 +14,7 @@ export default function TenantsView() {
   const saveMutation = useSaveSettingsMutation();
 
   const [modalOpen, setModalOpen] = useState(false);
+  const [topupTarget, setTopupTarget] = useState<TenantDTO | null>(null);
 
   const handleToggleStatus = useCallback(
     (tenant: TenantDTO) => {
@@ -33,10 +35,10 @@ export default function TenantsView() {
 
   const handleDelete = useCallback(
     (tenant: TenantDTO) => {
-      const identifier = tenant.key_hash || tenant.name;
+      const identifier = tenant.api_key || tenant.key_hash || tenant.name;
       const nextTenants = useAppStore
         .getState()
-        .tenants.filter((t) => (t.key_hash || t.name) !== identifier);
+        .tenants.filter((t) => (t.api_key || t.key_hash || t.name) !== identifier);
       removeTenant(identifier);
 
       saveMutation.mutate(
@@ -51,6 +53,10 @@ export default function TenantsView() {
     },
     [removeTenant, saveMutation, addToast]
   );
+
+  const handleTopup = useCallback((tenant: TenantDTO) => {
+    setTopupTarget(tenant);
+  }, []);
 
   return (
     <div className="flex flex-col gap-6 w-full animate-in fade-in duration-300">
@@ -72,6 +78,7 @@ export default function TenantsView() {
           tenants={tenants}
           onToggleStatus={handleToggleStatus}
           onDelete={handleDelete}
+          onTopup={handleTopup}
         />
       </div>
 
@@ -79,6 +86,13 @@ export default function TenantsView() {
       <KeyGeneratorModal
         isOpen={modalOpen}
         onClose={() => setModalOpen(false)}
+      />
+
+      {/* Top-up Modal */}
+      <TopupModal
+        isOpen={topupTarget !== null}
+        onClose={() => setTopupTarget(null)}
+        tenant={topupTarget}
       />
     </div>
   );

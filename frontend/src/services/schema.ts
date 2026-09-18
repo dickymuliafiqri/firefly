@@ -15,7 +15,7 @@ export type Protocol =
   | 'opencode-go';
 export type KeyStrategy = 'round_robin' | 'least_inflight';
 export type BreakerState = 'CLOSED' | 'OPEN' | 'HALF-OPEN';
-export type TenantStatus = 'active' | 'suspended' | 'revoked';
+export type TenantStatus = 'active' | 'suspended' | 'revoked' | 'exhausted' | 'expired';
 
 export interface ProviderInfoDTO {
   id: string;
@@ -164,6 +164,22 @@ export interface TenantDTO {
   credential_ref?: string;
   rate_limit?: RateLimitDTO | null;
   metadata?: Record<string, string>;
+  max_tokens?: number;
+  used_tokens?: number;
+  expires_at?: number | null;
+}
+
+export interface TenantTopupRequestDTO {
+  api_key?: string;
+  key_hash?: string;
+  add_tokens?: number;
+  extend_days?: number;
+  set_expires_at?: number | null;
+}
+
+export interface TenantTopupResponseDTO {
+  tenant: TenantDTO;
+  message: string;
 }
 
 export interface ComboDTO {

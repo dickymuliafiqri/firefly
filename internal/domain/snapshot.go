@@ -20,6 +20,7 @@ type CatalogSnapshot struct {
 	enabledModelIDs []string
 
 	tenantsByHash map[string]*Tenant
+	tenantsByKey  map[string]*Tenant
 	tenantOrder   []string
 
 	combos     map[string]*Combo
@@ -66,6 +67,12 @@ func NewCatalogSnapshot(
 	tenantOrder []string,
 	opts ...SnapshotOption,
 ) *CatalogSnapshot {
+	byKey := make(map[string]*Tenant, len(tenantsByHash))
+	for _, t := range tenantsByHash {
+		if t != nil && t.APIKey != "" {
+			byKey[t.APIKey] = t
+		}
+	}
 	s := &CatalogSnapshot{
 		generation:      generation,
 		upstreams:       upstreams,
@@ -73,6 +80,7 @@ func NewCatalogSnapshot(
 		models:          models,
 		enabledModelIDs: enabledModelIDs,
 		tenantsByHash:   tenantsByHash,
+		tenantsByKey:    byKey,
 		tenantOrder:     tenantOrder,
 		combos:          make(map[string]*Combo),
 	}
@@ -139,17 +147,42 @@ func (s *CatalogSnapshot) AllCombos() []*Combo {
 	return out
 }
 
-// TenantByHash returns the tenant for a key hash, if present.
+// TenantByKey returns the tenant for a plaintext API key (or key hash fallback), if present.
+func (s *CatalogSnapshot) TenantByKey(apiKey string) (*Tenant, bool) {
+	if s == nil {
+		return nil, false
+	}
+	if s.tenantsByKey != nil {
+		if t, ok := s.tenantsByKey[apiKey]; ok {
+			return t, true
+		}
+	}
+	if s.tenantsByHash != nil {
+		if t, ok := s.tenantsByHash[apiKey]; ok {
+			return t, true
+		}
+	}
+	return nil, false
+}
+
+// TenantKeys returns tenant lookup keys in stable order.
+func (s *CatalogSnapshot) TenantKeys() []string {
+	if s == nil {
+		return nil
+	}
+	out := make([]string, len(s.tenantOrder))
+	copy(out, s.tenantOrder)
+	return out
+}
+
+// TenantByHash returns the tenant for a key hash or API key, if present.
 func (s *CatalogSnapshot) TenantByHash(keyHash string) (*Tenant, bool) {
-	t, ok := s.tenantsByHash[keyHash]
-	return t, ok
+	return s.TenantByKey(keyHash)
 }
 
 // TenantHashes returns tenant key hashes in stable order.
 func (s *CatalogSnapshot) TenantHashes() []string {
-	out := make([]string, len(s.tenantOrder))
-	copy(out, s.tenantOrder)
-	return out
+	return s.TenantKeys()
 }
 
 // ResolveTarget maps a tenant + requested public model name to a routing

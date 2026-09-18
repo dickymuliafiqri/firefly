@@ -1,9 +1,12 @@
 {
   "tenants": [
     {
-      "key_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "api_key": "sk-gw-default-dev-key",
       "name": "default-dev",
       "status": "active",
+      "max_tokens": 10000000,
+      "used_tokens": 0,
+      "expires_at": 1893456000000,
       "allowed_models": [
         "*"
       ],

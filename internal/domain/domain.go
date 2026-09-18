@@ -438,17 +438,23 @@ const (
 	TenantStatusUnknown   TenantStatus = ""
 	TenantStatusActive    TenantStatus = "active"
 	TenantStatusSuspended TenantStatus = "suspended"
+	TenantStatusExhausted TenantStatus = "exhausted"
+	TenantStatusExpired   TenantStatus = "expired"
 )
 
-// Tenant is a resolved tenant with its policy. The plaintext key is never
-// stored; KeyHash is the canonical lookup key.
+// Tenant is a resolved tenant with its policy. APIKey is the primary plaintext lookup key.
+// KeyHash is retained for backward-compatibility.
 type Tenant struct {
-	KeyHash       string
+	APIKey        string        // Plaintext gateway API key (e.g. sk-gw-...)
+	KeyHash       string        // Deprecated: canonical sha256 lookup hash (fallback)
 	Name          string
 	Status        TenantStatus
 	AllowedModels []string // ["*"] means all enabled models
 	CredentialRef string   // optional override; empty = inherit from upstream
 	RateLimit     RateLimit
+	MaxTokens     int64         // 0 = unlimited, >0 = quota cap for (tokens_in + tokens_out)
+	UsedTokens    *atomic.Int64 // In-memory atomic token usage counter
+	ExpiresAt     int64         // Unix timestamp in ms; 0 = never expires
 	Metadata      map[string]string
 }
 
@@ -460,6 +466,45 @@ func (t Tenant) AllowsModel(publicName string) bool {
 		}
 	}
 	return false
+}
+
+// IsActive reports whether the tenant is in active status.
+func (t *Tenant) IsActive() bool {
+	if t == nil {
+		return false
+	}
+	return t.Status == TenantStatusActive
+}
+
+// IsExpired reports whether the tenant's expiration timestamp has passed.
+func (t *Tenant) IsExpired(nowMs int64) bool {
+	if t == nil {
+		return false
+	}
+	return t.ExpiresAt > 0 && nowMs > t.ExpiresAt
+}
+
+// IsQuotaExceeded reports whether the tenant has exhausted their max token quota.
+func (t *Tenant) IsQuotaExceeded() bool {
+	if t == nil || t.MaxTokens <= 0 || t.UsedTokens == nil {
+		return false
+	}
+	return t.UsedTokens.Load() >= t.MaxTokens
+}
+
+// RemainingTokens returns the remaining token balance (0 if exhausted, -1 if unlimited).
+func (t *Tenant) RemainingTokens() int64 {
+	if t == nil || t.MaxTokens <= 0 {
+		return -1
+	}
+	if t.UsedTokens == nil {
+		return t.MaxTokens
+	}
+	rem := t.MaxTokens - t.UsedTokens.Load()
+	if rem < 0 {
+		return 0
+	}
+	return rem
 }
 
 // Target is the resolved routing decision for a single request: which upstream

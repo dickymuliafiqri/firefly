@@ -98,10 +98,13 @@ type TenantsFile struct {
 
 // TenantDTO is one entry in tenants.json.
 type TenantDTO struct {
-	KeyHash       string            `json:"key_hash,omitempty"`
 	APIKey        string            `json:"api_key,omitempty"`
+	KeyHash       string            `json:"key_hash,omitempty"`
 	Name          string            `json:"name"`
 	Status        string            `json:"status,omitempty"`
+	MaxTokens     int64             `json:"max_tokens,omitempty"`
+	UsedTokens    int64             `json:"used_tokens,omitempty"`
+	ExpiresAt     *int64            `json:"expires_at,omitempty"`
 	AllowedModels []string          `json:"allowed_models,omitempty"`
 	CredentialRef string            `json:"credential_ref,omitempty"`
 	RateLimit     *RateLimitDTO     `json:"rate_limit,omitempty"`

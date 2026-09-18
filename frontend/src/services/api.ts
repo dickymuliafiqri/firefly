@@ -18,6 +18,8 @@ import type {
   UpstreamModelsRequest,
   UpstreamModelsResponse,
   WarpStatusDTO,
+  TenantTopupRequestDTO,
+  TenantTopupResponseDTO,
 } from './schema';
 import { useAdminToken, useAppStore } from '@/core/state/store';
 
@@ -395,6 +397,68 @@ export function useSaveSettingsMutation() {
       useAppStore.getState().addToast({
         title: 'Save Failed',
         message: err instanceof Error ? err.message : 'Failed to save configuration',
+        type: 'error',
+      });
+    },
+  });
+}
+
+/**
+ * Top up tenant quota tokens or extend expiry: POST /api/tenants/topup
+ */
+export async function topupTenant(
+  req: TenantTopupRequestDTO,
+  adminToken?: string
+): Promise<TenantTopupResponseDTO> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+  };
+  if (adminToken) {
+    headers['Authorization'] = `Bearer ${adminToken}`;
+  }
+
+  const res = await fetch(`${BASE_URL}/api/tenants/topup`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(req),
+  });
+
+  if (res.status === 401) {
+    throw new ApiError(401, 'Unauthorized: Valid Admin Token required');
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const message = body?.error?.message || `Top-up failed: ${res.statusText}`;
+    throw new ApiError(res.status, message, body?.error?.type);
+  }
+
+  return res.json();
+}
+
+/**
+ * Mutation hook for tenant top-up
+ */
+export function useTopupTenantMutation() {
+  const adminToken = useAdminToken();
+
+  return useMutation({
+    mutationFn: (req: TenantTopupRequestDTO) => topupTenant(req, adminToken),
+    onSuccess: (data) => {
+      if (data.tenant) {
+        useAppStore.getState().addOrUpdateTenant(data.tenant);
+      }
+      queryClient.invalidateQueries({ queryKey: ['settings'] });
+      useAppStore.getState().addToast({
+        title: 'Top-up Successful',
+        message: data.message || 'Tenant balance & expiry updated successfully.',
+        type: 'success',
+      });
+    },
+    onError: (err: unknown) => {
+      useAppStore.getState().addToast({
+        title: 'Top-up Failed',
+        message: err instanceof Error ? err.message : 'Failed to top up tenant',
         type: 'error',
       });
     },
