@@ -553,3 +553,38 @@ func TestResolveTarget_LeastInflight(t *testing.T) {
 	}
 }
 
+func TestTenant_IsExpired(t *testing.T) {
+	nowMs := time.Now().UnixMilli()
+	nowSec := time.Now().Unix()
+
+	// 1. Unlimited (expires_at = 0)
+	tUnlimited := &Tenant{ExpiresAt: 0}
+	if tUnlimited.IsExpired(nowMs) {
+		t.Errorf("expected tenant with ExpiresAt=0 to not be expired")
+	}
+
+	// 2. Future expiration in seconds (e.g. 10 digits)
+	tFutureSec := &Tenant{ExpiresAt: nowSec + 3600}
+	if tFutureSec.IsExpired(nowMs) {
+		t.Errorf("expected tenant with future seconds ExpiresAt to not be expired")
+	}
+
+	// 3. Past expiration in seconds
+	tPastSec := &Tenant{ExpiresAt: nowSec - 3600}
+	if !tPastSec.IsExpired(nowMs) {
+		t.Errorf("expected tenant with past seconds ExpiresAt to be expired")
+	}
+
+	// 4. Future expiration in milliseconds (e.g. 13 digits)
+	tFutureMs := &Tenant{ExpiresAt: nowMs + 3600000}
+	if tFutureMs.IsExpired(nowMs) {
+		t.Errorf("expected tenant with future milliseconds ExpiresAt to not be expired")
+	}
+
+	// 5. Past expiration in milliseconds
+	tPastMs := &Tenant{ExpiresAt: nowMs - 3600000}
+	if !tPastMs.IsExpired(nowMs) {
+		t.Errorf("expected tenant with past milliseconds ExpiresAt to be expired")
+	}
+}
+

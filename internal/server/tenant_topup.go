@@ -80,10 +80,19 @@ func (deps RouterDeps) handleTenantTopup(w http.ResponseWriter, r *http.Request)
 	if req.ExtendDays > 0 {
 		now := time.Now().UnixMilli()
 		baseTime := targetTenant.ExpiresAt
+		isSec := baseTime > 0 && baseTime < 100_000_000_000
+		if isSec {
+			baseTime *= 1000
+		}
 		if baseTime <= now {
 			baseTime = now
 		}
-		targetTenant.ExpiresAt = baseTime + int64(req.ExtendDays)*24*3600*1000
+		newExpMs := baseTime + int64(req.ExtendDays)*24*3600*1000
+		if isSec {
+			targetTenant.ExpiresAt = newExpMs / 1000
+		} else {
+			targetTenant.ExpiresAt = newExpMs
+		}
 	}
 
 	if targetTenant.Status == domain.TenantStatusExhausted || targetTenant.Status == domain.TenantStatusExpired {

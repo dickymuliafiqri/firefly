@@ -406,6 +406,41 @@ func TestAdmissionMiddleware_ExpiredKey(t *testing.T) {
 	}
 }
 
+func TestAdmissionMiddleware_ValidSecondsKey(t *testing.T) {
+	key := "sk-gw-valid-seconds"
+	hash := auth.HashKey(key)
+	// Unix timestamp in seconds (e.g. 10 digits) in the future
+	futureSeconds := time.Now().Add(48 * time.Hour).Unix()
+	snap := domain.NewCatalogSnapshot(1, nil, nil, nil, nil,
+		map[string]*domain.Tenant{hash: {
+			APIKey:    key,
+			KeyHash:   hash,
+			Name:      "valid-seconds-client",
+			Status:    domain.TenantStatusActive,
+			ExpiresAt: futureSeconds,
+			RateLimit: domain.RateLimit{RPS: 10, Burst: 20, MaxConcurrent: 5},
+		}},
+		[]string{hash})
+
+	store := auth.NewStore(fakeProvider{snap})
+	lim := limits.New()
+
+	base := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
+	h := Chain(base,
+		AuthMiddleware(store),
+		AdmissionMiddleware(lim),
+	)
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	req.Header.Set("Authorization", "Bearer "+key)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200 for valid seconds key, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestAdmissionMiddleware_QuotaExceeded(t *testing.T) {
 	key := "sk-gw-quota-depleted"
 	hash := auth.HashKey(key)

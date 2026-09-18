@@ -527,6 +527,72 @@ func TestPublicSanitizedSettingsAndTelemetry(t *testing.T) {
 	}
 }
 
+func TestSettingsTenantAPIKeyPlaintext(t *testing.T) {
+	tmpDir := t.TempDir()
+	reg := registry.New()
+
+	rawKey := "sk-gw-7a1330d1ff033da47fd4afeaf23f6507"
+	tenantsJSON := `{"tenants":[{"name":"client-a","api_key":"` + rawKey + `","status":"active"}]}`
+	_ = os.WriteFile(filepath.Join(tmpDir, "tenants.json"), []byte(tenantsJSON), 0o644)
+	_ = os.WriteFile(filepath.Join(tmpDir, "upstreams.json"), []byte(`{"upstreams":[{"name":"u1","protocol":"openai","base_url":"https://x"}]}`), 0o644)
+	_ = os.WriteFile(filepath.Join(tmpDir, "models.json"), []byte(`{"models":[]}`), 0o644)
+
+	src := config.NewFileConfigSource(tmpDir)
+	_, err := reg.BuildAndStore(context.Background(), src, os.LookupEnv)
+	if err != nil {
+		t.Fatalf("initial build and store failed: %v", err)
+	}
+
+	deps := RouterDeps{
+		Snapshots:   reg,
+		Registry:    reg,
+		ConfigDir:   tmpDir,
+		TenantStore: auth.NewStore(reg),
+		Limiter:     limits.New(),
+	}
+	s := New(Config{Addr: "0.0.0.0:8080"}, deps, context.Background(), nil)
+
+	// 1. GET /api/settings must return unredacted full tenant API key
+	getReq := httptest.NewRequest("GET", "/api/settings", nil)
+	getW := httptest.NewRecorder()
+	s.Handler().ServeHTTP(getW, getReq)
+	if getW.Code != http.StatusOK {
+		t.Fatalf("GET /api/settings = %d, want 200", getW.Code)
+	}
+
+	var loaded config.SettingsDTO
+	if err := json.Unmarshal(getW.Body.Bytes(), &loaded); err != nil {
+		t.Fatalf("unmarshal settings: %v", err)
+	}
+	if len(loaded.Tenants) == 0 {
+		t.Fatalf("expected tenants in settings, got 0")
+	}
+	if loaded.Tenants[0].APIKey != rawKey {
+		t.Fatalf("expected plaintext api_key %q, got %q", rawKey, loaded.Tenants[0].APIKey)
+	}
+
+	// 2. PUT /api/settings with masked key placeholder should restore original key
+	putPayload := loaded
+	putPayload.Tenants[0].APIKey = "sk-...6507"
+	putBody, _ := json.Marshal(putPayload)
+	putReq := httptest.NewRequest("PUT", "/api/settings", bytes.NewReader(putBody))
+	putW := httptest.NewRecorder()
+	s.Handler().ServeHTTP(putW, putReq)
+	if putW.Code != http.StatusOK {
+		t.Fatalf("PUT /api/settings = %d, want 200: %s", putW.Code, putW.Body.String())
+	}
+
+	// Verify snapshot still has full plaintext key
+	snap := reg.Current()
+	tSnap, ok := snap.TenantByKey(rawKey)
+	if !ok || tSnap == nil {
+		t.Fatalf("expected tenant to still be found by rawKey %q after PUT with masked key", rawKey)
+	}
+	if tSnap.APIKey != rawKey {
+		t.Fatalf("expected tenant.APIKey %q, got %q", rawKey, tSnap.APIKey)
+	}
+}
+
 
 
 

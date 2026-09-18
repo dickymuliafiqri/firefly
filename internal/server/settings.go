@@ -327,12 +327,6 @@ func (deps RouterDeps) handleGetSettings(w http.ResponseWriter, r *http.Request)
 			}
 		}
 	}
-	for i := range settings.Tenants {
-		t := &settings.Tenants[i]
-		if t.APIKey != "" {
-			t.APIKey = maskSecret(t.APIKey)
-		}
-	}
 
 	if settings.Upstreams == nil {
 		settings.Upstreams = []config.UpstreamDTO{}
@@ -519,6 +513,23 @@ func (deps RouterDeps) handleUpdateSettings(w http.ResponseWriter, r *http.Reque
 			}
 			if len(u.APIKeys) > 0 && len(u.CredentialPool) > 0 && len(u.APIKeys) != len(u.CredentialPool) {
 				u.CredentialPool = nil
+			}
+		}
+
+		// If tenant API key was sent masked (e.g. from an old or cached client), restore from snapshot
+		for i := range payload.Tenants {
+			t := &payload.Tenants[i]
+			if isMasked(t.APIKey) {
+				for _, key := range snap.TenantKeys() {
+					if existingTenant, ok := snap.TenantByKey(key); ok && existingTenant != nil {
+						if existingTenant.Name == t.Name || (t.KeyHash != "" && existingTenant.KeyHash == t.KeyHash) {
+							if existingTenant.APIKey != "" {
+								t.APIKey = existingTenant.APIKey
+								break
+							}
+						}
+					}
+				}
 			}
 		}
 	}

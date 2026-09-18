@@ -82,10 +82,11 @@ export const TopupModal = React.memo(function TopupModal({
     onClose();
   };
 
-  const formatExpiry = (epochSec?: number | null) => {
-    if (!epochSec) return 'Never expires';
-    const d = new Date(epochSec * 1000);
-    const isPast = epochSec < Math.floor(Date.now() / 1000);
+  const formatExpiry = (epoch?: number | null) => {
+    if (!epoch) return 'Never expires';
+    const epochMs = epoch < 100_000_000_000 ? epoch * 1000 : epoch;
+    const d = new Date(epochMs);
+    const isPast = epochMs < Date.now();
     return `${d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })} ${
       isPast ? '(Expired)' : ''
     }`;

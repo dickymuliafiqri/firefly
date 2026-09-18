@@ -477,11 +477,16 @@ func (t *Tenant) IsActive() bool {
 }
 
 // IsExpired reports whether the tenant's expiration timestamp has passed.
+// Accepts nowMs in milliseconds. Supports ExpiresAt in either seconds (< 1e11) or milliseconds (>= 1e11).
 func (t *Tenant) IsExpired(nowMs int64) bool {
-	if t == nil {
+	if t == nil || t.ExpiresAt <= 0 {
 		return false
 	}
-	return t.ExpiresAt > 0 && nowMs > t.ExpiresAt
+	expMs := t.ExpiresAt
+	if expMs < 100_000_000_000 {
+		expMs *= 1000
+	}
+	return nowMs > expMs
 }
 
 // IsQuotaExceeded reports whether the tenant has exhausted their max token quota.

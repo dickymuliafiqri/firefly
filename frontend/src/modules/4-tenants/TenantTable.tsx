@@ -53,8 +53,13 @@ const TenantRow = React.memo(function TenantRow({
   const rps = tenant.rate_limit?.rps ?? 20;
   const maxC = tenant.rate_limit?.max_concurrent ?? 20;
 
-  const nowSec = Math.floor(Date.now() / 1000);
-  const isExpired = tenant.expires_at !== undefined && tenant.expires_at !== null && tenant.expires_at > 0 && tenant.expires_at < nowSec;
+  const expiryMs =
+    tenant.expires_at !== undefined && tenant.expires_at !== null && tenant.expires_at > 0
+      ? tenant.expires_at < 100_000_000_000
+        ? tenant.expires_at * 1000
+        : tenant.expires_at
+      : null;
+  const isExpired = expiryMs !== null && expiryMs < Date.now();
   const maxTokens = tenant.max_tokens ?? 0;
   const usedTokens = tenant.used_tokens ?? 0;
   const isQuotaExceeded = maxTokens > 0 && usedTokens >= maxTokens;
@@ -190,7 +195,7 @@ const TenantRow = React.memo(function TenantRow({
               )}
             >
               {isExpired && <AlertCircle className="w-3 h-3 text-rose-400" />}
-              {new Date(tenant.expires_at * 1000).toLocaleDateString(undefined, {
+              {expiryMs && new Date(expiryMs).toLocaleDateString(undefined, {
                 year: 'numeric',
                 month: 'short',
                 day: 'numeric',

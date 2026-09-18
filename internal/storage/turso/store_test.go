@@ -80,6 +80,45 @@ func TestMigrateSchema(t *testing.T) {
 	}
 }
 
+func TestMigrateSchema_ExistingOldTenantsTable(t *testing.T) {
+	db, err := sql.Open("turso", ":memory:")
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+
+	ctx := context.Background()
+
+	// Simulate old schema without api_key column
+	_, err = db.ExecContext(ctx, `
+		CREATE TABLE tenants (
+			id             INTEGER PRIMARY KEY AUTOINCREMENT,
+			name           VARCHAR(128) NOT NULL,
+			key_hash       VARCHAR(128) NOT NULL UNIQUE,
+			key_hint       VARCHAR(32) NOT NULL,
+			status         VARCHAR(20) NOT NULL DEFAULT 'active',
+			rps            REAL,
+			burst          INTEGER,
+			max_concurrent INTEGER,
+			allowed_models TEXT,
+			metadata       TEXT,
+			version        INTEGER NOT NULL DEFAULT 1,
+			created_at     BIGINT NOT NULL,
+			updated_at     BIGINT NOT NULL
+		);
+	`)
+	if err != nil {
+		t.Fatalf("setup old tenants table: %v", err)
+	}
+
+	// Now run MigrateSchema
+	if err := MigrateSchema(ctx, db); err != nil {
+		t.Fatalf("MigrateSchema failed on existing old tenants table: %v", err)
+	}
+}
+
 func TestStore_OCC_Upstream(t *testing.T) {
 	ctx := context.Background()
 	store, _ := setupTestDB(t)

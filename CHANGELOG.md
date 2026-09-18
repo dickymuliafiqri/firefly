@@ -5,6 +5,25 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.1] - 2026-09-18
+
+### Fixed
+- **Turso Database Schema Migration Order (`internal/storage/turso`)**:
+  - Resolved startup fatal error `Parse error: Error: invalid expression in CREATE INDEX: api_key` on existing Turso databases.
+  - Relocated `CREATE INDEX IF NOT EXISTS idx_tenants_api_key ON tenants(api_key)` from the initial `schemaDDL` script to execute after `ALTER TABLE tenants ADD COLUMN api_key` migration has completed.
+  - Added regression test `TestMigrateSchema_ExistingOldTenantsTable` verifying seamless startup on pre-v1.8.0 schemas.
+
+- **Dual Epoch Expiration Resolution (`internal/domain`, `internal/server`, `frontend/src/modules/4-tenants`)**:
+  - Resolved false-positive `Your API key has expired. Please renew your plan.` error when tenant keys were provisioned with standard Unix epoch timestamps in seconds (10 digits).
+  - Enhanced `Tenant.IsExpired` in `internal/domain` to automatically normalize epoch timestamps `< 100_000_000_000` (seconds) to milliseconds before evaluating against `nowMs`.
+  - Updated `handleTenantTopup` in `internal/server` to detect and preserve the original timestamp unit (seconds vs milliseconds) upon validity extensions.
+  - Hardened frontend components (`TenantTable`, `TopupModal`) to reliably format and compute expiration state across both seconds and milliseconds.
+
+- **Plaintext Tenant Key Exposure & Unredacted Copying (`internal/server`, `frontend/src/modules/4-tenants`)**:
+  - Eliminated unwanted `maskSecret` redaction in `GET /api/settings` for tenant API keys, allowing operators in the authenticated admin dashboard to view, toggle, and copy the full credentials (`sk-gw-...`) instead of redacted placeholders (`sk-...xxxx`).
+  - Added defensive unmasking restoration in `handleUpdateSettings` (`PUT /api/settings`) to prevent snapshot corruption if clients submit masked placeholders.
+  - Rebuilt frontend production bundle with updated `v1.8.1` constants.
+
 ## [1.8.0] - 2026-09-18
 
 ### Added
