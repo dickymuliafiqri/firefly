@@ -5,6 +5,33 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.1] - 2026-09-18
+
+### Fixed & Improved
+- **OpenCode Free Tier Active Health Checking & Circuit Breaker Stability (`internal/upstream/health.go`, `internal/upstream/health_opencode.go`)**:
+  - Implemented specialized OpenCode health check prober with automated probe payload selection (`OpenCodeOfficialResponsesProbePayload` for `/responses` models like `muse-*` and `OpenCodeOfficialTitleProbePayload` for chat models).
+  - Added host reachability fallback probing (`probeHostFallback`) on model-level probe timeouts or failures to verify the host endpoint before reporting failure to the Circuit Breaker.
+  - Correctly classified HTTP 4xx (401/403/404/429) as Layer 1 credential/quota issues, ensuring public/free-tier keys are never incorrectly marked as revoked or trip the Circuit Breaker.
+  - Added keyless Free tier auto-provisioning in `internal/config/builder.go` to automatically assign an `opencode-free-public` key slot (`public`) for OpenCode upstreams when no credentials are provided.
+
+- **OpenCode Multi-Turn Conversation & Responses API Alignment (`internal/opencode/transform.go`)**:
+  - Resolved `[invalid_request_error] content type input_text is not valid on assistant messages` by converting assistant turn content to `output_text` across both standard message lists and raw Responses input objects.
+  - Supported assistant messages containing both conversational text and tool invocations simultaneously.
+
+- **OpenCode Free Tier Tool-Calling & Client Compatibility (`internal/opencode/adapter.go`, `internal/opencode/transform.go`, `internal/opencode/free_prompt.txt`)**:
+  - Stripped environment-specific Darwin paths (`/private/tmp/opencode-x64`) and tool declarations from `free_prompt.txt` that caused Muse Spark to hallucinate file paths and invoke unavailable local tools (`read`, `glob`, `bash`).
+  - Preserved client system instructions (e.g. from Cline) without prepending hardcoded instructions.
+  - Replaced all-tool injection with minimal non-invasive verification placeholders for `bash` and `read` (`[SYSTEM VERIFICATION ONLY - DO NOT CALL]`), satisfying provider console validation while prioritizing client-provided tools.
+  - Implemented standard OpenAI Chat Completions streaming event mapping for Responses tool invocations (`response.output_item.added`, `response.function_call_arguments.delta`, `response.output_item.done`) with 0-based sequential tool indexing and `finish_reason: "tool_calls"`, achieving full compatibility with Cline and `@ai-sdk/openai`.
+
+- **Architectural Cleanup & DRY Refactoring (`internal/upstream`, `internal/opencode`)**:
+  - Unified OpenCode base62 timestamp ID generation (`GenerateOpenCodeTimestampID`), session IDs (`GenerateOpenCodeSessionID`), request IDs (`GenerateOpenCodeRequestID`), user agent (`OpenCodeUserAgent`), and probe payload templates in `internal/upstream/health_opencode.go`.
+  - Replaced duplicate implementations in `internal/opencode/session.go`, `internal/opencode/free_template.go`, and `internal/opencode/transform.go` with single-source delegations.
+  - Pruned unused startup allocations and dead code (`parsedFreeResponsesTools`, `OfficialResponsesTools()`, `deriveCanonicalID`).
+
+- **Frontend Version Bump**:
+  - Updated frontend package and application constant identifiers to `v1.7.1`.
+
 ## [1.7.0] - 2026-09-18
 
 ### Added

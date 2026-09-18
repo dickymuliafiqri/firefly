@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -533,5 +534,211 @@ func TestHealthChecker_RotatesKeySlotsAcrossIntervals(t *testing.T) {
 		if receivedAuths[i] != want {
 			t.Errorf("probe %d: got %s, want %s", i, receivedAuths[i], want)
 		}
+	}
+}
+
+func TestHealthChecker_OpenCode_FreeResponsesProbe(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	var receivedPath string
+	var receivedAuth string
+	var receivedClient string
+	var receivedSession string
+	var receivedBody []byte
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		receivedAuth = r.Header.Get("Authorization")
+		receivedClient = r.Header.Get("x-opencode-client")
+		receivedSession = r.Header.Get("x-opencode-session")
+		receivedBody, _ = io.ReadAll(r.Body)
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `data: {"id":"resp_123"}`+"\n\n")
+	}))
+	defer srv.Close()
+
+	slot := &domain.KeySlot{Ref: "opencode-free-public", Secret: "public"}
+	kr := domain.NewKeyRing(domain.KeyStrategyRoundRobin, []*domain.KeySlot{slot})
+
+	up := &domain.Upstream{
+		Name:       "probe-opencode-responses",
+		Protocol:   domain.ProtocolOpenCode,
+		BaseURL:    srv.URL + "/v1",
+		ProbeModel: "muse-spark-1.3",
+		KeyRing:    kr,
+	}
+
+	reporter := newMockBreakerReporter()
+	checker := NewHealthCheckerWithStaticUpstreams(
+		HealthCheckConfig{Timeout: 2 * time.Second},
+		[]*domain.Upstream{up},
+		nil,
+		reporter,
+	)
+
+	if err := checker.ProbeOnce(context.Background()); err != nil {
+		t.Fatalf("ProbeOnce failed: %v", err)
+	}
+
+	if receivedPath != "/v1/responses" {
+		t.Errorf("expected path /v1/responses, got %s", receivedPath)
+	}
+	if receivedAuth != "Bearer public" {
+		t.Errorf("expected Authorization Bearer public, got %s", receivedAuth)
+	}
+	if receivedClient != "desktop" {
+		t.Errorf("expected x-opencode-client desktop, got %s", receivedClient)
+	}
+	if !strings.HasPrefix(receivedSession, "ses_") {
+		t.Errorf("expected x-opencode-session starting with ses_, got %s", receivedSession)
+	}
+	if !strings.Contains(string(receivedBody), "muse-spark-1.3") {
+		t.Errorf("expected body to contain model muse-spark-1.3, got %s", string(receivedBody))
+	}
+	if !strings.Contains(string(receivedBody), "You are a title generator") {
+		t.Errorf("expected body to contain title prompt, got %s", string(receivedBody))
+	}
+
+	if slot.Revoked.Load() {
+		t.Fatal("opencode-free-public slot must not be revoked on 200 OK")
+	}
+	reps := reporter.getReports("probe-opencode-responses")
+	if len(reps) != 1 || !reps[0] {
+		t.Fatalf("expected breaker to report healthy (true), got %v", reps)
+	}
+}
+
+func TestHealthChecker_OpenCode_DoesNotRevokePublicKeyOn401(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"type":"error","error":{"type":"ModelError","message":"Model not supported"}}`)
+	}))
+	defer srv.Close()
+
+	slot := &domain.KeySlot{Ref: "opencode-free-public", Secret: "public"}
+	kr := domain.NewKeyRing(domain.KeyStrategyRoundRobin, []*domain.KeySlot{slot})
+
+	up := &domain.Upstream{
+		Name:       "probe-opencode-401",
+		Protocol:   domain.ProtocolOpenCode,
+		BaseURL:    srv.URL,
+		ProbeModel: "muse-spark-1.3",
+		KeyRing:    kr,
+	}
+
+	reporter := newMockBreakerReporter()
+	checker := NewHealthCheckerWithStaticUpstreams(
+		HealthCheckConfig{Timeout: 2 * time.Second},
+		[]*domain.Upstream{up},
+		nil,
+		reporter,
+	)
+
+	if err := checker.ProbeOnce(context.Background()); err != nil {
+		t.Fatalf("ProbeOnce failed: %v", err)
+	}
+
+	if slot.Revoked.Load() {
+		t.Fatal("opencode-free-public MUST NOT be marked revoked on 401")
+	}
+}
+
+func TestHealthChecker_OpenCode_HostFallbackOnModelFailure(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	var hitCount atomic.Int32
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitCount.Add(1)
+		if r.URL.Path == "/v1/responses" {
+			// Simulate model 500 or timeout
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"error":"model unavailable"}`)
+			return
+		}
+		if r.URL.Path == "/v1/models" {
+			// Host itself is alive
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"data":[]}`)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	slot := &domain.KeySlot{Ref: "opencode-free-public", Secret: "public"}
+	kr := domain.NewKeyRing(domain.KeyStrategyRoundRobin, []*domain.KeySlot{slot})
+
+	up := &domain.Upstream{
+		Name:       "probe-opencode-fallback",
+		Protocol:   domain.ProtocolOpenCode,
+		BaseURL:    srv.URL + "/v1",
+		ProbeModel: "muse-spark-1.3",
+		KeyRing:    kr,
+	}
+
+	reporter := newMockBreakerReporter()
+	checker := NewHealthCheckerWithStaticUpstreams(
+		HealthCheckConfig{Timeout: 2 * time.Second},
+		[]*domain.Upstream{up},
+		nil,
+		reporter,
+	)
+
+	if err := checker.ProbeOnce(context.Background()); err != nil {
+		t.Fatalf("ProbeOnce failed: %v", err)
+	}
+
+	// Should have hit responses first, then fallen back to models
+	if hitCount.Load() < 2 {
+		t.Fatalf("expected at least 2 hits (model probe + host fallback), got %d", hitCount.Load())
+	}
+
+	// Host breaker must report healthy (true) because host fallback /models succeeded
+	reps := reporter.getReports("probe-opencode-fallback")
+	if len(reps) != 1 || !reps[0] {
+		t.Fatalf("expected host to be reported healthy via fallback, got %v", reps)
+	}
+}
+
+func TestHealthChecker_OpenCode_HostProbeWithoutModel(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	var receivedPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"data":[]}`)
+	}))
+	defer srv.Close()
+
+	up := &domain.Upstream{
+		Name:     "probe-opencode-host",
+		Protocol: domain.ProtocolOpenCode,
+		BaseURL:  srv.URL + "/zen/v1",
+	}
+
+	reporter := newMockBreakerReporter()
+	checker := NewHealthCheckerWithStaticUpstreams(
+		HealthCheckConfig{Timeout: 2 * time.Second},
+		[]*domain.Upstream{up},
+		nil,
+		reporter,
+	)
+
+	if err := checker.ProbeOnce(context.Background()); err != nil {
+		t.Fatalf("ProbeOnce failed: %v", err)
+	}
+
+	if receivedPath != "/zen/v1/models" {
+		t.Errorf("expected path /zen/v1/models, got %s", receivedPath)
+	}
+
+	reps := reporter.getReports("probe-opencode-host")
+	if len(reps) != 1 || !reps[0] {
+		t.Fatalf("expected host reported healthy, got %v", reps)
 	}
 }

@@ -156,8 +156,10 @@ Firefly strictly decouples credential/quota failures from host infrastructure fa
 ### Active Health Checking (`golang.org/x/sync/errgroup`)
 In addition to passive inline request error classification, Firefly runs an active background [`HealthChecker`](internal/upstream/health.go):
 - Periodically probes upstream endpoints using `errgroup.WithContext` with bounded concurrency (`SetLimit(10)`).
+- Multi-protocol probe dispatching: automatically selects OpenAI, Anthropic (`/v1/messages`), or OpenCode (dual-route `/responses` or `/chat/completions` with authentic client headers and payload templates).
+- Host reachability fallback: if a model-level probe encounters an error or timeout, verifies the upstream host reachability before tripping the Circuit Breaker.
 - Respects Circuit Breaker cooldowns and safely triggers `StateHalfOpen` validation.
-- Accurately classifies `< 500` status codes (including 401/404) as healthy host transport (Layer 2), preventing key credential errors from causing false infrastructure outages.
+- Accurately classifies `< 500` status codes (including 401/404) as healthy host transport (Layer 2), preventing key credential errors or keyless free-tier responses from causing false infrastructure outages.
 - Verified leak-free on server shutdown via `goleak`.
 
 ---
@@ -171,7 +173,7 @@ Firefly provides clean interface contracts (`ports.UpstreamAdapter`) for multi-p
 - **Cline OAuth Adapter (`internal/cline`):** Proxies completions to Cline API endpoints (`api.cline.bot`), automatically attaching client identification headers (`HTTP-Referer`, `X-Title`), unwrapping payload envelopes, and relaying SSE streams.
 - **CodeBuddy China & International Adapters (`internal/codebuddy`):** Manages RFC 8628 device authorization grants, payload rewrites, and completion streaming for CodeBuddy China and International endpoints.
 - **Grok CLI / Grok Build Adapter (`internal/grok`):** Routes to the xAI Grok CLI inference API (`cli-chat-proxy.grok.com`, OpenAI Responses API) with an xAI OAuth bearer token, translating OpenAI Chat Completions to/from the Responses wire format (including reasoning/thinking output) and pooling harvested account tokens across the key ring.
-- **OpenCode & OpenCode Go Adapter (`internal/opencode`):** Routes to OpenCode Zen gateways (`https://opencode.ai/zen/v1` for keyless Free tier and `https://opencode.ai/zen/go/v1` for OpenCode Go subscription API keys). Supports deterministic session isolation (`x-opencode-session`), dual-route dispatching (translating OpenAI Chat Completions to/from Responses API for `muse-*`, `grok-*`, and `gpt-5.6-luna`, while routing standard chat models to `/chat/completions`), tool schema sanitization, and automatic endpoint tier cross-correction.
+- **OpenCode & OpenCode Go Adapter (`internal/opencode`):** Routes to OpenCode Zen gateways (`https://opencode.ai/zen/v1` for keyless Free tier and `https://opencode.ai/zen/go/v1` for OpenCode Go subscription API keys). Supports deterministic session isolation (`x-opencode-session`), dual-route dispatching (translating OpenAI Chat Completions to/from Responses API for `muse-*`, `grok-*`, and `gpt-5.6-luna`, multi-turn conversation support with `output_text` for assistant turns, full Cline tool-calling compatibility via sequential 0-based delta streaming and `finish_reason: "tool_calls"`, while routing standard chat models to `/chat/completions`), tool schema sanitization, and automatic endpoint tier cross-correction.
 
 ---
 

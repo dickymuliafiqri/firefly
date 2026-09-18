@@ -5,6 +5,7 @@ package upstream
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -208,15 +209,10 @@ func (h *HealthChecker) probeOne(ctx context.Context, u *domain.Upstream) {
 		}
 	}
 
-	probeCtx, cancel := context.WithTimeout(ctx, h.cfg.Timeout)
-	defer cancel()
-
 	trimmedBase := strings.TrimRight(u.BaseURL, "/")
-	var req *http.Request
-	var err error
 	var activeSlot *domain.KeySlot
 
-	if u.ProbeModel != "" && u.KeyRing != nil && len(u.KeyRing.Slots) > 0 {
+	if u.KeyRing != nil && len(u.KeyRing.Slots) > 0 {
 		activeSlot, _ = u.KeyRing.SelectKey(time.Now().UnixNano())
 		if activeSlot == nil {
 			activeSlot = u.KeyRing.PrimarySlot()
@@ -229,20 +225,96 @@ func (h *HealthChecker) probeOne(ctx context.Context, u *domain.Upstream) {
 				}
 			}
 		}
+	}
 
-		keySecret := ""
-		if activeSlot != nil {
-			if activeSlot.Secret != "" {
-				keySecret = activeSlot.Secret
-			} else {
-				keySecret = activeSlot.Ref
-			}
+	keySecret := ""
+	if activeSlot != nil {
+		if activeSlot.Secret != "" {
+			keySecret = activeSlot.Secret
+		} else {
+			keySecret = activeSlot.Ref
 		}
+	} else if u.CredentialRef != "" {
+		keySecret = u.CredentialRef
+	}
 
+	isOpenCode := u.Protocol == domain.ProtocolOpenCode || u.Protocol == domain.ProtocolOpenCodeGo
+	isFreeOpenCode := false
+	if isOpenCode {
+		if keySecret == "" || strings.EqualFold(keySecret, "public") {
+			keySecret = "public"
+			isFreeOpenCode = true
+		}
+		// Auto-correct endpoint tier mismatch if user configured base URL with wrong tier
+		if isFreeOpenCode && strings.Contains(trimmedBase, "/zen/go/v1") {
+			trimmedBase = strings.Replace(trimmedBase, "/zen/go/v1", "/zen/v1", 1)
+		} else if !isFreeOpenCode && strings.Contains(trimmedBase, "/zen/v1") && !strings.Contains(trimmedBase, "/zen/go/v1") {
+			trimmedBase = strings.Replace(trimmedBase, "/zen/v1", "/zen/go/v1", 1)
+		}
+	}
+
+	canProbeModel := u.ProbeModel != "" && (activeSlot != nil || isFreeOpenCode)
+
+	// Model inference requires adequate breathing room beyond network TTFB
+	probeTimeout := h.cfg.Timeout
+	if canProbeModel && probeTimeout < 10*time.Second {
+		probeTimeout = 10 * time.Second
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+
+	var req *http.Request
+	var err error
+
+	if canProbeModel {
 		var probeURL string
 		var probeBody []byte
 
-		if u.Protocol == domain.ProtocolAnthropic {
+		if isOpenCode {
+			if IsOpenCodeResponsesModel(u.ProbeModel) {
+				probePath := "/responses"
+				if !strings.HasSuffix(trimmedBase, "/v1") {
+					probePath = "/v1/responses"
+				}
+				probeURL = trimmedBase + probePath
+				if isFreeOpenCode {
+					probeBody = OpenCodeOfficialResponsesProbePayload(MapOpenCodeFreeModel(u.ProbeModel))
+				} else {
+					probeBody, _ = json.Marshal(map[string]any{
+						"model": u.ProbeModel,
+						"input": []map[string]any{
+							{
+								"type": "message",
+								"role": "user",
+								"content": []map[string]string{
+									{"type": "input_text", "text": "ping"},
+								},
+							},
+						},
+						"max_output_tokens": 16,
+						"stream":            true,
+						"store":             false,
+					})
+				}
+			} else {
+				probePath := "/chat/completions"
+				if !strings.HasSuffix(trimmedBase, "/v1") {
+					probePath = "/v1/chat/completions"
+				}
+				probeURL = trimmedBase + probePath
+				if isFreeOpenCode {
+					probeBody = OpenCodeOfficialTitleProbePayload(u.ProbeModel)
+				} else {
+					probeBody, _ = json.Marshal(map[string]any{
+						"model": u.ProbeModel,
+						"messages": []map[string]string{
+							{"role": "user", "content": "ping"},
+						},
+						"max_tokens": 16,
+					})
+				}
+			}
+		} else if u.Protocol == domain.ProtocolAnthropic {
 			probePath := "/v1/messages"
 			if strings.HasSuffix(trimmedBase, "/v1") {
 				probePath = "/messages"
@@ -259,31 +331,46 @@ func (h *HealthChecker) probeOne(ctx context.Context, u *domain.Upstream) {
 		}
 
 		req, err = http.NewRequestWithContext(probeCtx, http.MethodPost, probeURL, bytes.NewReader(probeBody))
-		if err == nil {
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("Accept", "application/json")
-			req.Header.Set("User-Agent", "firefly-healthcheck/1.0")
-
-			if u.Protocol == domain.ProtocolAnthropic {
-				req.Header.Set("anthropic-version", "2023-06-01")
-				if keySecret != "" {
-					req.Header.Set("x-api-key", keySecret)
-				}
-			} else if keySecret != "" {
-				req.Header.Set("Authorization", "Bearer "+keySecret)
-			}
-			for k, v := range u.ExtraHeaders {
-				req.Header.Set(k, v)
+	} else {
+		probePath := h.cfg.Path
+		if probePath == "" && isOpenCode {
+			probePath = "/models"
+			if !strings.HasSuffix(trimmedBase, "/v1") {
+				probePath = "/v1/models"
 			}
 		}
-	} else {
-		url := trimmedBase + h.cfg.Path
+		url := trimmedBase + probePath
 		req, err = http.NewRequestWithContext(probeCtx, h.cfg.Method, url, nil)
 	}
 
 	if err != nil {
 		h.reportOutcome(u.Name, false, err, 0)
 		return
+	}
+
+	req.Header.Set("User-Agent", "firefly-healthcheck/1.0")
+	if isOpenCode {
+		SetOpenCodeHeaders(req, keySecret, isFreeOpenCode, canProbeModel)
+	} else if u.Protocol == domain.ProtocolAnthropic {
+		req.Header.Set("anthropic-version", "2023-06-01")
+		req.Header.Set("Accept", "application/json")
+		if canProbeModel {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if keySecret != "" {
+			req.Header.Set("x-api-key", keySecret)
+		}
+	} else {
+		req.Header.Set("Accept", "application/json")
+		if canProbeModel {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if keySecret != "" {
+			req.Header.Set("Authorization", "Bearer "+keySecret)
+		}
+	}
+	for k, v := range u.ExtraHeaders {
+		req.Header.Set(k, v)
 	}
 
 	var client *http.Client
@@ -296,6 +383,10 @@ func (h *HealthChecker) probeOne(ctx context.Context, u *domain.Upstream) {
 
 	resp, err := client.Do(req)
 	if err != nil {
+		// If a model-level probe timed out or failed, verify host reachability before tripping circuit breaker
+		if canProbeModel && h.probeHostFallback(ctx, client, u, trimmedBase, isOpenCode, keySecret) {
+			return
+		}
 		h.reportOutcome(u.Name, false, err, 0)
 		return
 	}
@@ -309,14 +400,23 @@ func (h *HealthChecker) probeOne(ctx context.Context, u *domain.Upstream) {
 	// Status < 500 indicates the host is reachable and healthy at Layer 2.
 	// 4xx client errors (401/404/429) are Layer 1 / key issues, NOT host failures.
 	isHealthy := resp.StatusCode < 500
+	if !isHealthy && canProbeModel {
+		// If model returns 5xx, check if upstream host itself is alive
+		if h.probeHostFallback(ctx, client, u, trimmedBase, isOpenCode, keySecret) {
+			return
+		}
+	}
 	h.reportOutcome(u.Name, isHealthy, nil, resp.StatusCode)
 
 	// If we probed a specific key slot with ProbeModel, handle Layer 1 key status updates:
 	if activeSlot != nil {
 		switch resp.StatusCode {
 		case http.StatusUnauthorized, http.StatusForbidden:
-			activeSlot.Revoked.Store(true)
-			h.logger.Warn("key marked revoked during background probe", "upstream", u.Name, "key_ref", activeSlot.Ref, "status", resp.StatusCode)
+			// NEVER mark public/free key slots as revoked
+			if !isFreeOpenCode && activeSlot.Ref != "opencode-free-public" && !strings.EqualFold(activeSlot.Secret, "public") {
+				activeSlot.Revoked.Store(true)
+				h.logger.Warn("key marked revoked during background probe", "upstream", u.Name, "key_ref", activeSlot.Ref, "status", resp.StatusCode)
+			}
 		case http.StatusTooManyRequests:
 			retryAfter := resp.Header.Get("Retry-After")
 			kr := &KeyRing{KeyRing: u.KeyRing}
@@ -324,6 +424,54 @@ func (h *HealthChecker) probeOne(ctx context.Context, u *domain.Upstream) {
 			h.logger.Warn("key placed in cooldown during background probe", "upstream", u.Name, "key_ref", activeSlot.Ref, "cooldown", dur)
 		}
 	}
+}
+
+func (h *HealthChecker) probeHostFallback(
+	ctx context.Context,
+	client *http.Client,
+	u *domain.Upstream,
+	trimmedBase string,
+	isOpenCode bool,
+	keySecret string,
+) bool {
+	fallbackTimeout := 3 * time.Second
+	fbCtx, fbCancel := context.WithTimeout(ctx, fallbackTimeout)
+	defer fbCancel()
+
+	probePath := h.cfg.Path
+	if probePath == "" && isOpenCode {
+		probePath = "/models"
+		if !strings.HasSuffix(trimmedBase, "/v1") {
+			probePath = "/v1/models"
+		}
+	}
+	url := trimmedBase + probePath
+	req, err := http.NewRequestWithContext(fbCtx, http.MethodGet, url, nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("User-Agent", "firefly-healthcheck/1.0")
+	if isOpenCode {
+		SetOpenCodeHeaders(req, keySecret, false, false)
+	} else if keySecret != "" {
+		req.Header.Set("Authorization", "Bearer "+keySecret)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	if resp.Body != nil {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+	}
+
+	if resp.StatusCode < 500 {
+		h.logger.Debug("upstream host alive via fallback probe despite model probe failure", "upstream", u.Name, "status", resp.StatusCode)
+		h.reportOutcome(u.Name, true, nil, resp.StatusCode)
+		return true
+	}
+	return false
 }
 
 func (h *HealthChecker) reportOutcome(name string, ok bool, err error, status int) {

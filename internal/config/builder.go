@@ -384,6 +384,18 @@ func translateUpstream(i int, d UpstreamDTO, envLookup func(string) (string, boo
 			MaxConcurrent: maxConcurrent,
 		})
 	}
+
+	// Keyless Free tier auto-provisioning: automatically injects a "opencode-free-public"
+	// key slot (KeySlot.Secret = "public") for OpenCode protocol when no credentials are provided.
+	if (domain.Protocol(proto) == domain.ProtocolOpenCode || domain.Protocol(proto) == domain.ProtocolOpenCodeGo) && len(slots) == 0 {
+		slots = append(slots, &domain.KeySlot{
+			Ref:           "opencode-free-public",
+			Secret:        "public",
+			RPS:           pickFloat(d.CredentialRPS, 0),
+			MaxConcurrent: pickInt(d.CredentialMaxConcurrent, 0),
+		})
+	}
+
 	// Note: an upstream with no credential material at all is allowed. It is
 	// created with an empty key ring so operators can add keys later. Any
 	// request routed to it will fail closed at forward time (no secret), but the

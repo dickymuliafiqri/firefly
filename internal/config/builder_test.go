@@ -686,4 +686,63 @@ func TestBuild_EgressModeAndProxy(t *testing.T) {
 	}
 }
 
+func TestBuild_OpenCode_AutoProvisionsPublicKeySlot(t *testing.T) {
+	upstreamsJSON := `{
+		"upstreams": [
+			{
+				"name": "opencode-free",
+				"protocol": "opencode",
+				"base_url": "https://opencode.ai/zen/v1",
+				"probe_model": "muse-spark-1.3"
+			}
+		]
+	}`
+	modelsJSON := `{
+		"models": [
+			{
+				"public_name": "muse-spark-1.3",
+				"upstream": "opencode-free",
+				"upstream_model": "muse-spark-1.3"
+			}
+		]
+	}`
+	tenantsJSON := `{
+		"tenants": [
+			{
+				"name": "t1",
+				"api_key": "sk-t1",
+				"allowed_models": ["*"]
+			}
+		]
+	}`
 
+	res, err := Build(FileSet{
+		Upstreams: []byte(upstreamsJSON),
+		Models:    []byte(modelsJSON),
+		Tenants:   []byte(tenantsJSON),
+	}, fakeEnv(nil))
+	if err != nil {
+		t.Fatalf("unexpected error building OpenCode free upstream: %v", err)
+	}
+
+	u := res.Upstreams["opencode-free"]
+	if u == nil {
+		t.Fatal("expected opencode-free upstream")
+	}
+	if u.KeyRing == nil {
+		t.Fatal("expected non-nil KeyRing")
+	}
+	if len(u.KeyRing.Slots) != 1 {
+		t.Fatalf("expected 1 auto-provisioned key slot, got %d", len(u.KeyRing.Slots))
+	}
+	slot := u.KeyRing.Slots[0]
+	if slot.Ref != "opencode-free-public" {
+		t.Errorf("expected slot ref 'opencode-free-public', got %s", slot.Ref)
+	}
+	if slot.Secret != "public" {
+		t.Errorf("expected slot secret 'public', got %s", slot.Secret)
+	}
+	if u.CredentialRef != "opencode-free-public" {
+		t.Errorf("expected upstream CredentialRef 'opencode-free-public', got %s", u.CredentialRef)
+	}
+}

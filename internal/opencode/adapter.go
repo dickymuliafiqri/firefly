@@ -29,7 +29,7 @@ import (
 const (
 	DefaultFreeBaseURL = "https://opencode.ai/zen/v1"
 	DefaultGoBaseURL   = "https://opencode.ai/zen/go/v1"
-	OpenCodeUserAgent  = "opencode/1.18.31 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14"
+	OpenCodeUserAgent  = upstream.OpenCodeUserAgent
 )
 
 type flusher interface {
@@ -285,6 +285,9 @@ func (a *Adapter) attempt(ctx context.Context, u *domain.Upstream, req ports.For
 	if targetModel == "" {
 		targetModel = gjson.GetBytes(body, "model").String()
 	}
+	if isFree {
+		targetModel = MapFreeModel(targetModel)
+	}
 
 	isResponses := IsResponsesModel(targetModel)
 	endpoint := buildEndpointURL(u, isResponses, isFree)
@@ -299,8 +302,8 @@ func (a *Adapter) attempt(ctx context.Context, u *domain.Upstream, req ports.For
 	} else {
 		// Standard chat completions: rewrite model if necessary, sanitize tools and reasoning
 		out := body
-		if t.UpstreamModel != "" {
-			out, _ = sjson.SetBytes(out, "model", t.UpstreamModel)
+		if targetModel != "" {
+			out, _ = sjson.SetBytes(out, "model", targetModel)
 		}
 		out, _ = SanitizeTools(out)
 		out, _ = NormalizeReasoning(out)
@@ -338,29 +341,35 @@ func (a *Adapter) attempt(ctx context.Context, u *domain.Upstream, req ports.For
 	}
 
 	httpReq.Header.Set(HeaderSession, sessionID)
-	httpReq.Header.Set(HeaderProject, "global")
+	projVal := clientHeaders.Get(HeaderProject)
+	if projVal == "" {
+		projVal = "global"
+	}
+	httpReq.Header.Set(HeaderProject, projVal)
+
 	clientVal := clientHeaders.Get(HeaderClient)
 	if clientVal == "" {
-		clientVal = "cli"
+		clientVal = "desktop"
 	}
 	httpReq.Header.Set(HeaderClient, clientVal)
 
 	if isFree {
 		httpReq.Header.Set("Authorization", "Bearer public")
 		httpReq.Header.Set(HeaderRequest, GenerateRequestID())
+		httpReq.Header.Set("anthropic-version", "2023-06-01")
 	} else {
 		httpReq.Header.Set("Authorization", "Bearer "+secret)
 	}
 
 	ua := OpenCodeUserAgent
 	if clientUA := clientHeaders.Get("User-Agent"); clientUA != "" {
-		if !isFree || strings.Contains(strings.ToLower(clientUA), "opencode/") {
+		if strings.Contains(strings.ToLower(clientUA), "opencode/") {
 			ua = clientUA
 		}
 	}
 	httpReq.Header.Set("User-Agent", ua)
 
-	if reqID != "" {
+	if reqID != "" && !isFree {
 		httpReq.Header.Set("X-Request-Id", reqID)
 	}
 
@@ -456,19 +465,34 @@ func (a *Adapter) attempt(ctx context.Context, u *domain.Upstream, req ports.For
 	}
 }
 
-// responsesToolCall holds function call info from Responses API events.
-type responsesToolCall struct {
-	Index int
-	ID    string
-	Name  string
-	Args  string
+// responsesToolAdded holds tool declaration from response.output_item.added.
+type responsesToolAdded struct {
+	ItemID string
+	CallID string
+	Name   string
+}
+
+// responsesToolDelta holds streamed tool arguments from response.function_call_arguments.delta.
+type responsesToolDelta struct {
+	ItemID    string
+	ArgsDelta string
+}
+
+// responsesToolDone holds finished tool call info from response.output_item.done.
+type responsesToolDone struct {
+	ItemID string
+	CallID string
+	Name   string
+	Args   string
 }
 
 // Normalized Responses API event for SSE streaming
 type responsesEvent struct {
 	Delta     string
 	Reasoning string
-	ToolCall  *responsesToolCall
+	ToolAdded *responsesToolAdded
+	ToolDelta *responsesToolDelta
+	ToolDone  *responsesToolDone
 	Error     string
 	Done      bool
 	InputTok  int
@@ -500,15 +524,61 @@ func parseResponsesEvent(eventType string, data []byte) (responsesEvent, bool) {
 		}
 		return responsesEvent{Reasoning: d}, true
 
-	case "response.output_item.done":
-		if root.Get("item.type").String() == "function_call" {
-			tc := &responsesToolCall{
-				Index: int(root.Get("output_index").Int()),
-				ID:    root.Get("item.call_id").String(),
-				Name:  root.Get("item.name").String(),
-				Args:  root.Get("item.arguments").String(),
+	case "response.output_item.added":
+		itemType := root.Get("item.type").String()
+		if itemType == "function_call" || itemType == "custom_tool_call" {
+			callID := root.Get("item.call_id").String()
+			if callID == "" {
+				callID = root.Get("item.id").String()
 			}
-			return responsesEvent{ToolCall: tc}, true
+			itemID := root.Get("item.id").String()
+			if itemID == "" {
+				itemID = root.Get("item_id").String()
+			}
+			name := root.Get("item.name").String()
+			return responsesEvent{
+				ToolAdded: &responsesToolAdded{
+					ItemID: itemID,
+					CallID: callID,
+					Name:   name,
+				},
+			}, true
+		}
+
+	case "response.function_call_arguments.delta", "response.custom_tool_call_input.delta":
+		itemID := root.Get("item_id").String()
+		delta := root.Get("delta").String()
+		if delta == "" {
+			return responsesEvent{}, false
+		}
+		return responsesEvent{
+			ToolDelta: &responsesToolDelta{
+				ItemID:    itemID,
+				ArgsDelta: delta,
+			},
+		}, true
+
+	case "response.output_item.done":
+		itemType := root.Get("item.type").String()
+		if itemType == "function_call" || itemType == "custom_tool_call" {
+			callID := root.Get("item.call_id").String()
+			if callID == "" {
+				callID = root.Get("item.id").String()
+			}
+			itemID := root.Get("item.id").String()
+			if itemID == "" {
+				itemID = root.Get("item_id").String()
+			}
+			name := root.Get("item.name").String()
+			args := root.Get("item.arguments").String()
+			return responsesEvent{
+				ToolDone: &responsesToolDone{
+					ItemID: itemID,
+					CallID: callID,
+					Name:   name,
+					Args:   args,
+				},
+			}, true
 		}
 
 	case "response.completed", "response.done", "response.incomplete":
@@ -663,6 +733,11 @@ func (a *Adapter) relayResponsesStream(ctx context.Context, w http.ResponseWrite
 	var finalIn, finalOut int
 	var writeErr error
 	var hasToolCalls bool
+
+	itemToToolIndex := make(map[string]int)
+	toolArgsEmitted := make(map[int]bool)
+	nextToolIndex := 0
+
 	scanErr := scanSSE(ctx, body, func(ev responsesEvent) (bool, error) {
 		switch {
 		case ev.Error != "":
@@ -678,20 +753,99 @@ func (a *Adapter) relayResponsesStream(ctx context.Context, w http.ResponseWrite
 				writeErr = err
 				return true, err
 			}
-		case ev.ToolCall != nil:
+		case ev.ToolAdded != nil:
 			hasToolCalls = true
+			key := ev.ToolAdded.ItemID
+			if key == "" {
+				key = ev.ToolAdded.CallID
+			}
+			idx, exists := itemToToolIndex[key]
+			if !exists {
+				idx = nextToolIndex
+				nextToolIndex++
+				if ev.ToolAdded.ItemID != "" {
+					itemToToolIndex[ev.ToolAdded.ItemID] = idx
+				}
+				if ev.ToolAdded.CallID != "" {
+					itemToToolIndex[ev.ToolAdded.CallID] = idx
+				}
+			}
 			tcChunk := map[string]any{
-				"index": ev.ToolCall.Index,
-				"id":    ev.ToolCall.ID,
+				"index": idx,
+				"id":    ev.ToolAdded.CallID,
 				"type":  "function",
 				"function": map[string]any{
-					"name":      ev.ToolCall.Name,
-					"arguments": ev.ToolCall.Args,
+					"name":      ev.ToolAdded.Name,
+					"arguments": "",
 				},
 			}
 			if err := writeChunk(map[string]any{"tool_calls": []any{tcChunk}}, "", 0, 0); err != nil {
 				writeErr = err
 				return true, err
+			}
+
+		case ev.ToolDelta != nil:
+			hasToolCalls = true
+			idx, exists := itemToToolIndex[ev.ToolDelta.ItemID]
+			if !exists {
+				idx = 0
+			}
+			toolArgsEmitted[idx] = true
+			tcChunk := map[string]any{
+				"index": idx,
+				"function": map[string]any{
+					"arguments": ev.ToolDelta.ArgsDelta,
+				},
+			}
+			if err := writeChunk(map[string]any{"tool_calls": []any{tcChunk}}, "", 0, 0); err != nil {
+				writeErr = err
+				return true, err
+			}
+
+		case ev.ToolDone != nil:
+			hasToolCalls = true
+			key := ev.ToolDone.ItemID
+			if key == "" {
+				key = ev.ToolDone.CallID
+			}
+			idx, exists := itemToToolIndex[key]
+			if !exists {
+				idx = nextToolIndex
+				nextToolIndex++
+				if ev.ToolDone.ItemID != "" {
+					itemToToolIndex[ev.ToolDone.ItemID] = idx
+				}
+				if ev.ToolDone.CallID != "" {
+					itemToToolIndex[ev.ToolDone.CallID] = idx
+				}
+				// Tool declaration wasn't previously emitted, emit full declaration now
+				tcChunk := map[string]any{
+					"index": idx,
+					"id":    ev.ToolDone.CallID,
+					"type":  "function",
+					"function": map[string]any{
+						"name":      ev.ToolDone.Name,
+						"arguments": ev.ToolDone.Args,
+					},
+				}
+				toolArgsEmitted[idx] = true
+				if err := writeChunk(map[string]any{"tool_calls": []any{tcChunk}}, "", 0, 0); err != nil {
+					writeErr = err
+					return true, err
+				}
+			} else if !toolArgsEmitted[idx] && ev.ToolDone.Args != "" {
+				// Tool declaration was emitted but argument deltas were not; emit full arguments
+				toolArgsEmitted[idx] = true
+				tcChunk := map[string]any{
+					"index": idx,
+					"function": map[string]any{
+						"arguments": ev.ToolDone.Args,
+					},
+				}
+				if err := writeChunk(map[string]any{"tool_calls": []any{tcChunk}}, "", 0, 0); err != nil {
+					writeErr = err
+					return true, err
+				}
 			}
 		}
 		if ev.Done {
@@ -744,13 +898,13 @@ func (a *Adapter) aggregateResponsesStream(ctx context.Context, body io.Reader, 
 			reasoning.WriteString(ev.Reasoning)
 		case ev.Delta != "":
 			content.WriteString(ev.Delta)
-		case ev.ToolCall != nil:
+		case ev.ToolDone != nil:
 			toolCalls = append(toolCalls, map[string]any{
-				"id":   ev.ToolCall.ID,
+				"id":   ev.ToolDone.CallID,
 				"type": "function",
 				"function": map[string]any{
-					"name":      ev.ToolCall.Name,
-					"arguments": ev.ToolCall.Args,
+					"name":      ev.ToolDone.Name,
+					"arguments": ev.ToolDone.Args,
 				},
 			})
 		}

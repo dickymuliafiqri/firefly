@@ -2,6 +2,7 @@ package opencode
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/dickymuliafiqri/firefly/internal/domain"
+	"github.com/dickymuliafiqri/firefly/internal/httpx"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -157,6 +159,84 @@ func TestTransformChatToResponses(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, int64(16), gjson.GetBytes(outClamped, "max_output_tokens").Int())
 	})
+
+	t.Run("multi-turn conversation converts assistant messages to output_text", func(t *testing.T) {
+		body := []byte(`{
+			"model": "muse-spark-1.3",
+			"messages": [
+				{"role": "user", "content": "hihi"},
+				{"role": "assistant", "content": "hihi"},
+				{"role": "user", "content": "halo muse"}
+			]
+		}`)
+
+		out, err := TransformChatToResponses(body, "muse-spark-1.3", true)
+		require.NoError(t, err)
+
+		inputs := gjson.GetBytes(out, "input").Array()
+		require.Equal(t, 3, len(inputs))
+
+		// First user turn
+		assert.Equal(t, "user", inputs[0].Get("role").String())
+		assert.Equal(t, "input_text", inputs[0].Get("content.0.type").String())
+		assert.Equal(t, "hihi", inputs[0].Get("content.0.text").String())
+
+		// Assistant turn MUST use output_text to satisfy OpenCode /responses API
+		assert.Equal(t, "assistant", inputs[1].Get("role").String())
+		assert.Equal(t, "output_text", inputs[1].Get("content.0.type").String())
+		assert.Equal(t, "hihi", inputs[1].Get("content.0.text").String())
+
+		// Second user turn
+		assert.Equal(t, "user", inputs[2].Get("role").String())
+		assert.Equal(t, "input_text", inputs[2].Get("content.0.type").String())
+		assert.Equal(t, "halo muse", inputs[2].Get("content.0.text").String())
+	})
+
+	t.Run("assistant message with text and tool calls preserves both", func(t *testing.T) {
+		body := []byte(`{
+			"model": "muse-spark-1.3",
+			"messages": [
+				{"role": "user", "content": "run bash"},
+				{
+					"role": "assistant",
+					"content": "Executing command now.",
+					"tool_calls": [
+						{
+							"id": "call_123",
+							"type": "function",
+							"function": {"name": "bash", "arguments": "{\"command\":\"ls\"}"}
+						}
+					]
+				},
+				{"role": "tool", "tool_call_id": "call_123", "content": "file1.txt\nfile2.txt"}
+			]
+		}`)
+
+		out, err := TransformChatToResponses(body, "muse-spark-1.3", false)
+		require.NoError(t, err)
+
+		inputs := gjson.GetBytes(out, "input").Array()
+		require.Equal(t, 4, len(inputs))
+
+		// 1. User message
+		assert.Equal(t, "user", inputs[0].Get("role").String())
+		assert.Equal(t, "input_text", inputs[0].Get("content.0.type").String())
+
+		// 2. Assistant message text
+		assert.Equal(t, "message", inputs[1].Get("type").String())
+		assert.Equal(t, "assistant", inputs[1].Get("role").String())
+		assert.Equal(t, "output_text", inputs[1].Get("content.0.type").String())
+		assert.Equal(t, "Executing command now.", inputs[1].Get("content.0.text").String())
+
+		// 3. Assistant function_call
+		assert.Equal(t, "function_call", inputs[2].Get("type").String())
+		assert.Equal(t, "call_123", inputs[2].Get("call_id").String())
+		assert.Equal(t, "bash", inputs[2].Get("name").String())
+
+		// 4. Tool output
+		assert.Equal(t, "function_call_output", inputs[3].Get("type").String())
+		assert.Equal(t, "call_123", inputs[3].Get("call_id").String())
+	})
 }
 
 func TestAdapter_FreeMode(t *testing.T) {
@@ -202,7 +282,7 @@ func TestAdapter_FreeMode(t *testing.T) {
 
 	assert.Equal(t, "Bearer public", receivedAuth)
 	assert.Equal(t, OpenCodeUserAgent, receivedUA)
-	assert.Equal(t, "cli", receivedClient)
+	assert.Equal(t, "desktop", receivedClient)
 	assert.True(t, strings.HasPrefix(receivedSession, "ses_"))
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
@@ -262,6 +342,155 @@ func TestAdapter_GoMode_ResponsesStream(t *testing.T) {
 
 	resBody := rec.Body.String()
 	assert.Contains(t, resBody, "Hi from Muse!")
+	assert.Contains(t, resBody, "data: [DONE]")
+}
+
+func TestAdapter_FreeMode_ResponsesStream_MultiTurn(t *testing.T) {
+	var receivedAuth string
+	var receivedPath string
+	var receivedBody []byte
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedAuth = r.Header.Get("Authorization")
+		receivedPath = r.URL.Path
+		receivedBody, _ = io.ReadAll(r.Body)
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		flusher, ok := w.(http.Flusher)
+		require.True(t, ok)
+
+		_, _ = w.Write([]byte("event: response.output_text.delta\ndata: {\"delta\": \"Halo! Ada yang bisa saya bantu?\"}\n\n"))
+		flusher.Flush()
+		_, _ = w.Write([]byte("event: response.completed\ndata: {\"response\": {\"usage\": {\"input_tokens\": 15, \"output_tokens\": 8}}}\n\n"))
+		flusher.Flush()
+	}))
+	defer server.Close()
+
+	u := &domain.Upstream{
+		Name:     "opencode-free",
+		Protocol: domain.ProtocolOpenCode,
+		BaseURL:  server.URL + "/zen/v1",
+	}
+	target := &domain.Target{
+		Upstream:      u,
+		UpstreamModel: "muse-spark-1.3",
+		KeySlot: &domain.KeySlot{
+			Ref:    "opencode-free-public",
+			Secret: "public",
+		},
+	}
+
+	adapter := NewAdapter(&mockClientPool{client: server.Client()}, &mockBreaker{allowed: true}, Config{})
+
+	req := ports.ForwardRequest{
+		Method: http.MethodPost,
+		Path:   "/chat/completions",
+		Stream: true,
+		BodyBytes: []byte(`{
+			"model": "muse-spark-1.3",
+			"messages": [
+				{"role": "user", "content": "hihi"},
+				{"role": "assistant", "content": "hihi"},
+				{"role": "user", "content": "halo muse"}
+			]
+		}`),
+	}
+
+	rec := httptest.NewRecorder()
+	err := adapter.Forward(context.Background(), target, req, rec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "Bearer public", receivedAuth)
+	assert.Equal(t, "/zen/v1/responses", receivedPath)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	// Verify the request body sent to upstream OpenCode
+	inputs := gjson.GetBytes(receivedBody, "input").Array()
+	require.Equal(t, 3, len(inputs))
+	assert.Equal(t, "input_text", inputs[0].Get("content.0.type").String())
+	assert.Equal(t, "hihi", inputs[0].Get("content.0.text").String())
+	// Assistant MUST be output_text
+	assert.Equal(t, "assistant", inputs[1].Get("role").String())
+	assert.Equal(t, "output_text", inputs[1].Get("content.0.type").String())
+	assert.Equal(t, "hihi", inputs[1].Get("content.0.text").String())
+	// Second user turn MUST be input_text
+	assert.Equal(t, "user", inputs[2].Get("role").String())
+	assert.Equal(t, "input_text", inputs[2].Get("content.0.type").String())
+	assert.Equal(t, "halo muse", inputs[2].Get("content.0.text").String())
+
+	resBody := rec.Body.String()
+	assert.Contains(t, resBody, "Halo! Ada yang bisa saya bantu?")
+	assert.Contains(t, resBody, "data: [DONE]")
+}
+
+func TestAdapter_ResponsesStream_ToolCallStreaming(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		events := []string{
+			"event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"sequence_number\":1,\"output_index\":2,\"item\":{\"id\":\"fc_123\",\"type\":\"function_call\",\"name\":\"execute_command\",\"call_id\":\"call_abc\",\"arguments\":\"\"}}\n\n",
+			"event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"sequence_number\":2,\"output_index\":2,\"item_id\":\"fc_123\",\"delta\":\"{\\\"command\\\":\\\"pwd\\\"}\"}\n\n",
+			"event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"sequence_number\":3,\"output_index\":2,\"item\":{\"id\":\"fc_123\",\"type\":\"function_call\",\"name\":\"execute_command\",\"call_id\":\"call_abc\",\"arguments\":\"{\\\"command\\\":\\\"pwd\\\"}\"}}\n\n",
+			"event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":4,\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":20}}}\n\n",
+		}
+		for _, ev := range events {
+			_, _ = w.Write([]byte(ev))
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+		}
+	}))
+	defer server.Close()
+
+	u := &domain.Upstream{
+		Name:     "opencode-test",
+		Protocol: domain.ProtocolOpenCode,
+		BaseURL:  server.URL,
+	}
+	target := &domain.Target{
+		Upstream:      u,
+		UpstreamModel: "muse-spark-1.3",
+	}
+
+	adapter := NewAdapter(&mockClientPool{client: server.Client()}, &mockBreaker{allowed: true}, Config{})
+
+	req := ports.ForwardRequest{
+		Method: http.MethodPost,
+		Path:   "/chat/completions",
+		Stream: true,
+		BodyBytes: []byte(`{
+			"model": "muse-spark-1.3",
+			"messages": [{"role": "user", "content": "run pwd"}],
+			"tools": [
+				{
+					"type": "function",
+					"function": {
+						"name": "execute_command",
+						"parameters": {"type": "object", "properties": {"command": {"type": "string"}}}
+					}
+				}
+			],
+			"stream": true
+		}`),
+	}
+
+	rec := httptest.NewRecorder()
+	err := adapter.Forward(context.Background(), target, req, rec)
+	require.NoError(t, err)
+
+	resBody := rec.Body.String()
+	assert.Contains(t, resBody, "chat.completion.chunk")
+	// Verify tool declaration chunk has index: 0, id: call_abc, and function name
+	assert.Contains(t, resBody, `"index":0`)
+	assert.Contains(t, resBody, `"id":"call_abc"`)
+	assert.Contains(t, resBody, `"name":"execute_command"`)
+	// Verify arguments delta chunk
+	assert.Contains(t, resBody, `\"command\":\"pwd\"`)
+	// Verify terminal chunk has finish_reason: tool_calls
+	assert.Contains(t, resBody, `"finish_reason":"tool_calls"`)
 	assert.Contains(t, resBody, "data: [DONE]")
 }
 
@@ -395,5 +624,129 @@ func TestAdapter_LiveMuseSparkForward(t *testing.T) {
 		body := rec.Body.String()
 		assert.Contains(t, body, "chat.completion")
 		assert.Contains(t, body, `"content":`)
+	})
+
+	t.Run("cline simulation", func(t *testing.T) {
+		clineHeaders := make(http.Header)
+		clineHeaders.Set("User-Agent", "Cline/3.5.0")
+		clineHeaders.Set("HTTP-Referer", "https://github.com/cline/cline")
+		clineHeaders.Set("X-Title", "Cline")
+
+		req := ports.ForwardRequest{
+			Method:  http.MethodPost,
+			Path:    "/chat/completions",
+			Stream:  true,
+			Headers: clineHeaders,
+			BodyBytes: []byte(`{
+				"model": "muse-spark-1.3",
+				"messages": [
+					{"role": "system", "content": "You are Cline, a highly skilled software engineer."},
+					{"role": "user", "content": "halo"}
+				],
+				"tools": [
+					{
+						"type": "function",
+						"function": {
+							"name": "execute_command",
+							"description": "Run bash command",
+							"parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}
+						}
+					}
+				],
+				"stream": true
+			}`),
+		}
+
+		targetMuse := &domain.Target{
+			Upstream:      u,
+			UpstreamModel: "muse-spark-1.3",
+		}
+
+		ctx := httpx.WithTenant(context.Background(), &domain.Tenant{Name: "test-tenant"})
+		ctx = httpx.WithRequestID(ctx, "req-12345")
+
+		rec := httptest.NewRecorder()
+		err := adapter.Forward(ctx, targetMuse, req, rec)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, rec.Code)
+		assert.Contains(t, rec.Body.String(), "chat.completion.chunk")
+		assert.Contains(t, rec.Body.String(), "data: [DONE]")
+
+		// Turn 2: User sends "sumimasen" with prior assistant response
+		req2 := ports.ForwardRequest{
+			Method:  http.MethodPost,
+			Path:    "/chat/completions",
+			Stream:  true,
+			Headers: clineHeaders,
+			BodyBytes: []byte(`{
+				"model": "muse-spark-1.3",
+				"messages": [
+					{"role": "system", "content": "You are Cline, a highly skilled software engineer."},
+					{"role": "user", "content": "halo"},
+					{"role": "assistant", "content": "Halo! Ada yang bisa saya bantu?"},
+					{"role": "user", "content": "sumimasen"}
+				],
+				"tools": [
+					{
+						"type": "function",
+						"function": {
+							"name": "execute_command",
+							"description": "Run bash command",
+							"parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}
+						}
+					}
+				],
+				"stream": true
+			}`),
+		}
+
+		ctx2 := httpx.WithTenant(context.Background(), &domain.Tenant{Name: "test-tenant"})
+		ctx2 = httpx.WithRequestID(ctx2, "req-67890")
+
+		rec2 := httptest.NewRecorder()
+		err2 := adapter.Forward(ctx2, targetMuse, req2, rec2)
+		require.NoError(t, err2)
+		assert.Equal(t, http.StatusOK, rec2.Code)
+		assert.Contains(t, rec2.Body.String(), "chat.completion.chunk")
+		assert.Contains(t, rec2.Body.String(), "data: [DONE]")
+
+		// Turn 3: User prompts for python webserver with tool calling
+		req3 := ports.ForwardRequest{
+			Method:  http.MethodPost,
+			Path:    "/chat/completions",
+			Stream:  true,
+			Headers: clineHeaders,
+			BodyBytes: []byte(`{
+				"model": "muse-spark-1.3",
+				"messages": [
+					{"role": "system", "content": "You are Cline, a highly skilled software engineer."},
+					{"role": "user", "content": "Tolong buatkan kode python untuk webserver sederhana dengan endpoint / dan /ping"}
+				],
+				"tools": [
+					{
+						"type": "function",
+						"function": {
+							"name": "execute_command",
+							"description": "Run bash command",
+							"parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}
+						}
+					}
+				],
+				"stream": true
+			}`),
+		}
+
+		ctx3 := httpx.WithTenant(context.Background(), &domain.Tenant{Name: "test-tenant"})
+		ctx3 = httpx.WithRequestID(ctx3, "req-webserver")
+
+		rec3 := httptest.NewRecorder()
+		err3 := adapter.Forward(ctx3, targetMuse, req3, rec3)
+		require.NoError(t, err3)
+		assert.Equal(t, http.StatusOK, rec3.Code)
+		body3 := rec3.Body.String()
+		assert.Contains(t, body3, "chat.completion.chunk")
+		assert.Contains(t, body3, "data: [DONE]")
+		// Ensure it never leaks /private/tmp/opencode-x64 into the response
+		assert.NotContains(t, body3, "/private/tmp/opencode-x64")
 	})
 }
