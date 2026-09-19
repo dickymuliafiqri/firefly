@@ -3,6 +3,7 @@
 [![Go Version](https://img.shields.io/badge/go-1.22+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![CI Status](https://github.com/dickymuliafiqri/firefly/actions/workflows/ci.yml/badge.svg)](https://github.com/dickymuliafiqri/firefly/actions)
+[![Docker](https://github.com/dickymuliafiqri/firefly/actions/workflows/docker.yml/badge.svg)](https://github.com/dickymuliafiqri/firefly/actions/workflows/docker.yml)
 [![Concurrency](https://img.shields.io/badge/Concurrency-1%2C000%2B%20SSE%20Streams-emerald)](./docs/loadtest.md)
 
 Firefly is a high-concurrency, multi-tenant, OpenAI-wire-compatible AI reverse proxy and API gateway. Written in pure Go, Firefly is specifically engineered to serve thousands of simultaneous Server-Sent Events (SSE) streaming connections (1,000+ concurrent inference streams) with zero allocations on the hot path, Virtual Combos for model load balancing, lock-free API key rotation, and an embedded nocturnal React management dashboard.
