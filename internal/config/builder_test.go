@@ -300,6 +300,55 @@ func TestBuildRejectsMissingEnvInPool(t *testing.T) {
 	}
 }
 
+// TestBuildRejectsEmptySecretDBStyleRef guards the DB-load regression: a
+// credential pool entry sourced from the database (ref like "openai-cred-3")
+// with an empty secret must fail loudly instead of being silently
+// reinterpreted as an ENV var lookup (which previously produced a misleading
+// "ENV var not set" error and collapsed the whole snapshot into zero-config).
+func TestBuildRejectsEmptySecretDBStyleRef(t *testing.T) {
+	cfg := `{"upstreams":[{
+		"name":"openai",
+		"base_url":"https://api.openai.com/v1",
+		"credential_pool":[{"ref":"openai-cred-3"}]
+	}]}`
+	_, err := Build(FileSet{
+		Upstreams: []byte(cfg),
+		Models:    []byte(`{"models":[]}`),
+		Tenants:   []byte(`{"tenants":[]}`),
+	}, fakeEnv(map[string]string{"openai-cred-3": "should-not-be-used"}))
+	if err == nil {
+		t.Fatal("expected error for DB-style ref with empty secret")
+	}
+	if !strings.Contains(err.Error(), "empty secret") {
+		t.Fatalf("want 'empty secret' error, got: %v", err)
+	}
+}
+
+// TestBuildAcceptsDBStyleRefWithSecret confirms the normal DB path: a
+// DB-generated ref that carries a real secret builds a usable slot.
+func TestBuildAcceptsDBStyleRefWithSecret(t *testing.T) {
+	cfg := `{"upstreams":[{
+		"name":"openai",
+		"base_url":"https://api.openai.com/v1",
+		"credential_pool":[{"ref":"openai-cred-3","secret":"sk-real-secret"}]
+	}]}`
+	res, err := Build(FileSet{
+		Upstreams: []byte(cfg),
+		Models:    []byte(`{"models":[]}`),
+		Tenants:   []byte(`{"tenants":[]}`),
+	}, fakeEnv(map[string]string{}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	u := res.Upstreams["openai"]
+	if u.KeyRing == nil || u.KeyRing.SlotCount() != 1 {
+		t.Fatalf("want 1 slot, got %v", u.KeyRing)
+	}
+	if u.KeyRing.Slots[0].Secret != "sk-real-secret" {
+		t.Errorf("want secret sk-real-secret, got %q", u.KeyRing.Slots[0].Secret)
+	}
+}
+
 func TestBuildRejectsDuplicateKeyLogInPool(t *testing.T) {
 	cfg := `{"upstreams":[{
 		"name":"u1",

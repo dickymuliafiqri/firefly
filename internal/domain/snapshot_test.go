@@ -206,17 +206,21 @@ func TestResolveTarget_WithKeySlotAndFallback(t *testing.T) {
 		[]string{"h_default", "h_override"},
 	)
 
-	// Default tenant uses primary key slot
+	// Default tenant uses round-robin key selection across the ring. The ring's
+	// starting slot is seeded from a process-wide rotation counter (so rotation
+	// survives snapshot rebuilds), so the selected slot may be either s1 or s2.
+	// Assert only that the resolved KeySlot is one of the ring slots and that
+	// CredentialRef is consistent with the chosen slot.
 	stdTenant, _ := snap.TenantByHash("h_default")
 	tgt, err := snap.ResolveTarget(stdTenant, "gpt-4")
 	if err != nil {
 		t.Fatalf("resolve target: %v", err)
 	}
-	if tgt.CredentialRef != "PRIMARY_KEY" {
-		t.Fatalf("target credential ref = %s, want PRIMARY_KEY", tgt.CredentialRef)
+	if tgt.KeySlot != s1 && tgt.KeySlot != s2 {
+		t.Fatalf("target KeySlot is not a ring slot: got %+v", tgt.KeySlot)
 	}
-	if tgt.KeySlot != s1 {
-		t.Fatalf("target KeySlot mismatch: got %+v, want %+v", tgt.KeySlot, s1)
+	if tgt.CredentialRef != tgt.KeySlot.Ref {
+		t.Fatalf("target CredentialRef %q inconsistent with selected slot ref %q", tgt.CredentialRef, tgt.KeySlot.Ref)
 	}
 
 	// Override tenant matches s2
@@ -307,7 +311,6 @@ func TestResolveTargetWithBreakerFallback(t *testing.T) {
 		t.Fatalf("expected error when all upstreams unavailable, got tgt=%+v fb=%v", tgt, fb)
 	}
 }
-
 
 func TestKeySlotSecretMasking(t *testing.T) {
 	secret := "sk-plaintext-super-sensitive-token-12345"
@@ -452,12 +455,24 @@ func TestResolveTarget_RoundRobin(t *testing.T) {
 	tenant, _ := snap.TenantByHash("t")
 
 	// Call 6 times: should cycle round-robin across candidates [m1, m2, m3]
-	expectedSequence := []string{"u1", "u2", "u3", "u1", "u2", "u3"}
-	for i, expectedUpstream := range expectedSequence {
-		tgt, fb, err := snap.ResolveTargetWithBreaker(tenant, "gpt-multi", nil)
-		if err != nil {
-			t.Fatalf("call %d: unexpected error %v", i, err)
-		}
+	// Combo round-robin cycles across candidates [u1, u2, u3]. The starting
+	// offset is seeded from a process-wide rotation counter (so rotation
+	// survives snapshot rebuilds), so the absolute first upstream is not fixed
+	// across runs. Assert the rotation order relative to the first result, and
+	// that fallback-used is reported whenever the chosen member is not the
+	// combo's primary model (m1 -> u1).
+	cycle := []string{"u1", "u2", "u3"}
+	idxOf := map[string]int{"u1": 0, "u2": 1, "u3": 2}
+
+	firstTgt, _, err := snap.ResolveTargetWithBreaker(tenant, "gpt-multi", nil)
+	if err != nil {
+		t.Fatalf("initial resolve failed: %v", err)
+	}
+	startIdx := idxOf[firstTgt.Upstream.Name]
+
+	// Re-check the first result plus 5 more, verifying strict rotation.
+	checkCall := func(i int, tgt *Target, fb bool) {
+		expectedUpstream := cycle[(startIdx+i)%len(cycle)]
 		if tgt.Upstream.Name != expectedUpstream {
 			t.Fatalf("call %d: got upstream %q, want %q", i, tgt.Upstream.Name, expectedUpstream)
 		}
@@ -469,6 +484,15 @@ func TestResolveTarget_RoundRobin(t *testing.T) {
 		if fb != expectedFB {
 			t.Fatalf("call %d: got fallbackUsed=%v, want %v", i, fb, expectedFB)
 		}
+	}
+
+	checkCall(0, firstTgt, firstTgt.Upstream.Name != "u1")
+	for i := 1; i < 6; i++ {
+		tgt, fb, err := snap.ResolveTargetWithBreaker(tenant, "gpt-multi", nil)
+		if err != nil {
+			t.Fatalf("call %d: unexpected error %v", i, err)
+		}
+		checkCall(i, tgt, fb)
 	}
 
 	// Breaker test: if u2 breaker is open (canUse returns false), it skips u2
@@ -587,4 +611,3 @@ func TestTenant_IsExpired(t *testing.T) {
 		t.Errorf("expected tenant with past milliseconds ExpiresAt to be expired")
 	}
 }
-

@@ -17,6 +17,16 @@ import (
 // (all in cooldown, concurrency saturated, or revoked).
 var ErrAllKeysExhausted = errors.New("all keys exhausted")
 
+// globalRotation is a process-wide monotonically increasing rotation counter
+// used to seed the starting offset of key selection. It deliberately lives
+// OUTSIDE the KeyRing so that rotation progress survives snapshot hot-swaps:
+// every config/DB reload rebuilds the KeyRing (and would otherwise reset a
+// per-ring cursor to 0), which — combined with frequent reloads triggered by
+// usage metering bumping api_keys.updated_at — collapsed all traffic onto the
+// first few slots. Anchoring the offset to a global counter keeps round-robin
+// and least-inflight scans advancing evenly regardless of reload frequency.
+var globalRotation atomic.Uint64
+
 // Protocol identifies the wire dialect spoken by an upstream. It is the
 // expansion point for non-OpenAI backends.
 type Protocol string
@@ -166,11 +176,22 @@ func NewKeyRing(strategy KeyStrategy, slots []*KeySlot) *KeyRing {
 			byRef[s.Ref] = s
 		}
 	}
-	return &KeyRing{
+	kr := &KeyRing{
 		Strategy: strategy,
 		Slots:    slots,
 		byRef:    byRef,
 	}
+	// Seed the starting cursor from the process-wide rotation counter so that
+	// rotation progress SURVIVES snapshot hot-swaps. Every config/DB reload
+	// rebuilds the KeyRing; if the cursor started at 0 each time, selection
+	// would always restart at Slots[0]. Combined with frequent reloads (e.g.
+	// usage metering bumping api_keys.updated_at), that collapsed all traffic
+	// onto the first few keys. Seeding from globalRotation keeps each freshly
+	// built ring picking up roughly where the previous generation left off,
+	// while the per-ring cursor keeps selection deterministic within a single
+	// ring's lifetime (which the round-robin unit tests rely on).
+	kr.cursor.Store(globalRotation.Add(1))
+	return kr
 }
 
 // SlotCount returns the number of slots in the ring.
@@ -414,11 +435,23 @@ type Combo struct {
 	Strategy RoutingStrategy
 	Models   []string // concrete model public names
 	Enabled  bool
-	cursor   atomic.Uint64
+
+	cursorInit atomic.Bool
+	cursor     atomic.Uint64
 }
 
 // NextCursor increments and returns the cursor for round-robin routing.
+//
+// The cursor is lazily seeded from the process-wide globalRotation counter on
+// first use so that rotation progress survives catalog hot-swaps: every reload
+// rebuilds Combo values, and a per-combo cursor that started at 0 each time
+// would always restart round-robin at Models[0]. Seeding from globalRotation
+// lets a freshly rebuilt combo pick up roughly where the previous generation
+// left off, while remaining deterministic within a single snapshot's lifetime.
 func (c *Combo) NextCursor() uint64 {
+	if c.cursorInit.CompareAndSwap(false, true) {
+		c.cursor.Store(globalRotation.Add(1))
+	}
 	return c.cursor.Add(1) - 1
 }
 
@@ -445,8 +478,8 @@ const (
 // Tenant is a resolved tenant with its policy. APIKey is the primary plaintext lookup key.
 // KeyHash is retained for backward-compatibility.
 type Tenant struct {
-	APIKey        string        // Plaintext gateway API key (e.g. sk-gw-...)
-	KeyHash       string        // Deprecated: canonical sha256 lookup hash (fallback)
+	APIKey        string // Plaintext gateway API key (e.g. sk-gw-...)
+	KeyHash       string // Deprecated: canonical sha256 lookup hash (fallback)
 	Name          string
 	Status        TenantStatus
 	AllowedModels []string // ["*"] means all enabled models

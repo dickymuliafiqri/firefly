@@ -18,14 +18,33 @@ func TestKeyRing_RoundRobin_Rotation(t *testing.T) {
 
 	kr := NewKeyRing(domain.KeyStrategyRoundRobin, []*domain.KeySlot{k1, k2, k3})
 
-	expected := []string{"K1", "K2", "K3", "K1", "K2", "K3"}
-	for i, exp := range expected {
+	// The ring's starting cursor is seeded from a process-wide rotation counter
+	// (so rotation survives snapshot rebuilds), therefore the absolute first
+	// slot is not fixed across test runs. The invariant under test is strict
+	// round-robin rotation: 6 consecutive selections must cycle through all 3
+	// distinct slots twice in a stable order with no repeats within a cycle.
+	refOrder := []string{"K1", "K2", "K3"}
+	indexOf := map[string]int{"K1": 0, "K2": 1, "K3": 2}
+
+	first, err := kr.SelectKey()
+	if err != nil {
+		t.Fatalf("initial select failed: %v", err)
+	}
+	startIdx := indexOf[first.Ref]
+
+	// Verify the full cycle continues in order from wherever it started.
+	got := []string{first.Ref}
+	for i := 1; i < 6; i++ {
 		slot, err := kr.SelectKey()
 		if err != nil {
 			t.Fatalf("call %d failed: %v", i, err)
 		}
-		if slot.Ref != exp {
-			t.Fatalf("call %d: expected %s, got %s", i, exp, slot.Ref)
+		got = append(got, slot.Ref)
+	}
+	for i, ref := range got {
+		want := refOrder[(startIdx+i)%len(refOrder)]
+		if ref != want {
+			t.Fatalf("call %d: expected %s, got %s (full sequence %v)", i, want, ref, got)
 		}
 	}
 }
@@ -199,7 +218,6 @@ func TestParseRetryAfter(t *testing.T) {
 	}
 }
 
-
 func TestKeyRing_Concurrent_Stress(t *testing.T) {
 	slots := make([]*domain.KeySlot, 5)
 	for i := range slots {
@@ -305,4 +323,3 @@ func TestKeyRing_ThroughputExceeds10MillionOps(t *testing.T) {
 		}
 	}
 }
-

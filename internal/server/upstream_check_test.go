@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dickymuliafiqri/firefly/internal/adapter/opencode"
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/security/oauth"
-	"github.com/dickymuliafiqri/firefly/internal/adapter/opencode"
 )
 
 func TestUpstreamCheck_CORS(t *testing.T) {
@@ -1125,22 +1125,26 @@ func TestUpstreamCheck_LoadBalancingRoundRobin(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	expectedAuths := []string{
-		"Bearer sk-key-1",
-		"Bearer sk-key-2",
-		"Bearer sk-key-1",
-		"Bearer sk-key-2",
+	// The ring's starting slot is seeded from a process-wide rotation counter
+	// (so rotation survives snapshot rebuilds), so the absolute first key is
+	// not fixed. Assert strict round-robin alternation relative to the first
+	// observed key rather than a fixed [k1,k2,k1,k2] sequence.
+	authForRef := map[string]string{"k1": "Bearer sk-key-1", "k2": "Bearer sk-key-2"}
+	firstRef := resKeyRefs[0]
+	if firstRef != "k1" && firstRef != "k2" {
+		t.Fatalf("unexpected first key_ref %q", firstRef)
 	}
-	for i, want := range expectedAuths {
-		if authHeaders[i] != want {
-			t.Errorf("request %d: got auth header %s, want %s", i, authHeaders[i], want)
-		}
+	otherRef := "k2"
+	if firstRef == "k2" {
+		otherRef = "k1"
 	}
-
-	expectedRefs := []string{"k1", "k2", "k1", "k2"}
-	for i, want := range expectedRefs {
+	wantRefs := []string{firstRef, otherRef, firstRef, otherRef}
+	for i, want := range wantRefs {
 		if resKeyRefs[i] != want {
-			t.Errorf("request %d: got key_ref %s, want %s", i, resKeyRefs[i], want)
+			t.Errorf("request %d: got key_ref %s, want %s (alternation from %s)", i, resKeyRefs[i], want, firstRef)
+		}
+		if authHeaders[i] != authForRef[want] {
+			t.Errorf("request %d: got auth header %s, want %s", i, authHeaders[i], authForRef[want])
 		}
 	}
 }
@@ -1148,14 +1152,25 @@ func TestUpstreamCheck_LoadBalancingRoundRobin(t *testing.T) {
 func TestUpstreamCheck_CooldownSkipsRateLimitedKey(t *testing.T) {
 	var mu sync.Mutex
 	var authHeaders []string
+	// The ring's first selected key is not fixed (its cursor is seeded from a
+	// process-wide rotation counter so rotation survives reloads). Rate-limit
+	// whichever key the FIRST request happens to pick, so the test asserts the
+	// real invariant: a 429'd key enters cooldown and the next request skips to
+	// the other key. The first Authorization header seen determines the "hot"
+	// (rate-limited) key.
+	var rateLimitedAuth string
 
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		auth := r.Header.Get("Authorization")
 		authHeaders = append(authHeaders, auth)
+		if rateLimitedAuth == "" {
+			rateLimitedAuth = auth
+		}
+		isRateLimited := auth == rateLimitedAuth
 		mu.Unlock()
 
-		if auth == "Bearer sk-k1" {
+		if isRateLimited {
 			w.Header().Set("Retry-After", "60")
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusTooManyRequests)
@@ -1172,6 +1187,7 @@ func TestUpstreamCheck_CooldownSkipsRateLimitedKey(t *testing.T) {
 	slot1 := &domain.KeySlot{Ref: "k1", Secret: "sk-k1"}
 	slot2 := &domain.KeySlot{Ref: "k2", Secret: "sk-k2"}
 	kr := domain.NewKeyRing(domain.KeyStrategyRoundRobin, []*domain.KeySlot{slot1, slot2})
+	slotByRef := map[string]*domain.KeySlot{"k1": slot1, "k2": slot2}
 
 	up := &domain.Upstream{
 		Name:       "cooldown-up",
@@ -1193,7 +1209,7 @@ func TestUpstreamCheck_CooldownSkipsRateLimitedKey(t *testing.T) {
 	deps := RouterDeps{Snapshots: fakeProvider{snap}}
 	s := New(Config{Addr: "0.0.0.0:8080"}, deps, context.Background(), nil)
 
-	// First request hits k1 and gets 429
+	// First request hits whichever key is selected first and gets 429.
 	payload1 := UpstreamCheckRequest{
 		Name:      "cooldown-up",
 		Model:     "gpt-4o-mini",
@@ -1209,16 +1225,22 @@ func TestUpstreamCheck_CooldownSkipsRateLimitedKey(t *testing.T) {
 	if res1.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("first request expected status 429, got %d", res1.StatusCode)
 	}
-	if res1.KeyRef != "k1" {
-		t.Fatalf("first request expected key_ref k1, got %s", res1.KeyRef)
+	firstRef := res1.KeyRef
+	if firstRef != "k1" && firstRef != "k2" {
+		t.Fatalf("first request unexpected key_ref %q", firstRef)
 	}
 
-	// Slot 1 must now be in cooldown
-	if !slot1.IsInCooldown(time.Now().UnixNano()) {
-		t.Fatal("expected slot1 to be in cooldown after 429")
+	// The first-selected slot must now be in cooldown.
+	if !slotByRef[firstRef].IsInCooldown(time.Now().UnixNano()) {
+		t.Fatalf("expected slot %s to be in cooldown after 429", firstRef)
 	}
 
-	// Next request should automatically skip slot 1 (in cooldown) and select slot 2!
+	// Next request should automatically skip the cooled-down slot and select
+	// the other key, which succeeds.
+	otherRef := "k2"
+	if firstRef == "k2" {
+		otherRef = "k1"
+	}
 	payload2 := UpstreamCheckRequest{
 		Name:      "cooldown-up",
 		Model:     "gpt-4o-mini",
@@ -1234,8 +1256,8 @@ func TestUpstreamCheck_CooldownSkipsRateLimitedKey(t *testing.T) {
 	if !res2.Healthy || res2.StatusCode != 200 {
 		t.Fatalf("second request expected healthy 200, got status=%d: %s", res2.StatusCode, res2.Message)
 	}
-	if res2.KeyRef != "k2" {
-		t.Fatalf("second request expected key_ref k2, got %s", res2.KeyRef)
+	if res2.KeyRef != otherRef {
+		t.Fatalf("second request expected key_ref %s, got %s", otherRef, res2.KeyRef)
 	}
 }
 
@@ -1414,5 +1436,3 @@ func TestUpstreamCheck_OpenCodeLive(t *testing.T) {
 		})
 	}
 }
-
-

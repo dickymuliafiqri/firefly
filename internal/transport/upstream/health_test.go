@@ -521,18 +521,26 @@ func TestHealthChecker_RotatesKeySlotsAcrossIntervals(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	expected := []string{
-		"Bearer sk-probe-1",
-		"Bearer sk-probe-2",
-		"Bearer sk-probe-1",
-		"Bearer sk-probe-2",
+	// The ring's starting slot is seeded from a process-wide rotation counter
+	// (so rotation survives snapshot rebuilds); the absolute first probed key
+	// is therefore not fixed. Assert the invariant under test: consecutive
+	// probes rotate strictly across both slots, alternating from whichever key
+	// was probed first.
+	if len(receivedAuths) != 4 {
+		t.Fatalf("expected 4 probes, got %d", len(receivedAuths))
 	}
-	if len(receivedAuths) != len(expected) {
-		t.Fatalf("expected %d probes, got %d", len(expected), len(receivedAuths))
+	first := receivedAuths[0]
+	if first != "Bearer sk-probe-1" && first != "Bearer sk-probe-2" {
+		t.Fatalf("unexpected first probe auth %q", first)
 	}
+	other := "Bearer sk-probe-2"
+	if first == "Bearer sk-probe-2" {
+		other = "Bearer sk-probe-1"
+	}
+	expected := []string{first, other, first, other}
 	for i, want := range expected {
 		if receivedAuths[i] != want {
-			t.Errorf("probe %d: got %s, want %s", i, receivedAuths[i], want)
+			t.Errorf("probe %d: got %s, want %s (alternation from %s)", i, receivedAuths[i], want, first)
 		}
 	}
 }

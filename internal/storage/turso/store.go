@@ -502,19 +502,30 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 		if err == nil {
 			for ucRows.Next() {
 				var (
-					cid                       int64
-					ref                       string
-					secret                    sql.NullString
-					rps                       sql.NullFloat64
-					maxConcur                 sql.NullInt64
-					joinedKey                 sql.NullString
-					credRPSVal                *float64
-					credMaxVal                *int
+					cid        int64
+					ref        string
+					secret     sql.NullString
+					rps        sql.NullFloat64
+					maxConcur  sql.NullInt64
+					joinedKey  sql.NullString
+					credRPSVal *float64
+					credMaxVal *int
 				)
 				if err := ucRows.Scan(&cid, &ref, &secret, &rps, &maxConcur, &joinedKey); err == nil {
 					keySec := secret.String
 					if keySec == "" && joinedKey.Valid {
 						keySec = joinedKey.String
+					}
+					// Skip credentials whose secret has not (yet) replicated
+					// into the local Turso replica. Emitting a slot with an
+					// empty secret would either fail the whole snapshot build
+					// (empty secret -> ref reinterpreted as an ENV var name in
+					// config.translateUpstream) or produce a KeySlot that gets
+					// revoked on the first 401 ("Invalid API Key"), skewing
+					// load balancing. Mirrors the keySecret != "" filter in the
+					// harvester-provider path (block 2a) above.
+					if strings.TrimSpace(keySec) == "" && !strings.HasPrefix(ref, "oauth:") {
+						continue
 					}
 					if rps.Valid {
 						v := rps.Float64
@@ -565,12 +576,12 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 	var models []config.ModelDTO
 	for modRows.Next() {
 		var (
-			id                                            int64
-			publicName, upstreamModel                     string
-			upstreamID                                    int64
-			fallbackUpstreamsJSON, capsJSON               sql.NullString
-			maxContext                                    sql.NullInt64
-			enabled                                       int
+			id                              int64
+			publicName, upstreamModel       string
+			upstreamID                      int64
+			fallbackUpstreamsJSON, capsJSON sql.NullString
+			maxContext                      sql.NullInt64
+			enabled                         int
 		)
 
 		if err := modRows.Scan(&id, &publicName, &upstreamID, &upstreamModel, &fallbackUpstreamsJSON, &capsJSON, &maxContext, &enabled); err != nil {
@@ -662,13 +673,13 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 	var tenants []config.TenantDTO
 	for tenRows.Next() {
 		var (
-			id                                            int64
-			name, status                                  string
-			apiKey, keyHash, keyHint                      sql.NullString
-			maxTokens, usedTokens, expiresAt              sql.NullInt64
-			rps                                           sql.NullFloat64
-			burst, maxConcurrent                          sql.NullInt64
-			allowedModelsJSON, metadataJSON               sql.NullString
+			id                               int64
+			name, status                     string
+			apiKey, keyHash, keyHint         sql.NullString
+			maxTokens, usedTokens, expiresAt sql.NullInt64
+			rps                              sql.NullFloat64
+			burst, maxConcurrent             sql.NullInt64
+			allowedModelsJSON, metadataJSON  sql.NullString
 		)
 
 		if err := tenRows.Scan(&id, &name, &apiKey, &keyHash, &keyHint, &status, &maxTokens, &usedTokens, &expiresAt, &rps, &burst, &maxConcurrent, &allowedModelsJSON, &metadataJSON); err != nil {
@@ -1782,4 +1793,3 @@ func (s *Store) DeleteKey(ctx context.Context, keyID int64) error {
 	}
 	return nil
 }
-

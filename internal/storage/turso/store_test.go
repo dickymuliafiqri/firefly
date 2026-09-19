@@ -525,8 +525,6 @@ func TestUsageFlusher_KeyActions(t *testing.T) {
 	}
 }
 
-
-
 // TestSaveSettings_DoesNotCascadeDeleteModelsOnPartialPayload verifies that a
 // stale/partial save (one that omits an upstream still referenced by surviving
 // models, or that carries an empty Models list) never wipes existing models.
@@ -651,7 +649,6 @@ func TestSaveSettings_DeletesSingleModelWhenAuthoritative(t *testing.T) {
 	}
 }
 
-
 // TestSaveSettings_ManageModelsDeletesLastModel verifies that an authoritative
 // payload (ManageModels=true) with an empty Models list deletes the remaining
 // models — the intended "delete the last model" flow — while a non-authoritative
@@ -718,7 +715,6 @@ func TestSaveSettings_ManageModelsDeletesLastModel(t *testing.T) {
 	}
 }
 
-
 // TestSaveSettings_ManageUpstreamsDeletesLastUpstream verifies that an
 // authoritative payload (ManageUpstreams=true) with an empty Upstreams list
 // deletes the remaining upstream — the intended "delete the last upstream" flow
@@ -779,7 +775,6 @@ func TestSaveSettings_ManageUpstreamsDeletesLastUpstream(t *testing.T) {
 		t.Fatalf("authoritative empty payload must delete the last upstream, got %d", len(got2.Upstreams))
 	}
 }
-
 
 // TestSaveSettings_ManageCombosAndTenantsDeleteLast verifies that authoritative
 // payloads with empty Combos/Tenants lists delete the remaining rows only when
@@ -948,4 +943,78 @@ func TestStore_ConcurrentOperations(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+// TestLoadCatalogSnapshot_SkipsEmptySecretCredential guards the DB-load
+// regression: an upstream_credentials row whose secret has not (yet)
+// replicated (NULL secret, no joined api_key) must be skipped rather than
+// producing a KeySlot with an empty secret. A single valid credential on the
+// same upstream must still load, and the snapshot build must succeed (not fall
+// into zero-config mode).
+func TestLoadCatalogSnapshot_SkipsEmptySecretCredential(t *testing.T) {
+	ctx := context.Background()
+	store, db := setupTestDB(t)
+
+	isEn := true
+	settings := config.SettingsDTO{
+		Upstreams: []config.UpstreamDTO{
+			{
+				Name:        "openai",
+				Protocol:    "openai",
+				BaseURL:     "https://api.openai.com/v1",
+				KeyStrategy: "round_robin",
+				Enabled:     &isEn,
+				CredentialPool: []config.CredentialKeyDTO{
+					{Ref: "openai-cred-1", Secret: "sk-valid-secret"},
+				},
+			},
+		},
+		Models: []config.ModelDTO{
+			{
+				PublicName:    "gpt-4o",
+				Upstream:      "openai",
+				UpstreamModel: "gpt-4o",
+				Enabled:       &isEn,
+				Capabilities:  &config.CapabilitiesDTO{Stream: true},
+			},
+		},
+	}
+	if err := store.SaveSettings(ctx, settings); err != nil {
+		t.Fatalf("SaveSettings: %v", err)
+	}
+
+	// Resolve the upstream id and inject a second credential with a NULL
+	// secret and no api_key_id (simulating a harvester row that has not yet
+	// replicated into the local Turso replica).
+	var upID int64
+	if err := db.QueryRowContext(ctx, "SELECT id FROM upstreams WHERE name = 'openai'").Scan(&upID); err != nil {
+		t.Fatalf("resolve upstream id: %v", err)
+	}
+	now := time.Now().UnixMilli()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO upstream_credentials (upstream_id, ref, secret, status, is_active, created_at, updated_at)
+		VALUES (?, 'openai-cred-2', NULL, 'active', 1, ?, ?)
+	`, upID, now, now); err != nil {
+		t.Fatalf("insert empty-secret credential: %v", err)
+	}
+
+	envLookup := func(k string) (string, bool) { return "", false }
+	snap, _, err := store.LoadCatalogSnapshot(ctx, envLookup)
+	if err != nil {
+		t.Fatalf("LoadCatalogSnapshot must not fail with an empty-secret credential present: %v", err)
+	}
+	if snap == nil {
+		t.Fatal("expected non-nil snapshot")
+	}
+
+	up, ok := snap.Upstream("openai")
+	if !ok || up == nil || up.KeyRing == nil {
+		t.Fatalf("upstream openai not resolved with a key ring")
+	}
+	if got := up.KeyRing.SlotCount(); got != 1 {
+		t.Fatalf("expected exactly 1 key slot (empty-secret credential skipped), got %d", got)
+	}
+	if sec := up.KeyRing.Slots[0].Secret; sec != "sk-valid-secret" {
+		t.Fatalf("expected the valid secret to remain, got %q", sec)
+	}
 }

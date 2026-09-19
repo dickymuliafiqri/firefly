@@ -25,6 +25,12 @@ var (
 	upstreamNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9\-_]{0,63}$`)
 	modelNameRe    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._\-]{0,127}$`)
 	keyHashRe      = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	// envVarNameRe matches POSIX-style ENV var names (UPPER_SNAKE_CASE). Only
+	// credential refs matching this pattern are eligible to be resolved from
+	// the environment when their secret is empty. DB-generated refs such as
+	// "openai-cred-3" deliberately do not match, so a missing DB secret fails
+	// loudly instead of being silently reinterpreted as an ENV var lookup.
+	envVarNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 )
 
 // BuildResult is the fully-resolved, validated content ready to become a
@@ -287,6 +293,20 @@ func translateUpstream(i int, d UpstreamDTO, envLookup func(string) (string, boo
 					return nil, &ValidationError{
 						Field: fmt.Sprintf("upstreams[%d].credential_pool[%d].ref", i, j),
 						Msg:   "required",
+					}
+				}
+				// An empty secret is only reinterpreted as an ENV var
+				// reference when the ref follows ENV var naming conventions
+				// (e.g. OPENAI_KEY_1). DB-sourced credentials use refs like
+				// "openai-cred-3" / "openai-key-5"; if such a credential
+				// arrives with an empty secret (e.g. the harvester row has not
+				// replicated yet) we must NOT silently probe a non-existent ENV
+				// var — that produced a misleading "ENV var not set" error and
+				// failed the entire snapshot build into zero-config mode.
+				if !envVarNameRe.MatchString(ref) {
+					return nil, &ValidationError{
+						Field: fmt.Sprintf("upstreams[%d].credential_pool[%d].secret", i, j),
+						Msg:   "empty secret for credential ref " + ref + " (secret not resolved from config or database)",
 					}
 				}
 				sec, ok := envLookup(ref)

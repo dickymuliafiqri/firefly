@@ -5,6 +5,27 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.2] - 2026-09-19
+
+### Fixed
+- **KeyRing Load Balancing Reset on Snapshot Hot-Swap (`internal/domain`)**:
+  - Resolved a severe load-balancing skew where, with large key rings (e.g. 1,000+ keys), only the first few keys received traffic and the remainder stayed at 0 requests despite being active and valid.
+  - Root cause: every catalog hot-swap rebuilt each `KeyRing` via `NewKeyRing`, which created a fresh per-ring `cursor` starting at 0. Combined with frequent reloads (see the flusher fix below), round-robin and least-inflight selection perpetually restarted at `Slots[0]`, concentrating traffic on the top keys.
+  - Introduced a process-wide `globalRotation` counter. `NewKeyRing` now seeds its starting cursor from this counter, and `Combo.NextCursor` lazily seeds from it as well, so rotation progress **survives** snapshot rebuilds instead of resetting. Distribution is now uniform across the entire ring even under low, bursty, or concurrent load.
+  - The `inflight == 0` early-`break` in `selectLeastInflight` was verified to be a correct optimization (0 is the absolute minimum inflight); fairness is guaranteed by the rotating start offset, not by the scan's stopping point.
+
+- **Reload Storm Triggered by Usage Metering (`internal/storage/turso`)**:
+  - The Turso syncer's `GetKeysState` uses `MAX(updated_at)` on `api_keys` as a structural-change signal. The usage flusher was bumping `updated_at` on every metering write (`total_requests` / `last_used_at`), so any active traffic forced a full catalog reload on every sync interval (~15s), which rebuilt every `KeyRing` (see above).
+  - Pure usage metering no longer touches `updated_at`. Revocations and deactivations still bump it, because those are genuine structural changes the syncer must observe.
+
+- **Database Credentials with Empty/Unreplicated Secrets (`internal/config`, `internal/storage/turso`)**:
+  - Fixed fresh instances connected to an existing Turso database showing configured upstreams that failed with `Invalid API Key` until keys were manually re-fetched.
+  - `LoadCatalogSnapshot` now skips `upstream_credentials` rows whose secret has not yet replicated into the local replica (empty secret and no joined `api_keys` row), mirroring the existing filter on the harvester-provider path. This prevents partially-replicated rows from producing unusable key slots.
+  - `config.translateUpstream` no longer silently reinterprets a database-sourced credential `ref` (e.g. `openai-cred-3`) as an environment variable name when the secret is empty. Such refs now fail with a clear `empty secret` error instead of a misleading `ENV var not set` error that collapsed the entire snapshot build into zero-config mode. Environment-variable resolution is now gated behind POSIX-style naming (`envVarNameRe`), preserving the file-config ENV var feature.
+  - Added regression tests: `TestBuildRejectsEmptySecretDBStyleRef`, `TestBuildAcceptsDBStyleRefWithSecret`, and `TestLoadCatalogSnapshot_SkipsEmptySecretCredential`.
+
+- **Frontend Version Bump**: Updated frontend package and application constant identifiers to `v1.8.2`.
+
 ## [1.8.1] - 2026-09-18
 
 ### Fixed

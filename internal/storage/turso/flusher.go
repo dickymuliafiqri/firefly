@@ -258,17 +258,25 @@ DRAINED_TENANTS:
 	now := time.Now().UnixMilli()
 	updatedAny := false
 
-	// Update api_keys usage
+	// Update api_keys usage.
+	//
+	// IMPORTANT: pure usage metering must NOT bump updated_at. The syncer's
+	// GetKeysState uses MAX(updated_at) as a "structural change" signal to
+	// decide whether to hot-swap the catalog snapshot. total_requests /
+	// last_used_at do not affect routing, so bumping updated_at here caused a
+	// reload every sync interval whenever traffic flowed — which rebuilt every
+	// KeyRing and reset key-selection rotation, collapsing load balancing onto
+	// the first few keys. Revocations/deactivations below still bump updated_at
+	// because those ARE structural changes the syncer must observe.
 	for ref, ev := range usageAgg {
 		keyID := extractAPIKeyID(ref)
 		if keyID > 0 {
 			res, err := tx.ExecContext(ctx, `
 				UPDATE api_keys
 				SET total_requests = total_requests + ?,
-				    last_used_at = ?,
-				    updated_at = ?
+				    last_used_at = ?
 				WHERE id = ?
-			`, ev.count, ev.at, now, keyID)
+			`, ev.count, ev.at, keyID)
 			if err == nil {
 				if r, _ := res.RowsAffected(); r > 0 {
 					updatedAny = true
