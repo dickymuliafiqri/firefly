@@ -60,6 +60,16 @@ type Config struct {
 	Metrics KeyMetricsObserver
 	// Notifier receives automated key lifecycle actions (deactivate/delete). Nil is safe.
 	Notifier ports.KeyActionNotifier
+	// DefaultMaxTokens is applied to the output-token limit when the client
+	// sends no max_tokens/max_completion_tokens/max_output_tokens field at all.
+	// This gives reasoning models (e.g. deepseek, glm) enough headroom so that
+	// thinking tokens do not consume the entire budget before a visible answer
+	// is produced. 0 disables the default (fully transparent pass-through).
+	DefaultMaxTokens int64
+	// MinMaxTokens is a floor applied when the client DOES send an output-token
+	// limit but it is smaller than this value. The client's field is raised to
+	// this floor. 0 disables the floor.
+	MinMaxTokens int64
 }
 
 // Adapter implements ports.UpstreamAdapter for the OpenAI (and compatible)
@@ -381,11 +391,69 @@ func (a *Adapter) buildBody(req ports.ForwardRequest, t *domain.Target) ([]byte,
 		mb, _ := json.Marshal(t.UpstreamModel)
 		obj["model"] = mb
 	}
+	// Apply the configured output-token default/floor so a missing or too-small
+	// client limit does not let reasoning tokens exhaust the budget before a
+	// visible answer is produced.
+	a.applyMaxTokensPolicy(obj)
 	out, err := json.Marshal(obj)
 	if err != nil {
 		return nil, fmt.Errorf("re-marshal request body: %w", err)
 	}
 	return out, nil
+}
+
+// outputTokenFields are the OpenAI-compatible field names that cap generated
+// (completion/output) tokens, in priority order for detecting an existing value.
+var outputTokenFields = []string{"max_completion_tokens", "max_output_tokens", "max_tokens"}
+
+// applyMaxTokensPolicy enforces Config.DefaultMaxTokens and Config.MinMaxTokens
+// on the request body in place. It is a no-op when both are 0, preserving the
+// adapter's transparent pass-through behavior.
+//
+// Rules:
+//   - If the client sends none of max_tokens/max_completion_tokens/max_output_tokens
+//     and DefaultMaxTokens > 0, inject max_tokens = DefaultMaxTokens.
+//   - If the client sends one of those fields but its value is below
+//     MinMaxTokens, raise that same field to MinMaxTokens.
+//
+// Only the field the client already used is modified so we never introduce a
+// field the upstream may reject; when injecting from scratch we use max_tokens,
+// the most broadly accepted spelling.
+func (a *Adapter) applyMaxTokensPolicy(obj map[string]json.RawMessage) {
+	if a.cfg.DefaultMaxTokens <= 0 && a.cfg.MinMaxTokens <= 0 {
+		return
+	}
+
+	// Find the first present output-token field and its numeric value.
+	presentField := ""
+	var presentVal int64
+	for _, f := range outputTokenFields {
+		raw, ok := obj[f]
+		if !ok {
+			continue
+		}
+		var v int64
+		if err := json.Unmarshal(raw, &v); err != nil {
+			// Non-integer (e.g. null or malformed) — treat as absent so we can
+			// still apply a sane default rather than pass through a bad value.
+			continue
+		}
+		presentField = f
+		presentVal = v
+		break
+	}
+
+	if presentField == "" {
+		// No client-supplied limit: inject the default if configured.
+		if a.cfg.DefaultMaxTokens > 0 {
+			mb, _ := json.Marshal(a.cfg.DefaultMaxTokens)
+			obj["max_tokens"] = mb
+		}
+	} else if a.cfg.MinMaxTokens > 0 && presentVal < a.cfg.MinMaxTokens {
+		// Client value too small: raise the same field to the floor.
+		mb, _ := json.Marshal(a.cfg.MinMaxTokens)
+		obj[presentField] = mb
+	}
 }
 
 // secret resolves the upstream credential value from SecretLookup or target KeySlot.

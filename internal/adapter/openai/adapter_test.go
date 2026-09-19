@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
 )
@@ -427,8 +426,6 @@ func TestForwardContextCancelledDuringRetryWait(t *testing.T) {
 	}
 }
 
-
-
 // TestForwardScrubsAcceptEncoding proves the adapter does NOT forward the
 // client's Accept-Encoding header. Forwarding it (e.g. "gzip") makes Go's
 // transport skip transparent decompression and relay raw compressed bytes,
@@ -508,5 +505,96 @@ func TestForwardStreamDecompressesGzippedSSE(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "[DONE]") {
 		t.Fatal("terminating [DONE] sentinel lost after decompression")
+	}
+}
+
+// --- max_tokens default/floor policy ---------------------------------------
+
+// newPolicyAdapter builds an adapter whose upstream captures the forwarded body,
+// with the configured DefaultMaxTokens / MinMaxTokens applied.
+func newPolicyAdapter(t *testing.T, defaultMax, minMax int64, capture *map[string]any) (*Adapter, string) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(capture)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	t.Cleanup(srv.Close)
+	a := NewAdapter(
+		fixedPool{c: srv.Client()},
+		&allowAllBreaker{},
+		Config{
+			SecretLookup:     func(string) (string, bool) { return "sk", true },
+			DefaultMaxTokens: defaultMax,
+			MinMaxTokens:     minMax,
+		},
+	)
+	return a, srv.URL
+}
+
+func forwardBody(t *testing.T, a *Adapter, base, body string) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	if err := a.Forward(context.Background(), upstreamTarget(base, "m"), ports.ForwardRequest{
+		Method: http.MethodPost, Path: "/chat/completions", BodyBytes: []byte(body),
+	}, rec); err != nil {
+		t.Fatalf("Forward: %v", err)
+	}
+}
+
+func TestMaxTokensDefaultInjectedWhenAbsent(t *testing.T) {
+	var got map[string]any
+	a, base := newPolicyAdapter(t, 8000, 0, &got)
+	forwardBody(t, a, base, `{"model":"m","messages":[]}`)
+	if v, ok := got["max_tokens"].(float64); !ok || int64(v) != 8000 {
+		t.Fatalf("max_tokens = %v, want 8000 injected", got["max_tokens"])
+	}
+}
+
+func TestMaxTokensFloorRaisesSmallValue(t *testing.T) {
+	var got map[string]any
+	a, base := newPolicyAdapter(t, 8000, 4000, &got)
+	forwardBody(t, a, base, `{"model":"m","max_tokens":100}`)
+	if v, ok := got["max_tokens"].(float64); !ok || int64(v) != 4000 {
+		t.Fatalf("max_tokens = %v, want raised to floor 4000", got["max_tokens"])
+	}
+}
+
+func TestMaxTokensLargeValueUntouched(t *testing.T) {
+	var got map[string]any
+	a, base := newPolicyAdapter(t, 8000, 4000, &got)
+	forwardBody(t, a, base, `{"model":"m","max_tokens":50000}`)
+	if v, ok := got["max_tokens"].(float64); !ok || int64(v) != 50000 {
+		t.Fatalf("max_tokens = %v, want left at 50000", got["max_tokens"])
+	}
+}
+
+func TestMaxTokensFloorAppliesToClientField(t *testing.T) {
+	var got map[string]any
+	a, base := newPolicyAdapter(t, 8000, 4000, &got)
+	// Client used max_completion_tokens; the floor must raise that same field
+	// and NOT introduce a separate max_tokens.
+	forwardBody(t, a, base, `{"model":"m","max_completion_tokens":50}`)
+	if v, ok := got["max_completion_tokens"].(float64); !ok || int64(v) != 4000 {
+		t.Fatalf("max_completion_tokens = %v, want raised to 4000", got["max_completion_tokens"])
+	}
+	if _, exists := got["max_tokens"]; exists {
+		t.Fatalf("must not introduce max_tokens when client used max_completion_tokens")
+	}
+}
+
+func TestMaxTokensPolicyDisabledIsTransparent(t *testing.T) {
+	var got map[string]any
+	a, base := newPolicyAdapter(t, 0, 0, &got)
+	forwardBody(t, a, base, `{"model":"m","max_tokens":10}`)
+	if v, ok := got["max_tokens"].(float64); !ok || int64(v) != 10 {
+		t.Fatalf("max_tokens = %v, want untouched 10 when policy disabled", got["max_tokens"])
+	}
+	// And absent stays absent.
+	var got2 map[string]any
+	a2, base2 := newPolicyAdapter(t, 0, 0, &got2)
+	forwardBody(t, a2, base2, `{"model":"m","messages":[]}`)
+	if _, exists := got2["max_tokens"]; exists {
+		t.Fatalf("must not inject max_tokens when policy disabled")
 	}
 }

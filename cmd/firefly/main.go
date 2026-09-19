@@ -15,35 +15,36 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
 
-	"github.com/dickymuliafiqri/firefly/internal/storage/analytics"
 	"github.com/dickymuliafiqri/firefly/internal/adapter/anthropic"
 	"github.com/dickymuliafiqri/firefly/internal/adapter/antigravity"
 	"github.com/dickymuliafiqri/firefly/internal/adapter/cline"
 	"github.com/dickymuliafiqri/firefly/internal/adapter/codebuddy"
-	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/adapter/grok"
+	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/security/oauth"
 	antigravityProvider "github.com/dickymuliafiqri/firefly/internal/security/oauth/providers/antigravity"
 	clineProvider "github.com/dickymuliafiqri/firefly/internal/security/oauth/providers/cline"
 	codebuddyProvider "github.com/dickymuliafiqri/firefly/internal/security/oauth/providers/codebuddy"
+	"github.com/dickymuliafiqri/firefly/internal/storage/analytics"
 
-	"github.com/dickymuliafiqri/firefly/internal/security/auth"
+	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
+	"github.com/dickymuliafiqri/firefly/internal/adapter/opencode"
 	"github.com/dickymuliafiqri/firefly/internal/config"
 	"github.com/dickymuliafiqri/firefly/internal/limits"
 	"github.com/dickymuliafiqri/firefly/internal/observability/logging"
 	"github.com/dickymuliafiqri/firefly/internal/observability/metrics"
-	"github.com/dickymuliafiqri/firefly/internal/adapter/opencode"
-	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
+	"github.com/dickymuliafiqri/firefly/internal/observability/usage"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
+	"github.com/dickymuliafiqri/firefly/internal/security/auth"
 	"github.com/dickymuliafiqri/firefly/internal/server"
 	"github.com/dickymuliafiqri/firefly/internal/storage/turso"
 	"github.com/dickymuliafiqri/firefly/internal/transport/upstream"
-	"github.com/dickymuliafiqri/firefly/internal/observability/usage"
 	"github.com/dickymuliafiqri/firefly/internal/transport/warp"
 	"github.com/dickymuliafiqri/firefly/internal/watch"
 )
@@ -77,6 +78,8 @@ func run() error {
 		tursoToken        = flag.String("turso-token", "", "Turso JWT auth token (defaults to $TURSO_AUTH_TOKEN)")
 		tursoLocalPath    = flag.String("turso-local-path", "data/firefly.db", "local embedded replica database path (defaults to $FIREFLY_TURSO_LOCAL_PATH)")
 		tursoSyncInterval = flag.Duration("turso-sync-interval", 15*time.Second, "interval to pull changes from Turso cloud (defaults to $FIREFLY_TURSO_SYNC_INTERVAL)")
+		openaiDefaultMax  = flag.Int64("openai-default-max-tokens", 0, "default max_tokens injected into OpenAI-protocol requests that omit an output-token limit (0 disables; defaults to $FIREFLY_OPENAI_DEFAULT_MAX_TOKENS)")
+		openaiMinMax      = flag.Int64("openai-min-max-tokens", 0, "minimum max_tokens floor for OpenAI-protocol requests; smaller client values are raised to this (0 disables; defaults to $FIREFLY_OPENAI_MIN_MAX_TOKENS)")
 	)
 	flag.Parse()
 
@@ -128,6 +131,16 @@ func run() error {
 	if envInterval := os.Getenv("FIREFLY_TURSO_SYNC_INTERVAL"); envInterval != "" {
 		if d, err := time.ParseDuration(envInterval); err == nil {
 			*tursoSyncInterval = d
+		}
+	}
+	if *openaiDefaultMax == 0 {
+		if v, err := strconv.ParseInt(os.Getenv("FIREFLY_OPENAI_DEFAULT_MAX_TOKENS"), 10, 64); err == nil && v > 0 {
+			*openaiDefaultMax = v
+		}
+	}
+	if *openaiMinMax == 0 {
+		if v, err := strconv.ParseInt(os.Getenv("FIREFLY_OPENAI_MIN_MAX_TOKENS"), 10, 64); err == nil && v > 0 {
+			*openaiMinMax = v
 		}
 	}
 
@@ -315,6 +328,8 @@ func run() error {
 		MaxBufferedBytes: 32 << 20,
 		Metrics:          mx,
 		Notifier:         usageFlusher,
+		DefaultMaxTokens: *openaiDefaultMax,
+		MinMaxTokens:     *openaiMinMax,
 	})
 
 	adapterRegistry := registry.NewAdapterRegistry()

@@ -5,6 +5,20 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] - 2026-09-19
+
+### Added
+- **Configurable Output-Token Default & Floor for the OpenAI Adapter (`internal/adapter/openai`, `cmd/firefly`)**:
+  - Reasoning-capable models served over the OpenAI-compatible wire format (e.g. DeepSeek V4, GLM 5.3 Flash) count their thinking tokens against the same completion budget as the visible answer. When a client (Cline, Hermes, etc.) sends a small `max_tokens` — or omits it entirely — reasoning can consume the whole budget, so the upstream returns `finish_reason: "length"` before any visible content, and the client reports "no visible answer" on every continuation attempt. The large (1M) context window is irrelevant here because the limit that is exhausted is the per-response output budget, not the combined input+output context.
+  - Added two adapter options that let the gateway enforce a sane output budget without relying on client configuration:
+    - `DefaultMaxTokens`: injected as `max_tokens` when the request carries none of `max_tokens` / `max_completion_tokens` / `max_output_tokens`.
+    - `MinMaxTokens`: a floor that raises a client-supplied value when it is below the threshold.
+  - The policy modifies **only the output-token field the client actually used** (falling back to `max_tokens` when injecting from scratch), so it never introduces a conflicting or upstream-rejected field. When both options are `0` the adapter stays fully transparent, preserving the prior pass-through behavior and honoring the "everything else is untouched" invariant.
+  - Exposed via flags `--openai-default-max-tokens` and `--openai-min-max-tokens`, with environment fallbacks `FIREFLY_OPENAI_DEFAULT_MAX_TOKENS` and `FIREFLY_OPENAI_MIN_MAX_TOKENS` (both default to `0` / disabled).
+  - Added regression tests: `TestMaxTokensDefaultInjectedWhenAbsent`, `TestMaxTokensFloorRaisesSmallValue`, `TestMaxTokensLargeValueUntouched`, `TestMaxTokensFloorAppliesToClientField`, and `TestMaxTokensPolicyDisabledIsTransparent`.
+
+- **Frontend Version Bump**: Updated frontend package and application constant identifiers to `v1.9.0`.
+
 ## [1.8.2] - 2026-09-19
 
 ### Fixed
