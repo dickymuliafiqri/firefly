@@ -62,7 +62,9 @@ type Manager struct {
 // with the provided default password (or DefaultDashboardPassword) and persists it.
 func NewManager(configDir, adminToken, defaultPassword string) *Manager {
 	if defaultPassword == "" {
-		if envPass := os.Getenv("FIREFLY_DASHBOARD_PASSWORD"); envPass != "" {
+		if envPass := os.Getenv("INITIAL_PASSWORD"); envPass != "" {
+			defaultPassword = envPass
+		} else if envPass := os.Getenv("FIREFLY_DASHBOARD_PASSWORD"); envPass != "" {
 			defaultPassword = envPass
 		} else {
 			defaultPassword = DefaultDashboardPassword

@@ -71,7 +71,7 @@ func run() error {
 		logLevel          = flag.String("log-level", "info", "log level: debug|info|warn|error")
 		graceSecs         = flag.Int("shutdown-grace-seconds", 30, "max seconds to drain in-flight requests on shutdown")
 		adminToken        = flag.String("admin-token", "", "bearer token guarding /debug/* endpoints (defaults to $FIREFLY_ADMIN_TOKEN; empty disables them)")
-		dashboardPassword = flag.String("dashboard-password", "", "master password for dashboard access (defaults to $FIREFLY_DASHBOARD_PASSWORD or 12345678)")
+		dashboardPassword = flag.String("dashboard-password", "", "master password for dashboard access (defaults to $INITIAL_PASSWORD, $FIREFLY_DASHBOARD_PASSWORD, or 12345678)")
 		healthInterval    = flag.Duration("health-check-interval", upstream.DefaultHealthCheckInterval, "interval between background upstream health checks (0 to disable)")
 		showVersion       = flag.Bool("version", false, "print version information and exit")
 		tursoURL          = flag.String("turso-url", "", "Turso database URL (e.g. libsql://...; defaults to $TURSO_DATABASE_URL)")

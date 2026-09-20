@@ -5,6 +5,14 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.1] - 2026-09-20
+
+### Added
+- **Configurable Initial Dashboard Password via `INITIAL_PASSWORD` (`internal/security/auth`, `cmd/firefly`)**:
+  - The dashboard master password can now be seeded from an `INITIAL_PASSWORD` environment variable. When no persisted `auth.json` exists and no `-dashboard-password` flag is provided, `auth.NewManager` resolves the initial password in the order `INITIAL_PASSWORD` → `FIREFLY_DASHBOARD_PASSWORD` → the built-in default (`12345678`).
+  - As with `FIREFLY_DASHBOARD_PASSWORD`, this only sets the *initial* credential: once credentials are persisted or changed through the dashboard, the stored hash takes precedence on subsequent starts. An explicit `-dashboard-password` flag still overrides all environment sources.
+  - Updated the `-dashboard-password` flag help text to document the new `$INITIAL_PASSWORD` source.
+
 ## [1.9.0] - 2026-09-19
 
 ### Added
