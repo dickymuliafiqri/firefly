@@ -830,34 +830,84 @@ export const UpstreamModal = React.memo(function UpstreamModal({
           return;
         }
 
-        // Deduplicate against existing keys in form state
-        const existingSecrets = new Set(keys.map((k) => k.secret.trim()));
-        const newValidKeys = incoming.filter(
-          (k) => k.api_key && k.api_key.trim() && !existingSecrets.has(k.api_key.trim())
-        );
-        const duplicatesCount = incoming.length - newValidKeys.length;
+        // Reconcile the credential pool against the database set instead of
+        // blindly appending. The goal is that after import, the app's key list
+        // exactly mirrors the provider's active keys in the database:
+        //   - keys present in the DB but missing locally are ADDED
+        //   - keys present locally but no longer in the DB are REMOVED
+        //   - keys present in both are KEPT (preserving local rps/limits/status)
+        // This mirrors the background Turso syncer, which rebuilds the pool
+        // fresh from the DB on every load, and makes repeated imports idempotent
+        // (no duplicate accumulation).
+        //
+        // Identity is anchored to the DB `api_keys.id` (stable), with the
+        // trimmed secret as a fallback so keys imported before this change
+        // (which lacked a DB-anchored ref) still reconcile instead of duplicating.
+        const prefix = name.trim() || 'upstream';
 
-        if (newValidKeys.length === 0) {
+        // Extract the DB api_keys.id embedded in a ref of the form
+        // "<prefix>-key-<id>" (the scheme the backend syncer uses). Returns
+        // null when the ref does not carry a numeric DB id suffix.
+        const dbIdFromRef = (ref: string): number | null => {
+          const m = /-key-(\d+)$/.exec(ref);
+          if (!m) return null;
+          const parsed = parseInt(m[1], 10);
+          return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+        };
+
+        const validIncoming = incoming.filter((k) => k.api_key && k.api_key.trim());
+
+        // Index existing form-state keys by DB id and by secret for matching.
+        const existingById = new Map<number, KeyItem>();
+        const existingBySecret = new Map<string, KeyItem>();
+        for (const k of keys) {
+          const id = dbIdFromRef(k.ref);
+          if (id !== null) existingById.set(id, k);
+          const sec = k.secret.trim();
+          if (sec) existingBySecret.set(sec, k);
+        }
+
+        // Build the reconciled list strictly from the database set.
+        let addedCount = 0;
+        let keptCount = 0;
+        const reconciled: KeyItem[] = validIncoming.map((item) => {
+          const secret = item.api_key.trim();
+          const canonicalRef = `${prefix}-key-${item.id}`;
+          const existing = existingById.get(item.id) ?? existingBySecret.get(secret);
+          if (existing) {
+            keptCount += 1;
+            // Preserve the operator's local overrides & last-known status, but
+            // re-anchor the ref/secret to the canonical DB identity so future
+            // imports match by id and stay idempotent.
+            return {
+              ...existing,
+              id: `turso-${item.id}`,
+              ref: canonicalRef,
+              secret,
+            };
+          }
+          addedCount += 1;
+          return {
+            id: `turso-${item.id}`,
+            ref: canonicalRef,
+            secret,
+            status: 'idle',
+          };
+        });
+
+        const removedCount = keys.length - keptCount;
+
+        if (addedCount === 0 && removedCount === 0) {
           addToast({
-            title: 'Keys Already Imported',
-            message: `All ${incoming.length} key(s) from this provider are already present in the credential pool.`,
+            title: 'Already In Sync',
+            message: `All ${reconciled.length} key(s) already match the database. Nothing to change.`,
             type: 'info',
           });
           setIsDbPickerOpen(false);
           return;
         }
 
-        const prefix = name.trim() || 'upstream';
-        const startIndex = keys.length;
-
-        const newItems: KeyItem[] = newValidKeys.map((item, idx) => ({
-          id: `turso-${item.id}-${Date.now()}-${idx}`,
-          ref: `${prefix}-key-${startIndex + idx + 1}`,
-          secret: item.api_key.trim(),
-          status: 'idle',
-        }));
-
-        setKeys((prev) => [...prev, ...newItems]);
+        setKeys(reconciled);
         setIsDbPickerOpen(false);
 
         // Update providerId and baseUrl if not yet set
@@ -870,10 +920,11 @@ export const UpstreamModal = React.memo(function UpstreamModal({
         }
 
         addToast({
-          title: 'Keys Imported from Database',
-          message: `Imported ${newItems.length} active key(s) from Turso database${
-            duplicatesCount > 0 ? ` (${duplicatesCount} duplicate(s) skipped)` : ''
-          }.`,
+          title: 'Keys Synced from Database',
+          message:
+            `Credential pool reconciled with the database: ` +
+            `${addedCount} added, ${removedCount} removed, ${keptCount} kept ` +
+            `(${reconciled.length} total).`,
           type: 'success',
         });
       } catch (err) {

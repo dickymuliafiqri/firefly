@@ -5,6 +5,21 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.3] - 2026-09-20
+
+### Fixed
+- **Credential Pool Duplication on Manual "Import from Database" (`frontend/src/modules/2-upstreams/UpstreamModal.tsx`)**:
+  - Fixed a bug where editing an Upstream, opening the Credentials tab, and clicking **Import from Database** repeatedly kept *appending* the provider's database keys to the form's credential pool. Because the merge was append-only and generated timestamp/index-based refs, saving and re-importing accumulated duplicate keys indefinitely (e.g. a 1,000-key provider became 2,000, 3,000, … on each import + save cycle).
+  - `handleImportKeysFromDatabase` now **reconciles** the credential pool against the database set instead of appending, mirroring the background Turso syncer's rebuild-from-DB behavior:
+    - keys present in the database but missing locally are **added**;
+    - keys present locally but no longer in the database are **removed**;
+    - keys present in both are **kept**, preserving the operator's local `rps` / `max_concurrent` / status overrides.
+  - Key identity is anchored to the database `api_keys.id` via the canonical `"<upstream>-key-<id>"` ref (the same scheme the backend syncer uses), with the trimmed secret as a fallback. This makes repeated imports **idempotent** and also collapses any pre-existing duplicate pools (from the old behavior) down to the exact database set on the next import. After import + save, the app's persisted `credential_pool` and the database always hold the same set of keys.
+  - The confirmation toast now reports the reconciliation result (`X added, Y removed, Z kept`) instead of a plain "imported" count.
+  - Note: the periodic **background Turso sync** (`internal/storage/turso`) was already reconciling correctly — it rebuilds the in-memory catalog snapshot fresh from the database on every load and never appended — so no change was required there. This fix targets the manual, frontend-initiated import that writes to the persisted upstream configuration.
+
+- **Frontend Version Bump**: Updated frontend package and application constant identifiers to `v1.9.3`.
+
 ## [1.9.2] - 2026-09-20
 
 ### Fixed
