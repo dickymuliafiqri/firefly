@@ -29,39 +29,38 @@ func HandleKeyOutcome(
 		return false, false
 	}
 
-	// 1. Success path: reset consecutive error counter
-	if statusCode > 0 && statusCode < 400 {
-		slot.ConsecutiveErrors.Store(0)
-		return false, false
-	}
-
-	// 2. Classify key-level error: only 429, 401, 402, 403 are credential/quota errors.
-	// Host network drops and 5xx are handled by Circuit Breaker and MUST NOT penalize the key.
+	// 1. Classify key-level error: only 429, 401, 402, 403 are credential/quota
+	// errors that indicate the key itself is failing. Everything else — success,
+	// client cancel (499), transport drops, and 5xx host errors — is NOT the
+	// key's fault and MUST reset the consecutive-error counter. Resetting on any
+	// non-key-error is what keeps transient 429s from slowly accumulating to the
+	// deactivate/delete threshold on a perfectly healthy key.
 	isKeyError := (statusCode == http.StatusTooManyRequests ||
 		statusCode == http.StatusUnauthorized ||
 		statusCode == http.StatusPaymentRequired ||
 		statusCode == http.StatusForbidden)
 
 	if !isKeyError {
+		slot.ConsecutiveErrors.Store(0)
 		return false, false
 	}
 
-	// 3. Dynamic cooldown for 429 always applies immediately to prevent loop hammering
+	// 2. Dynamic cooldown for 429 always applies immediately to prevent loop hammering
 	if statusCode == http.StatusTooManyRequests && u.KeyRing != nil {
 		FromDomain(u.KeyRing).Handle429(slot.Ref, retryAfterHeader)
 	}
 
-	// 4. Increment consecutive error counter
+	// 3. Increment consecutive error counter
 	consec := slot.ConsecutiveErrors.Add(1)
 
-	// 5. Check threshold
+	// 4. Check threshold
 	threshold := u.KeyErrorThreshold
 	if threshold > 0 && consec >= int64(threshold) {
 		reason := fmt.Sprintf("reached consecutive error threshold of %d (last status: %d)", threshold, statusCode)
 		return applyKeyAction(u, slot, notifier, logger, reason)
 	}
 
-	// 6. If threshold is not reached, handle standard single-error behaviors:
+	// 5. If threshold is not reached, handle standard single-error behaviors:
 	// - 401: Key is invalid/unauthorized, revoke in-memory to prevent retrying
 	if statusCode == http.StatusUnauthorized {
 		if u.KeyRing != nil {

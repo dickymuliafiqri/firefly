@@ -83,19 +83,40 @@ type AttemptDecision struct {
 	IsHostFailure bool
 }
 
+// isClientCancel reports whether an outcome was caused by the CLIENT aborting
+// the request (context.Canceled), rather than by the upstream host or the
+// credential. Coding-agent clients disconnect mid-request constantly (aborted
+// streams, retried turns), producing an HTTP 499-class outcome. This is NOT a
+// signal that the API key is dead/expired nor that the upstream host is down,
+// so it must never trip the circuit breaker (Layer 2) nor advance a key's
+// consecutive-error counter (Layer 1).
+//
+// The cancel can surface with ANY accompanying status: 0 (transport aborted
+// before headers), 200 (aborted mid-relay), or a synthetic 5xx an adapter
+// stamped on a failed aggregation. We therefore key off the error, not the
+// status. ctx cancellation is also checked so a wrapped/renamed cancel that
+// loses errors.Is identity is still caught.
+func isClientCancel(o AttemptOutcome) bool {
+	return o.Err != nil && errors.Is(o.Err, context.Canceled)
+}
+
 // isHostFailure reports whether an outcome is an upstream host failure for the
 // circuit breaker. Only transport errors (status 0 with a non-cancel error) and
 // 5xx responses count. Credential/quota errors (401/403/429) and other 4xx MUST
 // NOT trip the breaker — that is the Layer 1 (key) vs Layer 2 (host) separation.
+// A client cancellation is never a host failure, whatever status accompanies it.
 //
 // This is the single source of truth for breaker classification, replacing the
 // per-adapter variants that previously diverged (some counted any non-nil error,
 // including wrapped 4xx, as a host failure).
 func isHostFailure(o AttemptOutcome) bool {
+	if isClientCancel(o) {
+		return false
+	}
 	if o.Status >= 500 {
 		return true
 	}
-	if o.Status == 0 && o.Err != nil && !errors.Is(o.Err, context.Canceled) {
+	if o.Status == 0 && o.Err != nil {
 		return true
 	}
 	return false
@@ -119,6 +140,20 @@ func ProcessAttemptOutcome(
 	notifier ports.KeyActionNotifier,
 	logger *slog.Logger,
 ) AttemptDecision {
+	// Client cancellation (HTTP 499-class): the client aborted the request —
+	// routine for coding-agent clients that disconnect mid-stream and retry on
+	// the next connection. It is neither a host failure nor a key failure, so we
+	// stop cleanly without retrying, rotating keys, or emitting error metrics.
+	// Counter bookkeeping is left to HandleKeyOutcome (a cancel is a non-key
+	// error, so it resets the counter there), keeping reset logic in one place.
+	if isClientCancel(outcome) {
+		if breaker != nil {
+			breaker.Report(u.Name, true) // healthy: do not trip the breaker
+		}
+		HandleKeyOutcome(u, target.KeySlot, outcome.Status, "", notifier, logger)
+		return AttemptDecision{StopCommitted: true}
+	}
+
 	hostFailure := isHostFailure(outcome)
 
 	// Report the breaker on every attempt: success or host failure. Key/quota

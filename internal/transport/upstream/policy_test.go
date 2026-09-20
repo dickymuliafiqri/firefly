@@ -44,6 +44,58 @@ func TestHandleKeyOutcome_SuccessResetsCounter(t *testing.T) {
 	}
 }
 
+// TestHandleKeyOutcome_NonKeyErrorsResetCounter is the core of the simplified
+// policy: the counter tracks ONLY consecutive credential errors (429/401/402/
+// 403). Any other outcome — success, client cancel (499), transport drop
+// (status 0), or a 5xx host error — resets the counter so transient 429s can
+// never accumulate to the delete/deactivate threshold on a healthy key.
+func TestHandleKeyOutcome_NonKeyErrorsResetCounter(t *testing.T) {
+	for _, status := range []int{0, 200, 404, 499, 500, 502, 503} {
+		slot := &domain.KeySlot{Ref: "k1", APIKeyID: 10}
+		slot.ConsecutiveErrors.Store(2)
+		u := &domain.Upstream{Name: "up", KeyErrorThreshold: 3, KeyErrorAction: "delete"}
+
+		action, failover := HandleKeyOutcome(u, slot, status, "", nil, nil)
+		if action || failover {
+			t.Errorf("status %d: expected no action/failover, got action=%v failover=%v", status, action, failover)
+		}
+		if got := slot.ConsecutiveErrors.Load(); got != 0 {
+			t.Errorf("status %d: expected counter reset to 0, got %d", status, got)
+		}
+		if slot.Revoked.Load() {
+			t.Errorf("status %d: key must not be revoked on a non-key-error", status)
+		}
+	}
+}
+
+// TestHandleKeyOutcome_TransientRateLimitsBetweenSuccessNeverAccumulate models
+// the real coding-agent traffic that triggered the account-deletion bug: many
+// requests where an occasional genuine 429 is interleaved with successes and
+// client cancels. The counter must never climb past 1 because every non-429
+// resets it, so the delete threshold is never reached.
+func TestHandleKeyOutcome_TransientRateLimitsBetweenSuccessNeverAccumulate(t *testing.T) {
+	notifier := &mockKeyNotifier{}
+	slot := &domain.KeySlot{Ref: "k1", APIKeyID: 10}
+	u := &domain.Upstream{Name: "up", KeyErrorThreshold: 3, KeyErrorAction: "delete"}
+
+	// Interleave 429s with successes/cancels many times.
+	sequence := []int{429, 200, 429, 499, 429, 500, 429, 200, 429, 499, 429}
+	for _, status := range sequence {
+		HandleKeyOutcome(u, slot, status, "", notifier, nil)
+		if got := slot.ConsecutiveErrors.Load(); got > 1 {
+			t.Fatalf("counter climbed to %d despite non-429 resets between rate limits", got)
+		}
+	}
+	if slot.Revoked.Load() {
+		t.Error("healthy key with only transient interleaved 429s must never be revoked")
+	}
+	notifier.mu.Lock()
+	defer notifier.mu.Unlock()
+	if len(notifier.actions) != 0 {
+		t.Errorf("no key action should fire for interleaved transient 429s, got %v", notifier.actions)
+	}
+}
+
 func TestHandleKeyOutcome_ThresholdDeactivate(t *testing.T) {
 	notifier := &mockKeyNotifier{}
 	slot := &domain.KeySlot{Ref: "k1", APIKeyID: 42}

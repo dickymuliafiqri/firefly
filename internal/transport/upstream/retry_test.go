@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -144,3 +145,100 @@ func TestProcessAttemptOutcome_WarpAutoRotateOn429(t *testing.T) {
 	}
 }
 
+
+
+// mockBreaker records the ok/failure signals reported to the circuit breaker.
+type mockBreaker struct {
+	reports []bool
+}
+
+func (m *mockBreaker) Report(_ string, ok bool) { m.reports = append(m.reports, ok) }
+
+func (m *mockBreaker) tripped() bool {
+	for _, ok := range m.reports {
+		if !ok {
+			return true
+		}
+	}
+	return false
+}
+
+// TestProcessAttemptOutcome_ClientCancelNeverPenalizesKeyOrBreaker pins the fix
+// for the account-deletion bug: a client disconnect (context.Canceled / HTTP
+// 499-class) must never trip the breaker, never count as a key error, and must
+// RESET the key's consecutive-error counter — regardless of the HTTP status the
+// adapter stamped on the outcome (0 transport abort, 200 mid-stream abort, or a
+// synthetic 5xx from a failed non-stream aggregation).
+func TestProcessAttemptOutcome_ClientCancelNeverPenalizesKeyOrBreaker(t *testing.T) {
+	cases := []struct {
+		name      string
+		status    int
+		committed bool
+	}{
+		{"transport abort before headers", 0, false},
+		{"mid-stream abort after 200", http.StatusOK, true},
+		{"synthetic 500 from failed aggregation", http.StatusInternalServerError, false},
+		{"synthetic 502 from failed aggregation", http.StatusBadGateway, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			br := &mockBreaker{}
+			notifier := &mockKeyNotifier{}
+			slot := &domain.KeySlot{Ref: "k1", APIKeyID: 7}
+			slot.ConsecutiveErrors.Store(2) // simulate prior transient errors
+
+			u := &domain.Upstream{
+				Name:              "up",
+				KeyErrorThreshold: 3, // one more real error would delete/deactivate
+				KeyErrorAction:    "delete",
+			}
+			target := &domain.Target{Upstream: u, KeySlot: slot}
+
+			decision := ProcessAttemptOutcome(u, target, AttemptOutcome{
+				Status:    tc.status,
+				Err:       context.Canceled,
+				Committed: tc.committed,
+			}, br, nil, notifier, nil)
+
+			if !decision.StopCommitted {
+				t.Fatalf("expected StopCommitted for client cancel, got %+v", decision)
+			}
+			if br.tripped() {
+				t.Errorf("client cancel must not trip the breaker, reports=%v", br.reports)
+			}
+			if got := slot.ConsecutiveErrors.Load(); got != 0 {
+				t.Errorf("client cancel must reset consecutive errors, got %d", got)
+			}
+			if len(notifier.actions) != 0 {
+				t.Errorf("client cancel must not trigger any key action, got %v", notifier.actions)
+			}
+		})
+	}
+}
+
+// TestProcessAttemptOutcome_WrappedClientCancel ensures a cancel wrapped by an
+// adapter's error type is still recognized via errors.Is and treated as benign.
+func TestProcessAttemptOutcome_WrappedClientCancel(t *testing.T) {
+	br := &mockBreaker{}
+	slot := &domain.KeySlot{Ref: "k1", APIKeyID: 7}
+	slot.ConsecutiveErrors.Store(1)
+	u := &domain.Upstream{Name: "up", KeyErrorThreshold: 2, KeyErrorAction: "delete"}
+	target := &domain.Target{Upstream: u, KeySlot: slot}
+
+	wrapped := fmt.Errorf("relay aborted: %w", context.Canceled)
+	decision := ProcessAttemptOutcome(u, target, AttemptOutcome{
+		Status: http.StatusInternalServerError,
+		Err:    wrapped,
+	}, br, nil, nil, nil)
+
+	if !decision.StopCommitted {
+		t.Fatalf("expected StopCommitted for wrapped cancel, got %+v", decision)
+	}
+	if br.tripped() {
+		t.Errorf("wrapped client cancel must not trip the breaker, reports=%v", br.reports)
+	}
+	if got := slot.ConsecutiveErrors.Load(); got != 0 {
+		t.Errorf("wrapped client cancel must reset consecutive errors, got %d", got)
+	}
+}

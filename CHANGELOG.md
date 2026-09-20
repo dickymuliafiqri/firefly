@@ -5,6 +5,18 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.2] - 2026-09-20
+
+### Fixed
+- **Healthy Keys Deleted by Client Cancellations (HTTP 499) Counting Toward the Error Threshold (`internal/transport/upstream`)**:
+  - Resolved a severe issue where large key rings shrank dramatically over time (e.g. dahl provider dropping from ~1,000 active keys to ~100) because perfectly healthy credentials were being deactivated/deleted by the per-key error-threshold policy.
+  - Root cause: coding-agent clients disconnect mid-request constantly (aborted streams retried on the next connection), producing HTTP 499 / `context.Canceled` outcomes. The consecutive-error counter (`KeySlot.ConsecutiveErrors`) was only reset by a clean `< 400` response, so cancellations and transport/5xx outcomes never cleared it. Occasional genuine `429`s then accumulated across many requests — never reset by the frequent successful/cancelled traffic in between — until the counter crossed `KeyErrorThreshold` and the key was deactivated or deleted.
+  - Simplified the policy in `HandleKeyOutcome` to a single rule: the counter is incremented **only** for genuine credential errors (`429`, `401`, `402`, `403`); **every other outcome** — success, client cancel (`499`/`context.Canceled`), transport drops (status `0`), and host `5xx` — now **resets** the counter to `0`. This makes it impossible for transient, interleaved rate limits to accumulate to the delete/deactivate threshold on a live key.
+  - Hardened breaker classification in `ProcessAttemptOutcome`: a client cancellation is now recognized via `errors.Is(err, context.Canceled)` regardless of the accompanying status (`0`, `200`, or a synthetic `5xx` an adapter stamped on a failed non-stream aggregation), so a client disconnect never trips the upstream circuit breaker (Layer 2) and stops cleanly without retrying, rotating keys, or emitting error metrics.
+  - Added regression tests: `TestHandleKeyOutcome_NonKeyErrorsResetCounter`, `TestHandleKeyOutcome_TransientRateLimitsBetweenSuccessNeverAccumulate`, `TestProcessAttemptOutcome_ClientCancelNeverPenalizesKeyOrBreaker`, and `TestProcessAttemptOutcome_WrappedClientCancel`.
+
+- **Frontend Version Bump**: Updated frontend package and application constant identifiers to `v1.9.2`.
+
 ## [1.9.1] - 2026-09-20
 
 ### Added
