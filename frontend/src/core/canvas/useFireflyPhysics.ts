@@ -310,6 +310,21 @@ function drawConstellationLines(ctx: CanvasRenderingContext2D, fireflies: Firefl
   }
 }
 
+// Upstream names and base URLs are operator-supplied strings, so they are written as
+// text nodes: a name like `<img src=x onerror=...>` would otherwise execute in the
+// dashboard origin, where the admin session token lives.
+function renderTooltip(el: HTMLElement, name: string, details: string) {
+  const nameEl = document.createElement('span');
+  nameEl.className = 'font-bold';
+  nameEl.textContent = name;
+
+  const detailsEl = document.createElement('span');
+  detailsEl.className = 'ml-1 text-[10px] opacity-80';
+  detailsEl.textContent = details;
+
+  el.replaceChildren(nameEl, detailsEl);
+}
+
 interface UseFireflyPhysicsOptions {
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
   containerRef: React.RefObject<HTMLDivElement | null>;
@@ -462,7 +477,7 @@ export function useFireflyPhysics({
           ? `${(hit.upstream.protocol || 'OPENAI').toUpperCase()} · ${ep} · Status: HALF-OPEN (${actionHint})`
           : `Status: DISABLED (Circuit Open) · ${actionHint}`;
 
-        tooltip.innerHTML = `<span class="font-bold">${hit.upstream.name}</span><span class="ml-1 text-[10px] opacity-80">${details}</span>`;
+        renderTooltip(tooltip, hit.upstream.name, details);
         tooltip.style.left = `${hit.x}px`;
         tooltip.style.top = `${hit.y}px`;
         tooltip.classList.remove('opacity-0');
@@ -522,7 +537,7 @@ export function useFireflyPhysics({
               ? `${(hit.upstream.protocol || 'OPENAI').toUpperCase()} · ${ep} · ${hit.upstream.latency_ms || 180}ms (Status: ACTIVE · Click to disable)`
               : `Status: DISABLED (Circuit Open) · Click to activate`;
 
-            tooltip.innerHTML = `<span class="font-bold">${hit.upstream.name}</span><span class="ml-1 text-[10px] opacity-80">${details}</span>`;
+            renderTooltip(tooltip, hit.upstream.name, details);
           }
         }
 
@@ -537,10 +552,15 @@ export function useFireflyPhysics({
     container.addEventListener('click', handleClick);
 
     // Animation Render Loop
+    // A tab that loads in the background never paints, so the initial `document.hidden`
+    // is true and the loop must be woken up when the tab finally becomes visible.
     let isHidden = document.hidden;
     const handleVisibilityChange = () => {
       isHidden = document.hidden;
+      lastTimeRef.current = performance.now();
     };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
     // Global pulse and pause event listeners
     const handleGlobalPulse = (e: Event) => {
       const custom = e as CustomEvent<{ upstream?: string }>;

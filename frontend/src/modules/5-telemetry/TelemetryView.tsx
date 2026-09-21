@@ -124,10 +124,10 @@ export default React.memo(function TelemetryView() {
           </div>
         </div>
 
-        {/* 5xx Circuit Trips & Error Rate */}
+        {/* Error Rate & Circuit Trips */}
         <div className="p-4 rounded-xl bg-transparent border border-white/[0.06] hover:border-white/[0.12] transition-colors flex flex-col justify-between font-mono">
           <div className="flex items-center justify-between text-neutral-400">
-            <span className="text-[11px]">5xx Circuit Trips</span>
+            <span className="text-[11px]">Error Rate (4xx / 5xx)</span>
             <AlertTriangle
               className={cn('w-3.5 h-3.5', circuitTrips > 0 ? 'text-rose-400' : 'text-neutral-500')}
             />
@@ -196,8 +196,11 @@ export default React.memo(function TelemetryView() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/[0.04]">
-                {tenantsUsage.map((row, idx) => (
-                  <tr key={`${row.tenant}-${row.model}-${idx}`} className="hover:bg-white/[0.015]">
+                {tenantsUsage.map((row) => (
+                  <tr
+                    key={`${row.tenant}-${row.model}-${row.credential_ref || ''}`}
+                    className="hover:bg-white/[0.015]"
+                  >
                     <td className="py-2 font-medium text-neutral-200">{row.tenant}</td>
                     <td className="py-2 text-neutral-400">{row.model}</td>
                     <td className="py-2 text-neutral-500 text-[11px]">{row.credential_ref || '—'}</td>

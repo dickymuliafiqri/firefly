@@ -73,8 +73,8 @@ export const TopupModal = React.memo(function TopupModal({
     }
 
     await topupMutation.mutateAsync({
-      api_key: tenant.api_key,
-      key_hash: tenant.key_hash,
+      api_key: tenant.api_key || undefined,
+      tenant_name: tenant.name,
       add_tokens: addTokens > 0 ? addTokens : undefined,
       extend_days: extendDays > 0 ? extendDays : undefined,
     });

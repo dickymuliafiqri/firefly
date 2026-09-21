@@ -32,6 +32,8 @@ function formatLatency(ms: number) {
  * PercentileLatencyCard
  * Displays real P50, P90, P99 percentile latency and request distributions per configured model.
  * Eliminates dummy data in favor of live gateway histogram observations.
+ * Latency quantiles are recorded per upstream host (not per model), so models sharing an
+ * upstream report the same values — the footnote states this explicitly.
  *
  * Vercel React Best Practices:
  * - rerender-memo
@@ -112,6 +114,11 @@ export const PercentileLatencyCard = React.memo(function PercentileLatencyCard({
               })}
             </tbody>
           </table>
+          <p className="mt-3 text-[10px] leading-relaxed text-neutral-500">
+            Latency quantiles are observed per upstream host, so models served by the same
+            upstream share one set of P50/P90/P99 values. Requests and errors are counted per
+            model.
+          </p>
         </div>
       )}
     </div>

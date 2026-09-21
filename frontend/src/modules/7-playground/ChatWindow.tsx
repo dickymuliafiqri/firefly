@@ -122,7 +122,6 @@ export const ChatWindow = React.memo(function ChatWindow({
   const streamTextRef = useRef<string>('');
   const streamReasoningRef = useRef<string>('');
   const abortControllerRef = useRef<AbortController | null>(null);
-  const animFrameRef = useRef<number | null>(null);
   const messagesScrollRef = useRef<HTMLDivElement | null>(null);
 
   const enabledModels = models.filter((m) => m.enabled !== false);
@@ -216,11 +215,13 @@ export const ChatWindow = React.memo(function ChatWindow({
     }
   }, [adminToken, tenants, apiKey, apiKeyManuallyEdited, setPlaygroundApiKey]);
 
-  // Cleanup animFrame on unmount
+  // Abort any in-flight stream on unmount; otherwise the reader keeps draining a
+  // response nobody renders and the shared "generating" flag stays set across tabs.
   useEffect(() => {
     return () => {
-      if (animFrameRef.current !== null) {
-        cancelAnimationFrame(animFrameRef.current);
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
       }
     };
   }, []);
@@ -269,6 +270,11 @@ export const ChatWindow = React.memo(function ChatWindow({
 
     const userMessage: ChatMessage = { role: 'user', content: inputPrompt.trim() };
     const nextMessages = [...messages, userMessage];
+    // Empty assistant turns are left behind when a previous run was aborted before
+    // its first token; providers reject an empty assistant content block.
+    const requestMessages = nextMessages.filter(
+      (m) => m.role !== 'assistant' || m.content.trim() !== ''
+    );
     setPlaygroundMessages(nextMessages);
     setPlaygroundPrompt('');
     setPlaygroundErrorMessage(null);
@@ -317,6 +323,46 @@ export const ChatWindow = React.memo(function ChatWindow({
       });
     };
 
+    // Copying the whole timing array on every read batch is quadratic on long
+    // streams, so live updates are throttled to ~10fps and forced once at the end.
+    let lastTimingsAt = 0;
+    const TIMINGS_INTERVAL_MS = 100;
+    const pushTimings = (force = false) => {
+      const now = performance.now();
+      if (!force && now - lastTimingsAt < TIMINGS_INTERVAL_MS) return;
+      lastTimingsAt = now;
+      const elapsed = Math.round(now - startTime);
+      const tps =
+        chunkCount > 0 ? Math.round((chunkCount / (elapsed / 1000)) * 10) / 10 : null;
+      const snapshot = [...chunkTimings];
+      updatePlaygroundTimings(snapshot, firstTokenTime, tps, elapsed);
+      onTimingUpdate?.(snapshot, firstTokenTime, tps, elapsed);
+    };
+
+    // Runs on both the normal and the aborted path: the reply text and the timing
+    // metrics must reach the UI even when the user stops the stream mid-flight.
+    const finalizeStream = () => {
+      const hasContent = streamTextRef.current.trim() !== '';
+      setPlaygroundMessages((prev) => {
+        const updated = [...prev];
+        const lastIndex = updated.length - 1;
+        if (lastIndex >= 0 && updated[lastIndex].role === 'assistant') {
+          if (!hasContent) {
+            updated.pop();
+            return updated;
+          }
+          updated[lastIndex] = {
+            ...updated[lastIndex],
+            content: streamTextRef.current,
+            reasoning: streamReasoningRef.current || undefined,
+          };
+        }
+        return updated;
+      });
+
+      pushTimings(true);
+    };
+
     try {
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
@@ -333,7 +379,7 @@ export const ChatWindow = React.memo(function ChatWindow({
         cache: 'no-store',
         body: JSON.stringify({
           model: selectedModel || enabledModels[0]?.public_name || 'gpt-4o',
-          messages: nextMessages,
+          messages: requestMessages,
           temperature,
           max_tokens: maxTokens,
           stream: isStreamMode,
@@ -347,7 +393,12 @@ export const ChatWindow = React.memo(function ChatWindow({
         throw new Error(errText);
       }
 
-      if (!isStreamMode || !response.body) {
+      // Branch on what the server actually sent rather than on the request flag: an
+      // upstream that cannot stream answers with a buffered JSON body.
+      const isEventStream = (response.headers.get('Content-Type') || '').includes(
+        'text/event-stream'
+      );
+      if (!isEventStream || !response.body) {
         // Non-streaming response
         const json = await response.json();
         const content = json?.choices?.[0]?.message?.content || '';
@@ -381,8 +432,10 @@ export const ChatWindow = React.memo(function ChatWindow({
         const decoder = new TextDecoder();
         let buffer = '';
         let reasoningArrived = false;
+        let streamDone = false;
+        let streamErrorMessage: string | null = null;
 
-        while (true) {
+        while (!streamDone) {
           const { done, value } = await reader.read();
           const readEnd = performance.now();
           if (done) break;
@@ -405,10 +458,20 @@ export const ChatWindow = React.memo(function ChatWindow({
 
             if (trimmed.startsWith('data: ')) {
               const payload = trimmed.slice(6);
-              if (payload === '[DONE]') continue;
+              if (payload === '[DONE]') {
+                // Terminal frame: the gateway closes the connection right after it,
+                // so stop reading instead of waiting for the socket to close.
+                streamDone = true;
+                continue;
+              }
 
               try {
                 const parsed = JSON.parse(payload);
+                if (parsed?.error) {
+                  streamErrorMessage =
+                    parsed.error.message || parsed.error.type || 'upstream stream error';
+                  continue;
+                }
                 const delta = parsed.choices?.[0]?.delta;
                 const deltaContent = delta?.content;
                 // Reasoning / "thinking" trace: some upstreams (e.g. reasoning
@@ -490,63 +553,36 @@ export const ChatWindow = React.memo(function ChatWindow({
               );
             }
 
-            // Report live timings
-            const elapsedSoFar = readEnd - startTime;
-            const currentTps = Math.round((chunkCount / (elapsedSoFar / 1000)) * 10) / 10;
-            const roundedElapsed = Math.round(elapsedSoFar);
-
-            updatePlaygroundTimings(
-              [...chunkTimings],
-              firstTokenTime,
-              currentTps,
-              roundedElapsed
-            );
-            onTimingUpdate?.(
-              [...chunkTimings],
-              firstTokenTime,
-              currentTps,
-              roundedElapsed
-            );
+            pushTimings();
           } else if (reasoningArrived) {
             // Reasoning tokens arrived without answer content in this batch
             // (common while the model is still "thinking"). Flush so the
             // thinking trace streams into the UI live.
             flushToState(streamReasoningRef.current.length > 0 && !streamTextRef.current);
           }
+
+          // Surface a mid-stream error frame as a failed request rather than
+          // treating the truncated reply as complete.
+          if (streamErrorMessage) {
+            throw new Error(streamErrorMessage);
+          }
+        }
+
+        if (streamDone) {
+          // Release the connection without draining the frames that follow [DONE].
+          await reader.cancel().catch(() => {});
         }
       }
 
-      // Final state flush (bypass throttle to render the complete reply).
-      flushToState(true);
-      // Cancel any pending animation frame from earlier code paths.
-      if (animFrameRef.current !== null) {
-        animFrameRef.current = null;
-      }
-      setPlaygroundMessages((prev) => {
-        const updated = [...prev];
-        const lastIndex = updated.length - 1;
-        if (lastIndex >= 0 && updated[lastIndex].role === 'assistant') {
-          updated[lastIndex] = {
-            ...updated[lastIndex],
-            content: streamTextRef.current,
-            reasoning: streamReasoningRef.current || undefined,
-          };
-        }
-        return updated;
-      });
-
-      const totalElapsed = Math.round(performance.now() - startTime);
-      const finalTps =
-        chunkCount > 0 ? Math.round((chunkCount / (totalElapsed / 1000)) * 10) / 10 : null;
-
-      updatePlaygroundTimings([...chunkTimings], firstTokenTime, finalTps, totalElapsed);
-      onTimingUpdate?.([...chunkTimings], firstTokenTime, finalTps, totalElapsed);
+      finalizeStream();
     } catch (err: any) {
       if (err.name === 'AbortError') {
-        // aborted cleanly
+        // The user stopped the stream: keep the partial reply and its metrics.
+        finalizeStream();
       } else {
         const msg = err?.message || 'Failed to connect to gateway';
         setPlaygroundErrorMessage(msg);
+        finalizeStream();
       }
     } finally {
       setPlaygroundIsGenerating(false);

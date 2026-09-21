@@ -20,6 +20,18 @@ const TAB_KEYS: Record<string, TabId> = {
   '7': 'playground',
 };
 
+const NATIVE_ACTIVATION_TAGS = new Set(['button', 'summary']);
+
+// `<button>` and friends activate on Space, so swallowing the key would break the
+// most basic keyboard interaction on every focused control in the dashboard.
+function handlesSpaceNatively(el: HTMLElement | null): boolean {
+  if (!el) return false;
+  const tag = el.tagName.toLowerCase();
+  if (NATIVE_ACTIVATION_TAGS.has(tag)) return true;
+  if (tag === 'a' && el.hasAttribute('href')) return true;
+  return el.getAttribute('role') === 'button';
+}
+
 /**
  * useKeyboardShortcuts
  * Centralized single window event listener for global keyboard navigation.
@@ -79,6 +91,9 @@ export function useKeyboardShortcuts(handlers: KeyboardShortcutHandlers) {
 
       // 4. Pause / Resume Canvas Particles: Space
       if (e.key === ' ' || e.code === 'Space') {
+        if (handlesSpaceNatively(target)) {
+          return;
+        }
         e.preventDefault();
         latestHandlers.current.onTogglePauseCanvas();
         return;

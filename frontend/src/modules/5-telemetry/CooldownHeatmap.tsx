@@ -119,12 +119,14 @@ export const CooldownHeatmap = React.memo(function CooldownHeatmap({
                       </tr>
                     </thead>
                     <tbody>
-                      {g.slots.map((slot) => (
+                      {g.slots.map((slot, idx) => (
                         <tr
-                          key={slot.ref}
+                          key={slot.ref || `slot-${idx}`}
                           className="border-t border-white/[0.04] text-neutral-300"
                         >
-                          <td className="py-1 pl-5 pr-3 truncate">{slot.ref}</td>
+                          <td className="py-1 pl-5 pr-3 truncate">
+                            {slot.ref || `key #${idx + 1}`}
+                          </td>
                           <td className="py-1 pr-3 text-neutral-400">{slot.status}</td>
                           <td className="py-1 pr-3 text-right">{slot.inflight}</td>
                           <td className="py-1 pr-3 text-right">{slot.cooldownEvents}</td>

@@ -243,20 +243,6 @@ export async function updatePasswordApi(
 }
 
 /**
- * Fetch circuit breaker states from backend: GET /api/breakers
- */
-export async function fetchBreakersApi(): Promise<Record<string, 'OPEN' | 'CLOSED' | 'HALF-OPEN'>> {
-  const res = await fetch(`${BASE_URL}/api/breakers`, {
-    headers: { 'Accept': 'application/json' },
-  });
-  if (!res.ok) {
-    return {};
-  }
-  const data = await res.json().catch(() => ({}));
-  return data?.breakers || {};
-}
-
-/**
  * Update circuit breaker state on backend: PUT /api/breakers
  */
 export async function updateBreakerApi(
@@ -291,20 +277,6 @@ export async function updateBreakerApi(
 }
 
 /**
- * Fetch persistent request history from backend: GET /api/history
- */
-export async function fetchHistoryApi(limit: number = 50): Promise<LiveConnectionLog[]> {
-  const res = await fetch(`${BASE_URL}/api/history?limit=${limit}`, {
-    headers: { 'Accept': 'application/json' },
-  });
-  if (!res.ok) {
-    return [];
-  }
-  const data = await res.json().catch(() => ({}));
-  return data?.history || [];
-}
-
-/**
  * Clear request history on backend: DELETE /api/history
  */
 export async function deleteHistoryApi(token?: string): Promise<{ status: string }> {
@@ -323,30 +295,6 @@ export async function deleteHistoryApi(token?: string): Promise<{ status: string
     throw new ApiError(res.status, 'Failed to clear history');
   }
   return res.json();
-}
-
-/**
- * Parallel initialization loader (Vercel Best Practice: async-parallel)
- * Fetches settings and health status simultaneously without waterfalls.
- */
-export async function prefetchInitialData(adminToken?: string) {
-  const [settings, health, breakers] = await Promise.all([
-    fetchSettings(adminToken).catch((err) => {
-      console.warn('Initial settings fetch failed (might need token or server offline):', err);
-      return null;
-    }),
-    fetchHealth().catch(() => ({ status: 'error' as const })),
-    fetchBreakersApi().catch(() => ({})),
-  ]);
-
-  if (settings) {
-    useAppStore.getState().setSettings(settings);
-  }
-  if (breakers && Object.keys(breakers).length > 0) {
-    useAppStore.getState().setUpstreamBreakers(breakers);
-  }
-
-  return { settings, health, breakers };
 }
 
 // ================= TANSTACK QUERY HOOKS =================
@@ -445,9 +393,6 @@ export function useTopupTenantMutation() {
   return useMutation({
     mutationFn: (req: TenantTopupRequestDTO) => topupTenant(req, adminToken),
     onSuccess: (data) => {
-      if (data.tenant) {
-        useAppStore.getState().addOrUpdateTenant(data.tenant);
-      }
       queryClient.invalidateQueries({ queryKey: ['settings'] });
       useAppStore.getState().addToast({
         title: 'Top-up Successful',

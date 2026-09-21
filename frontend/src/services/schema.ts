@@ -176,15 +176,23 @@ export interface TenantDTO {
 
 export interface TenantTopupRequestDTO {
   api_key?: string;
-  key_hash?: string;
+  tenant_name?: string;
   add_tokens?: number;
   extend_days?: number;
-  set_expires_at?: number | null;
+  reset_used?: boolean;
 }
 
+/** Mirrors `server.TenantTopupResponse`, which is a flat object — there is no nested tenant. */
 export interface TenantTopupResponseDTO {
-  tenant: TenantDTO;
+  success: boolean;
   message: string;
+  name: string;
+  api_key?: string;
+  max_tokens: number;
+  used_tokens: number;
+  remaining_tokens: number;
+  expires_at?: number | null;
+  status: string;
 }
 
 export interface ComboDTO {
@@ -292,15 +300,6 @@ export interface LiveConnectionLog {
   tokens?: number;
   estimatedCost?: number;
   error?: string;
-}
-
-export interface TelemetrySnapshot {
-  activeStreams: number;
-  totalRequests: number;
-  requestsPerSecond: number;
-  p95LatencyMs: number;
-  errorRate5xx: number;
-  breakerStates: Record<string, BreakerState>;
 }
 
 export interface GlobalAdmissionDTO {

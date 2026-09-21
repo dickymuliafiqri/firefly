@@ -21,7 +21,9 @@ export const InflightSemaphoreGauge = React.memo(function InflightSemaphoreGauge
   maxSlots = 1500,
   queueDepth = 0,
 }: InflightSemaphoreGaugeProps) {
-  const ratio = Math.min(1, Math.max(0, activeInflight / maxSlots));
+  // A zero/absent capacity would make the ratio NaN and blank the arc and label.
+  const safeMaxSlots = maxSlots > 0 ? maxSlots : 1;
+  const ratio = Math.min(1, Math.max(0, activeInflight / safeMaxSlots));
   const percentage = Math.round(ratio * 100);
   const isWarning = ratio >= 0.8; // > 80% warning zone
   const isCritical = ratio >= 0.95;
