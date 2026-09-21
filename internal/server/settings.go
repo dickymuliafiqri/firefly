@@ -827,6 +827,21 @@ func settingsDTOFromSnapshot(snap *domain.CatalogSnapshot) config.SettingsDTO {
 	return settings
 }
 
+// ringHasSecret reports whether secret is one of the live keyring's plaintext
+// secrets — used to tell a real credential that merely looks masked apart from
+// an actual placeholder.
+func ringHasSecret(ring *domain.KeyRing, secret string) bool {
+	if ring == nil || secret == "" {
+		return false
+	}
+	for _, s := range ring.Slots {
+		if s != nil && s.Secret == secret {
+			return true
+		}
+	}
+	return false
+}
+
 // restoreMaskedSecrets replaces masked secret placeholders in payload with
 // the real secrets from the live snapshot, so a re-persisted payload never
 // writes masked values back over real credentials.
@@ -884,6 +899,47 @@ func restoreMaskedSecrets(payload *config.SettingsDTO, snap *domain.CatalogSnaps
 				}
 			}
 		}
+
+		// A pool entry whose secret is still a placeholder after every resolution
+		// attempt cannot be restored: persisting it would store the mask itself as
+		// a credential and mint a key slot that always fails upstream with 401.
+		// Drop it instead; u.APIKeys is positional against the pool, so filter it
+		// in lockstep. When both are non-empty but misaligned, positional mapping
+		// is meaningless — leave the payload alone and let the guard below null
+		// the pool rather than risk pairing a kept secret with a wrong APIKeys
+		// entry.
+		aligned := len(u.APIKeys) == len(u.CredentialPool)
+		if len(u.APIKeys) == 0 || aligned {
+			keptPool := make([]config.CredentialKeyDTO, 0, len(u.CredentialPool))
+			keptKeys := make([]string, 0, len(u.APIKeys))
+			dropped := 0
+			for j := range u.CredentialPool {
+				k := u.CredentialPool[j]
+				eff := k.Secret
+				if eff == "" {
+					eff = k.APIKey
+				}
+				// isMasked is a heuristic (the mask keeps a 3-byte prefix and a
+				// 4-byte suffix around "..."), and here it gates a delete: a live
+				// secret that literally contains "..." must not be discarded just
+				// because it looks like a placeholder.
+				if isMasked(eff) && !ringHasSecret(existingUp.KeyRing, eff) {
+					dropped++
+					continue
+				}
+				keptPool = append(keptPool, k)
+				if aligned {
+					keptKeys = append(keptKeys, u.APIKeys[j])
+				}
+			}
+			if dropped > 0 {
+				u.CredentialPool = keptPool
+				if aligned {
+					u.APIKeys = keptKeys
+				}
+			}
+		}
+
 		if len(u.APIKeys) > 0 && len(u.CredentialPool) > 0 && len(u.APIKeys) != len(u.CredentialPool) {
 			u.CredentialPool = nil
 		}

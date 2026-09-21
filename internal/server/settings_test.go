@@ -14,6 +14,7 @@ import (
 
 	"github.com/dickymuliafiqri/firefly/internal/security/auth"
 	"github.com/dickymuliafiqri/firefly/internal/config"
+	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/limits"
 	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
@@ -620,6 +621,151 @@ func TestSettingsTenantAPIKeyPlaintext(t *testing.T) {
 	if tSnap.APIKey != rawKey {
 		t.Fatalf("expected tenant.APIKey %q, got %q", rawKey, tSnap.APIKey)
 	}
+}
+
+// TestRestoreMaskedSecretsDropsUnresolvablePoolEntries covers the second half of
+// the masked-secret contract: a placeholder that cannot be matched back to a live
+// key slot must be removed from the payload, never persisted as a credential.
+func TestRestoreMaskedSecretsDropsUnresolvablePoolEntries(t *testing.T) {
+	const (
+		realA = "sk-live-aaaaaaaaaaaaaaaaaaaa"
+		realB = "sk-live-bbbbbbbbbbbbbbbbbbbb"
+	)
+	// A mask that matches no live slot; mirrors the junk produced by older
+	// dashboard saves (maskSecret output stored as if it were a credential).
+	const orphanMask = "69Y...IftQ"
+
+	newSnap := func() *domain.CatalogSnapshot {
+		ring := domain.NewKeyRing(domain.KeyStrategyRoundRobin, []*domain.KeySlot{
+			{Ref: "u1-key-11", Secret: realA},
+			{Ref: "u1-key-12", Secret: realB},
+		})
+		return domain.NewCatalogSnapshot(
+			1,
+			map[string]*domain.Upstream{"u1": {Name: "u1", KeyRing: ring}},
+			[]string{"u1"},
+			nil, nil, nil, nil,
+		)
+	}
+
+	t.Run("resolvable masks are restored, not dropped", func(t *testing.T) {
+		payload := config.SettingsDTO{Upstreams: []config.UpstreamDTO{{
+			Name: "u1",
+			CredentialPool: []config.CredentialKeyDTO{
+				{Ref: "u1-key-11", Secret: maskSecret(realA), APIKey: maskSecret(realA)},
+				{Ref: "u1-key-12", Secret: maskSecret(realB), APIKey: maskSecret(realB)},
+			},
+		}}}
+
+		restoreMaskedSecrets(&payload, newSnap())
+
+		pool := payload.Upstreams[0].CredentialPool
+		if len(pool) != 2 {
+			t.Fatalf("want 2 pool entries, got %d: %+v", len(pool), pool)
+		}
+		if pool[0].Secret != realA || pool[1].Secret != realB {
+			t.Fatalf("secrets not restored from live slots: %+v", pool)
+		}
+	})
+
+	t.Run("orphan mask is dropped from pool and api_keys in lockstep", func(t *testing.T) {
+		payload := config.SettingsDTO{Upstreams: []config.UpstreamDTO{{
+			Name:    "u1",
+			APIKeys: []string{maskSecret(realA), maskSecret(realB), orphanMask},
+			CredentialPool: []config.CredentialKeyDTO{
+				{Ref: "u1-key-11", Secret: maskSecret(realA)},
+				{Ref: "u1-key-12", Secret: maskSecret(realB)},
+				{Ref: "u1-key-local-13", Secret: orphanMask},
+			},
+		}}}
+
+		restoreMaskedSecrets(&payload, newSnap())
+
+		up := payload.Upstreams[0]
+		// The pool is longer than the ring, so the orphan has no positional
+		// fallback slot either — it survives every restore attempt as a mask.
+		if len(up.CredentialPool) != 2 {
+			t.Fatalf("want orphan pool entry dropped, got %d entries: %+v", len(up.CredentialPool), up.CredentialPool)
+		}
+		if up.CredentialPool[0].Secret != realA || up.CredentialPool[1].Secret != realB {
+			t.Fatalf("surviving pool entries lost their secrets: %+v", up.CredentialPool)
+		}
+		if len(up.APIKeys) != 2 {
+			t.Fatalf("want api_keys filtered in lockstep, got %d entries: %+v", len(up.APIKeys), up.APIKeys)
+		}
+		if up.APIKeys[0] != realA || up.APIKeys[1] != realB {
+			t.Fatalf("api_keys not aligned with pool after drop: %+v", up.APIKeys)
+		}
+	})
+
+	t.Run("secret-less entries survive", func(t *testing.T) {
+		payload := config.SettingsDTO{Upstreams: []config.UpstreamDTO{{
+			Name: "u1",
+			CredentialPool: []config.CredentialKeyDTO{
+				{Ref: "u1-key-11", Secret: realA},
+				{Ref: "oauth:grok-key-1156"},
+			},
+		}}}
+
+		restoreMaskedSecrets(&payload, newSnap())
+
+		pool := payload.Upstreams[0].CredentialPool
+		if len(pool) != 2 {
+			t.Fatalf("secret-less entry must not be treated as a mask, got %+v", pool)
+		}
+		if pool[1].Ref != "oauth:grok-key-1156" {
+			t.Fatalf("wrong entry dropped: %+v", pool)
+		}
+	})
+
+	t.Run("live secret containing dots is not mistaken for a mask", func(t *testing.T) {
+		// Opaque tokens from self-hosted gateways may legitimately contain "...".
+		const dotted = "on-prem...token-9f3c"
+		if !isMasked(dotted) {
+			t.Fatalf("precondition: %q should look masked to isMasked", dotted)
+		}
+		ring := domain.NewKeyRing(domain.KeyStrategyRoundRobin, []*domain.KeySlot{
+			{Ref: "u2-key-21", Secret: dotted},
+		})
+		snap := domain.NewCatalogSnapshot(
+			1,
+			map[string]*domain.Upstream{"u2": {Name: "u2", KeyRing: ring}},
+			[]string{"u2"},
+			nil, nil, nil, nil,
+		)
+		payload := config.SettingsDTO{Upstreams: []config.UpstreamDTO{{
+			Name: "u2",
+			CredentialPool: []config.CredentialKeyDTO{
+				{Ref: "u2-key-21", Secret: dotted},
+			},
+		}}}
+
+		restoreMaskedSecrets(&payload, snap)
+
+		pool := payload.Upstreams[0].CredentialPool
+		if len(pool) != 1 || pool[0].Secret != dotted {
+			t.Fatalf("live dotted secret must survive the drop filter: %+v", pool)
+		}
+	})
+
+	t.Run("misaligned non-empty api_keys nulls the pool instead of partial filtering", func(t *testing.T) {
+		payload := config.SettingsDTO{Upstreams: []config.UpstreamDTO{{
+			Name:    "u1",
+			APIKeys: []string{maskSecret(realA), maskSecret(realB)},
+			CredentialPool: []config.CredentialKeyDTO{
+				{Ref: "u1-key-11", Secret: maskSecret(realA)},
+				{Ref: "u1-key-12", Secret: maskSecret(realB)},
+				{Ref: "u1-key-local-13", Secret: orphanMask},
+			},
+		}}}
+
+		restoreMaskedSecrets(&payload, newSnap())
+
+		up := payload.Upstreams[0]
+		if up.CredentialPool != nil {
+			t.Fatalf("misaligned pool must be discarded wholesale, got %+v", up.CredentialPool)
+		}
+	})
 }
 
 
