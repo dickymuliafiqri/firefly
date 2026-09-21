@@ -1068,3 +1068,134 @@ func TestLoadCatalogSnapshot_SkipsEmptySecretCredential(t *testing.T) {
 		t.Fatalf("expected the valid secret to remain, got %q", sec)
 	}
 }
+
+// TestStore_SaveSettings_PrunesOrphanCredentials guards the credential-pool
+// duplication regression: the pool carried by the payload is authoritative for
+// its upstream, so rows whose ref is absent from it must be deleted. Older
+// dashboard imports minted a brand-new ref family on every import, which never
+// collided on UNIQUE(upstream_id, ref) and therefore accumulated unbounded.
+// A payload without a credential pool must remain non-authoritative (no prune).
+func TestStore_SaveSettings_PrunesOrphanCredentials(t *testing.T) {
+	ctx := context.Background()
+	store, db := setupTestDB(t)
+
+	isEn := true
+	settings := func(pool []config.CredentialKeyDTO) config.SettingsDTO {
+		return config.SettingsDTO{
+			Upstreams: []config.UpstreamDTO{
+				{
+					Name:           "dahl",
+					Protocol:       "openai",
+					BaseURL:        "https://api.dahl.ai/v1",
+					KeyStrategy:    "round_robin",
+					Enabled:        &isEn,
+					CredentialPool: pool,
+				},
+				{
+					Name:        "uno",
+					Protocol:    "openai",
+					BaseURL:     "https://api.uno.ai/v1",
+					KeyStrategy: "round_robin",
+					Enabled:     &isEn,
+					CredentialPool: []config.CredentialKeyDTO{
+						{Ref: "uno-key-7", Secret: "sk-uno-1"},
+						{Ref: "uno-key-9", Secret: "sk-uno-2"},
+					},
+				},
+			},
+		}
+	}
+	upstreamID := func(name string) int64 {
+		t.Helper()
+		var id int64
+		if err := db.QueryRowContext(ctx, "SELECT id FROM upstreams WHERE name = ?", name).Scan(&id); err != nil {
+			t.Fatalf("resolve upstream %q: %v", name, err)
+		}
+		return id
+	}
+	countCreds := func(name string) int {
+		t.Helper()
+		var n int
+		if err := db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM upstream_credentials WHERE upstream_id = ?", upstreamID(name)).Scan(&n); err != nil {
+			t.Fatalf("count credentials of %q: %v", name, err)
+		}
+		return n
+	}
+
+	dahlPool := []config.CredentialKeyDTO{
+		{Ref: "dahl-key-101", Secret: "sk-a"},
+		{Ref: "dahl-key-102", Secret: "sk-b"},
+	}
+	if err := store.SaveSettings(ctx, settings(dahlPool)); err != nil {
+		t.Fatalf("initial SaveSettings: %v", err)
+	}
+
+	// Simulate a stale row left behind by an older import flow, plus a
+	// credential whose secret has not replicated yet (must survive the prune).
+	now := time.Now().UnixMilli()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO upstream_credentials (upstream_id, ref, secret, status, is_active, created_at, updated_at)
+		VALUES (?, 'upstream-key-1', 'sk-a', 'active', 1, ?, ?)
+	`, upstreamID("dahl"), now, now); err != nil {
+		t.Fatalf("insert stale credential: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO upstream_credentials (upstream_id, ref, secret, status, is_active, created_at, updated_at)
+		VALUES (?, 'dahl-key-999', NULL, 'active', 1, ?, ?)
+	`, upstreamID("dahl"), now, now); err != nil {
+		t.Fatalf("insert unreplicated credential: %v", err)
+	}
+	// A deactivated credential is a deliberate tombstone, invisible to the loaded
+	// pool, and must survive a save that does not mention it.
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO upstream_credentials (upstream_id, ref, secret, status, is_active, created_at, updated_at)
+		VALUES (?, 'dahl-key-555', 'sk-dead', 'deactivated', 0, ?, ?)
+	`, upstreamID("dahl"), now, now); err != nil {
+		t.Fatalf("insert deactivated credential: %v", err)
+	}
+	if got := countCreds("dahl"); got != 5 {
+		t.Fatalf("expected 5 credentials before prune, got %d", got)
+	}
+
+	if err := store.SaveSettings(ctx, settings(dahlPool)); err != nil {
+		t.Fatalf("SaveSettings with authoritative pool: %v", err)
+	}
+	if got := countCreds("dahl"); got != 4 {
+		t.Fatalf("expected 4 credentials after prune (stale row gone, unreplicated + deactivated kept), got %d", got)
+	}
+	var stale int
+	if err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM upstream_credentials WHERE ref = 'upstream-key-1'").Scan(&stale); err != nil {
+		t.Fatalf("query stale ref: %v", err)
+	}
+	if stale != 0 {
+		t.Fatal("stale ref 'upstream-key-1' should have been pruned")
+	}
+	var unreplicated int
+	if err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM upstream_credentials WHERE ref = 'dahl-key-999'").Scan(&unreplicated); err != nil {
+		t.Fatalf("query unreplicated ref: %v", err)
+	}
+	if unreplicated != 1 {
+		t.Fatal("credential without a replicated secret must not be pruned")
+	}
+	var deactivated int
+	if err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM upstream_credentials WHERE ref = 'dahl-key-555'").Scan(&deactivated); err != nil {
+		t.Fatalf("query deactivated ref: %v", err)
+	}
+	if deactivated != 1 {
+		t.Fatal("deactivated credential tombstone must not be pruned")
+	}
+	if got := countCreds("uno"); got != 2 {
+		t.Fatalf("prune must be scoped to the saved upstream; uno has %d credentials, want 2", got)
+	}
+
+	if err := store.SaveSettings(ctx, settings(nil)); err != nil {
+		t.Fatalf("SaveSettings with empty pool: %v", err)
+	}
+	if got := countCreds("dahl"); got != 4 {
+		t.Fatalf("empty pool must not prune; dahl has %d credentials, want 4", got)
+	}
+}

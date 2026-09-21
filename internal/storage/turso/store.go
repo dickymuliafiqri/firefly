@@ -764,6 +764,71 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 	}, nil
 }
 
+// pruneOrphanCredentials removes active upstream_credentials rows of upstreamID
+// whose ref is absent from keep. Only rows the loader would have surfaced are
+// eligible: deactivated rows are invisible to the credential pool by design, so
+// the payload is authoritative for active credentials only and must never delete
+// a tombstone. Credentials without a usable secret (empty `secret` and no joined
+// api_keys row) are preserved too — they are invisible to the loaded pool, so a
+// save issued while their secret was still replicating must not delete them.
+// Rows are collected before deleting so the result set is fully drained on the
+// single-connection pool used by the Turso client.
+//
+// The `api_keys` table is owned by the harvester and may not exist in every
+// deployment, so the join is best-effort: a failure falls back to reading the
+// credentials table alone.
+func pruneOrphanCredentials(ctx context.Context, tx *sql.Tx, upstreamID int64, keep map[string]bool) error {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT uc.id, uc.ref, uc.secret, ak.api_key
+		FROM upstream_credentials uc
+		LEFT JOIN api_keys ak ON uc.api_key_id = ak.id
+		WHERE uc.upstream_id = ? AND uc.is_active = 1 AND uc.status = 'active'
+	`, upstreamID)
+	if err != nil {
+		rows, err = tx.QueryContext(ctx, `
+			SELECT id, ref, secret, NULL FROM upstream_credentials
+			WHERE upstream_id = ? AND is_active = 1 AND status = 'active'
+		`, upstreamID)
+		if err != nil {
+			return err
+		}
+	}
+
+	var staleIDs []int64
+	for rows.Next() {
+		var (
+			id        int64
+			ref       string
+			secret    sql.NullString
+			joinedKey sql.NullString
+		)
+		if err := rows.Scan(&id, &ref, &secret, &joinedKey); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if keep[ref] {
+			continue
+		}
+		if strings.TrimSpace(secret.String) == "" && !joinedKey.Valid {
+			continue
+		}
+		staleIDs = append(staleIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, id := range staleIDs {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM upstream_credentials WHERE id = ?`, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // SaveSettings writes the full SettingsDTO into the Turso database in an atomic
 // transaction, updates catalog revisions, and pushes changes to the cloud.
 func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) error {
@@ -902,12 +967,21 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 			existingID = newID
 		}
 
-		// Update upstream_credentials if explicit CredentialPool is provided
+		// Update upstream_credentials if explicit CredentialPool is provided.
+		// The payload is authoritative for this upstream's active credentials:
+		// rows it no longer carries are orphans and must be pruned. Older
+		// dashboard save flows minted a brand new ref family on every import
+		// (positional index or timestamp), so stale rows never collided on
+		// UNIQUE(upstream_id, ref) and accumulated without bound —
+		// LoadCatalogSnapshot then re-read them on every load. Saves that do not
+		// carry a pool (empty slice) never prune.
 		if len(u.CredentialPool) > 0 {
+			keepRefs := make(map[string]bool, len(u.CredentialPool))
 			for _, k := range u.CredentialPool {
 				if k.Ref == "" {
 					continue
 				}
+				keepRefs[k.Ref] = true
 				_, _ = tx.ExecContext(ctx, `
 					INSERT INTO upstream_credentials (
 						upstream_id, ref, secret, rps, max_concurrent, status, is_active, created_at, updated_at
@@ -918,6 +992,9 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 						max_concurrent = excluded.max_concurrent,
 						updated_at = excluded.updated_at
 				`, existingID, k.Ref, k.Secret, k.RPS, k.MaxConcurrent, now, now)
+			}
+			if err := pruneOrphanCredentials(ctx, tx, existingID, keepRefs); err != nil {
+				return fmt.Errorf("prune credentials for upstream %q: %w", u.Name, err)
 			}
 		}
 	}
