@@ -1,5 +1,14 @@
 package domain
 
+const (
+	// DefaultMaxToolOutputChars bounds a single tool result when neither the
+	// tenant nor the global configuration sets a limit.
+	DefaultMaxToolOutputChars = 12000
+	// DefaultContextThreshold is the token count above which Headroom prunes
+	// stale middle conversation history.
+	DefaultContextThreshold = 32000
+)
+
 // TokenSaverConfig defines gateway-level prompt and tool output optimization.
 type TokenSaverConfig struct {
 	Enabled            bool
@@ -19,7 +28,7 @@ func DefaultTokenSaverConfig() TokenSaverConfig {
 		TerseOutput:        false,
 		MinimalCode:        false,
 		CompressContext:    false,
-		MaxToolOutputChars: 12000,
-		ContextThreshold:   32000,
+		MaxToolOutputChars: DefaultMaxToolOutputChars,
+		ContextThreshold:   DefaultContextThreshold,
 	}
 }

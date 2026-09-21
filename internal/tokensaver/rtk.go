@@ -6,15 +6,13 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
-	"unicode/utf8"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
-)
 
-// DefaultMaxToolOutputChars bounds a single tool result when the caller does not
-// configure a limit. It matches domain.DefaultTokenSaverConfig.
-const DefaultMaxToolOutputChars = 12000
+	"github.com/dickymuliafiqri/firefly/internal/domain"
+	"github.com/dickymuliafiqri/firefly/internal/textx"
+)
 
 var (
 	// ansiRegex matches ANSI escape sequences (colors, cursor movements, etc.),
@@ -221,35 +219,6 @@ func CompactGitDiff(s string) string {
 	return strings.Join(out, "\n")
 }
 
-// safeHead returns the first n bytes of s without splitting a UTF-8 rune.
-func safeHead(s string, n int) string {
-	if n <= 0 {
-		return ""
-	}
-	if n >= len(s) {
-		return s
-	}
-	for n > 0 && !utf8.RuneStart(s[n]) {
-		n--
-	}
-	return s[:n]
-}
-
-// safeTail returns the last n bytes of s without splitting a UTF-8 rune.
-func safeTail(s string, n int) string {
-	if n <= 0 {
-		return ""
-	}
-	if n >= len(s) {
-		return s
-	}
-	start := len(s) - n
-	for start < len(s) && !utf8.RuneStart(s[start]) {
-		start++
-	}
-	return s[start:]
-}
-
 // truncateMarker reports how many bytes were dropped from the middle.
 func truncateMarker(omitted int) string {
 	return "\n\n... [RTK: truncated " + strconv.Itoa(omitted) + " characters] ...\n\n"
@@ -262,7 +231,7 @@ func truncateMarker(omitted int) string {
 // maxChars and never longer than the input. Cuts land on UTF-8 rune boundaries.
 func SmartTruncate(s string, maxChars int) string {
 	if maxChars <= 0 {
-		maxChars = DefaultMaxToolOutputChars
+		maxChars = domain.DefaultMaxToolOutputChars
 	}
 	if len(s) <= maxChars {
 		return s
@@ -273,20 +242,20 @@ func SmartTruncate(s string, maxChars int) string {
 	worst := len(truncateMarker(len(s)))
 	keep := maxChars - worst
 	if keep < 2 {
-		return safeHead(s, maxChars)
+		return textx.Head(s, maxChars)
 	}
 
 	headLen := keep / 3
 	tailLen := keep - headLen
-	head := safeHead(s, headLen)
-	// safeTail must receive the whole string: it aligns the last tailLen bytes
+	head := textx.Head(s, headLen)
+	// textx.Tail must receive the whole string: it aligns the last tailLen bytes
 	// on a rune boundary itself, which a pre-sliced argument would defeat.
-	tail := safeTail(s, tailLen)
+	tail := textx.Tail(s, tailLen)
 	omitted := len(s) - len(head) - len(tail)
 
 	out := head + truncateMarker(omitted) + tail
 	if len(out) > maxChars || len(out) >= len(s) {
-		return safeHead(s, maxChars)
+		return textx.Head(s, maxChars)
 	}
 	return out
 }

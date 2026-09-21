@@ -9,10 +9,16 @@ import (
 	"strings"
 
 	"github.com/tidwall/gjson"
+
+	"github.com/dickymuliafiqri/firefly/internal/textx"
 )
 
 // GrokCLIModelsPath is the Grok CLI model-discovery endpoint path.
 const GrokCLIModelsPath = "/models"
+
+// maxErrorBodyChars bounds the upstream error body captured in HTTPError; the
+// message is surfaced to clients, so it must stay short and single-line.
+const maxErrorBodyChars = 512
 
 // HTTPError captures a non-2xx HTTP status and response body from the Grok CLI endpoint.
 type HTTPError struct {
@@ -72,7 +78,7 @@ func FetchModels(ctx context.Context, client *http.Client, baseURL, accessToken 
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
 		return nil, &HTTPError{
 			StatusCode: resp.StatusCode,
-			Body:       strings.TrimSpace(string(body)),
+			Body:       textx.Excerpt(body, maxErrorBodyChars),
 		}
 	}
 

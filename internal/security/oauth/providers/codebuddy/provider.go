@@ -14,6 +14,7 @@ import (
 
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
+	"github.com/dickymuliafiqri/firefly/internal/textx"
 )
 
 // CodeBuddy return codes
@@ -21,6 +22,10 @@ const (
 	CodeSuccess = 0
 	CodePending = 11217 // RetryFetchToken
 )
+
+// maxErrorBodyChars bounds the upstream error body embedded in error messages.
+// These errors are logged, and an unbounded body can be a whole HTML page.
+const maxErrorBodyChars = 256
 
 // Region defines regional configurations for Tencent CodeBuddy.
 type Region string
@@ -175,7 +180,7 @@ func (p *Provider) PrepareAuth(ctx context.Context, redirectURI string) (*ports.
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("state request failed with status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("state request failed with status %d: %s", resp.StatusCode, textx.Excerpt(body, maxErrorBodyChars))
 	}
 
 	var data stateResponse
@@ -243,7 +248,7 @@ func (p *Provider) PollToken(ctx context.Context, session *ports.AuthSession) (*
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, false, fmt.Errorf("poll request failed with status %d: %s", resp.StatusCode, string(body))
+		return nil, false, fmt.Errorf("poll request failed with status %d: %s", resp.StatusCode, textx.Excerpt(body, maxErrorBodyChars))
 	}
 
 	var data tokenResponse
@@ -346,7 +351,7 @@ func (p *Provider) RefreshToken(ctx context.Context, conn *domain.OAuthConnectio
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("refresh request failed with status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("refresh request failed with status %d: %s", resp.StatusCode, textx.Excerpt(body, maxErrorBodyChars))
 	}
 
 	var data tokenResponse

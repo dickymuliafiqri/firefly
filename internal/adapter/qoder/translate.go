@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/tidwall/gjson"
+
+	"github.com/dickymuliafiqri/firefly/internal/textx"
 )
 
 var (
@@ -204,7 +206,7 @@ func itoa(n int) string {
 
 func truncate(s string, n int) string {
 	if len(s) > n {
-		return s[:n] + "..."
+		return textx.Head(s, n) + "..."
 	}
 	return s
 }

@@ -20,6 +20,17 @@ type EgressConfig struct {
 	DialTimeout time.Duration
 }
 
+// EgressModeWarp selects the embedded WARP tunnel.
+const EgressModeWarp = "warp"
+
+// IsWarpEgress reports whether mode selects the WARP tunnel. It lives next to the
+// dialer selection it mirrors so that callers reasoning about a client's egress —
+// dropping idle sockets on rotation, for instance — cannot drift from the
+// transport that actually dials.
+func IsWarpEgress(mode string) bool {
+	return strings.EqualFold(strings.TrimSpace(mode), EgressModeWarp)
+}
+
 // ConfigureTransportEgress configures the outbound dialer and proxy function on the provided http.Transport
 // according to the specified egress mode (direct, warp, or socks5/http proxy).
 func ConfigureTransportEgress(tr *http.Transport, cfg EgressConfig) {
@@ -38,13 +49,16 @@ func ConfigureTransportEgress(tr *http.Transport, cfg EgressConfig) {
 
 	var proxyFunc func(*http.Request) (*url.URL, error) = http.ProxyFromEnvironment
 
-	switch strings.ToLower(strings.TrimSpace(cfg.Mode)) {
-	case "warp":
+	mode := strings.ToLower(strings.TrimSpace(cfg.Mode))
+	switch {
+	case IsWarpEgress(mode):
+		// Without a dialer there is no tunnel to route through, and the
+		// environment proxy is left in place rather than disabled.
 		if cfg.WarpDialer != nil {
 			dialContext = cfg.WarpDialer.DialContext
 			proxyFunc = nil
 		}
-	case "proxy":
+	case mode == "proxy":
 		trimmedURL := strings.TrimSpace(cfg.ProxyURL)
 		if trimmedURL != "" {
 			lowerURL := strings.ToLower(trimmedURL)

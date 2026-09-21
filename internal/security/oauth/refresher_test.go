@@ -195,6 +195,16 @@ func TestRefresher_Tick_ContextCancellation(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("refresher.Tick did not abort promptly on context cancellation")
 	}
+
+	// The sweep aborted, but the refresh it had already started is shared work: it
+	// finishes on its own so the rotated token is not lost. Wait for that write to
+	// land, otherwise the detached flight would race the t.TempDir cleanup. Get
+	// blocks on the store mutex Save holds across its write, so a successful read
+	// of the new token means the file is on disk.
+	require.Eventually(t, func() bool {
+		conn, err := store.Get(context.Background(), "conn-1")
+		return err == nil && conn.Token.AccessToken == "new-access-token"
+	}, 2*time.Second, 5*time.Millisecond, "the shared refresh must persist the rotated token")
 }
 
 func TestRefresher_Run_Shutdown(t *testing.T) {

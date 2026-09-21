@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/curve25519"
+
+	"github.com/dickymuliafiqri/firefly/internal/textx"
 )
 
 // CloudflareDefaults holds canonical WARP endpoints and peer public keys.
@@ -159,7 +161,7 @@ func RegisterDevice(ctx context.Context, httpClient *http.Client, keys *KeyPair,
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("registration failed with status %d: %s", resp.StatusCode, snippet(bodyBytes))
+		return nil, fmt.Errorf("registration failed with status %d: %s", resp.StatusCode, textx.Excerpt(bodyBytes, maxErrorBodySnippet))
 	}
 
 	var regResp RegistrationResponse
@@ -222,16 +224,7 @@ func updateLicenseKey(ctx context.Context, httpClient *http.Client, reg *Registr
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("license attach failed with status %d: %s", resp.StatusCode, snippet(body))
+		return fmt.Errorf("license attach failed with status %d: %s", resp.StatusCode, textx.Excerpt(body, maxErrorBodySnippet))
 	}
 	return nil
-}
-
-// snippet renders a bounded, single-line excerpt of an API error body.
-func snippet(b []byte) string {
-	s := strings.Join(strings.Fields(string(b)), " ")
-	if len(s) > maxErrorBodySnippet {
-		s = strings.ToValidUTF8(s[:maxErrorBodySnippet], "") + "..."
-	}
-	return s
 }

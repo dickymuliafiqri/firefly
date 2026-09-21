@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/dickymuliafiqri/firefly/internal/reqid"
+	"github.com/dickymuliafiqri/firefly/internal/textx"
 )
 
 // hopByHopHeaders are connection-scoped and must never be forwarded upstream.
@@ -65,13 +66,10 @@ func writeUpstreamError(w http.ResponseWriter, status int, body []byte) {
 		_, _ = w.Write(body)
 		return
 	}
-	msg := strings.TrimSpace(string(body))
+	// Cap message length to avoid relaying huge HTML error pages.
+	msg := textx.Excerpt(body, 512)
 	if msg == "" {
 		msg = http.StatusText(status)
-	}
-	// Cap message length to avoid relaying huge HTML error pages.
-	if len(msg) > 512 {
-		msg = msg[:512] + "…"
 	}
 	WriteError(w, status, StatusToType(status), msg)
 }

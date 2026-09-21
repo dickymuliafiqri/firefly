@@ -12,7 +12,6 @@ package upstream
 
 import (
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -41,13 +40,6 @@ func NewPool(warpMgr ...*warp.Manager) *Pool {
 		p.warpMgr = warpMgr[0]
 	}
 	return p
-}
-
-// SetWarpManager configures the WARP manager for the pool.
-func (p *Pool) SetWarpManager(wm *warp.Manager) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.warpMgr = wm
 }
 
 // CloseIdleWarpConnections drops idle keep-alive sockets held by upstreams whose
@@ -93,7 +85,7 @@ func (p *Pool) Client(u *domain.Upstream) *http.Client {
 	c := buildClient(u, wm)
 	p.clients[u.Name] = pooledClient{
 		client:     c,
-		warpEgress: strings.EqualFold(strings.TrimSpace(u.EgressMode), "warp") && wm != nil,
+		warpEgress: warp.IsWarpEgress(u.EgressMode) && wm != nil,
 	}
 	return c
 }

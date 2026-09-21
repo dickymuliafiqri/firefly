@@ -13,11 +13,16 @@ import (
 
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
-	"golang.org/x/sync/singleflight"
+	"github.com/dickymuliafiqri/firefly/internal/singleflightx"
 )
 
 // DefaultSessionTTL is how long an unexchanged AuthSession remains valid.
 const DefaultSessionTTL = 10 * time.Minute
+
+// refreshFlightTimeout bounds a shared refresh flight. Detaching the flight from
+// the caller's context removes the caller's deadline along with its
+// cancellation, so the flight needs a deadline of its own.
+const refreshFlightTimeout = 2 * time.Minute
 
 // ProviderSummaryDTO describes an available OAuth provider for client/frontend discovery.
 type ProviderSummaryDTO struct {
@@ -33,7 +38,7 @@ type Manager struct {
 	providers map[string]ports.OAuthProvider
 	sessions  map[string]*ports.AuthSession // keyed by State
 	sessionMu sync.Mutex
-	sflight   singleflight.Group
+	sflight   singleflightx.Group[*domain.OAuthConnection]
 	logger    *slog.Logger
 }
 
@@ -312,9 +317,16 @@ func (m *Manager) RefreshToken(ctx context.Context, connectionID string) (*domai
 		return nil, errors.New("no token store configured")
 	}
 
-	// Singleflight deduplicates concurrent refresh calls for the same connection
-	res, err, _ := m.sflight.Do(connectionID, func() (any, error) {
-		conn, err := m.store.Get(ctx, connectionID)
+	// Concurrent refreshes for one connection are coalesced into a single
+	// provider call. The flight runs detached from the caller's context: a
+	// request that has already ended must not abort a refresh the other waiters
+	// are sharing, nor fail the store write after the provider has already
+	// rotated the refresh token. Waiters still stop waiting on their own ctx.
+	conn, err := m.sflight.Do(ctx, connectionID, func() (*domain.OAuthConnection, error) {
+		flightCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshFlightTimeout)
+		defer cancel()
+
+		conn, err := m.store.Get(flightCtx, connectionID)
 		if err != nil {
 			return nil, err
 		}
@@ -324,7 +336,7 @@ func (m *Manager) RefreshToken(ctx context.Context, connectionID string) (*domai
 			return nil, fmt.Errorf("provider %q not found", conn.Provider)
 		}
 
-		newToken, err := p.RefreshToken(ctx, conn)
+		newToken, err := p.RefreshToken(flightCtx, conn)
 		if err != nil {
 			return nil, fmt.Errorf("refresh token for %q: %w", conn.ID, err)
 		}
@@ -335,17 +347,16 @@ func (m *Manager) RefreshToken(ctx context.Context, connectionID string) (*domai
 		conn.Token = *newToken
 		conn.UpdatedAt = time.Now()
 
-		if err := m.store.Save(ctx, conn); err != nil {
+		if err := m.store.Save(flightCtx, conn); err != nil {
 			return nil, fmt.Errorf("save refreshed connection %q: %w", conn.ID, err)
 		}
 
 		return conn, nil
 	})
-
 	if err != nil {
 		return nil, err
 	}
-	return res.(*domain.OAuthConnection), nil
+	return conn, nil
 }
 
 // TokenSource returns a thread-safe ports.TokenSource implementation that automatically

@@ -4,10 +4,6 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 )
 
-// defaultContextThreshold mirrors domain.DefaultTokenSaverConfig and is used when
-// a caller passes a non-positive threshold.
-const defaultContextThreshold = 32000
-
 // Process applies enabled Token Saver optimizations (RTK, Caveman, Ponytail, Headroom)
 // to an inbound OpenAI chat completion payload.
 //

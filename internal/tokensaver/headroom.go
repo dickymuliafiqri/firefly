@@ -5,6 +5,9 @@ import (
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	"github.com/dickymuliafiqri/firefly/internal/domain"
+	"github.com/dickymuliafiqri/firefly/internal/textx"
 )
 
 const (
@@ -29,7 +32,7 @@ const (
 // content is rewritten so tool_call / tool_result pairing survives.
 func PruneMiddleHistory(body []byte, tokenThreshold int) ([]byte, bool) {
 	if tokenThreshold <= 0 {
-		tokenThreshold = defaultContextThreshold
+		tokenThreshold = domain.DefaultContextThreshold
 	}
 	// Approximate 1 token ~= 4 chars
 	charThreshold := tokenThreshold * 4
@@ -70,11 +73,11 @@ func PruneMiddleHistory(body []byte, tokenThreshold int) ([]byte, bool) {
 		case len(orig) > headroomMiddleChars:
 			// Keep a short leading excerpt so the model can still tell what the
 			// turn was about; the cut never splits a UTF-8 rune.
-			head := safeHead(orig, headroomMiddleHeadChars)
+			head := textx.Head(orig, headroomMiddleHeadChars)
 			pruned = fmt.Sprintf("%s\n\n... [Headroom: %d characters pruned from middle context history] ...",
 				head, len(orig)-len(head))
 		case role == "tool" && len(orig) > headroomToolChars:
-			head := safeHead(orig, headroomToolHeadChars)
+			head := textx.Head(orig, headroomToolHeadChars)
 			pruned = fmt.Sprintf("%s\n\n... [Headroom: tool output pruned from middle context] ...", head)
 		default:
 			continue

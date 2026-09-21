@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/tidwall/gjson"
+
+	"github.com/dickymuliafiqri/firefly/internal/textx"
 )
 
 // A Qoder Personal Access Token (pt-...) cannot COSY-sign requests directly. It
@@ -130,7 +132,7 @@ func exchangeJobToken(ctx context.Context, client *http.Client, pat string) (job
 	}()
 	buf, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
-		return "", time.Time{}, fmt.Errorf("qoder PAT exchange failed: %d %s", resp.StatusCode, truncate(string(buf), 180))
+		return "", time.Time{}, fmt.Errorf("qoder PAT exchange failed: %d %s", resp.StatusCode, textx.Excerpt(buf, 180))
 	}
 	if !gjson.ValidBytes(buf) {
 		return "", time.Time{}, fmt.Errorf("qoder PAT exchange returned invalid json")

@@ -112,6 +112,33 @@ func TestConfigureTransportEgress(t *testing.T) {
 	if trHTTPProxy.Proxy == nil {
 		t.Error("expected non-nil Proxy function for http proxy egress")
 	}
+
+	// 5. Warp mode without a dialer: nothing can be tunneled, so the transport
+	// must stay usable rather than claiming to egress through WARP (the pool
+	// keys idle-socket cleanup off the same predicate).
+	trWarpNoDialer := &http.Transport{}
+	ConfigureTransportEgress(trWarpNoDialer, EgressConfig{Mode: "warp"})
+	if trWarpNoDialer.DialContext == nil {
+		t.Error("expected a usable dialer when the warp dialer is missing")
+	}
+	if trWarpNoDialer.Proxy == nil {
+		t.Error("expected the environment proxy to stay in place without a warp dialer")
+	}
+}
+
+func TestIsWarpEgress(t *testing.T) {
+	t.Parallel()
+
+	for _, mode := range []string{"warp", "WARP", " Warp ", "wArP"} {
+		if !IsWarpEgress(mode) {
+			t.Errorf("expected %q to select warp egress", mode)
+		}
+	}
+	for _, mode := range []string{"", "direct", "proxy", "warp2", "warpx"} {
+		if IsWarpEgress(mode) {
+			t.Errorf("expected %q not to select warp egress", mode)
+		}
+	}
 }
 
 func TestManager_StatusInitial(t *testing.T) {

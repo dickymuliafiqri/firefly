@@ -21,10 +21,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"golang.org/x/sync/singleflight"
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun/netstack"
+
+	"github.com/dickymuliafiqri/firefly/internal/singleflightx"
 )
 
 const (
@@ -123,7 +124,7 @@ type SavedIdentity struct {
 // Manager coordinates userspace WireGuard sessions, dynamic IP rotation, and status telemetry.
 type Manager struct {
 	current      atomic.Pointer[Session]
-	sfg          singleflight.Group
+	sfg          singleflightx.Group[*Session]
 	logger       *slog.Logger
 	httpClient   *http.Client
 	licenseKey   string
@@ -499,27 +500,14 @@ func (m *Manager) ensureSession(ctx context.Context) (*Session, error) {
 // must not destroy setup work every other request is waiting on. The flight
 // itself runs on the manager context, so shutdown still cancels it.
 func (m *Manager) runFlight(ctx context.Context, key string, fn func() (*Session, error)) (*Session, error) {
-	res := m.sfg.DoChan(key, func() (any, error) {
-		session, err := fn()
-		if err != nil {
-			return nil, err
-		}
-		return session, nil
-	})
-
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case r := <-res:
-		if r.Err != nil {
-			return nil, r.Err
-		}
-		session, ok := r.Val.(*Session)
-		if !ok || session == nil {
-			return nil, errors.New("warp tunnel unavailable")
-		}
-		return session, nil
+	session, err := m.sfg.Do(ctx, key, fn)
+	if err != nil {
+		return nil, err
 	}
+	if session == nil {
+		return nil, errors.New("warp tunnel unavailable")
+	}
+	return session, nil
 }
 
 // restoreSession rebuilds a tunnel from the persisted identity. The session is

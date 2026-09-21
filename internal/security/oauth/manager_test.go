@@ -8,6 +8,7 @@ import (
 
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
+	"github.com/stretchr/testify/require"
 )
 
 type mockProvider struct {
@@ -16,9 +17,9 @@ type mockProvider struct {
 	sensitive bool
 }
 
-func (m *mockProvider) Name() string            { return m.name }
+func (m *mockProvider) Name() string              { return m.name }
 func (m *mockProvider) FlowType() domain.FlowType { return m.flowType }
-func (m *mockProvider) IsSensitive() bool        { return m.sensitive }
+func (m *mockProvider) IsSensitive() bool         { return m.sensitive }
 
 func (m *mockProvider) PrepareAuth(ctx context.Context, redirectURI string) (*ports.AuthSession, error) {
 	return &ports.AuthSession{
@@ -111,6 +112,104 @@ func TestManager_FlowAndTokenSource(t *testing.T) {
 	}
 	if refreshedTok != "new-access-token" {
 		t.Fatalf("expected refreshed token, got: %s", refreshedTok)
+	}
+}
+
+// blockingProvider blocks inside RefreshToken until the test releases it, so the
+// test can act while a shared refresh flight is in progress.
+type blockingProvider struct {
+	name    string
+	entered chan struct{}
+	release chan struct{}
+	ctxLost chan struct{}
+}
+
+func (p *blockingProvider) Name() string              { return p.name }
+func (p *blockingProvider) FlowType() domain.FlowType { return domain.FlowTypeStandardAuthCode }
+func (p *blockingProvider) IsSensitive() bool         { return false }
+func (p *blockingProvider) PrepareAuth(context.Context, string) (*ports.AuthSession, error) {
+	return nil, nil
+}
+
+func (p *blockingProvider) ExchangeCode(context.Context, string, *ports.AuthSession) (*domain.OAuthConnection, error) {
+	return nil, nil
+}
+
+func (p *blockingProvider) RefreshToken(ctx context.Context, conn *domain.OAuthConnection) (*domain.OAuthToken, error) {
+	close(p.entered)
+	select {
+	case <-p.release:
+	case <-ctx.Done():
+		close(p.ctxLost)
+		return nil, ctx.Err()
+	}
+	return &domain.OAuthToken{
+		AccessToken:  "rotated-access-token",
+		RefreshToken: conn.Token.RefreshToken,
+		ExpiresAt:    time.Now().Add(time.Hour),
+	}, nil
+}
+
+// A refresh is shared work: the provider has already rotated the token by the
+// time a caller disappears, so a caller's cancellation must not abort the flight
+// (the new refresh token would be lost, breaking the connection for good) nor
+// discard the store write.
+func TestManager_RefreshTokenSurvivesCallerCancel(t *testing.T) {
+	store, _ := NewStore("")
+	mgr := NewManager(store)
+
+	p := &blockingProvider{
+		name:    "blocking-prov",
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+		ctxLost: make(chan struct{}),
+	}
+	require.NoError(t, mgr.RegisterProvider(p))
+	require.NoError(t, store.Save(context.Background(), &domain.OAuthConnection{
+		ID:       "blocking-user",
+		Provider: p.name,
+		Token: domain.OAuthToken{
+			AccessToken:  "stale-access-token",
+			RefreshToken: "refresh-token-1",
+			ExpiresAt:    time.Now().Add(-time.Hour),
+		},
+	}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	first := make(chan error, 1)
+	go func() {
+		_, err := mgr.RefreshToken(ctx, "blocking-user")
+		first <- err
+	}()
+	<-p.entered
+
+	// The caller that started the flight walks away...
+	cancel()
+
+	// ...and another caller that gives up stops waiting without disturbing it.
+	abandoned, abandon := context.WithCancel(context.Background())
+	abandon()
+	if _, err := mgr.RefreshToken(abandoned, "blocking-user"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("a waiter with a canceled context must return promptly, got %v", err)
+	}
+
+	select {
+	case <-p.ctxLost:
+		t.Fatal("the shared refresh was canceled by a caller that walked away")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(p.release)
+
+	// The flight finishes on its own and the rotated token is persisted, so the
+	// next request gets a working connection.
+	require.Eventually(t, func() bool {
+		conn, err := store.Get(context.Background(), "blocking-user")
+		return err == nil && conn.Token.AccessToken == "rotated-access-token"
+	}, 2*time.Second, 5*time.Millisecond, "the rotated token must be persisted")
+
+	if err := <-first; !errors.Is(err, context.Canceled) {
+		t.Fatalf("the canceled caller must observe its own cancellation, got %v", err)
 	}
 }
 
@@ -262,4 +361,3 @@ func TestManager_ResolveConnection(t *testing.T) {
 		t.Fatalf("unexpected connection: %+v", resolved2)
 	}
 }
-
