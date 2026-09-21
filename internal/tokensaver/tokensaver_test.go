@@ -133,6 +133,26 @@ func TestSmartTruncateNeverGrows(t *testing.T) {
 	require.True(t, utf8.ValidString(out))
 }
 
+// Regression: the tail cut used to be pre-sliced before the rune alignment ran,
+// so a multibyte tail came back starting on a continuation byte.
+func TestSmartTruncateKeepsUTF8Tail(t *testing.T) {
+	lastRune := func(s string) rune {
+		r := []rune(s)
+		return r[len(r)-1]
+	}
+
+	for pad := 0; pad < 8; pad++ {
+		for _, maxChars := range []int{120, 300, 12000} {
+			in := strings.Repeat("a", pad) + strings.Repeat("🔥", 400) + strings.Repeat("z", pad)
+			out := tokensaver.SmartTruncate(in, maxChars)
+
+			require.True(t, utf8.ValidString(out), "pad %d cap %d", pad, maxChars)
+			require.LessOrEqual(t, len(out), maxChars, "pad %d cap %d", pad, maxChars)
+			require.Equal(t, lastRune(in), lastRune(out), "tail must survive the cut: pad %d cap %d", pad, maxChars)
+		}
+	}
+}
+
 // Regression: distinct tool-output lines that merely contain a percentage, the
 // word "progress", or a download/upload verb used to be merged into one line and
 // silently deleted.

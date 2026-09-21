@@ -3,6 +3,7 @@ package warp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -609,6 +610,76 @@ func TestManager_InstallKeepsNewerSession(t *testing.T) {
 	}
 	waitFor(t, 5*time.Second, func() bool { return newer.closed.Load() },
 		"the superseded session was never drained")
+}
+
+// Publish and shutdown are serialized. A publisher must therefore either finish
+// before Close starts waiting or be refused outright: a drain registered while
+// Close is waiting for one is WaitGroup misuse, and it panics the process
+// instead of shutting down. The window is a few instructions wide, so this hammers
+// the interleaving and asserts the shutdown outcome that follow from the lock.
+func TestManager_ConcurrentPublishAndClose(t *testing.T) {
+	const publishers = 8
+
+	for iter := 0; iter < 500; iter++ {
+		mgr := NewManager(quietLogger(), "")
+		mgr.sessionGrace = time.Millisecond
+		mgr.current.Store(&Session{CreatedAt: time.Now().Add(-time.Second)})
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(publishers + 1)
+		for p := 0; p < publishers; p++ {
+			go func() {
+				defer wg.Done()
+				<-start
+				mgr.installSession(&Session{CreatedAt: time.Now()})
+			}()
+		}
+		go func() {
+			defer wg.Done()
+			<-start
+			mgr.Close()
+		}()
+		close(start)
+		wg.Wait()
+
+		if left := mgr.draining.Load(); left != 0 {
+			t.Fatalf("iteration %d: Close returned with %d drains still registered", iter, left)
+		}
+		if s := mgr.current.Load(); s != nil {
+			t.Fatalf("iteration %d: a publish resurrected the active session after shutdown", iter)
+		}
+	}
+}
+
+// A publish that loses to shutdown must report it instead of returning a closed
+// session that the caller would log as a successful rotation.
+func TestManager_InstallAfterCloseReturnsNil(t *testing.T) {
+	mgr := NewManager(quietLogger(), "")
+	mgr.current.Store(&Session{CreatedAt: time.Now()})
+	mgr.Close()
+
+	s := &Session{}
+	if got := mgr.installSession(s); got != nil {
+		t.Fatalf("expected nil once the manager is closed, got %+v", got)
+	}
+	if !s.closed.Load() {
+		t.Error("an unpublished session must be closed")
+	}
+}
+
+// A dial that races shutdown must fail fast: it used to load the cached
+// identity, build a WireGuard device and probe it before giving up.
+func TestManager_EnsureSessionFailsFastWhenClosed(t *testing.T) {
+	h := newHarness(t)
+	h.mgr.Close()
+
+	if _, err := h.mgr.ensureSession(context.Background()); !errors.Is(err, errClosed) {
+		t.Fatalf("expected errClosed, got %v", err)
+	}
+	if got := h.regCalls.Load(); got != 0 {
+		t.Errorf("a closed manager must not register a device, got %d registrations", got)
+	}
 }
 
 func TestSession_ConnectionRefcount(t *testing.T) {

@@ -143,6 +143,12 @@ type Manager struct {
 	draining  atomic.Int64
 	drainWG   sync.WaitGroup
 
+	// publishMu serializes session publication with shutdown. A drain registered
+	// while Close is already waiting for one is WaitGroup misuse (Add must not
+	// race Wait), so installSession publishes under this lock and Close takes it
+	// before it starts waiting.
+	publishMu sync.Mutex
+
 	// asyncRotations counts background 429-driven rotations. They are bounded by
 	// their own timeout and canceled by bgCtx, so shutdown does not wait on them.
 	asyncRotations atomic.Int64
@@ -211,13 +217,17 @@ func (m *Manager) Close() {
 		return
 	}
 	m.closeOnce.Do(func() {
+		m.publishMu.Lock()
 		m.closed.Store(true)
 		m.bgCancel()
 		// Tell draining goroutines to stop waiting for idle: the process is going
 		// away and the sockets die with it.
 		close(m.drainDone)
-		if s := m.current.Swap(nil); s != nil {
-			s.Close()
+		session := m.current.Swap(nil)
+		m.publishMu.Unlock()
+
+		if session != nil {
+			session.Close()
 		}
 		m.drainWG.Wait()
 	})
@@ -458,6 +468,9 @@ func (m *Manager) ensureSession(ctx context.Context) (*Session, error) {
 	if s := m.current.Load(); s != nil {
 		return s, nil
 	}
+	if m.closed.Load() {
+		return nil, errClosed
+	}
 
 	return m.runFlight(ctx, ensureFlightKey, func() (*Session, error) {
 		if s := m.current.Load(); s != nil {
@@ -468,7 +481,10 @@ func (m *Manager) ensureSession(ctx context.Context) (*Session, error) {
 		// every restart.
 		s, err := m.restoreSession()
 		if err == nil {
-			return m.installSession(s), nil
+			if active := m.installSession(s); active != nil {
+				return active, nil
+			}
+			return nil, errClosed
 		}
 		if !errors.Is(err, os.ErrNotExist) {
 			m.logger.Warn("could not reuse cached warp identity; registering a new device", "error", err)
@@ -537,29 +553,36 @@ func (m *Manager) restoreSession() (*Session, error) {
 }
 
 // installSession publishes s as the active session and drains the one it
-// replaced. The compare-and-swap is what keeps a losing build from being
-// orphaned: whichever session is displaced goes through drainSession, and a
-// build that is older than what already won is closed instead of published.
+// replaced. Publication is serialized with Close, which is what keeps a losing
+// build from being orphaned (a build that is older than what already won is
+// closed instead of published) and what keeps a drain from being registered
+// once shutdown is already waiting for the last one.
+//
 // It returns the session that is active now, which callers must use: the one
-// they built is not guaranteed to be it.
+// they built is not guaranteed to be it. nil means the manager is closed.
 func (m *Manager) installSession(s *Session) *Session {
-	for {
-		if m.closed.Load() {
-			s.Close()
-			return s
-		}
-		old := m.current.Load()
-		if old != nil && old.CreatedAt.After(s.CreatedAt) {
-			s.Close()
-			return old
-		}
-		if m.current.CompareAndSwap(old, s) {
-			if old != nil && old != s {
-				m.drainSession(old)
-			}
-			return s
-		}
+	m.publishMu.Lock()
+
+	if m.closed.Load() {
+		m.publishMu.Unlock()
+		s.Close()
+		return nil
 	}
+	old := m.current.Load()
+	if old != nil && old.CreatedAt.After(s.CreatedAt) {
+		m.publishMu.Unlock()
+		s.Close()
+		return old
+	}
+
+	m.current.Store(s)
+	if old != nil && old != s {
+		// Registered under publishMu, so this Add cannot race the Wait in Close.
+		m.drainSession(old)
+	}
+	m.publishMu.Unlock()
+
+	return s
 }
 
 // drainSession closes a superseded tunnel once its connections finish, bounded
@@ -651,6 +674,9 @@ func (m *Manager) rotate() (*Session, error) {
 	// tunnel that is actually serving traffic.
 	built := session
 	session = m.installSession(session)
+	if session == nil {
+		return nil, errClosed
+	}
 	if session != built {
 		m.logger.Info("kept the newer warp session; the one just negotiated was discarded",
 			"active_public_ip", session.PublicIP)

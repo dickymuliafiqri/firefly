@@ -279,7 +279,9 @@ func SmartTruncate(s string, maxChars int) string {
 	headLen := keep / 3
 	tailLen := keep - headLen
 	head := safeHead(s, headLen)
-	tail := safeTail(s[len(s)-tailLen:], tailLen)
+	// safeTail must receive the whole string: it aligns the last tailLen bytes
+	// on a rune boundary itself, which a pre-sliced argument would defeat.
+	tail := safeTail(s, tailLen)
 	omitted := len(s) - len(head) - len(tail)
 
 	out := head + truncateMarker(omitted) + tail
