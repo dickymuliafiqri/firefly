@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,12 +22,17 @@ const (
 	DefaultRegistrationURL = "https://api.cloudflareclient.com/v0a3304/reg"
 	DefaultPeerPublicKey   = "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
 	DefaultPeerEndpoint    = "162.159.192.1:2408"
+	DefaultTraceURL        = "https://cloudflare.com/cdn-cgi/trace"
 )
+
+// maxErrorBodySnippet bounds how much of an upstream error body is copied into
+// an error message (which ends up in logs and in the WARP status payload).
+const maxErrorBodySnippet = 200
 
 // KeyPair stores private and public Curve25519 WireGuard keys in both raw and base64 formats.
 type KeyPair struct {
-	PrivateKey   [32]byte
-	PublicKey    [32]byte
+	PrivateKey    [32]byte
+	PublicKey     [32]byte
 	PrivateKeyB64 string
 	PublicKeyB64  string
 	PrivateKeyHex string
@@ -86,19 +92,35 @@ type RegistrationResponse struct {
 		Warp        bool   `json:"warp"`
 	} `json:"account"`
 	Config struct {
-		ClientID string       `json:"client_id"`
-		Peers    []PeerConfig `json:"peers"`
+		ClientID  string       `json:"client_id"`
+		Peers     []PeerConfig `json:"peers"`
 		Interface struct {
 			Addresses InterfaceAddresses `json:"addresses"`
 		} `json:"interface"`
 	} `json:"config"`
 	Token string `json:"token"`
+
+	// RegisteredAt mirrors Cloudflare's created_at for this registration; the
+	// identity cache and telemetry use it to tell a fresh device from a restored one.
+	RegisteredAt time.Time `json:"created_at,omitzero"`
+
+	// LicenseApplied and LicenseError report the outcome of an optional WARP+
+	// license attach. They are computed locally and never part of the payload.
+	LicenseApplied bool   `json:"-"`
+	LicenseError   string `json:"-"`
 }
 
-// RegisterDevice calls Cloudflare WARP client API to register a new WireGuard peer.
-func RegisterDevice(ctx context.Context, httpClient *http.Client, keys *KeyPair, licenseKey string) (*RegistrationResponse, error) {
+// RegisterDevice calls the Cloudflare WARP client API to register a new WireGuard
+// peer. registrationURL defaults to DefaultRegistrationURL when empty; tests and
+// mirrors point it elsewhere. A license is attached on the same host as the
+// registration, so overriding the URL keeps both calls consistent.
+func RegisterDevice(ctx context.Context, httpClient *http.Client, keys *KeyPair, licenseKey, registrationURL string) (*RegistrationResponse, error) {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 15 * time.Second}
+	}
+	endpoint := strings.TrimSpace(registrationURL)
+	if endpoint == "" {
+		endpoint = DefaultRegistrationURL
 	}
 
 	reqBody := map[string]any{
@@ -116,7 +138,7 @@ func RegisterDevice(ctx context.Context, httpClient *http.Client, keys *KeyPair,
 		return nil, fmt.Errorf("marshal registration request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, DefaultRegistrationURL, bytes.NewReader(jsonBytes))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(jsonBytes))
 	if err != nil {
 		return nil, fmt.Errorf("create registration request: %w", err)
 	}
@@ -131,13 +153,13 @@ func RegisterDevice(ctx context.Context, httpClient *http.Client, keys *KeyPair,
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil, fmt.Errorf("read registration response: %w", err)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("registration failed with status %d: %s", resp.StatusCode, string(bodyBytes))
+		return nil, fmt.Errorf("registration failed with status %d: %s", resp.StatusCode, snippet(bodyBytes))
 	}
 
 	var regResp RegistrationResponse
@@ -157,33 +179,59 @@ func RegisterDevice(ctx context.Context, httpClient *http.Client, keys *KeyPair,
 		}
 	}
 
-	// Apply optional license key (WARP+) if supplied
+	// A WARP+ license that cannot be attached is not fatal: the tunnel still
+	// works on the plan the registration returned. Record why so the manager can
+	// log it instead of every caller silently discarding the error.
 	if licenseKey != "" && regResp.ID != "" && regResp.Token != "" {
-		_ = updateLicenseKey(ctx, httpClient, &regResp, licenseKey)
+		accountURL := strings.TrimSuffix(endpoint, "/") + "/" + regResp.ID + "/account"
+		if err := updateLicenseKey(ctx, httpClient, &regResp, accountURL, licenseKey); err != nil {
+			regResp.LicenseError = err.Error()
+		} else {
+			regResp.LicenseApplied = true
+		}
 	}
 
 	return &regResp, nil
 }
 
-func updateLicenseKey(ctx context.Context, httpClient *http.Client, reg *RegistrationResponse, license string) error {
+// updateLicenseKey attaches a WARP+ license to a fresh registration.
+func updateLicenseKey(ctx context.Context, httpClient *http.Client, reg *RegistrationResponse, accountURL, license string) error {
 	if reg == nil || reg.ID == "" || reg.Token == "" {
-		return nil
+		return errors.New("registration is missing the id or token needed to attach a license")
 	}
-	url := fmt.Sprintf("https://api.cloudflareclient.com/v0a3304/reg/%s/account", reg.ID)
-	payload := map[string]string{"license": strings.TrimSpace(license)}
-	data, _ := json.Marshal(payload)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(data))
+	data, err := json.Marshal(map[string]string{"license": strings.TrimSpace(license)})
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal license request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, accountURL, bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("create license request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// The registration token is a bearer credential: it goes on the wire, never
+	// into an error message or a log line.
 	req.Header.Set("Authorization", "Bearer "+reg.Token)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("execute license request: %w", err)
 	}
 	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("license attach failed with status %d: %s", resp.StatusCode, snippet(body))
+	}
 	return nil
+}
+
+// snippet renders a bounded, single-line excerpt of an API error body.
+func snippet(b []byte) string {
+	s := strings.Join(strings.Fields(string(b)), " ")
+	if len(s) > maxErrorBodySnippet {
+		s = strings.ToValidUTF8(s[:maxErrorBodySnippet], "") + "..."
+	}
+	return s
 }

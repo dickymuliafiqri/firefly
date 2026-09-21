@@ -12,6 +12,7 @@ package upstream
 
 import (
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,16 +20,23 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/transport/warp"
 )
 
+// pooledClient records how a client dials, so WARP rotations can drop only the
+// keep-alive sockets that actually go through the tunnel.
+type pooledClient struct {
+	client     *http.Client
+	warpEgress bool
+}
+
 // Pool caches one *http.Client per upstream name. It is safe for concurrent use.
 type Pool struct {
 	mu      sync.RWMutex
-	clients map[string]*http.Client
+	clients map[string]pooledClient
 	warpMgr *warp.Manager
 }
 
 // NewPool returns a new Pool, optionally wired with an embedded WARP manager.
 func NewPool(warpMgr ...*warp.Manager) *Pool {
-	p := &Pool{clients: make(map[string]*http.Client)}
+	p := &Pool{clients: make(map[string]pooledClient)}
 	if len(warpMgr) > 0 {
 		p.warpMgr = warpMgr[0]
 	}
@@ -42,26 +50,51 @@ func (p *Pool) SetWarpManager(wm *warp.Manager) {
 	p.warpMgr = wm
 }
 
+// CloseIdleWarpConnections drops idle keep-alive sockets held by upstreams whose
+// egress is the WARP tunnel. Rotating the tunnel installs a new source address,
+// but a pooled connection keeps talking from the old one, so without this a
+// rotation would not change anything for the upstream until sockets age out.
+// Active (in-flight) connections are untouched.
+func (p *Pool) CloseIdleWarpConnections() {
+	p.mu.RLock()
+	entries := make([]pooledClient, 0, len(p.clients))
+	for _, entry := range p.clients {
+		if entry.warpEgress {
+			entries = append(entries, entry)
+		}
+	}
+	p.mu.RUnlock()
+
+	for _, entry := range entries {
+		if tr, ok := entry.client.Transport.(*http.Transport); ok {
+			tr.CloseIdleConnections()
+		}
+	}
+}
+
 // Client returns the pooled client for the upstream, building it on first use.
 func (p *Pool) Client(u *domain.Upstream) *http.Client {
 	if u == nil {
 		return http.DefaultClient
 	}
 	p.mu.RLock()
-	c, ok := p.clients[u.Name]
+	entry, ok := p.clients[u.Name]
 	wm := p.warpMgr
 	p.mu.RUnlock()
 	if ok {
-		return c
+		return entry.client
 	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if c, ok := p.clients[u.Name]; ok { // lost the race; reuse
-		return c
+	if entry, ok := p.clients[u.Name]; ok { // lost the race; reuse
+		return entry.client
 	}
-	c = buildClient(u, wm)
-	p.clients[u.Name] = c
+	c := buildClient(u, wm)
+	p.clients[u.Name] = pooledClient{
+		client:     c,
+		warpEgress: strings.EqualFold(strings.TrimSpace(u.EgressMode), "warp") && wm != nil,
+	}
 	return c
 }
 

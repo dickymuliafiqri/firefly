@@ -7,11 +7,29 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-// PruneMiddleHistory truncates excessive middle messages when total body length
-// exceeds the context threshold, preserving the system prompt and the latest 4 messages.
+const (
+	// headroomPreserveLatest is the number of trailing messages that are never
+	// pruned, so the active turn keeps its full fidelity.
+	headroomPreserveLatest = 4
+	// headroomMiddleChars prunes any middle message whose content is longer than
+	// this many bytes.
+	headroomMiddleChars = 1500
+	// headroomMiddleHeadChars is the rune-safe prefix kept for pruned middle
+	// messages.
+	headroomMiddleHeadChars = 250
+	// headroomToolChars and headroomToolHeadChars do the same for stale tool
+	// results, which carry less narrative value than user/assistant turns.
+	headroomToolChars     = 500
+	headroomToolHeadChars = 200
+)
+
+// PruneMiddleHistory shortens excessive middle messages when the total body
+// length exceeds the context threshold. Message 0 (the system prompt) and the
+// latest headroomPreserveLatest messages are left alone, and only message
+// content is rewritten so tool_call / tool_result pairing survives.
 func PruneMiddleHistory(body []byte, tokenThreshold int) ([]byte, bool) {
 	if tokenThreshold <= 0 {
-		tokenThreshold = 32000
+		tokenThreshold = defaultContextThreshold
 	}
 	// Approximate 1 token ~= 4 chars
 	charThreshold := tokenThreshold * 4
@@ -26,39 +44,51 @@ func PruneMiddleHistory(body []byte, tokenThreshold int) ([]byte, bool) {
 
 	msgArr := messages.Array()
 	totalMsgs := len(msgArr)
-	// Need at least 6 messages to have a middle region (msg 0 is system, msgs N-4..N-1 are recent)
-	if totalMsgs < 6 {
+	// Need a middle region at all: msg 0 is the system prompt, the last
+	// headroomPreserveLatest messages are the live turn.
+	if totalMsgs < 2+headroomPreserveLatest {
 		return body, false
 	}
 
 	modified := false
 	out := body
 	startIdx := 1
-	endIdx := totalMsgs - 4
+	endIdx := totalMsgs - headroomPreserveLatest
 
 	for i := startIdx; i < endIdx; i++ {
 		msg := msgArr[i]
 		role := msg.Get("role").String()
 		content := msg.Get("content")
 
-		// If a middle message has string content exceeding 1500 chars (old tool or old verbose response)
-		if content.Type == gjson.String && len(content.String()) > 1500 {
-			orig := content.String()
-			// Prune to short summary
-			pruned := fmt.Sprintf("%s\n\n... [Headroom: %d characters pruned from middle context history] ...", orig[:250], len(orig)-250)
-			path := fmt.Sprintf("messages.%d.content", i)
-			if updated, err := sjson.SetBytes(out, path, pruned); err == nil {
-				out = updated
-				modified = true
-			}
-		} else if role == "tool" && content.Type == gjson.String && len(content.String()) > 500 {
-			orig := content.String()
-			pruned := fmt.Sprintf("%s\n\n... [Headroom: tool output pruned from middle context] ...", orig[:200])
-			path := fmt.Sprintf("messages.%d.content", i)
-			if updated, err := sjson.SetBytes(out, path, pruned); err == nil {
-				out = updated
-				modified = true
-			}
+		if content.Type != gjson.String {
+			continue
+		}
+		orig := content.String()
+
+		var pruned string
+		switch {
+		case len(orig) > headroomMiddleChars:
+			// Keep a short leading excerpt so the model can still tell what the
+			// turn was about; the cut never splits a UTF-8 rune.
+			head := safeHead(orig, headroomMiddleHeadChars)
+			pruned = fmt.Sprintf("%s\n\n... [Headroom: %d characters pruned from middle context history] ...",
+				head, len(orig)-len(head))
+		case role == "tool" && len(orig) > headroomToolChars:
+			head := safeHead(orig, headroomToolHeadChars)
+			pruned = fmt.Sprintf("%s\n\n... [Headroom: tool output pruned from middle context] ...", head)
+		default:
+			continue
+		}
+
+		// Only rewrite when it is a genuine reduction.
+		if len(pruned) >= len(orig) {
+			continue
+		}
+
+		path := fmt.Sprintf("messages.%d.content", i)
+		if updated, err := sjson.SetBytes(out, path, pruned); err == nil {
+			out = updated
+			modified = true
 		}
 	}
 

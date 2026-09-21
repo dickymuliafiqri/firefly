@@ -103,11 +103,15 @@ export interface UpstreamDTO {
 
 export interface WarpStatusDTO {
   enabled: boolean;
+  /** Egress address reported by the Cloudflare edge; empty until probed. */
   public_ip?: string;
+  /** WARP-assigned tunnel address (172.16/12), never a public IP. */
+  internal_ip?: string;
   colo?: string;
   endpoint?: string;
   latency_ms?: number;
-  active_sessions?: number;
+  active_connections?: number;
+  draining_sessions?: number;
   last_rotated_at?: string;
   error?: string;
 }

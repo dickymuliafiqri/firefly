@@ -3,9 +3,7 @@ package warp
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"os"
-	"sync"
 	"testing"
 	"time"
 )
@@ -125,73 +123,12 @@ func TestManager_StatusInitial(t *testing.T) {
 	if st.Enabled {
 		t.Error("expected uninitialized manager to have Enabled = false")
 	}
-	if st.ActiveSessions != 0 {
-		t.Errorf("expected 0 active sessions, got %d", st.ActiveSessions)
+	if st.ActiveConnections != 0 {
+		t.Errorf("expected 0 active connections, got %d", st.ActiveConnections)
 	}
-}
-
-func TestManager_SingleflightCoalescing(t *testing.T) {
-	t.Parallel()
-
-	var registrationCalls int
-	var mu sync.Mutex
-
-	// Mock Cloudflare Registration Server
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		registrationCalls++
-		mu.Unlock()
-
-		time.Sleep(50 * time.Millisecond) // Simulate network round-trip
-
-		resp := `{
-			"id": "dev_test_123",
-			"type": "Android",
-			"name": "Firefly",
-			"key": "test_key",
-			"account": {"id": "acc_1", "account_type": "free", "warp": true},
-			"config": {
-				"client_id": "client_1",
-				"peers": [
-					{
-						"public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
-						"endpoint": {"v4": "127.0.0.1:2408"}
-					}
-				],
-				"interface": {
-					"addresses": {
-						"v4": "172.16.0.2/32",
-						"v6": "2606:4700::1/128"
-					}
-				}
-			},
-			"token": "tok_test"
-		}`
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(resp))
-	}))
-	defer ts.Close()
-
-	mgr := NewManager(nil, "")
-	mgr.httpClient = ts.Client()
-
-	// 10 concurrent requests attempting rotation simultaneously
-	const concurrency = 10
-	var wg sync.WaitGroup
-	wg.Add(concurrency)
-
-	for i := 0; i < concurrency; i++ {
-		go func() {
-			defer wg.Done()
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-			// We test the singleflight registration logic
-			keys, _ := GenerateKeyPair()
-			_, _ = RegisterDevice(ctx, ts.Client(), keys, "")
-		}()
+	if st.PublicIP != "" {
+		t.Errorf("expected no public ip before a tunnel exists, got %q", st.PublicIP)
 	}
-
-	wg.Wait()
 }
 
 func TestLiveCloudflareRegistration(t *testing.T) {
@@ -199,7 +136,9 @@ func TestLiveCloudflareRegistration(t *testing.T) {
 		t.Skip("skipping live test; set FIREFLY_LIVE_TESTS=1 to run")
 	}
 
-	mgr := NewManager(nil, "")
+	// Exercises the real Cloudflare registration + trace probe, including TLS
+	// verification of the probe endpoint.
+	mgr := NewManager(quietLogger(), "")
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -209,6 +148,6 @@ func TestLiveCloudflareRegistration(t *testing.T) {
 	}
 	defer sess.Close()
 	t.Logf("Session Endpoint: %s", sess.Endpoint)
-	t.Logf("Session Public IP: %s", sess.PublicIPv4)
+	t.Logf("Session Public IP: %s", sess.PublicIP)
 	t.Logf("Session Colo: %s", sess.Colo)
 }

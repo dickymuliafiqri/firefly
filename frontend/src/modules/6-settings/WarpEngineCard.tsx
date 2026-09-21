@@ -76,6 +76,15 @@ export const WarpEngineCard = React.memo(function WarpEngineCard() {
 
         <div className="p-2.5 rounded-lg bg-white/[0.01] border border-white/[0.04] space-y-1">
           <span className="text-[10px] text-neutral-500 uppercase tracking-wider block">
+            Tunnel Internal IP
+          </span>
+          <span className="text-neutral-300 font-medium text-xs block truncate">
+            {status?.internal_ip || '—'}
+          </span>
+        </div>
+
+        <div className="p-2.5 rounded-lg bg-white/[0.01] border border-white/[0.04] space-y-1">
+          <span className="text-[10px] text-neutral-500 uppercase tracking-wider block">
             Handshake Latency
           </span>
           <span className="text-neutral-300 font-medium text-xs block">
@@ -88,7 +97,13 @@ export const WarpEngineCard = React.memo(function WarpEngineCard() {
             Active Outbound Streams
           </span>
           <span className="text-neutral-300 font-medium text-xs block">
-            {status?.active_sessions ?? 0}
+            {status?.active_connections ?? 0}
+            {status?.draining_sessions ? (
+              <span className="text-neutral-500">
+                {' '}
+                (+{status.draining_sessions} draining)
+              </span>
+            ) : null}
           </span>
         </div>
 

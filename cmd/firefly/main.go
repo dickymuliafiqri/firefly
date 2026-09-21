@@ -304,6 +304,10 @@ func run() error {
 	upstream.SetGlobalWarpRotator(warpManager)
 
 	pool := upstream.NewPool(warpManager)
+	// A rotation gives the tunnel a new egress address, but transports keep their
+	// warm connections from the previous one. Drop those idle sockets so the new
+	// IP is actually used by the next request.
+	warpManager.SetRotationObserver(pool.CloseIdleWarpConnections)
 	breakers := upstream.NewBreakerRegistry(upstream.BreakerConfig{
 		FailureThreshold: 5,
 		SuccessThreshold: 2,
