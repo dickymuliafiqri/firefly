@@ -3,6 +3,7 @@ package cline
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -124,19 +125,23 @@ func TestProvider_ExchangeCode_HTTPFallback(t *testing.T) {
 func TestProvider_RefreshToken(t *testing.T) {
 	t.Parallel()
 
+	// Computed per run: a literal future epoch starts failing the moment it
+	// elapses, which is how this test broke on 2026-09-21.
+	expiresAt := time.Now().Add(time.Hour).Unix()
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/auth/refresh", r.URL.Path)
 		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{
+		_, _ = fmt.Fprintf(w, `{
 			"data": {
 				"accessToken": "refreshed-access-token",
 				"refreshToken": "new-refresh-token",
-				"expiresAt": 1790000000
+				"expiresAt": %d
 			}
-		}`))
+		}`, expiresAt)
 	}))
 	defer server.Close()
 
