@@ -109,6 +109,29 @@ function parseDraftNumber(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+// Credential refs the app mints for keys that are not (yet) anchored to a row in
+// the `api_keys` table must never end in "-key-<digits>": the backend derives the
+// DB key id from exactly that suffix, so a positional suffix silently aliases a
+// real row belonging to some other provider. Usage metering then attributes the
+// traffic to that row, and key lifecycle actions (deactivate/delete) hit it too.
+// The "-local-" infix keeps the suffix non-numeric, so the backend resolves the id
+// to 0 until the credential is re-anchored to a genuine `api_keys.id`.
+const LOCAL_KEY_REF_RE = /-key-local-(\d+)$/;
+
+function mintLocalRef(prefix: string, seq: number): string {
+  return `${prefix}-key-local-${seq}`;
+}
+
+function maxLocalKeySeq(items: Array<{ ref?: string | null }>): number {
+  let max = 0;
+  for (const item of items) {
+    if (!item.ref) continue;
+    const m = LOCAL_KEY_REF_RE.exec(item.ref);
+    if (m) max = Math.max(max, parseInt(m[1], 10));
+  }
+  return Number.isFinite(max) ? max : 0;
+}
+
 function numericDraft(value: number | null | undefined, fallback: number): string {
   return String(value ?? fallback);
 }
@@ -543,6 +566,8 @@ export const UpstreamModal = React.memo(function UpstreamModal({
   const [batchResults, setBatchResults] = useState<Record<string, ModelBatchItemResult>>({});
   const batchAbortControllerRef = useRef<AbortController | null>(null);
   const singleTestIndexRef = useRef<number>(0);
+  // Monotonic sequence for refs of keys created in this modal session.
+  const localKeySeqRef = useRef<number>(1);
 
   // Load balancing tab state
   const [keyStrategy, setKeyStrategy] = useState<'round_robin' | 'least_inflight'>('round_robin');
@@ -637,7 +662,7 @@ export const UpstreamModal = React.memo(function UpstreamModal({
           if (upstreamToEdit.credential_pool && upstreamToEdit.credential_pool.length > 0) {
             initialKeys = upstreamToEdit.credential_pool.map((slot, idx) => ({
               id: `k-${idx}-${slot.ref || idx}`,
-              ref: slot.ref || `${upstreamToEdit.name}-key-${idx + 1}`,
+              ref: slot.ref || mintLocalRef(upstreamToEdit.name, idx + 1),
               secret: slot.secret || slot.api_key || '',
               rps: slot.rps,
               max_concurrent: slot.max_concurrent,
@@ -646,7 +671,7 @@ export const UpstreamModal = React.memo(function UpstreamModal({
           } else if (upstreamToEdit.api_keys && upstreamToEdit.api_keys.length > 0) {
             initialKeys = upstreamToEdit.api_keys.map((k, idx) => ({
               id: `k-${idx}`,
-              ref: `${upstreamToEdit.name}-key-${idx + 1}`,
+              ref: mintLocalRef(upstreamToEdit.name, idx + 1),
               secret: k,
               status: 'idle',
             }));
@@ -654,13 +679,14 @@ export const UpstreamModal = React.memo(function UpstreamModal({
             initialKeys = [
               {
                 id: 'k-0',
-                ref: `${upstreamToEdit.name}-key-1`,
+                ref: mintLocalRef(upstreamToEdit.name, 1),
                 secret: upstreamToEdit.api_key,
                 status: 'idle',
               },
             ];
           }
         }
+        localKeySeqRef.current = maxLocalKeySeq(initialKeys) + 1;
         setKeys(initialKeys);
         setBoundAccounts(initialBoundAccounts);
         setActiveTab('keys');
@@ -681,6 +707,7 @@ export const UpstreamModal = React.memo(function UpstreamModal({
         setAllowInsecure(false);
         setExtraHeaders([]);
         setKeys([]);
+        localKeySeqRef.current = 1;
         setBoundAccounts([]);
         setProviderId('');
         setKeyErrorThreshold('0');
@@ -745,14 +772,15 @@ export const UpstreamModal = React.memo(function UpstreamModal({
       if (uniqueBulkKeys.length === 0) return;
 
       const prefix = name.trim() || 'upstream';
-      const startIndex = mode === 'replace' ? 0 : keys.length;
 
+      const baseSeq = localKeySeqRef.current;
       const newKeyItems: KeyItem[] = uniqueBulkKeys.map((secret, idx) => ({
         id: `bulk-${Date.now()}-${idx}`,
-        ref: `${prefix}-key-${startIndex + idx + 1}`,
+        ref: mintLocalRef(prefix, baseSeq + idx),
         secret,
         status: 'idle',
       }));
+      localKeySeqRef.current = baseSeq + newKeyItems.length;
 
       setKeys((prev) => (mode === 'replace' ? newKeyItems : [...prev, ...newKeyItems]));
       setBulkText('');
@@ -764,7 +792,7 @@ export const UpstreamModal = React.memo(function UpstreamModal({
         type: 'info',
       });
     },
-    [uniqueBulkKeys, name, keys.length, addToast]
+    [uniqueBulkKeys, name, addToast]
   );
 
   // -------------------------------------------------------------
@@ -959,14 +987,14 @@ export const UpstreamModal = React.memo(function UpstreamModal({
     const prefix = name.trim() || 'upstream';
     const newSlot: KeyItem = {
       id: `single-${Date.now()}`,
-      ref: `${prefix}-key-${keys.length + 1}`,
+      ref: mintLocalRef(prefix, localKeySeqRef.current++),
       secret: trimmed,
       status: 'idle',
     };
 
     setKeys((prev) => [...prev, newSlot]);
     setSingleKeyInput('');
-  }, [singleKeyInput, name, keys.length]);
+  }, [singleKeyInput, name]);
 
   const handleRemoveKey = useCallback((id: string) => {
     setKeys((prev) => prev.filter((k) => k.id !== id));
@@ -2164,8 +2192,9 @@ export const UpstreamModal = React.memo(function UpstreamModal({
         max_concurrent: acc.maxConcurrent ?? credentialMaxConcurrentLimit,
       }));
     } else {
-      poolDTO = keys.map((k, idx) => ({
-        ref: k.ref || `${name.trim()}-key-${idx + 1}`,
+      const refFallbackPrefix = name.trim() || 'upstream';
+      poolDTO = keys.map((k) => ({
+        ref: k.ref || mintLocalRef(refFallbackPrefix, localKeySeqRef.current++),
         secret: k.secret,
         api_key: k.secret,
         rps: k.rps ?? credentialRpsLimit,
