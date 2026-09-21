@@ -57,6 +57,8 @@ export const UpstreamCard = React.memo(function UpstreamCard({
       case 'opencode':
       case 'opencode-go':
         return 'OPENCODE';
+      case 'qoder':
+        return 'QODER';
       default:
         return 'OPENAI';
     }
@@ -75,6 +77,8 @@ export const UpstreamCard = React.memo(function UpstreamCard({
       case 'opencode':
       case 'opencode-go':
         return 'OpenCode Zen Gateway';
+      case 'qoder':
+        return 'Qoder IDE (COSY-signed)';
       default:
         return baseUrl || 'Default Provider Endpoint';
     }

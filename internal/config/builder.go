@@ -219,10 +219,12 @@ func translateUpstream(i int, d UpstreamDTO, envLookup func(string) (string, boo
 		proto = string(domain.ProtocolGrokCLI)
 	} else if proto == "opencode_go" || proto == "opencode-go" || proto == "ocg" || proto == "oc" {
 		proto = string(domain.ProtocolOpenCode)
+	} else if proto == "qoder" || proto == "qodercli" || proto == "qoder-cli" {
+		proto = string(domain.ProtocolQoder)
 	}
 
 	switch domain.Protocol(proto) {
-	case domain.ProtocolOpenAI, domain.ProtocolAnthropic, domain.ProtocolAntigravity, domain.ProtocolCline, domain.ProtocolCodeBuddyCN, domain.ProtocolCodeBuddyIntl, domain.ProtocolGrokCLI, domain.ProtocolOpenCode:
+	case domain.ProtocolOpenAI, domain.ProtocolAnthropic, domain.ProtocolAntigravity, domain.ProtocolCline, domain.ProtocolCodeBuddyCN, domain.ProtocolCodeBuddyIntl, domain.ProtocolGrokCLI, domain.ProtocolOpenCode, domain.ProtocolQoder:
 		// Valid protocol
 	default:
 		return nil, &ValidationError{Field: fmt.Sprintf("upstreams[%d].protocol", i), Msg: "unsupported protocol: " + proto}
@@ -242,6 +244,16 @@ func translateUpstream(i int, d UpstreamDTO, envLookup func(string) (string, boo
 			if len(d.BaseURLs) == 1 && d.BaseURLs[0] == "https://opencode.ai/zen/go/v1" {
 				d.BaseURLs = []string{d.BaseURL}
 			}
+		}
+	}
+
+	if domain.Protocol(proto) == domain.ProtocolQoder {
+		// Qoder's inference host is fixed (api3); the adapter routes jt- tokens to
+		// api2 at request time. Default it so a dashboard-created upstream needs no
+		// base_url. Kept as a literal to avoid importing the adapter into config.
+		if d.BaseURL == "" && len(d.BaseURLs) == 0 {
+			d.BaseURL = "https://api3.qoder.sh"
+			d.BaseURLs = []string{d.BaseURL}
 		}
 	}
 
@@ -273,7 +285,13 @@ func translateUpstream(i int, d UpstreamDTO, envLookup func(string) (string, boo
 	}
 
 	var slots []*domain.KeySlot
-	seenRefs := make(map[string]bool)
+	// Deduplicate at the KEY level (resolved secret), not the ref/name level.
+	// The same upstream can carry the same credential under different refs
+	// (e.g. "dahl-1" and "upstream-dahl-1" from overlapping import sources);
+	// those must collapse to a single key slot rather than inflating the ring
+	// or failing the build. The first occurrence wins (it keeps its ref and any
+	// rps/max_concurrent overrides); later duplicates are skipped.
+	seenSecrets := make(map[string]bool)
 
 	if len(d.CredentialPool) > 0 {
 		for j, k := range d.CredentialPool {
@@ -319,13 +337,12 @@ func translateUpstream(i int, d UpstreamDTO, envLookup func(string) (string, boo
 				secret = sec
 			}
 
-			if seenRefs[ref] {
-				return nil, &ValidationError{
-					Field: fmt.Sprintf("upstreams[%d].credential_pool[%d].ref", i, j),
-					Msg:   "duplicate key ref: " + ref,
-				}
+			// Skip duplicate credentials (same resolved secret). This collapses
+			// the same key imported under different refs into one slot.
+			if seenSecrets[secret] {
+				continue
 			}
-			seenRefs[ref] = true
+			seenSecrets[secret] = true
 			rps := pickFloat(k.RPS, 0)
 			if rps < 0 {
 				return nil, &ValidationError{
@@ -352,6 +369,10 @@ func translateUpstream(i int, d UpstreamDTO, envLookup func(string) (string, boo
 			if k == "" {
 				continue
 			}
+			if seenSecrets[k] {
+				continue
+			}
+			seenSecrets[k] = true
 			ref := fmt.Sprintf("%s-key-%d", d.Name, j+1)
 			slots = append(slots, &domain.KeySlot{
 				Ref:           ref,

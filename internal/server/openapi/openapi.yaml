@@ -1,0 +1,560 @@
+openapi: 3.1.0
+info:
+  title: Firefly Public API
+  version: "1.0.0"
+  description: >
+    Public, client-facing API for the Firefly LLM gateway. These endpoints are
+    OpenAI wire-compatible: point any OpenAI SDK at the gateway base URL and
+    authenticate with a tenant gateway key (`Authorization: Bearer sk-gw-...`).
+
+    This document covers only the public `/v1/*` surface plus the unauthenticated
+    health probe. Dashboard/admin endpoints under `/api/*` are intentionally out
+    of scope.
+  contact:
+    name: Firefly
+    url: https://github.com/dickymuliafiqri/firefly
+
+servers:
+  - url: /
+    description: The gateway origin serving this document.
+
+tags:
+  - name: Health
+    description: Liveness probe.
+  - name: Models
+    description: Discover the models and combos the tenant may call.
+  - name: Inference
+    description: OpenAI-compatible chat, completions, and embeddings.
+  - name: Usage
+    description: Tenant quota and consumption self-service.
+  - name: Token Saver
+    description: Standalone prompt/tool-output compression.
+
+security:
+  - TenantKey: []
+
+paths:
+  /healthz:
+    get:
+      tags: [Health]
+      summary: Liveness probe
+      description: Returns 200 with the body `ok`. Bypasses auth and admission control.
+      security: []
+      responses:
+        "200":
+          description: Service is up.
+          content:
+            text/plain:
+              schema:
+                type: string
+                examples: ["ok"]
+
+  /v1/models:
+    get:
+      tags: [Models]
+      summary: List models
+      description: >
+        Lists the models and combos the authenticated tenant is allowed to use.
+        Models are owned by `firefly`; virtual combos by `firefly-combo`.
+      operationId: listModels
+      responses:
+        "200":
+          description: The model list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ConfigUnavailable"
+
+  /v1/models/{id}:
+    get:
+      tags: [Models]
+      summary: Retrieve a model
+      description: >
+        Retrieves a single model or combo by id. A model the tenant cannot see
+        returns 404 (not 403) to avoid leaking the catalog.
+      operationId: retrieveModel
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The public model id or combo name.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The model object.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelObject"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ConfigUnavailable"
+
+  /v1/usage:
+    get:
+      tags: [Usage]
+      summary: Tenant usage and quota
+      description: Returns the authenticated tenant's token quota, consumption, and expiration.
+      operationId: getUsage
+      responses:
+        "200":
+          description: The tenant usage summary.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantUsageResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/chat/completions:
+    post:
+      tags: [Inference]
+      summary: Create chat completion
+      description: >
+        OpenAI-compatible chat completions. The gateway resolves the requested
+        `model` to an upstream provider, applies routing/failover, and relays the
+        response. Set `stream: true` for a Server-Sent Events token stream of
+        `chat.completion.chunk` objects terminated by `data: [DONE]`.
+      operationId: createChatCompletion
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatCompletionRequest"
+      responses:
+        "200":
+          description: >
+            A chat completion. When `stream` is false the body is a
+            `chat.completion` JSON object; when true it is a `text/event-stream`
+            of `chat.completion.chunk` events.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatCompletionResponse"
+            text/event-stream:
+              schema:
+                type: string
+                description: "SSE stream of chat.completion.chunk objects, ending with 'data: [DONE]'."
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ConfigUnavailable"
+
+  /v1/completions:
+    post:
+      tags: [Inference]
+      summary: Create completion
+      description: "OpenAI-compatible legacy text completions. Supports streaming via stream: true."
+      operationId: createCompletion
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CompletionRequest"
+      responses:
+        "200":
+          description: A text completion (JSON) or an SSE token stream.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+            text/event-stream:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ConfigUnavailable"
+
+  /v1/embeddings:
+    post:
+      tags: [Inference]
+      summary: Create embeddings
+      description: OpenAI-compatible embeddings. Returns vector representations of the input.
+      operationId: createEmbeddings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmbeddingsRequest"
+      responses:
+        "200":
+          description: The embeddings response.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ConfigUnavailable"
+
+  /v1/compress:
+    post:
+      tags: [Token Saver]
+      summary: Compress a prompt or conversation
+      description: >
+        Standalone Token Saver compression. Provide either `prompt` (returns
+        compression metrics) or `messages` (returns the transformed OpenAI
+        payload). One of the two is required.
+      operationId: compress
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CompressRequest"
+      responses:
+        "200":
+          description: >
+            When `prompt` was supplied, a `CompressResult`. When `messages` was
+            supplied, the transformed OpenAI chat payload (passthrough shape).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CompressResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+components:
+  securitySchemes:
+    TenantKey:
+      type: http
+      scheme: bearer
+      bearerFormat: sk-gw-...
+      description: >
+        Tenant gateway key presented as `Authorization: Bearer sk-gw-...`.
+        A missing or unknown key returns 401 with an identical body to avoid
+        key enumeration.
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid gateway key.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              message: "missing or malformed API key; expected 'Authorization: Bearer sk-gw-...'"
+              type: authentication_error
+              param: null
+              code: null
+    BadRequest:
+      description: Malformed request.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Resource not found (or not visible to this tenant).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    PayloadTooLarge:
+      description: Request body exceeded the size limit.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    RateLimited:
+      description: >
+        Rate or concurrency limit exceeded (tenant, credential, or global
+        admission). A `Retry-After` header may be present.
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying.
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    ConfigUnavailable:
+      description: Gateway configuration is not loaded yet.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    ErrorResponse:
+      type: object
+      description: OpenAI-shaped error envelope.
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [message, type]
+          properties:
+            message:
+              type: string
+            type:
+              type: string
+              enum:
+                - invalid_request_error
+                - authentication_error
+                - permission_error
+                - not_found_error
+                - rate_limit_error
+                - api_error
+            param:
+              type: [string, "null"]
+            code:
+              type: [string, "null"]
+
+    ModelObject:
+      type: object
+      required: [id, object, created, owned_by]
+      properties:
+        id:
+          type: string
+          examples: ["gpt-4o"]
+        object:
+          type: string
+          const: model
+        created:
+          type: integer
+          format: int64
+          description: Unix timestamp (seconds).
+        owned_by:
+          type: string
+          description: "`firefly` for direct models, `firefly-combo` for virtual combos."
+          enum: [firefly, firefly-combo]
+
+    ModelsResponse:
+      type: object
+      required: [object, data]
+      properties:
+        object:
+          type: string
+          const: list
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ModelObject"
+
+    TenantUsageResponse:
+      type: object
+      required:
+        - object
+        - name
+        - max_tokens
+        - used_tokens
+        - remaining_tokens
+        - percent_used
+        - is_expired
+        - status
+      properties:
+        object:
+          type: string
+          const: tenant_usage
+        name:
+          type: string
+        max_tokens:
+          type: integer
+          format: int64
+          description: Token quota; 0 means unlimited.
+        used_tokens:
+          type: integer
+          format: int64
+        remaining_tokens:
+          type: integer
+          format: int64
+        percent_used:
+          type: number
+          format: double
+          description: 0-100; clamped at 100.
+        expires_at:
+          type: integer
+          format: int64
+          description: Unix milliseconds; omitted when the tenant never expires.
+        is_expired:
+          type: boolean
+        status:
+          type: string
+          examples: [active]
+
+    ChatMessage:
+      type: object
+      required: [role]
+      properties:
+        role:
+          type: string
+          enum: [system, user, assistant, tool, developer]
+        content:
+          description: A string, or an array of content parts (text/image).
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: object
+                additionalProperties: true
+        name:
+          type: string
+      additionalProperties: true
+
+    ChatCompletionRequest:
+      type: object
+      required: [model, messages]
+      properties:
+        model:
+          type: string
+          description: Public model id or combo name (see /v1/models).
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChatMessage"
+        stream:
+          type: boolean
+          default: false
+        max_tokens:
+          type: integer
+        max_completion_tokens:
+          type: integer
+        temperature:
+          type: number
+        top_p:
+          type: number
+        tools:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+      additionalProperties: true
+
+    ChatCompletionResponse:
+      type: object
+      description: OpenAI `chat.completion` object (non-streaming).
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          const: chat.completion
+        created:
+          type: integer
+          format: int64
+        model:
+          type: string
+        choices:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        usage:
+          type: object
+          additionalProperties: true
+      additionalProperties: true
+
+    CompletionRequest:
+      type: object
+      required: [model, prompt]
+      properties:
+        model:
+          type: string
+        prompt:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+        stream:
+          type: boolean
+          default: false
+        max_tokens:
+          type: integer
+      additionalProperties: true
+
+    EmbeddingsRequest:
+      type: object
+      required: [model, input]
+      properties:
+        model:
+          type: string
+        input:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+      additionalProperties: true
+
+    CompressRequest:
+      type: object
+      description: Provide either `prompt` or `messages`.
+      properties:
+        prompt:
+          type: string
+          description: Raw text to compress. Returns a CompressResult.
+        messages:
+          type: array
+          description: OpenAI messages array to transform. Returns the transformed payload.
+          items:
+            $ref: "#/components/schemas/ChatMessage"
+        max_chars:
+          type: integer
+          default: 12000
+          description: Max characters per tool output before truncation.
+        terse:
+          type: boolean
+          default: false
+        minimal_code:
+          type: boolean
+          default: false
+      additionalProperties: false
+
+    CompressResult:
+      type: object
+      required:
+        - original_chars
+        - compressed_chars
+        - chars_saved
+        - compression_ratio
+      properties:
+        original_chars:
+          type: integer
+        compressed_chars:
+          type: integer
+        chars_saved:
+          type: integer
+        compression_ratio:
+          type: number
+          format: double
+        output:
+          type: string
+          description: The compressed text (omitted when empty).

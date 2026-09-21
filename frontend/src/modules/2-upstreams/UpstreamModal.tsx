@@ -2095,10 +2095,13 @@ export const UpstreamModal = React.memo(function UpstreamModal({
       setBaseUrl('https://opencode.ai/zen/v1');
     } else if (newProto === 'opencode-go') {
       setBaseUrl('https://opencode.ai/zen/go/v1');
+    } else if (newProto === 'qoder') {
+      setBaseUrl('https://api3.qoder.sh');
     } else if (
       baseUrl === 'https://cli-chat-proxy.grok.com/v1' ||
       baseUrl === 'https://opencode.ai/zen/go/v1' ||
-      baseUrl === 'https://opencode.ai/zen/v1'
+      baseUrl === 'https://opencode.ai/zen/v1' ||
+      baseUrl === 'https://api3.qoder.sh'
     ) {
       setBaseUrl('https://api.openai.com/v1');
     }
@@ -2392,6 +2395,7 @@ export const UpstreamModal = React.memo(function UpstreamModal({
                       <option value="opencode" className="bg-[#090b10]">OpenCode Free (zen/v1 - Community / Keyless)</option>
                       <option value="opencode-go" className="bg-[#090b10]">OpenCode Go (zen/go/v1 - Subscription Key)</option>
                       <option value="grok-cli" className="bg-[#090b10]">Grok CLI / Grok Build (xAI OAuth)</option>
+                      <option value="qoder" className="bg-[#090b10]">Qoder IDE (COSY-signed / PAT)</option>
                     </select>
                   )}
                   <span className="text-[10px] text-neutral-500">

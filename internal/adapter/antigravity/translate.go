@@ -2,7 +2,6 @@ package antigravity
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -12,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dickymuliafiqri/firefly/internal/idgen"
 	"github.com/tidwall/gjson"
 )
 
@@ -32,20 +32,20 @@ const defaultDailyEndpoint = "https://daily-cloudcode-pa.googleapis.com"
 
 // StreamState maintains state across streaming SSE chunks for Antigravity to OpenAI translation.
 type StreamState struct {
-	MessageID            string
-	Model                string
-	FunctionIndex        int
-	GeminiToolCallCount  int
-	PendingThoughtSig    string
-	FirstChunkEmitted    bool
+	MessageID           string
+	Model               string
+	FunctionIndex       int
+	GeminiToolCallCount int
+	PendingThoughtSig   string
+	FirstChunkEmitted   bool
 }
 
 // GeminiPart represents one part of Gemini content.
 type GeminiPart struct {
-	Text             string          `json:"text,omitempty"`
-	Thought          bool            `json:"thought,omitempty"`
-	ThoughtSignature string          `json:"thoughtSignature,omitempty"`
-	FunctionCall     *FunctionCall   `json:"functionCall,omitempty"`
+	Text             string            `json:"text,omitempty"`
+	Thought          bool              `json:"thought,omitempty"`
+	ThoughtSignature string            `json:"thoughtSignature,omitempty"`
+	FunctionCall     *FunctionCall     `json:"functionCall,omitempty"`
 	FunctionResponse *FunctionResponse `json:"functionResponse,omitempty"`
 }
 
@@ -136,12 +136,9 @@ func BuildIdeRequestID(sessionID, model string, contentCount int) string {
 }
 
 func uuidFromSeed(seed string) string {
-	h := sha256.Sum256([]byte(seed))
-	b := h[:16]
-	b[6] = (b[6] & 0x0f) | 0x50
-	b[8] = (b[8] & 0x3f) | 0x80
-	s := hex.EncodeToString(b)
-	return fmt.Sprintf("%s-%s-%s-%s-%s", s[0:8], s[8:12], s[12:16], s[16:20], s[20:32])
+	// Antigravity pins the version nibble to 0x50 (non-standard) rather than the
+	// usual v4 0x40; preserve that exactly.
+	return idgen.UUIDFromSeedVersion(seed, 0x50)
 }
 
 // GenerateProjectID generates a randomized Google Cloud companion project ID.
@@ -366,9 +363,9 @@ func TranslateOpenAIToAntigravity(body []byte, upstreamModel, projectID string) 
 
 // OpenAIChunkChoice is a single choice inside an SSE chunk response.
 type OpenAIChunkChoice struct {
-	Index        int               `json:"index"`
-	Delta        map[string]any    `json:"delta"`
-	FinishReason *string           `json:"finish_reason"`
+	Index        int            `json:"index"`
+	Delta        map[string]any `json:"delta"`
+	FinishReason *string        `json:"finish_reason"`
 }
 
 // OpenAIChunk is an SSE chunk formatted for OpenAI API clients.

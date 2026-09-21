@@ -55,6 +55,10 @@ const (
 	ProtocolOpenCode Protocol = "opencode"
 	// ProtocolOpenCodeGo is an alias for OpenCode Go subscription.
 	ProtocolOpenCodeGo Protocol = "opencode-go"
+	// ProtocolQoder is the Qoder IDE wire format (api3/api2.qoder.sh COSY-signed
+	// agent_chat_generation endpoint, authenticated with a device/job/PAT token
+	// harvested into the key ring; requests are WAF-encoded and COSY-signed).
+	ProtocolQoder Protocol = "qoder"
 )
 
 // KeyStrategy defines how a KeyRing selects credentials from its pool.

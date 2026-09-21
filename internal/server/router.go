@@ -146,6 +146,11 @@ func (s *Server) buildHandler(deps RouterDeps) http.Handler {
 	// Root dashboard & static frontend assets (embedded SPA)
 	deps.registerFrontendRoutes(mux)
 
+	// Public API reference: interactive docs + raw OpenAPI spec (no auth; the
+	// spec only describes the public surface and leaks no secrets).
+	mux.HandleFunc("GET /api/docs", deps.handleAPIDocs)
+	mux.HandleFunc("GET /api/openapi.yaml", deps.handleOpenAPISpec)
+
 	// Authentication & Backend Credential Authorization Endpoints
 	mux.HandleFunc("OPTIONS /api/auth/login", deps.handleOptionsAuth)
 	mux.HandleFunc("POST /api/auth/login", deps.handleAuthLogin)

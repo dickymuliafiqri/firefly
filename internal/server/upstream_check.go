@@ -14,10 +14,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/adapter/grok"
-	"github.com/dickymuliafiqri/firefly/internal/adapter/opencode"
 	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
+	"github.com/dickymuliafiqri/firefly/internal/adapter/opencode"
+	"github.com/dickymuliafiqri/firefly/internal/adapter/qoder"
+	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/transport/upstream"
 	"github.com/dickymuliafiqri/firefly/internal/transport/warp"
 	"github.com/tidwall/gjson"
@@ -157,6 +158,8 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 		protocol = "codebuddy-intl"
 	} else if protocol == "grok_cli" || protocol == "grok" || protocol == "gcli" || protocol == "grok-build" {
 		protocol = "grok-cli"
+	} else if protocol == "qodercli" || protocol == "qoder-cli" {
+		protocol = "qoder"
 	}
 
 	egressMode := strings.TrimSpace(req.EgressMode)
@@ -469,6 +472,61 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 			Message:    fmt.Sprintf("Grok CLI upstream (%d models available, curated)", len(staticModels)),
 			ModelCount: len(staticModels),
 			Models:     staticModels,
+			KeyRef:     resolvedKeyRef,
+		})
+		return
+	}
+
+	if protocol == "qoder" {
+		if strings.TrimSpace(apiKey) == "" {
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(UpstreamCheckResponse{
+				Healthy: false,
+				Message: "Qoder requires a credential (pt-/jt-/dt- token) to verify; add a key first.",
+				KeyRef:  resolvedKeyRef,
+			})
+			return
+		}
+		client := deps.makeCheckClient(timeout, egressMode, proxyURL)
+		start := time.Now()
+		live, err := qoder.FetchModels(ctx, client, baseURL, apiKey)
+		latencyMs := time.Since(start).Milliseconds()
+		if err != nil {
+			if targetSlot != nil {
+				low := strings.ToLower(err.Error())
+				if strings.Contains(low, "userid") || strings.Contains(low, "exchange") || strings.Contains(low, "401") || strings.Contains(low, "403") {
+					targetSlot.Revoked.Store(true)
+				}
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(UpstreamCheckResponse{
+				Healthy:   false,
+				LatencyMs: latencyMs,
+				Message:   fmt.Sprintf("Qoder credential check failed: %s", err.Error()),
+				KeyRef:    resolvedKeyRef,
+			})
+			return
+		}
+		if reqModel := strings.TrimSpace(req.Model); reqModel != "" {
+			known := slices.ContainsFunc(live, func(m string) bool { return strings.EqualFold(m, reqModel) })
+			msg := fmt.Sprintf("Qoder supports model %q", reqModel)
+			if !known {
+				msg = fmt.Sprintf("Qoder accepts model %q (not in the discovered list; routed as-is)", reqModel)
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(UpstreamCheckResponse{
+				Healthy: true, StatusCode: 200, LatencyMs: latencyMs, Message: msg, KeyRef: resolvedKeyRef,
+			})
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(UpstreamCheckResponse{
+			Healthy:    true,
+			StatusCode: 200,
+			LatencyMs:  latencyMs,
+			Message:    fmt.Sprintf("Qoder upstream healthy (%d models discovered, live)", len(live)),
+			ModelCount: len(live),
+			Models:     live,
 			KeyRef:     resolvedKeyRef,
 		})
 		return
@@ -1003,6 +1061,8 @@ func (deps RouterDeps) handleFetchUpstreamModels(w http.ResponseWriter, r *http.
 		protocol = "codebuddy-intl"
 	} else if protocol == "grok_cli" || protocol == "grok" || protocol == "gcli" || protocol == "grok-build" {
 		protocol = "grok-cli"
+	} else if protocol == "qodercli" || protocol == "qoder-cli" {
+		protocol = "qoder"
 	}
 
 	egressMode := strings.TrimSpace(req.EgressMode)
@@ -1161,6 +1221,39 @@ func (deps RouterDeps) handleFetchUpstreamModels(w http.ResponseWriter, r *http.
 			ModelCount: len(staticModels),
 			LatencyMs:  1,
 			Message:    fmt.Sprintf("Grok CLI (%d models available, curated)", len(staticModels)),
+			KeyRef:     resolvedKeyRef,
+		})
+		return
+	}
+
+	if protocol == "qoder" {
+		if strings.TrimSpace(apiKey) == "" {
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(UpstreamModelsResponse{
+				Message: "Qoder requires a credential (pt-/jt-/dt- token) to discover models; add a key first.",
+				KeyRef:  resolvedKeyRef,
+			})
+			return
+		}
+		client := deps.makeCheckClient(timeout, egressMode, proxyURL)
+		start := time.Now()
+		live, err := qoder.FetchModels(ctx, client, baseURL, apiKey)
+		latencyMs := time.Since(start).Milliseconds()
+		if err != nil {
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(UpstreamModelsResponse{
+				LatencyMs: latencyMs,
+				Message:   fmt.Sprintf("Failed to discover Qoder models: %s", err.Error()),
+				KeyRef:    resolvedKeyRef,
+			})
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(UpstreamModelsResponse{
+			Models:     live,
+			ModelCount: len(live),
+			LatencyMs:  latencyMs,
+			Message:    fmt.Sprintf("Discovered %d models live from Qoder", len(live)),
 			KeyRef:     resolvedKeyRef,
 		})
 		return

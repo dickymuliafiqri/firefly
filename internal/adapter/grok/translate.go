@@ -1,13 +1,12 @@
 package grok
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/dickymuliafiqri/firefly/internal/idgen"
 	"github.com/tidwall/gjson"
 )
 
@@ -442,17 +441,6 @@ func buildCompletion(id, model string, created int64, content, reasoning string,
 
 // --- id helpers ---------------------------------------------------------------
 
-func newUUID() string {
-	var b [16]byte
-	_, _ = rand.Read(b[:])
-	b[6] = (b[6] & 0x0f) | 0x40
-	b[8] = (b[8] & 0x3f) | 0x80
-	h := hex.EncodeToString(b[:])
-	return fmt.Sprintf("%s-%s-%s-%s-%s", h[0:8], h[8:12], h[12:16], h[16:20], h[20:32])
-}
+func newUUID() string { return idgen.UUIDv4() }
 
-func shortID() string {
-	var b [6]byte
-	_, _ = rand.Read(b[:])
-	return hex.EncodeToString(b[:])
-}
+func shortID() string { return idgen.Short(6) }

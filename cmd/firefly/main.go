@@ -25,7 +25,6 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/adapter/cline"
 	"github.com/dickymuliafiqri/firefly/internal/adapter/codebuddy"
 	"github.com/dickymuliafiqri/firefly/internal/adapter/grok"
-	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/security/oauth"
 	antigravityProvider "github.com/dickymuliafiqri/firefly/internal/security/oauth/providers/antigravity"
 	clineProvider "github.com/dickymuliafiqri/firefly/internal/security/oauth/providers/cline"
@@ -34,7 +33,9 @@ import (
 
 	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
 	"github.com/dickymuliafiqri/firefly/internal/adapter/opencode"
+	"github.com/dickymuliafiqri/firefly/internal/adapter/qoder"
 	"github.com/dickymuliafiqri/firefly/internal/config"
+	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/limits"
 	"github.com/dickymuliafiqri/firefly/internal/observability/logging"
 	"github.com/dickymuliafiqri/firefly/internal/observability/metrics"
@@ -449,6 +450,18 @@ func run() error {
 	}
 	if err := adapterRegistry.Register(domain.ProtocolOpenCodeGo, openCodeAdapter); err != nil {
 		return fmt.Errorf("register opencode-go adapter: %w", err)
+	}
+	qoderAdapter := qoder.NewAdapter(pool, breakers, qoder.Config{
+		TokenResolver:    oauthMgr.ResolveToken,
+		SecretLookup:     os.LookupEnv,
+		Retry:            retry,
+		Logger:           logger,
+		MaxBufferedBytes: 32 << 20,
+		Metrics:          mx,
+		Notifier:         usageFlusher,
+	})
+	if err := adapterRegistry.Register(domain.ProtocolQoder, qoderAdapter); err != nil {
+		return fmt.Errorf("register qoder adapter: %w", err)
 	}
 
 	// 4. Analytics, Token Ledger, and Request History Persistent Storage.

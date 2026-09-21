@@ -5,6 +5,35 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.0] - 2026-09-21
+
+### Added
+- **Qoder IDE Upstream Adapter (`internal/adapter/qoder`, `internal/domain`, `internal/config`, `cmd/firefly`)**:
+  - New `qoder` protocol adapter that translates OpenAI-compatible chat/completions into Qoder's bespoke transport on `api3.qoder.sh` (device tokens) / `api2.qoder.sh` (job tokens), and translates the `{statusCodeValue, body}` SSE envelope back into OpenAI SSE.
+  - Implements the full credential lifecycle: Personal Access Tokens (`pt-`) are exchanged at runtime for short-lived job tokens (`jt-`) via `jobToken/exchange`, the `userId` is resolved from `/userinfo`, and both are cached (single-flight) for reuse.
+  - COSY request signing (RSA-PKCS1v15 + AES-128-CBC + MD5 over the signed payload, plus the 17 `Cosy-*` fingerprint headers) and the WAF-bypass body encoder are ported to Go with byte-for-byte parity tests against the reference implementation, and verified end-to-end against the live Qoder API.
+  - Live per-account model catalog is fetched from `/model/list` (COSY-signed) and cached with a 1h TTL; a missing model config is a hard error to avoid silent model downgrade.
+  - Billing/quota blocks (upstream codes 112 / 10605 / `pricingUrl`) are classified as Layer 1 credential errors (429 cooldown/failover) and never trip the upstream circuit breaker, consistent with the gateway's 2-layer resilience model.
+  - Registered in the adapter registry and validated in the config builder (aliases `qoder` / `qodercli` / `qoder-cli`), with a default base URL of `https://api3.qoder.sh` auto-provisioned for dashboard-created upstreams.
+- **Public API Reference via OpenAPI 3.1 (`internal/server`)**:
+  - Added an embedded OpenAPI 3.1 specification documenting the public `/v1/*` surface (`/v1/models`, `/v1/models/{id}`, `/v1/usage`, `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/compress`) plus `/healthz`.
+  - Served at `GET /api/openapi.yaml` (raw spec) and `GET /api/docs` (interactive reference), so developers can explore endpoints, schemas, and auth without reading the source.
+  - Anti-drift tests validate the spec structurally (version, security scheme, per-operation responses, resolvable `$ref`s) and cross-check the documented paths against the routes actually registered in the router, in both directions — a route added or removed without a matching spec change fails CI. No new external dependencies were introduced.
+- **Qoder Model Discovery on the Upstream Page (`internal/server/upstream_check.go`, `frontend`)**:
+  - `POST /api/upstreams/models` and `POST /api/upstreams/check` now have a dedicated `qoder` branch that discovers models live (PAT exchange + COSY-signed `/model/list`) instead of falling through to the generic OpenAI `/models` probe (which returned HTTP 404 against Qoder).
+  - The dashboard now offers **Qoder IDE** as a selectable upstream protocol, defaulting its base URL to `https://api3.qoder.sh`; previously a Qoder upstream defaulted to the `openai` protocol and failed model discovery.
+
+### Changed
+- **Shared Identifier Generators (`internal/idgen`)**:
+  - Extracted the duplicated UUID/short-id/seeded-UUID helpers that had been copy-pasted across the `grok`, `qoder`, and `antigravity` adapters into a single dependency-free leaf package (`UUIDv4`, `Short`, `UUIDFromSeed`, `UUIDFromSeedVersion`, `Hash16`).
+  - Migrated all three adapters to it. Antigravity's non-standard version nibble (`0x50`) is preserved via `UUIDFromSeedVersion` rather than silently normalized.
+- **Keyring Deduplication at the Key Level, Not the Ref Level (`internal/config`)**:
+  - An upstream's credential pool is now deduplicated by resolved secret rather than by ref/name. The same credential imported under different refs (e.g. `dahl-1` and `upstream-dahl-1`) collapses into a single key slot, with the first occurrence retaining its ref and any `rps` / `max_concurrent` overrides.
+  - This replaces the previous behavior of failing the entire snapshot build on a duplicate ref; overlapping-import duplicates no longer inflate the ring or break configuration loading.
+
+### Fixed
+- **Frontend Version Bump**: Updated frontend package and application constant identifiers to `v1.10.0`.
+
 ## [1.9.3] - 2026-09-20
 
 ### Fixed

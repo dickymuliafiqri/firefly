@@ -349,19 +349,71 @@ func TestBuildAcceptsDBStyleRefWithSecret(t *testing.T) {
 	}
 }
 
-func TestBuildRejectsDuplicateKeyLogInPool(t *testing.T) {
+// Two credential entries resolving to the same secret must collapse into a
+// single key slot (key-level dedup), not fail the build. This covers the
+// "dahl-1 vs upstream-dahl-1" overlapping-import case.
+func TestBuildDeduplicatesKeysBySecret(t *testing.T) {
+	cfg := `{"upstreams":[{
+		"name":"dahl",
+		"base_url":"https://api.openai.com/v1",
+		"credential_pool":[
+			{"ref":"dahl-1","secret":"same-secret"},
+			{"ref":"upstream-dahl-1","secret":"same-secret"},
+			{"ref":"dahl-2","secret":"other-secret"}
+		]
+	}]}`
+	res, err := Build(FileSet{
+		Upstreams: []byte(cfg),
+		Models:    []byte(`{"models":[]}`),
+		Tenants:   []byte(`{"tenants":[]}`),
+	}, fakeEnv(nil))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	up := res.Upstreams["dahl"]
+	if up == nil || up.KeyRing == nil {
+		t.Fatal("expected dahl upstream with a keyring")
+	}
+	if got := len(up.KeyRing.Slots); got != 2 {
+		t.Fatalf("expected 2 deduplicated slots, got %d", got)
+	}
+	// First occurrence wins: the "same-secret" slot keeps ref "dahl-1".
+	secretsByRef := map[string]string{}
+	for _, s := range up.KeyRing.Slots {
+		secretsByRef[s.Ref] = s.Secret
+	}
+	if _, ok := secretsByRef["dahl-1"]; !ok {
+		t.Errorf("expected first occurrence 'dahl-1' to be kept; slots: %v", secretsByRef)
+	}
+	if _, ok := secretsByRef["upstream-dahl-1"]; ok {
+		t.Errorf("duplicate secret under 'upstream-dahl-1' should have been skipped")
+	}
+	if _, ok := secretsByRef["dahl-2"]; !ok {
+		t.Errorf("distinct secret 'dahl-2' should be present")
+	}
+}
+
+// Two entries pointing at the same ENV var (same resolved secret) also collapse.
+func TestBuildDeduplicatesSameEnvSecret(t *testing.T) {
 	cfg := `{"upstreams":[{
 		"name":"u1",
 		"base_url":"https://api.openai.com/v1",
 		"credential_pool":[{"ref":"DUP_KEY"},{"ref":"DUP_KEY"}]
 	}]}`
-	_, err := Build(FileSet{
+	res, err := Build(FileSet{
 		Upstreams: []byte(cfg),
 		Models:    []byte(`{"models":[]}`),
 		Tenants:   []byte(`{"tenants":[]}`),
 	}, fakeEnv(map[string]string{"DUP_KEY": "secret"}))
-	if err == nil {
-		t.Fatal("expected error for duplicate key ref in pool")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	up := res.Upstreams["u1"]
+	if up == nil || up.KeyRing == nil {
+		t.Fatal("expected u1 upstream with a keyring")
+	}
+	if got := len(up.KeyRing.Slots); got != 1 {
+		t.Fatalf("expected 1 deduplicated slot, got %d", got)
 	}
 }
 
@@ -642,6 +694,42 @@ func TestBuild_OAuthProtocolsAndDynamicRefs(t *testing.T) {
 	}
 	if cbUp.Protocol != domain.ProtocolCodeBuddyCN {
 		t.Errorf("expected normalized protocol 'codebuddy-cn', got %s", cbUp.Protocol)
+	}
+}
+
+func TestBuild_QoderDefaultBaseURL(t *testing.T) {
+	t.Parallel()
+
+	// A qoder upstream created without a base_url must default to api3, and the
+	// "qodercli" alias must normalize to the qoder protocol.
+	upstreamsJSON := `{
+		"upstreams": [
+			{
+				"name": "qoder-upstream",
+				"protocol": "qodercli",
+				"credential_pool": [
+					{"ref": "qoder-key-1", "secret": "pt-example"}
+				]
+			}
+		]
+	}`
+	res, err := Build(FileSet{
+		Upstreams: []byte(upstreamsJSON),
+		Models:    []byte(`{"models": []}`),
+		Tenants:   []byte(`{"tenants": []}`),
+	}, fakeEnv(nil))
+	if err != nil {
+		t.Fatalf("unexpected error building qoder upstream: %v", err)
+	}
+	up := res.Upstreams["qoder-upstream"]
+	if up == nil {
+		t.Fatal("expected qoder-upstream to exist")
+	}
+	if up.Protocol != domain.ProtocolQoder {
+		t.Errorf("expected normalized protocol 'qoder', got %s", up.Protocol)
+	}
+	if up.BaseURL != "https://api3.qoder.sh" {
+		t.Errorf("expected default base_url 'https://api3.qoder.sh', got %q", up.BaseURL)
 	}
 }
 
