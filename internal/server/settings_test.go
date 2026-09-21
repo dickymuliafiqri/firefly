@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -183,6 +184,34 @@ func TestSettingsGetAndPost(t *testing.T) {
 	u2, _ := snap2.Upstream("test-openai")
 	if u2.KeyRing.Slots[0].Secret != "sk-secret-key-1" || u2.KeyRing.Slots[1].Secret != "sk-secret-key-2" {
 		t.Fatalf("secrets not retained after masked update: %+v", u2.KeyRing.Slots)
+	}
+}
+
+func TestSettingsUpdateOversizedBody(t *testing.T) {
+	tmpDir := t.TempDir()
+	reg := registry.New()
+
+	src := config.NewFileConfigSource(tmpDir)
+	if _, err := reg.BuildAndStore(context.Background(), src, os.LookupEnv); err != nil {
+		t.Fatalf("initial build and store failed: %v", err)
+	}
+
+	deps := RouterDeps{
+		Snapshots: reg,
+		Registry:  reg,
+		ConfigDir: tmpDir,
+	}
+	s := New(Config{Addr: "0.0.0.0:8080"}, deps, context.Background(), nil)
+
+	// Stream one byte past the gateway-wide limit without allocating 32 MiB.
+	oversize := io.LimitReader(zeroReader{}, maxRequestBodyBytes+1)
+	req := httptest.NewRequest(http.MethodPost, "/api/settings", oversize)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("POST /api/settings oversized body status = %d, want 413; body = %s", w.Code, w.Body.String())
 	}
 }
 

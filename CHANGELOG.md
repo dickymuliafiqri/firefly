@@ -5,6 +5,33 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.0] - 2026-09-21
+
+### Added
+- **Tenant Management CRUD API (`internal/server/tenants_admin.go`, `internal/server/router.go`)**:
+  - Full CRUD REST endpoints under `/api/tenants` (`GET /api/tenants`, `POST /api/tenants`, `GET /api/tenants/{name}`, `PUT /api/tenants/{name}`, `DELETE /api/tenants/{name}`) for programmatic tenant lifecycle management.
+  - Reuses the validate-then-persist pipeline: synchronizes mutations across Turso database tables (`tenants`) and local config files (`tenants.json`), followed by atomic catalog snapshot hot-swapping without gateway downtime.
+  - Automatic `sk-gw-` key generation and SHA-256 hash derivation on create when credentials are not pre-supplied.
+  - Safe update semantics: preserves live metered token consumption (`used_tokens`) and handles credential rotation without leaking keys or wiping quotas.
+- **Admin OpenAPI Specification & Interactive Documentation (`internal/server/openapi`, `internal/server`)**:
+  - Added canonical OpenAPI 3.1 specification for administrative surfaces in `internal/server/openapi/openapi-admin.yaml`.
+  - Exposed via `GET /api/openapi-admin.yaml` and interactive Scalar reference at `GET /api/docs/admin`.
+  - Dynamic build version stamping (`server.SetBuildVersion`) injects ldflags binary version into both public and admin OpenAPI documents at startup.
+  - Anti-drift tests (`openapi_admin_test.go`) enforcing route parity, reference resolution, and read-only invariants.
+- **Turso In-Memory Store Constructor & Database Verification (`internal/storage/turso`)**:
+  - Added `turso.NewStoreWithDB` constructor to facilitate in-memory database testing and embedded engine integrations.
+  - Added `TestStore_OCC_Tenant` validating OCC versioning, conflict detection, and table operations on the `tenants` table.
+  - Added `TestTenantsAdmin_CRUDRoundTrip_TursoBacked` verifying full end-to-end CRUD against Turso/SQLite database backing.
+
+### Fixed
+- **Tenant DTO Serialization of Zero Used Tokens (`internal/config/dto.go`)**:
+  - Removed `omitempty` from `TenantDTO.UsedTokens` (`json:"used_tokens"`), preventing serialization omission when `used_tokens == 0` and ensuring full contract compliance with OpenAPI schemas and API test harnesses.
+- **Live In-Memory Usage Preservation on Mutation (`internal/server/tenants_admin.go`)**:
+  - Added `overlayLiveUsedTokens` to overlay in-memory atomic CAS usage counters from the active snapshot onto loaded configuration prior to saving, preventing reset of active metered usage by stale database/disk data.
+- **Default Tenant Status (`internal/server/tenants_admin.go`)**:
+  - Defaulted tenant status to `"active"` on creation when unspecified in request payload.
+- **Frontend Version Bump**: Updated frontend package and application constant identifiers to `v1.11.0`.
+
 ## [1.10.0] - 2026-09-21
 
 ### Added

@@ -84,9 +84,13 @@ Every request entering Firefly follows a strict, deterministic lifecycle:
 
 ### 3. Route Multiplexing (`http.ServeMux` Go 1.22+)
 - `GET /healthz` -> Returns `HTTP 200 "ok"` immediately without authentication.
+- `GET /api/docs` & `GET /api/docs/admin` -> Interactive OpenAPI 3.1 reference docs for public and admin surfaces.
+- `GET /api/openapi.yaml` & `GET /api/openapi-admin.yaml` -> Raw OpenAPI 3.1 specifications with build version stamping.
 - `GET /v1/models` & `GET /v1/models/{id}` -> Authenticated routes returning catalog models accessible to the requesting tenant.
 - `GET /v1/usage` -> Authenticated endpoint returning current token quota, consumed tokens, remaining balance, and validity/expiration.
 - `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/embeddings` -> Routed to the shared proxy execution engine `forwardEndpoint`.
+- `POST /v1/compress` -> Standalone prompt and conversation token optimization endpoint.
+- `GET, POST, PUT, DELETE /api/tenants` & `/api/tenants/{name}` -> Admin CRUD API for tenant catalog lifecycle, persisting to Turso / JSON files with immediate hot-swapping.
 - `POST /api/tenants/topup` -> Admin/Webhook endpoint for topping up token balances and extending validity days.
 
 ### 4. Tenant Route Protection (`deps.protected`)

@@ -229,6 +229,56 @@ func TestStore_OCC_Model(t *testing.T) {
 	}
 }
 
+func TestStore_OCC_Tenant(t *testing.T) {
+	ctx := context.Background()
+	store, _ := setupTestDB(t)
+
+	tr := &TenantRecord{
+		Name:          "tenant-alpha",
+		APIKey:        "sk-gw-test-1234567890",
+		KeyHash:       "sha256:abc123def456",
+		Status:        "active",
+		MaxTokens:     100000,
+		AllowedModels: []string{"*"},
+	}
+	if err := store.SaveTenant(ctx, tr); err != nil {
+		t.Fatalf("insert tenant: %v", err)
+	}
+	if tr.ID <= 0 || tr.Version != 1 {
+		t.Fatalf("expected id > 0 and version 1, got id=%d version=%d", tr.ID, tr.Version)
+	}
+
+	// Update
+	tr.MaxTokens = 200000
+	if err := store.SaveTenant(ctx, tr); err != nil {
+		t.Fatalf("update tenant: %v", err)
+	}
+	if tr.Version != 2 {
+		t.Fatalf("expected version 2, got %d", tr.Version)
+	}
+
+	// Stale conflict
+	stale := &TenantRecord{
+		ID:        tr.ID,
+		Name:      tr.Name,
+		APIKey:    tr.APIKey,
+		KeyHash:   tr.KeyHash,
+		Version:   1, // stale version
+		MaxTokens: 99999,
+	}
+	if err := store.SaveTenant(ctx, stale); !errors.Is(err, ErrConflict) {
+		t.Fatalf("expected ErrConflict, got %v", err)
+	}
+
+	// Delete
+	if err := store.DeleteTenant(ctx, tr.ID); err != nil {
+		t.Fatalf("delete tenant: %v", err)
+	}
+	if err := store.DeleteTenant(ctx, tr.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound on duplicate delete, got %v", err)
+	}
+}
+
 func TestStore_SaveAndLoadSettings(t *testing.T) {
 	ctx := context.Background()
 	store, db := setupTestDB(t)

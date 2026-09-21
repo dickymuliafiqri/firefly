@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -186,6 +187,38 @@ func TestOpenAPISpec_NoDriftFromRoutes(t *testing.T) {
 	}
 }
 
+// TestOpenAPISpec_AdmissionDocumented guards the fifth drift class: every
+// public route except /healthz sits behind per-tenant admission control (and
+// the server-wide global limiter), so any of them can answer 429. The spec
+// must say so, or client retry logic built from the docs will misbehave.
+func TestOpenAPISpec_AdmissionDocumented(t *testing.T) {
+	doc := loadSpec(t)
+
+	var missing []string
+	for route := range publicRoutesFromSource(t) {
+		method, path, _ := strings.Cut(route, " ")
+		if path == "/healthz" {
+			continue // liveness probe bypasses admission by design
+		}
+		item, ok := doc.Paths[path]
+		if !ok {
+			continue // path-level drift is reported by TestOpenAPISpec_NoDriftFromRoutes
+		}
+		op, ok := item[strings.ToLower(method)]
+		if !ok {
+			continue
+		}
+		if _, ok := op.Responses["429"]; !ok {
+			missing = append(missing, route)
+		}
+	}
+
+	sort.Strings(missing)
+	if len(missing) > 0 {
+		t.Errorf("admission-protected routes missing a 429 response in openapi.yaml:\n  %s", strings.Join(missing, "\n  "))
+	}
+}
+
 // TestOpenAPISpec_SanityRouteCount guards against the drift test silently
 // passing because it extracted zero routes (a regex/refactor regression).
 func TestOpenAPISpec_SanityRouteCount(t *testing.T) {
@@ -224,4 +257,122 @@ func TestServeAPIDocs(t *testing.T) {
 	if !strings.Contains(body, "/api/openapi.yaml") {
 		t.Error("docs page does not reference the spec URL")
 	}
+}
+
+// TestOpenAPISpec_VersionStampedFromBuild guards against info.version drifting
+// away from the binary that serves it: SetBuildVersion must override the
+// placeholder baked into openapi.yaml.
+func TestOpenAPISpec_VersionStampedFromBuild(t *testing.T) {
+	const want = "v9.9.9-test"
+
+	// The stamp mutates package state; restore it so later tests see the
+	// embedded document.
+	specMu.RLock()
+	prev := servedSpec
+	specMu.RUnlock()
+	t.Cleanup(func() {
+		specMu.Lock()
+		servedSpec = prev
+		specMu.Unlock()
+	})
+
+	SetBuildVersion(want)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/openapi.yaml", nil)
+	RouterDeps{}.handleOpenAPISpec(rec, req)
+
+	var served specDoc
+	if err := yaml.Unmarshal(rec.Body.Bytes(), &served); err != nil {
+		t.Fatalf("served spec is not valid YAML: %v", err)
+	}
+	if served.Info.Version != want {
+		t.Errorf("served info.version = %q, want %q", served.Info.Version, want)
+	}
+
+	// Stamping rewrites exactly one line; the rest of the document must survive.
+	var embedded specDoc
+	if err := yaml.Unmarshal(openAPISpec, &embedded); err != nil {
+		t.Fatalf("embedded spec: %v", err)
+	}
+	if len(served.Paths) != len(embedded.Paths) {
+		t.Errorf("stamped spec has %d paths, embedded has %d", len(served.Paths), len(embedded.Paths))
+	}
+	if len(served.Components.Schemas) != len(embedded.Components.Schemas) {
+		t.Errorf("stamped spec has %d schemas, embedded has %d",
+			len(served.Components.Schemas), len(embedded.Components.Schemas))
+	}
+}
+
+// TestOpenAPISpec_VersionStampRejectsUnsafeValues ensures a version that cannot
+// be embedded verbatim leaves the document untouched rather than producing
+// malformed YAML.
+func TestOpenAPISpec_VersionStampRejectsUnsafeValues(t *testing.T) {
+	specMu.RLock()
+	prev := servedSpec
+	specMu.RUnlock()
+	t.Cleanup(func() {
+		specMu.Lock()
+		servedSpec = prev
+		specMu.Unlock()
+	})
+
+	for _, bad := range []string{"", "   ", `1.0" injected`, "a\nb"} {
+		SetBuildVersion(bad)
+		specMu.RLock()
+		got := servedSpec
+		specMu.RUnlock()
+		if !bytes.Equal(got, prev) {
+			t.Errorf("SetBuildVersion(%q) modified the served spec", bad)
+		}
+	}
+}
+
+// TestOpenAPISpec_CompressContract pins the two /v1/compress behaviours that
+// previously drifted from the implementation: the 200 body is a union rather
+// than always a CompressResult, and the request tolerates unknown fields.
+func TestOpenAPISpec_CompressContract(t *testing.T) {
+	var raw map[string]any
+	if err := yaml.Unmarshal(openAPISpec, &raw); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	op := dig(t, raw, "paths", "/v1/compress", "post")
+	responses := op["responses"].(map[string]any)
+	for _, code := range []string{"200", "400", "401", "413", "429"} {
+		if _, ok := responses[code]; !ok {
+			t.Errorf("/v1/compress does not document response %s", code)
+		}
+	}
+
+	jsonContent := responses["200"].(map[string]any)["content"].(map[string]any)
+	schema := jsonContent["application/json"].(map[string]any)["schema"].(map[string]any)
+	branches, ok := schema["oneOf"].([]any)
+	if !ok {
+		t.Fatal("200 schema is not a oneOf, so the messages passthrough shape is undocumented")
+	}
+	if len(branches) != 2 {
+		t.Errorf("200 oneOf has %d branches, want 2 (CompressResult and the messages passthrough)", len(branches))
+	}
+
+	// The handler reads fields with gjson and ignores the rest, so the request
+	// must not claim to reject unknown fields.
+	compressReq := dig(t, raw, "components", "schemas", "CompressRequest")
+	if ap, ok := compressReq["additionalProperties"]; ok && ap == false {
+		t.Error("CompressRequest declares additionalProperties: false but the handler ignores unknown fields")
+	}
+}
+
+// dig walks nested YAML mappings and fails the test on a missing key.
+func dig(t *testing.T, root map[string]any, path ...string) map[string]any {
+	t.Helper()
+	cur := root
+	for _, key := range path {
+		next, ok := cur[key].(map[string]any)
+		if !ok {
+			t.Fatalf("spec is missing %s (want a mapping at %q)", strings.Join(path, "."), key)
+		}
+		cur = next
+	}
+	return cur
 }

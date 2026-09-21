@@ -81,11 +81,15 @@ Before modifying or adding code to Firefly, every AI Agent **must understand and
     │
     ▼ 3. Routing (http.ServeMux - Go 1.22+)
     ├── GET  /healthz             : Bypass admission & auth -> HTTP 200 "ok"
+    ├── GET  /api/docs{,/admin}   : Interactive OpenAPI 3.1 reference docs
+    ├── GET  /api/openapi*.yaml   : OpenAPI 3.1 specs with build version stamping
+    ├── CRUD /api/tenants{,/{name}}: Admin tenant management CRUD
     ├── GET  /v1/models           : AuthMiddleware -> Filter catalog by tenant access -> JSON
     ├── GET  /v1/models/{id}      : AuthMiddleware -> Check model access -> JSON / 404
     └── POST /v1/chat/completions : Protected Handler (Auth -> Admission -> forwardEndpoint)
         POST /v1/completions
         POST /v1/embeddings
+        POST /v1/compress
     │
     ▼ 4. Route Protection Middleware (deps.protected)
     ├── AuthMiddleware            : Validate `Authorization: Bearer sk-gw-...`. Lookup tenant.

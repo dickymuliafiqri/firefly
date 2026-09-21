@@ -681,11 +681,18 @@ func (deps RouterDeps) handleCompress(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Content-Type", "application/json")
 
-	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	defer r.Body.Close()
 
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
+		// Report an oversized body as 413 rather than a generic 400 so clients
+		// can distinguish "shrink the payload" from "fix the JSON".
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			openai.WriteError(w, http.StatusRequestEntityTooLarge, openai.TypeInvalidRequest, "request body too large")
+			return
+		}
 		openai.WriteError(w, http.StatusBadRequest, openai.TypeInvalidRequest, "read body: "+err.Error())
 		return
 	}

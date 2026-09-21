@@ -1,0 +1,530 @@
+openapi: 3.1.0
+info:
+  title: Firefly Admin API
+  # Placeholder only. The running binary replaces this with its build version
+  # at startup (server.SetBuildVersion); do not hand-edit it to track a release.
+  version: "0.0.0-dev"
+  description: >
+    Administrative surface for the Firefly LLM gateway dashboard. Every
+    endpoint requires an authenticated operator: either an active dashboard
+    session token (obtained via `POST /api/auth/login`) or the configured
+    admin bearer token, presented as `Authorization: Bearer <token>`.
+
+    This document covers tenant lifecycle management under `/api/tenants`.
+    Tenant mutations persist through the same validate-then-store pipeline as
+    the bulk settings endpoint (Turso when configured, otherwise the config
+    files) and hot-swap the routing snapshot, so changes take effect
+    immediately without a restart. The public `/v1/*` surface is documented
+    separately at `/api/openapi.yaml`.
+  contact:
+    name: Firefly
+    url: https://github.com/dickymuliafiqri/firefly
+
+servers:
+  - url: /
+    description: The gateway origin serving this document.
+
+tags:
+  - name: Tenants
+    description: Tenant catalog lifecycle (CRUD plus balance top-up).
+
+security:
+  - AdminAuth: []
+
+paths:
+  /api/tenants:
+    get:
+      tags: [Tenants]
+      summary: List tenants
+      description: >
+        Returns the full tenant catalog from the authoritative configuration
+        store (Turso when configured, otherwise the config files). Tenant API
+        keys are returned in plaintext, like `GET /api/settings`, because they
+        are working credentials the operator must be able to copy.
+      operationId: listTenants
+      responses:
+        "200":
+          description: The tenant catalog.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    post:
+      tags: [Tenants]
+      summary: Create tenant
+      description: >
+        Appends a tenant to the catalog. The name must be unique; duplicate
+        names return 409. When `api_key` is omitted a fresh gateway key
+        (`sk-gw-` plus random hex) is generated automatically, and `key_hash`
+        is derived from the plaintext key when absent. The full catalog is
+        re-validated before persisting: an unknown `allowed_models` entry or a
+        missing `credential_ref` environment variable fails the request with
+        400 and changes nothing.
+      operationId: createTenant
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TenantCreate"
+      responses:
+        "201":
+          description: Tenant created and live.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantMutationResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/tenants/{name}:
+    get:
+      tags: [Tenants]
+      summary: Retrieve a tenant
+      description: Returns one tenant by display name.
+      operationId: getTenant
+      parameters:
+        - $ref: "#/components/parameters/TenantName"
+      responses:
+        "200":
+          description: The tenant.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Tenant"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    put:
+      tags: [Tenants]
+      summary: Update tenant
+      description: >
+        Overlays the operator-managed fields of an existing tenant; absent or
+        zero-valued fields keep their stored values, so partial edits never
+        silently clear quota or access. Credential rotation happens only when
+        the body carries an explicit, unmasked `api_key` that differs from the
+        stored one — omitting `api_key` or echoing the masked placeholder from
+        a previous GET preserves the current credential. `used_tokens` is
+        metered state owned by the traffic pipeline and the topup endpoint; it
+        is never taken from the request.
+      operationId: updateTenant
+      parameters:
+        - $ref: "#/components/parameters/TenantName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TenantUpdate"
+      responses:
+        "200":
+          description: Tenant updated and live.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantMutationResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [Tenants]
+      summary: Delete tenant
+      description: >
+        Removes the tenant from the catalog, including deleting the last
+        remaining tenant. Subsequent requests authenticated with the tenant's
+        key fail with 401.
+      operationId: deleteTenant
+      parameters:
+        - $ref: "#/components/parameters/TenantName"
+      responses:
+        "200":
+          description: Tenant deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantDeleteResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/tenants/topup:
+    post:
+      tags: [Tenants]
+      summary: Top up tenant balance
+      description: >
+        Adds tokens, extends the expiry window, and/or resets consumed usage
+        for a tenant identified by `api_key` or `tenant_name`. An
+        `exhausted` or `expired` tenant returns to `active`. Persisted to the
+        database when Turso is configured.
+      operationId: topupTenant
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TenantTopupRequest"
+      responses:
+        "200":
+          description: Top-up applied.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantTopupResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+components:
+  securitySchemes:
+    AdminAuth:
+      type: http
+      scheme: bearer
+      description: >
+        Dashboard session token (from `POST /api/auth/login`) or the
+        configured admin bearer token. A missing or invalid token returns 401.
+
+  parameters:
+    TenantName:
+      name: name
+      in: path
+      required: true
+      description: The tenant display name (exact match, case-sensitive).
+      schema:
+        type: string
+        examples: ["acme-corp"]
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid admin credentials.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              message: "unauthorized: valid dashboard session or admin token required"
+              type: authentication_error
+              param: null
+              code: null
+    BadRequest:
+      description: Malformed JSON, a missing required field, a body/path name mismatch, or catalog validation failure.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: No tenant with that name exists.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Conflict:
+      description: A tenant with that name already exists.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    PayloadTooLarge:
+      description: Request body exceeded the 32 MiB gateway limit.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    ServiceUnavailable:
+      description: No configuration source (database, config files, or loaded snapshot) is available.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    InternalError:
+      description: Persisting the updated catalog failed (storage error).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    ErrorResponse:
+      type: object
+      description: OpenAI-shaped error envelope.
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [message, type]
+          properties:
+            message:
+              type: string
+            type:
+              type: string
+              enum:
+                - invalid_request_error
+                - authentication_error
+                - permission_error
+                - not_found_error
+                - rate_limit_error
+                - api_error
+            param:
+              type: [string, "null"]
+            code:
+              type: [string, "null"]
+
+    RateLimit:
+      type: object
+      description: Per-tenant admission limits.
+      properties:
+        rps:
+          type: number
+          format: double
+          description: Sustained requests per second (token bucket).
+        burst:
+          type: integer
+          description: Token bucket burst capacity.
+        max_concurrent:
+          type: integer
+          description: Maximum in-flight requests for the tenant.
+
+    Tenant:
+      type: object
+      description: A tenant as stored in the catalog.
+      required: [name, status]
+      properties:
+        api_key:
+          type: string
+          description: >
+            Plaintext gateway key. Only ever exposed to authenticated admins;
+            identical masking rules apply as for `GET /api/settings`.
+          examples: ["sk-gw-1a2b3c4d5e6f7890abcdef1234567890"]
+        key_hash:
+          type: string
+          description: Canonical `sha256:<hex>` hash of the plaintext key; the stable identity used at auth time.
+          examples: ["sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"]
+        name:
+          type: string
+          description: Unique display name; also the path parameter for single-tenant routes.
+        status:
+          type: string
+          enum: [active, suspended, exhausted, expired]
+          description: >
+            `suspended` rejects traffic with 401; `exhausted`/`expired` are set
+            automatically as quota or time runs out.
+        max_tokens:
+          type: integer
+          format: int64
+          description: Token quota ceiling; 0 means unlimited.
+        used_tokens:
+          type: integer
+          format: int64
+          readOnly: true
+          description: Metered consumption, owned by the traffic pipeline; never writable.
+        expires_at:
+          type: [integer, "null"]
+          format: int64
+          description: Expiry as a Unix epoch in milliseconds; null or absent means never expires.
+        allowed_models:
+          type: array
+          items:
+            type: string
+          description: Model or combo public names this tenant may call. `["*"]` (the default) allows everything that exists.
+        credential_ref:
+          type: string
+          description: Name of an environment variable holding an upstream credential the tenant may draw from.
+        rate_limit:
+          $ref: "#/components/schemas/RateLimit"
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+          description: Free-form operator labels attached to the tenant.
+
+    TenantCreate:
+      type: object
+      description: Payload for `POST /api/tenants`.
+      required: [name]
+      properties:
+        name:
+          type: string
+        api_key:
+          type: string
+          description: Existing plaintext key to adopt; generated when omitted.
+        key_hash:
+          type: string
+          description: Pre-hashed `sha256:<hex>` identity; derived from `api_key` when omitted.
+        status:
+          type: string
+          enum: [active, suspended, exhausted, expired]
+        max_tokens:
+          type: integer
+          format: int64
+        expires_at:
+          type: [integer, "null"]
+          format: int64
+        allowed_models:
+          type: array
+          items:
+            type: string
+        credential_ref:
+          type: string
+        rate_limit:
+          $ref: "#/components/schemas/RateLimit"
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+
+    TenantUpdate:
+      type: object
+      description: >
+        Payload for `PUT /api/tenants/{name}`. Overlay semantics: a field
+        absent from the body keeps its stored value. The `name` field, when
+        present, must equal the path parameter.
+      properties:
+        name:
+          type: string
+          description: Must match the `{name}` path parameter when present.
+        api_key:
+          type: string
+          description: >
+            New plaintext key for credential rotation. Omit it, or echo the
+            masked placeholder from a previous GET, to keep the current
+            credential. `key_hash` is re-derived automatically and is not
+            accepted in the update body.
+        status:
+          type: string
+          enum: [active, suspended, exhausted, expired]
+        max_tokens:
+          type: integer
+          format: int64
+        expires_at:
+          type: [integer, "null"]
+          format: int64
+        allowed_models:
+          type: array
+          items:
+            type: string
+        credential_ref:
+          type: string
+        rate_limit:
+          $ref: "#/components/schemas/RateLimit"
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+
+    TenantListResponse:
+      type: object
+      required: [tenants]
+      properties:
+        tenants:
+          type: array
+          items:
+            $ref: "#/components/schemas/Tenant"
+
+    TenantMutationResponse:
+      type: object
+      required: [tenant, generation, warnings]
+      properties:
+        tenant:
+          $ref: "#/components/schemas/Tenant"
+        generation:
+          type: integer
+          format: int64
+          description: Routing snapshot generation after the hot-swap; increments on every mutation.
+        warnings:
+          type: array
+          items:
+            type: string
+          description: Non-fatal validation notes from catalog rebuild (e.g. defaulted rate limits).
+
+    TenantDeleteResponse:
+      type: object
+      required: [status, name, generation]
+      properties:
+        status:
+          type: string
+          const: ok
+        name:
+          type: string
+        generation:
+          type: integer
+          format: int64
+
+    TenantTopupRequest:
+      type: object
+      description: At least one of `api_key` or `tenant_name` is required.
+      properties:
+        api_key:
+          type: string
+          description: Plaintext key of the tenant to top up.
+        tenant_name:
+          type: string
+          description: Display name; used when `api_key` is absent or unmatched.
+        add_tokens:
+          type: integer
+          format: int64
+          description: Tokens added to `max_tokens`.
+        extend_days:
+          type: integer
+          description: Days added to the expiry timestamp (from now when already expired).
+        reset_used:
+          type: boolean
+          description: Zero out `used_tokens`.
+
+    TenantTopupResponse:
+      type: object
+      required: [success, message, name, api_key, max_tokens, used_tokens, remaining_tokens, status]
+      properties:
+        success:
+          type: boolean
+          const: true
+        message:
+          type: string
+        name:
+          type: string
+        api_key:
+          type: string
+        max_tokens:
+          type: integer
+          format: int64
+        used_tokens:
+          type: integer
+          format: int64
+        remaining_tokens:
+          type: integer
+          format: int64
+        expires_at:
+          type: [integer, "null"]
+          format: int64
+        status:
+          type: string
+          enum: [active, suspended, exhausted, expired]

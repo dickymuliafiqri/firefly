@@ -41,6 +41,14 @@ func NewStore(client *Client) *Store {
 	}
 }
 
+// NewStoreWithDB initializes a Store backed directly by an existing *sql.DB,
+// primarily for in-memory test harnesses and local embedded usage.
+func NewStoreWithDB(db *sql.DB) *Store {
+	return &Store{
+		db: db,
+	}
+}
+
 // Client returns the underlying Turso Client.
 func (s *Store) Client() *Client {
 	return s.client

@@ -147,9 +147,12 @@ func (s *Server) buildHandler(deps RouterDeps) http.Handler {
 	deps.registerFrontendRoutes(mux)
 
 	// Public API reference: interactive docs + raw OpenAPI spec (no auth; the
-	// spec only describes the public surface and leaks no secrets).
+	// specs only describe the API surface and leak no secrets — the admin
+	// endpoints themselves stay admin-gated).
 	mux.HandleFunc("GET /api/docs", deps.handleAPIDocs)
+	mux.HandleFunc("GET /api/docs/admin", deps.handleAPIDocsAdmin)
 	mux.HandleFunc("GET /api/openapi.yaml", deps.handleOpenAPISpec)
+	mux.HandleFunc("GET /api/openapi-admin.yaml", deps.handleOpenAPISpecAdmin)
 
 	// Authentication & Backend Credential Authorization Endpoints
 	mux.HandleFunc("OPTIONS /api/auth/login", deps.handleOptionsAuth)
@@ -170,6 +173,17 @@ func (s *Server) buildHandler(deps RouterDeps) http.Handler {
 	mux.HandleFunc("PUT /api/settings", deps.handleUpdateSettings)
 	mux.HandleFunc("OPTIONS /api/tenants/topup", deps.handleOptionsSettings)
 	mux.HandleFunc("POST /api/tenants/topup", deps.handleTenantTopup)
+
+	// Tenant Management CRUD API (admin-authorized; persists via the shared
+	// settings pipeline so file and Turso modes stay consistent, then hot-swaps
+	// the routing snapshot).
+	mux.HandleFunc("OPTIONS /api/tenants", deps.handleOptionsSettings)
+	mux.HandleFunc("GET /api/tenants", deps.handleListTenants)
+	mux.HandleFunc("POST /api/tenants", deps.handleCreateTenant)
+	mux.HandleFunc("OPTIONS /api/tenants/{name}", deps.handleOptionsSettings)
+	mux.HandleFunc("GET /api/tenants/{name}", deps.handleGetTenant)
+	mux.HandleFunc("PUT /api/tenants/{name}", deps.handleUpdateTenant)
+	mux.HandleFunc("DELETE /api/tenants/{name}", deps.handleDeleteTenant)
 
 	// Turso Centralized Database API
 	mux.HandleFunc("OPTIONS /api/turso/providers", deps.handleOptionsSettings)

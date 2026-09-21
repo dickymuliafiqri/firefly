@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -69,6 +70,28 @@ func TestCompressEndpoint(t *testing.T) {
 		require.Equal(t, "system", sysRole)
 		require.Contains(t, gjson.GetBytes(outBytes, "messages.0.content").String(), "CRITICAL INSTRUCTION (Brevity)")
 	})
+
+	t.Run("POST /v1/compress with oversized body", func(t *testing.T) {
+		// One byte past the gateway limit. The handler must answer 413 so clients
+		// can tell "shrink the payload" apart from "fix the JSON".
+		oversize := io.LimitReader(zeroReader{}, maxRequestBodyBytes+1)
+		req := httptest.NewRequest(http.MethodPost, "/v1/compress", oversize)
+		req.Header.Set("Authorization", "Bearer "+testKey)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, req)
+
+		require.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
+	})
+}
+
+// zeroReader yields an unbounded stream of NUL bytes without allocating a
+// body-sized buffer, keeping the oversize test cheap.
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
 }
 
 func TestSettingsTokenSaverPersistence(t *testing.T) {

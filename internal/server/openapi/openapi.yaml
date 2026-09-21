@@ -1,15 +1,18 @@
 openapi: 3.1.0
 info:
   title: Firefly Public API
-  version: "1.0.0"
+  # Placeholder only. The running binary replaces this with its build version
+  # at startup (server.SetBuildVersion); do not hand-edit it to track a release.
+  version: "0.0.0-dev"
   description: >
     Public, client-facing API for the Firefly LLM gateway. These endpoints are
     OpenAI wire-compatible: point any OpenAI SDK at the gateway base URL and
     authenticate with a tenant gateway key (`Authorization: Bearer sk-gw-...`).
 
     This document covers only the public `/v1/*` surface plus the unauthenticated
-    health probe. Dashboard/admin endpoints under `/api/*` are intentionally out
-    of scope.
+    health probe. The admin surface — tenant lifecycle management under
+    `/api/tenants` — is documented separately: raw spec at
+    `/api/openapi-admin.yaml`, interactive reference at `/api/docs/admin`.
   contact:
     name: Firefly
     url: https://github.com/dickymuliafiqri/firefly
@@ -66,6 +69,8 @@ paths:
                 $ref: "#/components/schemas/ModelsResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "503":
           $ref: "#/components/responses/ConfigUnavailable"
 
@@ -95,6 +100,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "503":
           $ref: "#/components/responses/ConfigUnavailable"
 
@@ -113,6 +120,8 @@ paths:
                 $ref: "#/components/schemas/TenantUsageResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
   /v1/chat/completions:
     post:
@@ -239,15 +248,22 @@ paths:
         "200":
           description: >
             When `prompt` was supplied, a `CompressResult`. When `messages` was
-            supplied, the transformed OpenAI chat payload (passthrough shape).
+            supplied, the request payload passed through with `messages`
+            transformed.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CompressResult"
+                oneOf:
+                  - $ref: "#/components/schemas/CompressResult"
+                  - $ref: "#/components/schemas/CompressMessagesResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
 components:
   securitySchemes:
@@ -286,7 +302,7 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
     PayloadTooLarge:
-      description: Request body exceeded the size limit.
+      description: Request body exceeded the 32 MiB gateway limit.
       content:
         application/json:
           schema:
@@ -516,7 +532,9 @@ components:
 
     CompressRequest:
       type: object
-      description: Provide either `prompt` or `messages`.
+      description: >
+        Provide either `prompt` or `messages`. Unrecognised fields are ignored,
+        matching the pass-through behaviour of the inference endpoints.
       properties:
         prompt:
           type: string
@@ -536,7 +554,7 @@ components:
         minimal_code:
           type: boolean
           default: false
-      additionalProperties: false
+      additionalProperties: true
 
     CompressResult:
       type: object
@@ -558,3 +576,17 @@ components:
         output:
           type: string
           description: The compressed text (omitted when empty).
+
+    CompressMessagesResponse:
+      type: object
+      description: >
+        The submitted payload returned with `messages` transformed: tool outputs
+        compressed, stale middle context pruned, and brevity / minimal-code
+        directives injected when requested. Every other field of the request is
+        echoed back unchanged.
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChatMessage"
+      additionalProperties: true

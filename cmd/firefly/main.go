@@ -157,6 +157,10 @@ func run() error {
 
 	logger.Info("starting firefly", "version", Version, "commit", Commit, "built_at", BuildDate, "addr", *addr)
 
+	// Stamp the ldflags-injected version into the served OpenAPI document so
+	// /api/openapi.yaml reports the build that is actually running.
+	server.SetBuildVersion(Version)
+
 	// Ensure config directory and initial template files exist so watcher and
 	// settings persist cleanly even on a fresh startup with zero initial files.
 	if err := config.EnsureConfigFiles(*configDir); err != nil {

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -154,140 +155,7 @@ func (deps RouterDeps) handleGetSettings(w http.ResponseWriter, r *http.Request)
 	}
 
 	if !loadedFromDisk && snap != nil {
-		// Populate from active snapshot
-		for _, name := range snap.UpstreamNames() {
-			u, ok := snap.Upstream(name)
-			if !ok || u == nil {
-				continue
-			}
-			var pool []config.CredentialKeyDTO
-			var apiKeys []string
-			var primaryKey string
-			if u.KeyRing != nil {
-				if u.KeyRing.PrimarySlot() != nil {
-					primaryKey = maskSecret(u.KeyRing.PrimarySlot().Secret)
-				}
-				for _, slot := range u.KeyRing.Slots {
-					if slot != nil {
-						rps := slot.RPS
-						maxC := slot.MaxConcurrent
-						masked := maskSecret(slot.Secret)
-						pool = append(pool, config.CredentialKeyDTO{
-							Ref:           slot.Ref,
-							Secret:        masked,
-							APIKey:        masked,
-							RPS:           &rps,
-							MaxConcurrent: &maxC,
-						})
-						apiKeys = append(apiKeys, masked)
-					}
-				}
-			}
-			tMs := u.TimeoutMs
-			iMs := u.IdleTimeoutMs
-			sMs := u.StreamIdleTimeoutMs
-			mIdle := u.MaxIdleConnsPerHost
-			mConn := u.MaxConnsPerHost
-			insec := u.AllowInsecure
-			cRPS := u.CredentialRPS
-			cMax := u.CredentialMaxConcurrent
-			en := !u.Disabled
-
-			settings.Upstreams = append(settings.Upstreams, config.UpstreamDTO{
-				Name:                    u.Name,
-				Protocol:                string(u.Protocol),
-				BaseURL:                 u.BaseURL,
-				BaseURLs:                u.BaseURLs,
-				APIKey:                  primaryKey,
-				APIKeys:                 apiKeys,
-				CredentialRef:           u.CredentialRef,
-				KeyStrategy:             string(u.KeyStrategy),
-				CredentialPool:          pool,
-				TimeoutMs:               &tMs,
-				IdleTimeoutMs:           &iMs,
-				StreamIdleTimeoutMs:     &sMs,
-				MaxIdleConnsPerHost:     &mIdle,
-				MaxConnsPerHost:         &mConn,
-				ExtraHeaders:            u.ExtraHeaders,
-				AllowInsecure:           &insec,
-				CredentialRPS:           &cRPS,
-				CredentialMaxConcurrent: &cMax,
-				Enabled:                 &en,
-			})
-		}
-
-		for _, id := range snap.SortedPublicModelIDs() {
-			m, ok := snap.Model(id)
-			if !ok || m == nil {
-				continue
-			}
-			maxCtx := m.MaxContext
-			en := m.Enabled
-			settings.Models = append(settings.Models, config.ModelDTO{
-				PublicName:    m.PublicName,
-				Upstream:      m.Upstream,
-				UpstreamModel: m.UpstreamModel,
-				Capabilities: &config.CapabilitiesDTO{
-					Stream:     m.Capabilities.Stream,
-					Tools:      m.Capabilities.Tools,
-					Vision:     m.Capabilities.Vision,
-					JSONMode:   m.Capabilities.JSONMode,
-					Embeddings: m.Capabilities.Embeddings,
-					Audio:      m.Capabilities.Audio,
-				},
-				MaxContext: &maxCtx,
-				Enabled:    &en,
-			})
-		}
-
-		for _, key := range snap.TenantKeys() {
-			t, ok := snap.TenantByKey(key)
-			if !ok || t == nil {
-				continue
-			}
-			rps := t.RateLimit.RPS
-			burst := t.RateLimit.Burst
-			maxC := t.RateLimit.MaxConcurrent
-			var expPtr *int64
-			if t.ExpiresAt > 0 {
-				v := t.ExpiresAt
-				expPtr = &v
-			}
-			var used int64
-			if t.UsedTokens != nil {
-				used = t.UsedTokens.Load()
-			}
-			apiKey := t.APIKey
-			if apiKey == "" {
-				apiKey = t.KeyHash
-			}
-			settings.Tenants = append(settings.Tenants, config.TenantDTO{
-				APIKey:        apiKey,
-				KeyHash:       t.KeyHash,
-				Name:          t.Name,
-				Status:        string(t.Status),
-				MaxTokens:     t.MaxTokens,
-				UsedTokens:    used,
-				ExpiresAt:     expPtr,
-				AllowedModels: t.AllowedModels,
-				CredentialRef: t.CredentialRef,
-				RateLimit: &config.RateLimitDTO{
-					RPS:           &rps,
-					Burst:         &burst,
-					MaxConcurrent: &maxC,
-				},
-				Metadata: t.Metadata,
-			})
-		}
-		for _, c := range snap.AllCombos() {
-			en := c.Enabled
-			settings.Combos = append(settings.Combos, config.ComboDTO{
-				Name:     c.Name,
-				Strategy: string(c.Strategy),
-				Models:   c.Models,
-				Enabled:  &en,
-			})
-		}
+		settings = settingsDTOFromSnapshot(snap)
 	}
 
 	if !isAdmin {
@@ -411,12 +279,20 @@ func (deps RouterDeps) handleUpdateSettings(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Bound incoming payload size to 10 MB
-	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
+	// Bound incoming payload to the same gateway-wide body limit used by the
+	// inference endpoints, so one handler never accepts what another rejects.
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	defer r.Body.Close()
 
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
+		// An oversized body is a 413, not a generic 400, so clients can tell
+		// "shrink the payload" apart from "fix the JSON".
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			openai.WriteError(w, http.StatusRequestEntityTooLarge, openai.TypeInvalidRequest, "request body too large")
+			return
+		}
 		openai.WriteError(w, http.StatusBadRequest, openai.TypeInvalidRequest, "read request body: "+err.Error())
 		return
 	}
@@ -458,80 +334,7 @@ func (deps RouterDeps) handleUpdateSettings(w http.ResponseWriter, r *http.Reque
 	// If any secret was left masked (unchanged in frontend), restore existing secret from snapshot
 	snap := deps.currentSnapshot()
 	if snap != nil {
-		for i := range payload.Upstreams {
-			u := &payload.Upstreams[i]
-			existingUp, hasUp := snap.Upstream(u.Name)
-			if !hasUp || existingUp == nil || existingUp.KeyRing == nil {
-				continue
-			}
-
-			if isMasked(u.APIKey) && existingUp.KeyRing.PrimarySlot() != nil {
-				u.APIKey = existingUp.KeyRing.PrimarySlot().Secret
-			}
-			for j := range u.APIKeys {
-				if isMasked(u.APIKeys[j]) {
-					masked := u.APIKeys[j]
-					found := false
-					for _, slot := range existingUp.KeyRing.Slots {
-						if slot != nil && maskSecret(slot.Secret) == masked {
-							u.APIKeys[j] = slot.Secret
-							found = true
-							break
-						}
-					}
-					if !found && j < len(existingUp.KeyRing.Slots) && existingUp.KeyRing.Slots[j] != nil {
-						u.APIKeys[j] = existingUp.KeyRing.Slots[j].Secret
-					}
-				}
-			}
-			for j := range u.CredentialPool {
-				k := &u.CredentialPool[j]
-				slot := existingUp.KeyRing.SlotByRef(k.Ref)
-				if slot == nil && (isMasked(k.Secret) || isMasked(k.APIKey)) {
-					targetMasked := k.Secret
-					if targetMasked == "" {
-						targetMasked = k.APIKey
-					}
-					for _, s := range existingUp.KeyRing.Slots {
-						if s != nil && maskSecret(s.Secret) == targetMasked {
-							slot = s
-							break
-						}
-					}
-				}
-				if slot == nil && j < len(existingUp.KeyRing.Slots) {
-					slot = existingUp.KeyRing.Slots[j]
-				}
-				if slot != nil {
-					if isMasked(k.APIKey) {
-						k.APIKey = slot.Secret
-					}
-					if isMasked(k.Secret) {
-						k.Secret = slot.Secret
-					}
-				}
-			}
-			if len(u.APIKeys) > 0 && len(u.CredentialPool) > 0 && len(u.APIKeys) != len(u.CredentialPool) {
-				u.CredentialPool = nil
-			}
-		}
-
-		// If tenant API key was sent masked (e.g. from an old or cached client), restore from snapshot
-		for i := range payload.Tenants {
-			t := &payload.Tenants[i]
-			if isMasked(t.APIKey) {
-				for _, key := range snap.TenantKeys() {
-					if existingTenant, ok := snap.TenantByKey(key); ok && existingTenant != nil {
-						if existingTenant.Name == t.Name || (t.KeyHash != "" && existingTenant.KeyHash == t.KeyHash) {
-							if existingTenant.APIKey != "" {
-								t.APIKey = existingTenant.APIKey
-								break
-							}
-						}
-					}
-				}
-			}
-		}
+		restoreMaskedSecrets(&payload, snap)
 	}
 
 	if payload.Combos == nil && snap != nil {
@@ -914,4 +717,192 @@ func (deps RouterDeps) handleTestTurso(w http.ResponseWriter, r *http.Request) {
 		"message":    "Successfully connected to Turso database.",
 		"latency_ms": latency,
 	})
+}
+
+// settingsDTOFromSnapshot reconstructs the full settings DTO from the live
+// routing snapshot. Upstream credential secrets are masked for display;
+// callers that intend to re-persist the result must run it through
+// restoreMaskedSecrets first, otherwise masked placeholders would be written
+// back as real secrets.
+func settingsDTOFromSnapshot(snap *domain.CatalogSnapshot) config.SettingsDTO {
+	var settings config.SettingsDTO
+
+	for _, name := range snap.UpstreamNames() {
+		u, ok := snap.Upstream(name)
+		if !ok || u == nil {
+			continue
+		}
+		var pool []config.CredentialKeyDTO
+		var apiKeys []string
+		var primaryKey string
+		if u.KeyRing != nil {
+			if u.KeyRing.PrimarySlot() != nil {
+				primaryKey = maskSecret(u.KeyRing.PrimarySlot().Secret)
+			}
+			for _, slot := range u.KeyRing.Slots {
+				if slot != nil {
+					rps := slot.RPS
+					maxC := slot.MaxConcurrent
+					masked := maskSecret(slot.Secret)
+					pool = append(pool, config.CredentialKeyDTO{
+						Ref:           slot.Ref,
+						Secret:        masked,
+						APIKey:        masked,
+						RPS:           &rps,
+						MaxConcurrent: &maxC,
+					})
+					apiKeys = append(apiKeys, masked)
+				}
+			}
+		}
+		tMs := u.TimeoutMs
+		iMs := u.IdleTimeoutMs
+		sMs := u.StreamIdleTimeoutMs
+		mIdle := u.MaxIdleConnsPerHost
+		mConn := u.MaxConnsPerHost
+		insec := u.AllowInsecure
+		cRPS := u.CredentialRPS
+		cMax := u.CredentialMaxConcurrent
+		en := !u.Disabled
+
+		settings.Upstreams = append(settings.Upstreams, config.UpstreamDTO{
+			Name:                    u.Name,
+			Protocol:                string(u.Protocol),
+			BaseURL:                 u.BaseURL,
+			BaseURLs:                u.BaseURLs,
+			APIKey:                  primaryKey,
+			APIKeys:                 apiKeys,
+			CredentialRef:           u.CredentialRef,
+			KeyStrategy:             string(u.KeyStrategy),
+			CredentialPool:          pool,
+			TimeoutMs:               &tMs,
+			IdleTimeoutMs:           &iMs,
+			StreamIdleTimeoutMs:     &sMs,
+			MaxIdleConnsPerHost:     &mIdle,
+			MaxConnsPerHost:         &mConn,
+			ExtraHeaders:            u.ExtraHeaders,
+			AllowInsecure:           &insec,
+			CredentialRPS:           &cRPS,
+			CredentialMaxConcurrent: &cMax,
+			Enabled:                 &en,
+		})
+	}
+
+	for _, id := range snap.SortedPublicModelIDs() {
+		m, ok := snap.Model(id)
+		if !ok || m == nil {
+			continue
+		}
+		maxCtx := m.MaxContext
+		en := m.Enabled
+		settings.Models = append(settings.Models, config.ModelDTO{
+			PublicName:    m.PublicName,
+			Upstream:      m.Upstream,
+			UpstreamModel: m.UpstreamModel,
+			Capabilities: &config.CapabilitiesDTO{
+				Stream:     m.Capabilities.Stream,
+				Tools:      m.Capabilities.Tools,
+				Vision:     m.Capabilities.Vision,
+				JSONMode:   m.Capabilities.JSONMode,
+				Embeddings: m.Capabilities.Embeddings,
+				Audio:      m.Capabilities.Audio,
+			},
+			MaxContext: &maxCtx,
+			Enabled:    &en,
+		})
+	}
+
+	settings.Tenants = tenantDTOsFromSnapshot(snap)
+
+	for _, c := range snap.AllCombos() {
+		en := c.Enabled
+		settings.Combos = append(settings.Combos, config.ComboDTO{
+			Name:     c.Name,
+			Strategy: string(c.Strategy),
+			Models:   c.Models,
+			Enabled:  &en,
+		})
+	}
+
+	return settings
+}
+
+// restoreMaskedSecrets replaces masked secret placeholders in payload with
+// the real secrets from the live snapshot, so a re-persisted payload never
+// writes masked values back over real credentials.
+func restoreMaskedSecrets(payload *config.SettingsDTO, snap *domain.CatalogSnapshot) {
+	for i := range payload.Upstreams {
+		u := &payload.Upstreams[i]
+		existingUp, hasUp := snap.Upstream(u.Name)
+		if !hasUp || existingUp == nil || existingUp.KeyRing == nil {
+			continue
+		}
+
+		if isMasked(u.APIKey) && existingUp.KeyRing.PrimarySlot() != nil {
+			u.APIKey = existingUp.KeyRing.PrimarySlot().Secret
+		}
+		for j := range u.APIKeys {
+			if isMasked(u.APIKeys[j]) {
+				masked := u.APIKeys[j]
+				found := false
+				for _, slot := range existingUp.KeyRing.Slots {
+					if slot != nil && maskSecret(slot.Secret) == masked {
+						u.APIKeys[j] = slot.Secret
+						found = true
+						break
+					}
+				}
+				if !found && j < len(existingUp.KeyRing.Slots) && existingUp.KeyRing.Slots[j] != nil {
+					u.APIKeys[j] = existingUp.KeyRing.Slots[j].Secret
+				}
+			}
+		}
+		for j := range u.CredentialPool {
+			k := &u.CredentialPool[j]
+			slot := existingUp.KeyRing.SlotByRef(k.Ref)
+			if slot == nil && (isMasked(k.Secret) || isMasked(k.APIKey)) {
+				targetMasked := k.Secret
+				if targetMasked == "" {
+					targetMasked = k.APIKey
+				}
+				for _, s := range existingUp.KeyRing.Slots {
+					if s != nil && maskSecret(s.Secret) == targetMasked {
+						slot = s
+						break
+					}
+				}
+			}
+			if slot == nil && j < len(existingUp.KeyRing.Slots) {
+				slot = existingUp.KeyRing.Slots[j]
+			}
+			if slot != nil {
+				if isMasked(k.APIKey) {
+					k.APIKey = slot.Secret
+				}
+				if isMasked(k.Secret) {
+					k.Secret = slot.Secret
+				}
+			}
+		}
+		if len(u.APIKeys) > 0 && len(u.CredentialPool) > 0 && len(u.APIKeys) != len(u.CredentialPool) {
+			u.CredentialPool = nil
+		}
+	}
+
+	// If a tenant API key was sent masked (e.g. from an old or cached client), restore from snapshot
+	for i := range payload.Tenants {
+		t := &payload.Tenants[i]
+		if isMasked(t.APIKey) {
+			for _, key := range snap.TenantKeys() {
+				if existingTenant, ok := snap.TenantByKey(key); ok && existingTenant != nil {
+					if existingTenant.Name == t.Name || (t.KeyHash != "" && existingTenant.KeyHash == t.KeyHash) {
+						if existingTenant.APIKey != "" {
+							t.APIKey = existingTenant.APIKey
+							break
+						}
+					}
+				}
+			}
+		}
+	}
 }

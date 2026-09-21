@@ -103,7 +103,7 @@ type TenantDTO struct {
 	Name          string            `json:"name"`
 	Status        string            `json:"status,omitempty"`
 	MaxTokens     int64             `json:"max_tokens,omitempty"`
-	UsedTokens    int64             `json:"used_tokens,omitempty"`
+	UsedTokens    int64             `json:"used_tokens"`
 	ExpiresAt     *int64            `json:"expires_at,omitempty"`
 	AllowedModels []string          `json:"allowed_models,omitempty"`
 	CredentialRef string            `json:"credential_ref,omitempty"`
