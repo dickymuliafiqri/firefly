@@ -5,6 +5,22 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.1] - 2026-09-21
+
+### Fixed
+- **Mid-Rune Tail Cut Still Emitting Invalid UTF-8 (`internal/tokensaver/rtk.go`)**: `safeTail` was handed a pre-sliced tail (`s[len(s)-tailLen:]`), which defeated the rune-boundary alignment it performs: the cut had already landed inside a multi-byte rune, so the truncated output was invalid UTF-8 and corrupted downstream JSON bodies. The whole string is now passed in and the alignment happens on the final tail. Regression test covers 2/3/4-byte rune pads at several caps.
+- **WARP Shutdown Racing Session Publication (`internal/transport/warp/manager.go`)**: A drain registered after `Close` had begun waiting on `drainWG` is WaitGroup misuse ("WaitGroup is reused before previous Wait has returned") and panics the process instead of shutting down. Publication and shutdown are serialized by `publishMu`: `installSession` publishes and registers its drain under the lock, and `Close` holds the lock while it marks the manager closed and swaps the active session out, then waits for drains that can no longer be registered behind it.
+- **Closed Manager Handing Back a Session It Just Closed (`internal/transport/warp/manager.go`)**: `installSession` returned the session it had just closed, so a publish that lost to shutdown was reported to the caller as a successful rotation. It now returns `nil`; `ensureSession` and `rotate` translate that into `errClosed`, and a dial that races shutdown fails fast instead of registering a device only to discard it.
+- **OAuth Refresh Canceled by a Caller That Walked Away (`internal/security/oauth/manager.go`)**: The refresh flight inherited the initiating caller's context, so a client disconnecting mid-refresh canceled work every other waiter was blocked on — the token was never rotated and the next request re-entered the same refresh. The flight body now runs on `context.WithoutCancel` with its own two-minute timeout, while callers still stop waiting on their own cancellation.
+
+### Changed
+- **Shared Helpers Extracted (`internal/textx`, `internal/singleflightx`)**: Rune-safe `Head`/`Tail` and whitespace-collapsing `Excerpt` replace the copies carried by the token saver and the protocol adapters (six call sites, three different caps, each now a named constant). `singleflightx.Group.Do` wraps `DoChan` with the "honor the caller's context, never cancel the shared flight" semantics that OAuth refresh and WARP session establishment had each hand-rolled.
+- **Token Saver Defaults Centralized (`internal/domain/tokensaver.go`)**: `DefaultMaxToolOutputChars` and `DefaultContextThreshold` were written twice — once in the domain config constructor, once as a `tokensaver` constant — and could drift apart silently. They now have a single definition.
+- **WARP Egress Predicate Unified (`internal/transport/warp/proxy.go`, `internal/transport/upstream/client.go`)**: The `"warp"` egress mode was compared with slightly different `EqualFold`/`TrimSpace` spellings in two packages; `warp.IsWarpEgress` is now the only check. The unused `Pool.SetWarpManager` setter is removed.
+
+### Added
+- **Regression Tests**: `TestSmartTruncateKeepsUTF8Tail`; WARP `TestManager_ConcurrentPublishAndClose`, `TestManager_InstallAfterCloseReturnsNil`, and `TestManager_EnsureSessionFailsFastWhenClosed`; `TestManager_RefreshTokenSurvivesCallerCancel`; plus unit suites for the new `textx` and `singleflightx` packages.
+
 ## [1.12.0] - 2026-09-21
 
 ### Fixed
