@@ -740,7 +740,7 @@ git commit -m "feat(frontend): add the Tools page shell with a tool sidebar"
 
 **Files:**
 - Create: `frontend/src/modules/7-tools/shared/MetricPill.tsx`
-- Modify: `frontend/src/modules/7-tools/chat/TokenStreamWaterfall.tsx:56-87`
+- Modify: `frontend/src/modules/7-tools/chat/TokenStreamWaterfall.tsx:78-106`
 
 **Interfaces:**
 - Consumes: nothing.
