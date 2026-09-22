@@ -7,7 +7,7 @@ import {
   Users,
   BarChart3,
   Sliders,
-  Terminal,
+  Wrench,
   Database,
 } from 'lucide-react';
 
@@ -18,7 +18,7 @@ const ModelsView = lazy(() => import('./3-models/ModelsView'));
 const TenantsView = lazy(() => import('./4-tenants/TenantsView'));
 const TelemetryView = lazy(() => import('./5-telemetry/TelemetryView'));
 const SettingsView = lazy(() => import('./6-settings/SettingsView'));
-const PlaygroundView = lazy(() => import('./7-tools/chat/ChatTool'));
+const ToolsView = lazy(() => import('./7-tools/ToolsView'));
 const ProvidersView = lazy(() => import('./8-providers/ProvidersView'));
 
 /**
@@ -78,13 +78,13 @@ export const MODULE_REGISTRY = {
     component: SettingsView,
     preload: () => import('./6-settings/SettingsView'),
   },
-  playground: {
-    title: 'Playground',
-    description: 'Real-time SSE token stream tester and direct proxy verification',
+  tools: {
+    title: 'Tools',
+    description: 'Interactive tooling: SSE chat testing and gateway benchmarking',
     order: 7,
-    icon: Terminal,
-    component: PlaygroundView,
-    preload: () => import('./7-tools/chat/ChatTool'),
+    icon: Wrench,
+    component: ToolsView,
+    preload: () => import('./7-tools/ToolsView'),
   },
   providers: {
     title: 'Providers',

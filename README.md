@@ -285,10 +285,10 @@ Firefly provides out-of-the-box support for API key commercialization, allowing 
 Firefly ships with a nocturnal React 19 Single Page Application embedded directly into the standalone binary (`//go:embed all:dist`):
 - **Responsive Mobile & Desktop**: Clean, unified navigation across all viewports with a nocturnal bioluminescent mobile burger menu, adaptive viewport stability (`min-h-[100dvh]`), and touch-friendly controls.
 - **Public Overview & Sanitized Settings**: Unauthenticated visitors can view real-time traffic pulse, particle canvas physics, latency charts, active upstream/model names, and recent activity logs. Sensitive credentials (upstream API keys, credential pools, tenant keys, rate limits, Turso DB credentials, and Auto-TLS certificates) are strictly redacted or omitted on the backend until admin authentication.
-- **Protected Route Navigation**: Accessing management modules (*Upstreams, Models, Combos, Tenants, Telemetry, Settings, Playground, Providers*) is gated behind backend session token authentication (default: `12345678`).
+- **Protected Route Navigation**: Accessing management modules (*Upstreams, Models, Combos, Tenants, Telemetry, Settings, Tools, Providers*) is gated behind backend session token authentication (default: `12345678`).
 - **Provider & Key Management**: The **Providers** tab manages the native provider/key catalog without touching the database — create/edit/delete providers, upsert keys in batch, patch status/routability/expiry, and rotate a secret in place. Raw secrets never reach the browser: the table shows masked hints only, and "Bind Provider Keys" pulls a provider's pooled credentials into an upstream server-side.
 - **Backend Credential Vault**: Passwords and session tokens are stored and verified exclusively on the backend (`configs/auth.json`), eliminating sensitive credential storage in browser `localStorage`.
-- **In-Browser LLM Playground**: Test model endpoints, inspect token streaming waterfalls, and review raw SSE packet diagnostics.
+- **In-Browser LLM Tools**: Chat against a model endpoint while inspecting token streaming waterfalls and raw SSE packet diagnostics, or run N concurrent requests through the gateway and compare TTFT/TPS in the Benchmark tool.
 
 ---
 

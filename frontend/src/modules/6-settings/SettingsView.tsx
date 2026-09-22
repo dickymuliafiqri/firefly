@@ -524,7 +524,7 @@ export default React.memo(function SettingsView() {
                     • <span className="text-neutral-300">Overview</span> tab is always public and does not require authentication.
                   </p>
                   <p className="text-neutral-500 pl-2.5">
-                    • Navigation to <span className="text-neutral-300">Upstreams</span>, <span className="text-neutral-300">Models</span>, <span className="text-neutral-300">Tenants</span>, <span className="text-neutral-300">Telemetry</span>, <span className="text-neutral-300">Settings</span>, and <span className="text-neutral-300">Playground</span> requires this password.
+                    • Navigation to <span className="text-neutral-300">Upstreams</span>, <span className="text-neutral-300">Models</span>, <span className="text-neutral-300">Tenants</span>, <span className="text-neutral-300">Telemetry</span>, <span className="text-neutral-300">Settings</span>, and <span className="text-neutral-300">Tools</span> requires this password.
                   </p>
                 </div>
               </div>

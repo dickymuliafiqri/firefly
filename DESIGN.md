@@ -137,6 +137,8 @@ frontend/
 │   │       ├── telemetrySlice.ts# Live Token & Request Counters
 │   │       ├── settingsSlice.ts # Upstream & Model Configurations
 │   │       ├── playgroundSlice.ts
+│   │       ├── toolsSlice.ts    # Active Tool & Telemetry Panel Collapse
+│   │       ├── benchmarkSlice.ts# Benchmark Run State & Per-Request Results
 │   │       └── uiSlice.ts
 │   ├── modules/                 # [EXTENSIBLE 🧩] Pluggable Feature Modules
 │   │   ├── 1-overview/          # Module 1: Live Overview & Quick Telemetry
@@ -145,7 +147,7 @@ frontend/
 │   │   ├── 4-tenants/           # Module 4: Tenant Credentials & RPS Gates
 │   │   ├── 5-telemetry/         # Module 5: Real-Time Stream Telemetry & Metrics
 │   │   ├── 6-settings/          # Module 6: Settings, Auto-TLS & Turso Configuration
-│   │   └── 7-playground/        # Module 7: Interactive Streaming Prompt Playground
+│   │   └── 7-tools/             # Module 7: Tools (chat/ + benchmark/ sub-tools)
 │   ├── components/ui/           # Reusable UI Elements (GlassCard, Badge, Button, Modal)
 │   ├── services/                # API Client & Adapters
 │   │   ├── api.ts               # Typed fetch / TanStack Query hooks
@@ -208,7 +210,7 @@ export interface ModuleViewProps {
 
 ### 6.2. Accessibility & Keyboard Navigation (WCAG 2.1 AA)
 1. **Global Keyboard Shortcuts:**
-   - `1` through `7`: Rapid module switching (1: Overview, 2: Upstreams, 3: Models & Combos, 4: Tenants, 5: Telemetry, 6: Settings, 7: Playground).
+   - `1` through `7`: Rapid module switching (1: Overview, 2: Upstreams, 3: Models & Combos, 4: Tenants, 5: Telemetry, 6: Settings, 7: Tools).
    - `M`: Toggle Lo-Fi audio ambience.
    - `P`: Trigger test photon pulse broadcast across network.
    - `Space`: Pause/resume particle physics canvas simulation.

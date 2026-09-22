@@ -3,9 +3,10 @@ import type { SettingsDTO } from '@/services/schema';
 import { createSettingsSlice, type SettingsSlice } from './settingsSlice';
 import { createTelemetrySlice, type TelemetrySlice } from './telemetrySlice';
 import { createUISlice, type UISlice } from './uiSlice';
+import { createToolsSlice, type ToolsSlice } from './toolsSlice';
 import { createPlaygroundSlice, type PlaygroundSlice } from './playgroundSlice';
 
-export type AppStore = SettingsSlice & TelemetrySlice & UISlice & PlaygroundSlice;
+export type AppStore = SettingsSlice & TelemetrySlice & UISlice & ToolsSlice & PlaygroundSlice;
 
 /**
  * Root Zustand Store combining Settings, Telemetry, UI, and Playground slices.
@@ -16,6 +17,7 @@ export const useAppStore = create<AppStore>()((...a) => ({
   ...createSettingsSlice(...a),
   ...createTelemetrySlice(...a),
   ...createUISlice(...a),
+  ...createToolsSlice(...a),
   ...createPlaygroundSlice(...a),
 }));
 
@@ -121,6 +123,17 @@ export function buildSettingsPayload(overrides: SettingsPayloadOverrides = {}): 
     ...(overrides.manage_tenants !== undefined && { manage_tenants: overrides.manage_tenants }),
   };
 }
+
+// ================= TOOLS SELECTOR HOOKS =================
+
+export const useActiveToolId = () => useAppStore((state) => state.activeToolId);
+export const useSetActiveToolId = () => useAppStore((state) => state.setActiveToolId);
+
+const TOOLS_ACTIONS = {
+  setActiveToolId: (...args: Parameters<AppStore['setActiveToolId']>) => useAppStore.getState().setActiveToolId(...args),
+};
+
+export const useToolsActions = () => TOOLS_ACTIONS;
 
 // ================= PLAYGROUND SELECTOR HOOKS =================
 
