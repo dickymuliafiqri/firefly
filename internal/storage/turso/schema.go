@@ -7,7 +7,45 @@ import (
 	"time"
 )
 
+// providers and api_keys are the harvester credential-pool tables that Firefly
+// now owns. Their definitions mirror the live database (sqlite_master) exactly:
+// no added defaults or AUTOINCREMENT, and never an ALTER/DROP — existing
+// databases already contain these tables, so the statements below must stay
+// no-ops there while producing an identical schema on a fresh deploy.
+// Declaration order matters: providers is referenced by api_keys and upstreams,
+// api_keys by upstream_credentials.
 const schemaDDL = `
+CREATE TABLE IF NOT EXISTS providers (
+    id          INTEGER NOT NULL,
+    name        VARCHAR(64) NOT NULL,
+    base_url    VARCHAR(255) NOT NULL,
+    description VARCHAR(255),
+    is_active   INTEGER NOT NULL,
+    created_at  BIGINT NOT NULL,
+    updated_at  BIGINT NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE (name)
+);
+
+CREATE TABLE IF NOT EXISTS api_keys (
+    id               INTEGER NOT NULL,
+    provider_id      INTEGER NOT NULL,
+    api_key          TEXT NOT NULL,
+    status           VARCHAR(20) NOT NULL,
+    is_active        INTEGER NOT NULL,
+    expires_at       BIGINT,
+    last_used_at     BIGINT NOT NULL,
+    total_requests   BIGINT NOT NULL,
+    account_metadata JSON,
+    created_at       BIGINT NOT NULL,
+    updated_at       BIGINT NOT NULL,
+    PRIMARY KEY (id),
+    FOREIGN KEY (provider_id) REFERENCES providers (id) ON DELETE CASCADE,
+    UNIQUE (api_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_provider_active_keys ON api_keys (provider_id, is_active, status, last_used_at);
+
 CREATE TABLE IF NOT EXISTS upstreams (
     id                      INTEGER PRIMARY KEY AUTOINCREMENT,
     name                    VARCHAR(64) NOT NULL UNIQUE,

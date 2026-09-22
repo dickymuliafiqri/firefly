@@ -29,35 +29,6 @@ func setupTestDB(t *testing.T) (*Store, *sql.DB) {
 		t.Fatalf("migrate schema: %v", err)
 	}
 
-	// Create fake providers and api_keys table for test environment
-	_, err = db.ExecContext(ctx, `
-		CREATE TABLE IF NOT EXISTS providers (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			name VARCHAR(64) NOT NULL,
-			base_url VARCHAR(255) NOT NULL,
-			description VARCHAR(255),
-			is_active INTEGER NOT NULL DEFAULT 1,
-			created_at BIGINT NOT NULL,
-			updated_at BIGINT NOT NULL
-		);
-		CREATE TABLE IF NOT EXISTS api_keys (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			provider_id INTEGER NOT NULL,
-			api_key TEXT NOT NULL,
-			status VARCHAR(32) NOT NULL DEFAULT 'active',
-			is_active INTEGER NOT NULL DEFAULT 1,
-			expires_at BIGINT,
-			last_used_at BIGINT NOT NULL DEFAULT 0,
-			total_requests BIGINT NOT NULL DEFAULT 0,
-			account_metadata JSON,
-			created_at BIGINT NOT NULL,
-			updated_at BIGINT NOT NULL
-		);
-	`)
-	if err != nil {
-		t.Fatalf("create provider/api_key tables: %v", err)
-	}
-
 	store := &Store{
 		db: db,
 	}
@@ -295,8 +266,8 @@ func TestStore_SaveAndLoadSettings(t *testing.T) {
 	pID, _ := res.LastInsertId()
 
 	_, err = db.ExecContext(ctx, `
-		INSERT INTO api_keys (provider_id, api_key, status, is_active, created_at, updated_at)
-		VALUES (?, 'sk-test-key-12345', 'active', 1, ?, ?)
+		INSERT INTO api_keys (provider_id, api_key, status, is_active, last_used_at, total_requests, created_at, updated_at)
+		VALUES (?, 'sk-test-key-12345', 'active', 1, 0, 0, ?, ?)
 	`, pID, now, now)
 	if err != nil {
 		t.Fatalf("insert api key: %v", err)
@@ -480,8 +451,8 @@ func TestUsageFlusher(t *testing.T) {
 	// Insert test api_key with id = 42
 	now := time.Now().UnixMilli()
 	_, err := db.ExecContext(ctx, `
-		INSERT INTO api_keys (id, provider_id, api_key, status, is_active, created_at, updated_at)
-		VALUES (42, 1, 'sk-test-key-42', 'active', 1, ?, ?)
+		INSERT INTO api_keys (id, provider_id, api_key, status, is_active, last_used_at, total_requests, created_at, updated_at)
+		VALUES (42, 1, 'sk-test-key-42', 'active', 1, 0, 0, ?, ?)
 	`, now, now)
 	if err != nil {
 		t.Fatalf("insert test key: %v", err)
@@ -529,14 +500,14 @@ func TestUsageFlusher_KeyActions(t *testing.T) {
 	store, db := setupTestDB(t)
 
 	now := time.Now().UnixMilli()
-	_, err := db.ExecContext(ctx, "INSERT INTO providers (id, name, base_url, created_at, updated_at) VALUES (1, 'prov', 'https://api.test.com', ?, ?)", now, now)
+	_, err := db.ExecContext(ctx, "INSERT INTO providers (id, name, base_url, is_active, created_at, updated_at) VALUES (1, 'prov', 'https://api.test.com', 1, ?, ?)", now, now)
 	if err != nil {
 		t.Fatalf("seed provider: %v", err)
 	}
 	_, err = db.ExecContext(ctx, `
-		INSERT INTO api_keys (id, provider_id, api_key, status, is_active, created_at, updated_at)
-		VALUES (101, 1, 'sk-test-101', 'active', 1, ?, ?),
-		       (102, 1, 'sk-test-102', 'active', 1, ?, ?)
+		INSERT INTO api_keys (id, provider_id, api_key, status, is_active, last_used_at, total_requests, created_at, updated_at)
+		VALUES (101, 1, 'sk-test-101', 'active', 1, 0, 0, ?, ?),
+		       (102, 1, 'sk-test-102', 'active', 1, 0, 0, ?, ?)
 	`, now, now, now, now)
 	if err != nil {
 		t.Fatalf("seed keys: %v", err)
@@ -1066,6 +1037,132 @@ func TestLoadCatalogSnapshot_SkipsEmptySecretCredential(t *testing.T) {
 	}
 	if sec := up.KeyRing.Slots[0].Secret; sec != "sk-valid-secret" {
 		t.Fatalf("expected the valid secret to remain, got %q", sec)
+	}
+}
+
+// TestLoadCatalogSnapshot_PoolsProviderKeysIntoBoundUpstream is the payoff test
+// for Firefly owning providers/api_keys natively: an upstream whose provider_id
+// is set receives that provider's routable keys as its credential pool during
+// the snapshot build. This is what lets the dashboard bind credentials by
+// provider id (upstreams.provider_id) instead of copying raw secrets into
+// upstream_credentials, and it is the only path that turns a stored key into a
+// routable slot for a provider-bound upstream.
+func TestLoadCatalogSnapshot_PoolsProviderKeysIntoBoundUpstream(t *testing.T) {
+	ctx := context.Background()
+	store, db := setupTestDB(t)
+
+	now := time.Now().UnixMilli()
+	res, err := db.ExecContext(ctx, `
+		INSERT INTO providers (name, base_url, description, is_active, created_at, updated_at)
+		VALUES ('pool-prov', 'https://pool.example/v1', 'pooling fixture', 1, ?, ?)
+	`, now, now)
+	if err != nil {
+		t.Fatalf("insert provider: %v", err)
+	}
+	providerID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("provider id: %v", err)
+	}
+
+	insertKey := func(id int64, secret, status string, active int, expiresAt any) {
+		t.Helper()
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO api_keys (
+				id, provider_id, api_key, status, is_active, expires_at,
+				last_used_at, total_requests, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
+		`, id, providerID, secret, status, active, expiresAt, now, now); err != nil {
+			t.Fatalf("insert api_key %d: %v", id, err)
+		}
+	}
+	insertKey(101, "sk-pool-routable", "active", 1, nil)
+	insertKey(102, "sk-pool-expired", "active", 1, now-60_000)
+	insertKey(103, "sk-pool-inactive", "active", 0, nil)
+	insertKey(104, "sk-pool-unknown-status", "dead", 1, nil)
+	insertKey(105, "sk-pool-valid-until-later", "active", 1, now+3_600_000)
+	insertKey(106, "", "active", 1, nil)
+
+	isEn := true
+	settings := config.SettingsDTO{
+		Upstreams: []config.UpstreamDTO{
+			{
+				Name:        "pool-upstream",
+				Protocol:    "openai",
+				BaseURL:     "https://pool.example/v1",
+				KeyStrategy: "round_robin",
+				Enabled:     &isEn,
+				ProviderID:  &providerID,
+			},
+		},
+		Models: []config.ModelDTO{
+			{
+				PublicName:    "pool-model",
+				Upstream:      "pool-upstream",
+				UpstreamModel: "pool-model",
+				Enabled:       &isEn,
+				Capabilities:  &config.CapabilitiesDTO{Stream: true},
+			},
+		},
+	}
+	if err := store.SaveSettings(ctx, settings); err != nil {
+		t.Fatalf("SaveSettings: %v", err)
+	}
+
+	var ucCount int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM upstream_credentials").Scan(&ucCount); err != nil {
+		t.Fatalf("count upstream_credentials: %v", err)
+	}
+	if ucCount != 0 {
+		t.Fatalf("fixture must rely on the provider pool alone, found %d upstream_credentials rows", ucCount)
+	}
+
+	snap, _, err := store.LoadCatalogSnapshot(ctx, func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatalf("LoadCatalogSnapshot: %v", err)
+	}
+	up, ok := snap.Upstream("pool-upstream")
+	if !ok || up == nil || up.KeyRing == nil {
+		t.Fatal("upstream pool-upstream not resolved with a key ring")
+	}
+
+	// Only 101 and 105 are routable: 102 is expired, 103 is deactivated, 104
+	// carries a non-routable status, and 106 has not replicated a secret yet.
+	if got := up.KeyRing.SlotCount(); got != 2 {
+		t.Fatalf("expected exactly 2 pooled slots, got %d", got)
+	}
+	type want struct{ ref, secret string }
+	wants := []want{
+		{"pool-upstream-key-101", "sk-pool-routable"},
+		{"pool-upstream-key-105", "sk-pool-valid-until-later"},
+	}
+	for i, w := range wants {
+		if got := up.KeyRing.Slots[i].Ref; got != w.ref {
+			t.Errorf("slot %d ref = %q, want %q", i, got, w.ref)
+		}
+		if got := up.KeyRing.Slots[i].Secret; got != w.secret {
+			t.Errorf("slot %d secret = %q, want %q", i, got, w.secret)
+		}
+	}
+
+	// The pool must be queried per snapshot build, not cached: revoking the key
+	// server-side has to disappear from the next snapshot without touching the
+	// upstream row.
+	if _, err := db.ExecContext(ctx, `UPDATE api_keys SET is_active = 0 WHERE id = 101`); err != nil {
+		t.Fatalf("deactivate pooled key: %v", err)
+	}
+	snap2, _, err := store.LoadCatalogSnapshot(ctx, func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatalf("LoadCatalogSnapshot after deactivation: %v", err)
+	}
+	up2, ok := snap2.Upstream("pool-upstream")
+	if !ok || up2 == nil || up2.KeyRing == nil {
+		t.Fatal("upstream pool-upstream lost its key ring after deactivation")
+	}
+	if got := up2.KeyRing.SlotCount(); got != 1 {
+		t.Fatalf("expected 1 slot after deactivating key 101, got %d", got)
+	}
+	if got := up2.KeyRing.Slots[0].Ref; got != "pool-upstream-key-105" {
+		t.Fatalf("surviving slot ref = %q, want pool-upstream-key-105", got)
 	}
 }
 
