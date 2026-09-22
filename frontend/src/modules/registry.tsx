@@ -18,7 +18,7 @@ const ModelsView = lazy(() => import('./3-models/ModelsView'));
 const TenantsView = lazy(() => import('./4-tenants/TenantsView'));
 const TelemetryView = lazy(() => import('./5-telemetry/TelemetryView'));
 const SettingsView = lazy(() => import('./6-settings/SettingsView'));
-const PlaygroundView = lazy(() => import('./7-playground/PlaygroundView'));
+const PlaygroundView = lazy(() => import('./7-tools/chat/ChatTool'));
 const ProvidersView = lazy(() => import('./8-providers/ProvidersView'));
 
 /**
@@ -84,7 +84,7 @@ export const MODULE_REGISTRY = {
     order: 7,
     icon: Terminal,
     component: PlaygroundView,
-    preload: () => import('./7-playground/PlaygroundView'),
+    preload: () => import('./7-tools/chat/ChatTool'),
   },
   providers: {
     title: 'Providers',

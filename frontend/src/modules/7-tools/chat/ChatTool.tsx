@@ -12,16 +12,16 @@ import {
 } from '@/core/state/store';
 
 /**
- * PlaygroundView
- * Interactive LLM test playground with real-time SSE waterfall telemetry.
- * All chat messages, timings, and inspector state are persisted in the Zustand store,
- * preserving state across tab navigation.
+ * ChatTool
+ * Interactive LLM test chat with real-time SSE waterfall telemetry.
+ * All chat messages, timings, and inspector state live in the Zustand store,
+ * preserving state across tool and tab navigation.
  *
  * Vercel React Best Practices:
  * - rerender-memo
  * - rerender-defer-reads: uses atomic selector hooks
  */
-export default React.memo(function PlaygroundView() {
+export default React.memo(function ChatTool() {
   const isStreaming = usePlaygroundIsGenerating();
   const ttftMs = usePlaygroundTtftMs();
   const totalDurationMs = usePlaygroundTotalDurationMs();
