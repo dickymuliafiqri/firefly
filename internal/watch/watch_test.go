@@ -192,6 +192,160 @@ func TestWatcherIgnoresUnrelatedFiles(t *testing.T) {
 	}
 }
 
+// TestWatcherPollDoesNotReloadWithoutChanges guards the poll-backstop
+// regression: the poll branch used to signal a reload unconditionally, so an
+// idle gateway rebuilt its entire catalog (and every KeyRing) every
+// PollInterval. With fingerprint gating, ticks over an untouched directory must
+// be silent.
+func TestWatcherPollDoesNotReloadWithoutChanges(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	dir := t.TempDir()
+	write := func(name, content string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("upstreams.json", `{"upstreams":[]}`)
+	write("models.json", `{"models":[]}`)
+	write("tenants.json", `{"tenants":[]}`)
+
+	var reloads atomic.Int64
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w := New(Options{
+		Dir:          dir,
+		PollInterval: 20 * time.Millisecond,
+		Debounce:     5 * time.Millisecond,
+	}, nil)
+
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx, func(context.Context) error { reloads.Add(1); return nil }) }()
+	time.Sleep(40 * time.Millisecond) // let the watcher attach
+
+	// Several poll periods with zero writers: no reload may fire. (The watcher
+	// itself never writes to the config dir, so the fingerprint stays constant.)
+	time.Sleep(300 * time.Millisecond)
+	if n := reloads.Load(); n != 0 {
+		t.Fatalf("idle poll caused %d reload(s), want 0", n)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("watcher did not exit after cancel")
+	}
+}
+
+// TestPollFingerprintTracksConfigFiles is the unit-level half of the poll gate:
+// the fingerprint must be stable across unrelated activity and must change when
+// a tracked file is written or removed.
+func TestPollFingerprintTracksConfigFiles(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, content string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("upstreams.json", `{"upstreams":[]}`)
+
+	t.Run("stable when nothing changes", func(t *testing.T) {
+		first := pollFingerprint(dir)
+		time.Sleep(20 * time.Millisecond)
+		if got := pollFingerprint(dir); got != first {
+			t.Fatalf("fingerprint changed without a writer: %d -> %d", first, got)
+		}
+	})
+
+	t.Run("unchanged by unrelated files", func(t *testing.T) {
+		first := pollFingerprint(dir)
+		write("gateway.log", "noise")
+		write("models.json.swp", "editor swap")
+		if got := pollFingerprint(dir); got != first {
+			t.Fatalf("unrelated file changed the fingerprint: %d -> %d", first, got)
+		}
+	})
+
+	t.Run("changes on config write", func(t *testing.T) {
+		first := pollFingerprint(dir)
+		write("models.json", `{"models":[{"public_name":"m","upstream":"u","upstream_model":"m"}]}`)
+		if got := pollFingerprint(dir); got == first {
+			t.Fatal("config write did not change the fingerprint")
+		}
+	})
+
+	t.Run("changes on config removal", func(t *testing.T) {
+		first := pollFingerprint(dir)
+		if err := os.Remove(filepath.Join(dir, "upstreams.json")); err != nil {
+			t.Fatal(err)
+		}
+		if got := pollFingerprint(dir); got == first {
+			t.Fatal("config removal did not change the fingerprint")
+		}
+	})
+}
+
+// TestWatcherPollReloadsOnMetadataTouch exercises the poll backstop branch in
+// Run. An mtime-only touch (os.Chtimes) is used deliberately: fsnotify either
+// reports it as a Chmod op or not at all, both of which the select loop ignores,
+// so a reload can only come from the poll fingerprint comparison. After the
+// change is consumed the ticks must go quiet again.
+func TestWatcherPollReloadsOnMetadataTouch(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	dir := t.TempDir()
+	write := func(name, content string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("upstreams.json", `{"upstreams":[]}`)
+	write("models.json", `{"models":[]}`)
+
+	var reloads atomic.Int64
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w := New(Options{
+		Dir:          dir,
+		PollInterval: 20 * time.Millisecond,
+		Debounce:     5 * time.Millisecond,
+	}, nil)
+
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx, func(context.Context) error { reloads.Add(1); return nil }) }()
+	time.Sleep(40 * time.Millisecond) // let the watcher attach
+
+	touched := filepath.Join(dir, "models.json")
+	stamp := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	if err := os.Chtimes(touched, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for reloads.Load() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("poll did not detect the touched config file")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	// Once the change has been consumed, ticking must go quiet again.
+	settled := reloads.Load()
+	time.Sleep(200 * time.Millisecond)
+	if got := reloads.Load(); got != settled {
+		t.Fatalf("reload fired after change was consumed: %d -> %d", settled, got)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("watcher did not exit after cancel")
+	}
+}
+
 // TestWatcherDoesNotLeakPerIteration guards the SIGHUP hoist: the watcher used
 // to call sighup(ctx) inside its select loop, spawning a fresh goroutine plus a
 // signal registration on EVERY event. On the many-events path that leaked

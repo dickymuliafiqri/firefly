@@ -45,6 +45,7 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/security/auth"
 	"github.com/dickymuliafiqri/firefly/internal/server"
 	"github.com/dickymuliafiqri/firefly/internal/storage/turso"
+	"github.com/dickymuliafiqri/firefly/internal/transport/httpx"
 	"github.com/dickymuliafiqri/firefly/internal/transport/upstream"
 	"github.com/dickymuliafiqri/firefly/internal/transport/warp"
 	"github.com/dickymuliafiqri/firefly/internal/watch"
@@ -504,28 +505,35 @@ func run() error {
 	liveLogs.AttachStore(analyticsStore)
 	autoTLS := server.NewAutoTLS(filepath.Join(*configDir, "certificates"), logger)
 
+	// Global admission gate (layer 1 of the limiter stack). It is constructed
+	// here, not inside the router, so this exact instance is shared by the
+	// middleware chain and the telemetry handler; otherwise telemetry would
+	// report occupancy from a throwaway limiter nobody routes through.
+	globalLimiter := httpx.NewGlobalLimiter(httpx.DefaultGlobalMaxInflight, httpx.DefaultGlobalWaitTimeout)
+
 	deps := server.RouterDeps{
-		Snapshots:    reg,
-		Registry:     reg,
-		ConfigDir:    *configDir,
-		AdminToken:   *adminToken,
-		ServiceToken: *harvesterToken,
-		Auth:         authMgr,
-		TenantStore:  tenantStore,
-		Limiter:      limits.New(),
-		Adapters:     adapterRegistry,
-		Adapter:      openAIAdapter,
-		Usage:        usageRecorder,
-		Breakers:     breakers,
-		Analytics:    analyticsStore,
-		LiveLogs:     liveLogs,
-		AutoTLS:      autoTLS,
-		OAuthManager: oauthMgr,
-		TursoStore:   tursoStore,
-		TursoManager: server.NewTursoManager(*configDir, tursoStore, logger),
-		WarpManager:  warpManager,
-		Logger:       logger,
-		Metrics:      mx,
+		Snapshots:     reg,
+		Registry:      reg,
+		ConfigDir:     *configDir,
+		AdminToken:    *adminToken,
+		ServiceToken:  *harvesterToken,
+		Auth:          authMgr,
+		TenantStore:   tenantStore,
+		Limiter:       limits.New(),
+		GlobalLimiter: globalLimiter,
+		Adapters:      adapterRegistry,
+		Adapter:       openAIAdapter,
+		Usage:         usageRecorder,
+		Breakers:      breakers,
+		Analytics:     analyticsStore,
+		LiveLogs:      liveLogs,
+		AutoTLS:       autoTLS,
+		OAuthManager:  oauthMgr,
+		TursoStore:    tursoStore,
+		TursoManager:  server.NewTursoManager(*configDir, tursoStore, logger),
+		WarpManager:   warpManager,
+		Logger:        logger,
+		Metrics:       mx,
 	}
 	graceDuration := time.Duration(*graceSecs) * time.Second
 	srv := server.New(server.Config{

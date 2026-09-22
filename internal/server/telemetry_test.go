@@ -37,12 +37,15 @@ func TestTelemetry_Get(t *testing.T) {
 	mx := metrics.New()
 	mx.ObserveHTTP("POST", "/v1/chat/completions", 200, 25*time.Millisecond)
 	mx.ObserveHTTP("POST", "/v1/chat/completions", 500, 100*time.Millisecond)
-	mx.IncInflight()
+	mx.IncInflight()                                // HTTP-level gauge: includes bypassed admin traffic
+	mx.IncKeyInflight("openai", "OPENAI_API_KEY_1") // one real data-plane request on a credential
 
 	counters := usage.NewCounters()
 	counters.Record("KEY_A", "demo", "gpt-4o", 5)
 
-	lim := httpx.NewGlobalLimiter(1500, 1500*time.Millisecond)
+	// A non-default capacity proves telemetry reports the limiter instance
+	// wired into deps, not a throwaway one built on the fly.
+	lim := httpx.NewGlobalLimiter(7, 1500*time.Millisecond)
 
 	deps := RouterDeps{
 		Metrics:       mx,
@@ -70,11 +73,17 @@ func TestTelemetry_Get(t *testing.T) {
 	if res.Summary.TotalErrors != 1 {
 		t.Errorf("TotalErrors = %d, want 1", res.Summary.TotalErrors)
 	}
-	if res.Summary.ActiveStreams < 1 {
-		t.Errorf("ActiveStreams = %d, want >= 1", res.Summary.ActiveStreams)
+	// Active streams come from the per-credential in-flight gauge only; the
+	// HTTP-level gauge (which also counts this telemetry request) must not leak
+	// into the number, and admission occupancy must not be fabricated either.
+	if res.Summary.ActiveStreams != 1 {
+		t.Errorf("ActiveStreams = %d, want 1 (from per-credential inflight)", res.Summary.ActiveStreams)
 	}
-	if res.GlobalAdmission.Capacity != 1500 {
-		t.Errorf("GlobalAdmission.Capacity = %d, want 1500", res.GlobalAdmission.Capacity)
+	if res.GlobalAdmission.Inflight != 0 {
+		t.Errorf("GlobalAdmission.Inflight = %d, want 0 (nothing routed through the limiter)", res.GlobalAdmission.Inflight)
+	}
+	if res.GlobalAdmission.Capacity != 7 {
+		t.Errorf("GlobalAdmission.Capacity = %d, want 7 (the wired limiter)", res.GlobalAdmission.Capacity)
 	}
 	if len(res.TenantsUsage) == 0 {
 		t.Errorf("TenantsUsage expected non-empty")
@@ -94,6 +103,43 @@ func TestTelemetry_Get(t *testing.T) {
 	}
 	if res2.Summary.TotalRequests != 2 {
 		t.Errorf("TotalRequests after healthz/settings = %d, want 2 (only AI requests)", res2.Summary.TotalRequests)
+	}
+}
+
+// TestTelemetry_GlobalAdmissionFallbackUsesAdmissionGauge pins the fallback
+// used when no limiter is wired into deps: occupancy must come from the
+// admission observer gauge (fed by the limiter middleware), never from the
+// total HTTP in-flight count, which also includes bypassed admin traffic.
+func TestTelemetry_GlobalAdmissionFallbackUsesAdmissionGauge(t *testing.T) {
+	mx := metrics.New()
+	mx.IncInflight() // HTTP-level gauge: must NOT be reported as admission
+	mx.IncInflight()
+	mx.IncGlobalInflight()
+	mx.IncGlobalInflight()
+	mx.IncGlobalInflight()
+
+	deps := RouterDeps{Metrics: mx}
+	s := New(Config{Addr: "0.0.0.0:8080"}, deps, context.Background(), nil)
+
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/telemetry", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	var res TelemetryDTO
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if res.GlobalAdmission.Inflight != 3 {
+		t.Errorf("GlobalAdmission.Inflight = %d, want 3 (admission gauge, not HTTP inflight)", res.GlobalAdmission.Inflight)
+	}
+	if res.GlobalAdmission.Capacity != httpx.DefaultGlobalMaxInflight {
+		t.Errorf("GlobalAdmission.Capacity = %d, want %d", res.GlobalAdmission.Capacity, httpx.DefaultGlobalMaxInflight)
+	}
+	// No per-credential in-flight was recorded, so there is no stream to report.
+	if res.Summary.ActiveStreams != 0 {
+		t.Errorf("ActiveStreams = %d, want 0 (no data-plane request recorded)", res.Summary.ActiveStreams)
 	}
 }
 

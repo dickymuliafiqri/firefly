@@ -17,6 +17,13 @@ import (
 // Returns:
 // - actionTaken: true if an automated threshold action (deactivate/delete/cooldown) was executed.
 // - failoverEligible: true if the key is now unavailable and rotation should fail over to another key.
+//
+// notifier may be a typed-nil pointer — in file-config mode the usage flusher
+// does not exist but is still injected as an interface — so every guard uses
+// the package-local isNil helper (the same check as httpx.IsNil; httpx cannot
+// be imported here because it transitively depends on the adapters). A bare
+// `notifier != nil` check lets the typed nil through and the first
+// NotifyKeyAction call panics into a recovered 500.
 func HandleKeyOutcome(
 	u *domain.Upstream,
 	slot *domain.KeySlot,
@@ -67,7 +74,7 @@ func HandleKeyOutcome(
 			FromDomain(u.KeyRing).Handle401(slot.Ref)
 		}
 		// If threshold was 0 (unlimited/unconfigured) or 1, trigger deactivation in notifier as well
-		if threshold <= 1 && notifier != nil {
+		if threshold <= 1 && !isNil(notifier) {
 			notifier.NotifyKeyAction(ports.KeyActionDeactivate, u.Name, slot.Ref, slot.APIKeyID, "HTTP 401 Unauthorized")
 		}
 		return false, true
@@ -104,7 +111,7 @@ func applyKeyAction(
 				"reason", reason,
 			)
 		}
-		if notifier != nil {
+		if !isNil(notifier) {
 			notifier.NotifyKeyAction(ports.KeyActionDelete, u.Name, slot.Ref, slot.APIKeyID, reason)
 		}
 		return true, true
@@ -140,7 +147,7 @@ func applyKeyAction(
 				"reason", reason,
 			)
 		}
-		if notifier != nil {
+		if !isNil(notifier) {
 			notifier.NotifyKeyAction(ports.KeyActionDeactivate, u.Name, slot.Ref, slot.APIKeyID, reason)
 		}
 		return true, true

@@ -48,6 +48,11 @@ func (r *Registry) CurrentGeneration() uint64 {
 // BuildAndStore loads config via src, validates it, and stores the resulting
 // snapshot. On any error the previous snapshot is left untouched (fail-closed).
 // It returns the warnings produced during validation on success.
+//
+// The snapshot built here must carry the same options as the settings-update
+// path (handleUpdateSettings): this function runs at startup and on every
+// watcher reload, so an option missing here is silently dropped from the live
+// snapshot the moment the process reloads.
 func (r *Registry) BuildAndStore(ctx context.Context, src ports.ConfigSource, envLookup func(string) (string, bool)) ([]string, error) {
 	raw, err := src.Load(ctx)
 	if err != nil {
@@ -66,6 +71,7 @@ func (r *Registry) BuildAndStore(ctx context.Context, src ports.ConfigSource, en
 		res.TenantsByHash,
 		res.TenantOrder,
 		domain.WithCombos(res.Combos, res.ComboOrder),
+		domain.WithTokenSaver(res.TokenSaver),
 	)
 	r.Store(snap)
 	return res.Warnings, nil

@@ -263,6 +263,13 @@ export interface ProviderRecordDTO {
 export interface ProviderListResponse {
   count: number;
   providers: ProviderRecordDTO[];
+  /** Where the rows come from: the Turso catalog, or the read-only projection of
+   *  the running configuration. */
+  storage?: 'file' | 'turso';
+  /** True when the rows are projected from the live snapshot (file-config mode).
+   *  There is no row to edit — credentials are declared in upstreams.json and the
+   *  environment — so the surface is shown without any mutation affordance. */
+  read_only?: boolean;
 }
 
 export interface ProviderMutationResponse {

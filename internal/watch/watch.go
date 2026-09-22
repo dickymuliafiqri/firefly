@@ -5,6 +5,8 @@ package watch
 
 import (
 	"context"
+	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -89,6 +91,15 @@ func (w *Watcher) Run(ctx context.Context, reload func(context.Context) error) e
 	poll := time.NewTicker(w.opts.PollInterval)
 	defer poll.Stop()
 
+	// Baseline for the poll backstop. The poll exists for environments where
+	// inotify events never arrive (bind mounts, Docker volumes), but an idle
+	// gateway must not rebuild its whole catalog on every tick — that caused a
+	// reload (and a full KeyRing rebuild) every PollInterval even with nothing
+	// changed. Only a fingerprint change — a writer actually touching one of the
+	// tracked files — justifies a reload. fsnotify-served changes refresh the
+	// baseline too, so they are not reloaded a second time by the next poll.
+	lastPoll := pollFingerprint(w.opts.Dir)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -103,6 +114,7 @@ func (w *Watcher) Run(ctx context.Context, reload func(context.Context) error) e
 				if !config.IsConfigFile(filepath.Base(ev.Name)) {
 					continue
 				}
+				lastPoll = pollFingerprint(w.opts.Dir)
 				w.signal(triggers, "fsnotify:"+ev.Name)
 			}
 		case err, ok := <-fsw.Errors:
@@ -111,11 +123,31 @@ func (w *Watcher) Run(ctx context.Context, reload func(context.Context) error) e
 			}
 			w.logger.Error("fsnotify error", "err", err)
 		case <-poll.C:
-			w.signal(triggers, "poll")
+			if fp := pollFingerprint(w.opts.Dir); fp != lastPoll {
+				lastPoll = fp
+				w.signal(triggers, "poll")
+			}
 		case <-hup:
 			w.signal(triggers, "sighup")
 		}
 	}
+}
+
+// pollFingerprint hashes the identity (presence, size, mtime) of every tracked
+// config file. It deliberately does not read file contents: the fingerprint only
+// answers "did a writer touch the directory since the last sample", which is
+// what gates the poll-triggered reload.
+func pollFingerprint(dir string) uint64 {
+	h := fnv.New64a()
+	for _, name := range config.ConfigFileNames() {
+		fi, err := os.Stat(filepath.Join(dir, name))
+		if err != nil {
+			_, _ = fmt.Fprintf(h, "%s|missing\n", name)
+			continue
+		}
+		_, _ = fmt.Fprintf(h, "%s|%d|%d\n", name, fi.Size(), fi.ModTime().UnixNano())
+	}
+	return h.Sum64()
 }
 
 // generation returns the registry's current generation, or 0 if no registry is
@@ -145,10 +177,6 @@ func (w *Watcher) signal(ch chan<- trigger, reason string) {
 // timer stopped, with a race check) before reuse, and a stale tick leaking into
 // the next window would fire a premature reload. A per-burst timer sidesteps
 // that contract entirely and is cheap (one alloc per event burst, not per file).
-// debounce waits for quiet time before invoking reload.
-//
-// It coalesces a burst of file-change triggers: each new trigger restarts the
-// quiet window, and reload runs once when the window elapses.
 func (w *Watcher) debounce(ctx context.Context, in <-chan trigger, reload func(context.Context) error) {
 	for {
 		select {

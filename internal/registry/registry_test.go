@@ -91,4 +91,25 @@ func TestGenerationMonotonic(t *testing.T) {
 	}
 }
 
+// TestBuildAndStoreCarriesTokenSaver guards the reload path: TokenSaver used to
+// be attached only by the settings-update handler, so a process that had not
+// saved settings since boot (or that reloaded afterwards) ran every chat
+// completion without the configured compression.
+func TestBuildAndStoreCarriesTokenSaver(t *testing.T) {
+	files := validFiles()
+	files["tokensaver"] = []byte(`{"enabled":true,"compress_tool_output":true,` +
+		`"terse_output":false,"minimal_code":false,"compress_context":false,` +
+		`"max_tool_output_chars":12000,"context_threshold":32000}`)
+
+	r := New()
+	if _, err := r.BuildAndStore(context.Background(), &mapSource{files: files}, env); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	ts := r.Current().TokenSaver()
+	if !ts.Enabled || !ts.CompressToolOutput {
+		t.Fatalf("TokenSaver config missing from the built snapshot: %+v", ts)
+	}
+}
+
 var _ = config.FileSetFromMap

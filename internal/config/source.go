@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/dickymuliafiqri/firefly/internal/ports"
 )
@@ -31,16 +32,28 @@ const (
 	FileNameTokenSaver = "tokensaver.json"
 )
 
+// configFileNames is the tracked set in load order. It is the single source of
+// truth for both the fsnotify filter and the watcher's poll fingerprint, so the
+// two can never disagree about which files matter.
+var configFileNames = []string{
+	FileNameUpstreams,
+	FileNameModels,
+	FileNameTenants,
+	FileNameCombos,
+	FileNameTokenSaver,
+}
+
+// ConfigFileNames returns the tracked config filenames. Callers get a copy;
+// the watcher fingerprints exactly these files.
+func ConfigFileNames() []string {
+	return slices.Clone(configFileNames)
+}
+
 // IsConfigFile reports whether base (a filename, not a path) is one of the
 // tracked config files. The watcher uses this to ignore unrelated writes in the
 // config directory (log files, editor swap files, etc.).
 func IsConfigFile(base string) bool {
-	switch base {
-	case FileNameUpstreams, FileNameModels, FileNameTenants, FileNameCombos, FileNameTokenSaver:
-		return true
-	default:
-		return false
-	}
+	return slices.Contains(configFileNames, base)
 }
 
 // Load reads all config files. It aggregates any read errors using errors.Join

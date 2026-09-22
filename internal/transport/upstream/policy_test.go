@@ -197,3 +197,44 @@ func TestHandleKeyOutcome_5xxIgnored(t *testing.T) {
 		t.Errorf("5xx must not increment consecutive key error counter, got %d", slot.ConsecutiveErrors.Load())
 	}
 }
+
+// panicOnNotifyNotifier models *turso.UsageFlusher in file-config mode: a nil
+// pointer stored in the notifier interface whose method dereferences the
+// receiver. A bare `notifier != nil` guard let it through and the threshold
+// action panicked into a recovered 500; httpx.IsNil must classify it as absent.
+type panicOnNotifyNotifier struct{ hits int }
+
+func (n *panicOnNotifyNotifier) NotifyKeyAction(ports.KeyAction, string, string, int64, string) {
+	n.hits++
+}
+
+func TestHandleKeyOutcome_TypedNilNotifierIsSkipped(t *testing.T) {
+	var typedNil ports.KeyActionNotifier = (*panicOnNotifyNotifier)(nil)
+
+	t.Run("threshold action", func(t *testing.T) {
+		slot := &domain.KeySlot{Ref: "k1", APIKeyID: 7}
+		u := &domain.Upstream{
+			Name:              "file-mode-up",
+			KeyErrorThreshold: 1,
+			KeyErrorAction:    "deactivate",
+		}
+
+		action, failover := HandleKeyOutcome(u, slot, http.StatusTooManyRequests, "", typedNil, nil)
+		if !action || !failover {
+			t.Errorf("expected action=true and failover=true, got action=%v failover=%v", action, failover)
+		}
+		if !slot.Revoked.Load() {
+			t.Error("expected slot to be revoked")
+		}
+	})
+
+	t.Run("401 without threshold", func(t *testing.T) {
+		slot := &domain.KeySlot{Ref: "k2", APIKeyID: 8}
+		u := &domain.Upstream{Name: "file-mode-up"}
+
+		_, failover := HandleKeyOutcome(u, slot, http.StatusUnauthorized, "", typedNil, nil)
+		if !failover {
+			t.Error("expected failover=true on 401")
+		}
+	})
+}

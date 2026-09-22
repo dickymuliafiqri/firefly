@@ -20,6 +20,7 @@ import {
   AlertCircle,
   Database,
   KeyRound,
+  Lock,
   Pencil,
   Plus,
   RefreshCw,
@@ -33,6 +34,11 @@ export default function ProvidersView() {
 
   const providersQuery = useProvidersQuery();
   const providers = useMemo(() => providersQuery.data?.providers ?? [], [providersQuery.data]);
+  // File-config mode projects the catalog read-only from the running
+  // configuration: there is no row to edit, and the server answers 501 to every
+  // mutation. Rendering the surface as a viewer keeps that from reading as a
+  // broken page.
+  const readOnly = providersQuery.data?.read_only === true;
 
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [formOpen, setFormOpen] = useState(false);
@@ -174,8 +180,8 @@ export default function ProvidersView() {
         <h3 className="text-sm font-medium text-neutral-200">Provider Store Unavailable</h3>
         <p className="text-xs text-neutral-500 mt-1 max-w-md">{parseApiError(providersQuery.error)}</p>
         <p className="text-[11px] text-neutral-600 mt-2 max-w-md">
-          Provider administration needs a configured storage engine; the endpoints fail closed
-          without one.
+          The provider surface needs a configured storage engine or a loaded catalog; with neither,
+          the endpoints fail closed.
         </p>
         <Button
           variant="minimal"
@@ -192,37 +198,58 @@ export default function ProvidersView() {
 
   return (
     <div className="flex flex-col gap-6 w-full animate-in fade-in duration-300">
-      {/* Top Action Bar */}
-      <div className="flex items-center justify-end">
-        <Button
-          variant="minimal"
-          size="sm"
-          onClick={handleCreate}
-          leftIcon={
-            <Plus className="w-3.5 h-3.5 text-neutral-400 group-hover:text-white transition-colors" />
-          }
-        >
-          Add Provider
-        </Button>
-      </div>
-
-      {providers.length === 0 ? (
-        <div className="p-12 text-center flex flex-col items-center justify-center font-mono rounded-xl border border-white/[0.06] bg-transparent">
-          <Database className="w-8 h-8 text-neutral-500 mb-3" />
-          <h3 className="text-sm font-medium text-neutral-200">No Providers Stored</h3>
-          <p className="text-xs text-neutral-500 mt-1 max-w-md">
-            A provider owns a credential pool. Bind its name to an upstream to have the gateway
-            pool those keys server-side — secrets never reach the browser.
-          </p>
+      {/* Top Action Bar — or the read-only explanation that replaces it */}
+      {readOnly ? (
+        <div className="flex items-start gap-3 px-4 py-3 rounded-xl border border-white/[0.06] bg-white/[0.02]">
+          <Lock className="w-4 h-4 text-neutral-400 flex-shrink-0 mt-0.5" />
+          <div className="font-mono text-[11px] leading-relaxed">
+            <p className="text-neutral-300">
+              Read-only view: this catalog is projected from the running configuration.
+            </p>
+            <p className="text-neutral-500 mt-0.5">
+              Credentials are declared in <span className="text-neutral-400">upstreams.json</span> and
+              the environment, so they are edited there and picked up on the next reload. Connect
+              Turso storage to manage provider keys from this page.
+            </p>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-center justify-end">
           <Button
             variant="minimal"
             size="sm"
             onClick={handleCreate}
-            leftIcon={<Plus className="w-3.5 h-3.5 text-neutral-400 group-hover:text-white transition-colors" />}
-            className="mt-4"
+            leftIcon={
+              <Plus className="w-3.5 h-3.5 text-neutral-400 group-hover:text-white transition-colors" />
+            }
           >
             Add Provider
           </Button>
+        </div>
+      )}
+
+      {providers.length === 0 ? (
+        <div className="p-12 text-center flex flex-col items-center justify-center font-mono rounded-xl border border-white/[0.06] bg-transparent">
+          <Database className="w-8 h-8 text-neutral-500 mb-3" />
+          <h3 className="text-sm font-medium text-neutral-200">
+            {readOnly ? 'No Configured Credential Pools' : 'No Providers Stored'}
+          </h3>
+          <p className="text-xs text-neutral-500 mt-1 max-w-md">
+            {readOnly
+              ? 'None of the configured upstreams carries a credential pool: they either authenticate with a fixed public token or have no keys yet. Declare keys for an upstream in upstreams.json to see them here.'
+              : 'A provider owns a credential pool. Bind its name to an upstream to have the gateway pool those keys server-side — secrets never reach the browser.'}
+          </p>
+          {readOnly ? null : (
+            <Button
+              variant="minimal"
+              size="sm"
+              onClick={handleCreate}
+              leftIcon={<Plus className="w-3.5 h-3.5 text-neutral-400 group-hover:text-white transition-colors" />}
+              className="mt-4"
+            >
+              Add Provider
+            </Button>
+          )}
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-[minmax(240px,300px)_1fr] gap-4 items-start">
@@ -294,26 +321,28 @@ export default function ProvidersView() {
                     ) : null}
                   </div>
 
-                  <div className="flex items-center gap-1.5 flex-shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => handleEdit(selected)}
-                      className="p-1.5 rounded text-neutral-400 hover:text-white transition-colors cursor-pointer hover:bg-white/[0.05]"
-                      title="Edit provider"
-                      aria-label="Edit provider"
-                    >
-                      <Pencil className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setDeletingProvider(selected)}
-                      className="p-1.5 rounded text-neutral-400 hover:text-rose-400 transition-colors cursor-pointer hover:bg-white/[0.05]"
-                      title="Delete provider and its keys"
-                      aria-label="Delete provider"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
+                  {readOnly ? null : (
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => handleEdit(selected)}
+                        className="p-1.5 rounded text-neutral-400 hover:text-white transition-colors cursor-pointer hover:bg-white/[0.05]"
+                        title="Edit provider"
+                        aria-label="Edit provider"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDeletingProvider(selected)}
+                        className="p-1.5 rounded text-neutral-400 hover:text-rose-400 transition-colors cursor-pointer hover:bg-white/[0.05]"
+                        title="Delete provider and its keys"
+                        aria-label="Delete provider"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -322,20 +351,23 @@ export default function ProvidersView() {
                   <span className="font-mono text-[10px] uppercase tracking-wider text-neutral-500">
                     Credentials ({keys.length.toLocaleString()})
                   </span>
-                  <Button
-                    variant="minimal"
-                    size="sm"
-                    onClick={() => setUpsertTarget(selected)}
-                    leftIcon={<KeyRound className="w-3.5 h-3.5 text-neutral-400" />}
-                  >
-                    Add / Update Keys
-                  </Button>
+                  {readOnly ? null : (
+                    <Button
+                      variant="minimal"
+                      size="sm"
+                      onClick={() => setUpsertTarget(selected)}
+                      leftIcon={<KeyRound className="w-3.5 h-3.5 text-neutral-400" />}
+                    >
+                      Add / Update Keys
+                    </Button>
+                  )}
                 </div>
 
                 <ProviderKeyTable
                   providerId={selected.id}
                   keys={keys}
                   isLoading={keysQuery.isLoading}
+                  readOnly={readOnly}
                   onEdit={setPatchTarget}
                   onDelete={setDeletingKey}
                   onToggleRoutable={handleToggleRoutable}

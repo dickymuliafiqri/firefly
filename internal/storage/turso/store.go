@@ -227,11 +227,24 @@ func (s *Store) LoadCatalogSnapshot(ctx context.Context, envLookup func(string) 
 		return nil, nil, fmt.Errorf("marshal combos: %w", err)
 	}
 
+	// Token Saver lives in the settings blob, not in a table, so it has to be
+	// marshaled back into the file set: without it every snapshot rebuilt from
+	// the database (startup and each sync) would carry the disabled default and
+	// silently drop the configured compression.
+	var tsRaw []byte
+	if settings.TokenSaver != nil {
+		tsRaw, err = json.Marshal(settings.TokenSaver)
+		if err != nil {
+			return nil, nil, fmt.Errorf("marshal tokensaver: %w", err)
+		}
+	}
+
 	fs := config.FileSet{
-		Upstreams: upRaw,
-		Models:    modRaw,
-		Tenants:   tenRaw,
-		Combos:    combRaw,
+		Upstreams:  upRaw,
+		Models:     modRaw,
+		Tenants:    tenRaw,
+		Combos:     combRaw,
+		TokenSaver: tsRaw,
 	}
 
 	res, err := config.Build(fs, envLookup)
@@ -259,6 +272,7 @@ func (s *Store) LoadCatalogSnapshot(ctx context.Context, envLookup func(string) 
 		res.TenantsByHash,
 		res.TenantOrder,
 		domain.WithCombos(res.Combos, res.ComboOrder),
+		domain.WithTokenSaver(res.TokenSaver),
 	)
 
 	return snap, res.Warnings, nil

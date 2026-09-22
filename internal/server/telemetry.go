@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/dickymuliafiqri/firefly/internal/observability/metrics"
+	"github.com/dickymuliafiqri/firefly/internal/transport/httpx"
 )
 
 // TelemetryDTO is the structured real-time observability snapshot.
@@ -102,7 +103,10 @@ func (deps RouterDeps) handleGetTelemetry(w http.ResponseWriter, r *http.Request
 		metricsSnap = deps.Metrics.Snapshot()
 	}
 
-	// Global admission stats
+	// Global admission stats. A wired limiter is the source of truth; without
+	// one, fall back to the admission observer gauge, which the limiter's own
+	// middleware feeds — never to the total HTTP in-flight count, which also
+	// includes admin/telemetry traffic that bypasses admission entirely.
 	var adm GlobalAdmissionDTO
 	if deps.GlobalLimiter != nil {
 		adm = GlobalAdmissionDTO{
@@ -112,25 +116,21 @@ func (deps RouterDeps) handleGetTelemetry(w http.ResponseWriter, r *http.Request
 		}
 	} else {
 		adm = GlobalAdmissionDTO{
-			Inflight:   int(metricsSnap.HttpInflight),
-			Capacity:   1500,
+			Inflight:   int(metricsSnap.GlobalInflight),
+			Capacity:   httpx.DefaultGlobalMaxInflight,
 			QueueDepth: 0,
 		}
 	}
 
-	var activeAIStreams int64
+	// Active AI streams are the sum of per-credential in-flight requests: only
+	// the data-plane path increments those counters. There is deliberately no
+	// fallback to admission occupancy — that counts every admitted request, not
+	// streams, and previously even subtracted the telemetry connection itself.
+	var activeStreams int64
 	for _, inf := range metricsSnap.KeyInflight {
 		if inf > 0 {
-			activeAIStreams += inf
+			activeStreams += inf
 		}
-	}
-
-	activeStreams := activeAIStreams
-	if activeStreams <= 0 && adm.Inflight > 0 {
-		activeStreams = int64(adm.Inflight)
-	}
-	if activeStreams <= 0 && metricsSnap.HttpInflight > 1 {
-		activeStreams = metricsSnap.HttpInflight - 1
 	}
 
 	var inTokens, outTokens, hubReqs, hubErrors int64

@@ -28,13 +28,15 @@ import (
 //
 // These are the operator side of the harvester ownership shift: before them,
 // providers/api_keys had no writer except the harvester and the data-plane key
-// policy. Both tables live only in Turso storage, so every handler needs a
-// configured store and fails closed (503) without one.
+// policy. The tables live in Turso storage; when no database is configured the
+// same reads are served read-only from the live snapshot (see providers_file.go)
+// and every mutation answers 501, so the dashboard works in file-config mode
+// without offering edits that a reload would discard.
 //
 // Security notes:
 //   - Every handler is gated by authorizeAdmin (dashboard session or admin token).
-//   - Responses carry ids, counters, and a masked key hint only. The raw secret
-//     never leaves the store, and account_metadata — a vault holding private
+//   - Responses carry ids, counters, and a masked key hint only — never a raw
+//     secret, in either backing store. account_metadata — a vault holding private
 //     keys, mnemonics, and OAuth tokens — is write-only here: it is accepted on
 //     an upsert and never read back.
 //   - Errors name fields, ids, and limits; never credential contents. Unknown
@@ -62,10 +64,17 @@ func adminKeyViewsFrom(recs []turso.ProviderKeyRecord) []adminKeyView {
 	return views
 }
 
-// providersAdminStore authorizes the request and resolves the Turso store the
-// provider tables live in, writing the failure response itself: 401 without an
-// admin identity, 503 when the store is unconfigured (fail closed).
-func (deps RouterDeps) providersAdminStore(w http.ResponseWriter, r *http.Request) (*turso.Store, bool) {
+// providersAdminStore authorizes the request and resolves the store the provider
+// catalog lives in, writing the failure response itself: 401 without an admin
+// identity, 503 when neither a Turso database nor a loaded catalog is available
+// (fail closed).
+//
+// A configured Turso store always wins. Without one, the surface is served from
+// the live snapshot in read-only mode (fileProviderStore) instead of failing
+// closed with a 503: the dashboard's provider page then shows the credential
+// pools the running configuration actually uses — with masked hints and no path
+// to mutate them.
+func (deps RouterDeps) providersAdminStore(w http.ResponseWriter, r *http.Request) (providerAdminStore, bool) {
 	if !deps.authorizeAdmin(r) {
 		openai.WriteError(w, http.StatusUnauthorized, openai.TypeAuthentication, "unauthorized: valid dashboard session or admin token required")
 		return nil, false
@@ -77,12 +86,17 @@ func (deps RouterDeps) providersAdminStore(w http.ResponseWriter, r *http.Reques
 		openai.WriteError(w, http.StatusServiceUnavailable, openai.TypeAPI, "credential store is unavailable")
 		return nil, false
 	}
-	if store == nil {
+	if store != nil {
+		return store, true
+	}
+
+	snap := deps.currentSnapshot()
+	if snap == nil {
 		openai.WriteError(w, http.StatusServiceUnavailable, openai.TypeAPI,
-			"credential store is not configured; provider administration requires turso storage")
+			"no catalog loaded: configure an upstream or connect turso storage")
 		return nil, false
 	}
-	return store, true
+	return newFileProviderStore(snap, deps.Metrics), true
 }
 
 // reloadAfterMutation publishes a committed write to the routing snapshot and
@@ -146,10 +160,13 @@ func pathID(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
 }
 
 // writeProvidersAdminError maps store failures onto client statuses: payload
-// problems are 400, conflicts 409, missing rows 404, and anything else 500 with
-// the database detail left server-side.
+// problems are 400, conflicts 409, missing rows 404, mutations against a
+// read-only (file-backed) catalog 501, and anything else 500 with the database
+// detail left server-side.
 func (deps RouterDeps) writeProvidersAdminError(w http.ResponseWriter, op string, err error) {
 	switch {
+	case errors.Is(err, errProviderReadOnly):
+		openai.WriteError(w, http.StatusNotImplemented, openai.TypeAPI, err.Error())
 	case errors.Is(err, turso.ErrInvalidPayload), errors.Is(err, turso.ErrInvalidSyncPayload):
 		openai.WriteError(w, http.StatusBadRequest, openai.TypeInvalidRequest, err.Error())
 	case errors.Is(err, turso.ErrNotFound):
@@ -177,9 +194,12 @@ func (deps RouterDeps) handleListProvidersAdmin(w http.ResponseWriter, r *http.R
 		deps.writeProvidersAdminError(w, "list providers", err)
 		return
 	}
+	storage, readOnly := providerStoreProvenance(store)
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"count":     len(providers),
 		"providers": providers,
+		"storage":   storage,
+		"read_only": readOnly,
 	})
 }
 

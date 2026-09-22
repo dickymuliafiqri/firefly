@@ -18,6 +18,10 @@ export interface ProviderKeyTableProps {
   providerId: number;
   keys: ProviderKeyRecordDTO[];
   isLoading?: boolean;
+  /** Hides the Actions column. Set when the pool is projected from the running
+   *  configuration: the rows are read-only there, so offering the buttons would
+   *  only produce refused requests. */
+  readOnly?: boolean;
   onEdit: (keyRecord: ProviderKeyRecordDTO) => void;
   onDelete: (keyRecord: ProviderKeyRecordDTO) => void;
   onToggleRoutable: (keyRecord: ProviderKeyRecordDTO) => void;
@@ -68,11 +72,13 @@ function statusTone(record: ProviderKeyRecordDTO, expired: boolean) {
 
 const KeyRow = React.memo(function KeyRow({
   record,
+  readOnly,
   onEdit,
   onDelete,
   onToggleRoutable,
 }: {
   record: ProviderKeyRecordDTO;
+  readOnly: boolean;
   onEdit: (keyRecord: ProviderKeyRecordDTO) => void;
   onDelete: (keyRecord: ProviderKeyRecordDTO) => void;
   onToggleRoutable: (keyRecord: ProviderKeyRecordDTO) => void;
@@ -91,7 +97,7 @@ const KeyRow = React.memo(function KeyRow({
           <span className="text-neutral-200">{record.api_key_hint || '[REDACTED]'}</span>
         </div>
         <span className="text-[10px] text-neutral-600">
-          ref suffix -key-{record.id}
+          {readOnly ? 'from upstreams.json' : `ref suffix -key-${record.id}`}
         </span>
       </td>
 
@@ -129,42 +135,44 @@ const KeyRow = React.memo(function KeyRow({
       </td>
 
       <td className="py-2.5 px-4 text-right">
-        <div className="inline-flex items-center gap-1.5">
-          <button
-            type="button"
-            onClick={() => onToggleRoutable(record)}
-            className={cn(
-              'p-1.5 rounded transition-colors cursor-pointer hover:bg-white/[0.05]',
-              isRoutable
-                ? 'text-neutral-400 hover:text-white'
-                : 'text-emerald-400/90 hover:text-emerald-300'
-            )}
-            title={isRoutable ? 'Take out of rotation' : 'Put back into rotation'}
-            aria-label={isRoutable ? 'Deactivate key' : 'Activate key'}
-          >
-            {isRoutable ? <PowerOff className="w-3.5 h-3.5" /> : <Power className="w-3.5 h-3.5" />}
-          </button>
+        {readOnly ? null : (
+          <div className="inline-flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => onToggleRoutable(record)}
+              className={cn(
+                'p-1.5 rounded transition-colors cursor-pointer hover:bg-white/[0.05]',
+                isRoutable
+                  ? 'text-neutral-400 hover:text-white'
+                  : 'text-emerald-400/90 hover:text-emerald-300'
+              )}
+              title={isRoutable ? 'Take out of rotation' : 'Put back into rotation'}
+              aria-label={isRoutable ? 'Deactivate key' : 'Activate key'}
+            >
+              {isRoutable ? <PowerOff className="w-3.5 h-3.5" /> : <Power className="w-3.5 h-3.5" />}
+            </button>
 
-          <button
-            type="button"
-            onClick={() => onEdit(record)}
-            className="p-1.5 rounded text-neutral-400 hover:text-white transition-colors cursor-pointer hover:bg-white/[0.05]"
-            title="Edit status, expiry, or rotate the secret"
-            aria-label="Edit key"
-          >
-            <Pencil className="w-3.5 h-3.5" />
-          </button>
+            <button
+              type="button"
+              onClick={() => onEdit(record)}
+              className="p-1.5 rounded text-neutral-400 hover:text-white transition-colors cursor-pointer hover:bg-white/[0.05]"
+              title="Edit status, expiry, or rotate the secret"
+              aria-label="Edit key"
+            >
+              <Pencil className="w-3.5 h-3.5" />
+            </button>
 
-          <button
-            type="button"
-            onClick={() => onDelete(record)}
-            className="p-1.5 rounded text-neutral-400 hover:text-rose-400 transition-colors cursor-pointer hover:bg-white/[0.05]"
-            title="Delete key and its bound credentials"
-            aria-label="Delete key"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-          </button>
-        </div>
+            <button
+              type="button"
+              onClick={() => onDelete(record)}
+              className="p-1.5 rounded text-neutral-400 hover:text-rose-400 transition-colors cursor-pointer hover:bg-white/[0.05]"
+              title="Delete key and its bound credentials"
+              aria-label="Delete key"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
       </td>
     </tr>
   );
@@ -287,6 +295,7 @@ export const ProviderKeyTable = React.memo(function ProviderKeyTable({
   providerId,
   keys,
   isLoading = false,
+  readOnly = false,
   onEdit,
   onDelete,
   onToggleRoutable,
@@ -339,7 +348,7 @@ export const ProviderKeyTable = React.memo(function ProviderKeyTable({
               <th className={HEADER_CELL_CLASS}>Status</th>
               <th className={HEADER_CELL_CLASS}>Expires</th>
               <th className={HEADER_CELL_CLASS}>Usage</th>
-              <th className={cn(HEADER_CELL_CLASS, 'text-right')}>Actions</th>
+              {readOnly ? null : <th className={cn(HEADER_CELL_CLASS, 'text-right')}>Actions</th>}
             </tr>
           </thead>
           <tbody>
@@ -347,6 +356,7 @@ export const ProviderKeyTable = React.memo(function ProviderKeyTable({
               <KeyRow
                 key={record.id}
                 record={record}
+                readOnly={readOnly}
                 onEdit={onEdit}
                 onDelete={onDelete}
                 onToggleRoutable={onToggleRoutable}

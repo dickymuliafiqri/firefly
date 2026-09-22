@@ -966,6 +966,65 @@ func TestStore_ConcurrentOperations(t *testing.T) {
 	wg.Wait()
 }
 
+// TestLoadCatalogSnapshot_CarriesTokenSaver guards the database reload path:
+// Token Saver is stored in the settings blob, so a snapshot rebuilt from the
+// database must carry it. Without this, every sync published a snapshot whose
+// TokenSaver was the disabled default and the configured compression silently
+// stopped applying to chat completions.
+func TestLoadCatalogSnapshot_CarriesTokenSaver(t *testing.T) {
+	ctx := context.Background()
+	store, _ := setupTestDB(t)
+
+	isEn := true
+	maxTool := 4321
+	ctxThreshold := 9999
+	settings := config.SettingsDTO{
+		Upstreams: []config.UpstreamDTO{
+			{
+				Name:        "openai",
+				Protocol:    "openai",
+				BaseURL:     "https://api.openai.com/v1",
+				KeyStrategy: "round_robin",
+				Enabled:     &isEn,
+				CredentialPool: []config.CredentialKeyDTO{
+					{Ref: "openai-cred-1", Secret: "sk-valid-secret"},
+				},
+			},
+		},
+		Models: []config.ModelDTO{
+			{
+				PublicName:    "gpt-4o",
+				Upstream:      "openai",
+				UpstreamModel: "gpt-4o",
+				Enabled:       &isEn,
+			},
+		},
+		TokenSaver: &config.TokenSaverDTO{
+			Enabled:            true,
+			CompressToolOutput: true,
+			MaxToolOutputChars: &maxTool,
+			ContextThreshold:   &ctxThreshold,
+		},
+	}
+	if err := store.SaveSettings(ctx, settings); err != nil {
+		t.Fatalf("SaveSettings: %v", err)
+	}
+
+	snap, _, err := store.LoadCatalogSnapshot(ctx, func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatalf("LoadCatalogSnapshot: %v", err)
+	}
+
+	ts := snap.TokenSaver()
+	if !ts.Enabled || !ts.CompressToolOutput {
+		t.Fatalf("TokenSaver not carried into the snapshot: %+v", ts)
+	}
+	if ts.MaxToolOutputChars != maxTool || ts.ContextThreshold != ctxThreshold {
+		t.Fatalf("TokenSaver thresholds lost: max=%d threshold=%d, want %d/%d",
+			ts.MaxToolOutputChars, ts.ContextThreshold, maxTool, ctxThreshold)
+	}
+}
+
 // TestLoadCatalogSnapshot_SkipsEmptySecretCredential guards the DB-load
 // regression: an upstream_credentials row whose secret has not (yet)
 // replicated (NULL secret, no joined api_key) must be skipped rather than
