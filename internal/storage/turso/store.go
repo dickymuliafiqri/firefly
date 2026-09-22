@@ -788,9 +788,9 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 // Rows are collected before deleting so the result set is fully drained on the
 // single-connection pool used by the Turso client.
 //
-// The `api_keys` table is owned by the harvester and may not exist in every
-// deployment, so the join is best-effort: a failure falls back to reading the
-// credentials table alone.
+// The `api_keys` table came from the external harvester originally, and a
+// replica that predates Firefly's own DDL may still lack it, so the join is
+// best-effort: a failure falls back to reading the credentials table alone.
 func pruneOrphanCredentials(ctx context.Context, tx *sql.Tx, upstreamID int64, keep map[string]bool) error {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT uc.id, uc.ref, uc.secret, ak.api_key

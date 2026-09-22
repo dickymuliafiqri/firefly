@@ -105,22 +105,10 @@ type RawAPIKeyRecord struct {
 	ExpiresAt *int64 `json:"expires_at,omitempty"`
 }
 
-// ProviderSyncEntry is one provider in a harvester snapshot. Name is the
-// natural key: an entry upserts the row with that name and never renames it.
-type ProviderSyncEntry struct {
-	Name        string `json:"name"`
-	BaseURL     string `json:"base_url"`
-	Description string `json:"description,omitempty"`
-	IsActive    *bool  `json:"is_active,omitempty"`
-}
-
-// ProviderKeySyncEntry is one credential in a harvester snapshot. Provider is
-// the provider name (not id) so the client never has to track server ids.
-// Status is authoritative on every write: an omitted status means "active" (so
-// a batch can reactivate a key). Status values are the writer's lifecycle
-// vocabulary and are stored verbatim — only "active" routes — so the endpoint
-// checks their shape (<= 20 chars, no control characters or padding) rather
-// than an enum, and refuses to freeze a batch over a state it has not seen.
+// ProviderKeySyncEntry is one credential in an operator key batch. Status is
+// authoritative on every write: an omitted status means "active" (so a batch can
+// reactivate a key). The operator surface issues lifecycle commands, so it
+// accepts only the states Firefly's own writers produce.
 // ExpiresAt carries three intents, distinguished on the wire exactly as the
 // operator PATCH does: absent keeps the stored expiry, JSON null clears it, a
 // number replaces it. Absence must not mean "clear" because one writer refreshes
@@ -138,28 +126,4 @@ type ProviderKeySyncEntry struct {
 	Status          string          `json:"status,omitempty"`
 	ExpiresAt       json.RawMessage `json:"expires_at,omitempty"`
 	AccountMetadata json.RawMessage `json:"account_metadata,omitempty"`
-}
-
-// ProviderSyncRequest is the harvester batch payload. Every write is idempotent:
-// replaying the same payload creates nothing new and never changes api_keys.id
-// (credential refs are derived from that id). Deactivation is explicit-id only —
-// the server never infers deletions from absence, so the client stays the owner
-// of "what disappeared".
-type ProviderSyncRequest struct {
-	Providers      []ProviderSyncEntry    `json:"providers"`
-	Keys           []ProviderKeySyncEntry `json:"keys"`
-	DeactivateKeys []int64                `json:"deactivate_keys,omitempty"`
-}
-
-// ProviderSyncResult reports what the batch changed. Created/Updated/Unchanged
-// count API keys only; KeyIDs lists every currently active key id per provider
-// touched by the request.
-type ProviderSyncResult struct {
-	Created     int                `json:"created"`
-	Updated     int                `json:"updated"`
-	Unchanged   int                `json:"unchanged"`
-	Deactivated int                `json:"deactivated"`
-	KeyIDs      map[string][]int64 `json:"key_ids"`
-	Revision    int64              `json:"revision"`
-	Pushed      bool               `json:"pushed"`
 }

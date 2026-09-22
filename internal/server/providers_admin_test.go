@@ -7,25 +7,204 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/dickymuliafiqri/firefly/internal/config"
+	"github.com/dickymuliafiqri/firefly/internal/limits"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
+	"github.com/dickymuliafiqri/firefly/internal/security/auth"
+	"github.com/dickymuliafiqri/firefly/internal/storage/turso"
 	_ "turso.tech/database/tursogo"
 )
 
-// providersEnv reuses the harvester harness: the same in-memory Turso store, a
-// hand-bound syncer so reloads are deterministic, and the registry it swaps.
+// providersEnv wires the provider/key admin surface to an in-memory Turso store
+// and to a registry whose reload cursor the test controls, so reload assertions
+// are deterministic and no background ticker participates.
 type providersEnv struct {
-	*harvesterEnv
+	t     *testing.T
+	db    *sql.DB
+	store *turso.Store
+	reg   *registry.Registry
+	sync  *turso.Syncer
+	s     *Server
+	logs  *bytes.Buffer
 }
 
 func newProvidersEnv(t *testing.T, mutate func(*RouterDeps)) *providersEnv {
 	t.Helper()
-	return &providersEnv{harvesterEnv: newHarvesterEnv(t, mutate)}
+	ctx, cancel := context.WithCancel(context.Background())
+
+	db, err := sql.Open("turso", ":memory:")
+	if err != nil {
+		cancel()
+		t.Fatalf("open memory db: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	t.Cleanup(func() {
+		cancel()
+		_ = db.Close()
+	})
+
+	if err := turso.MigrateSchema(ctx, db); err != nil {
+		t.Fatalf("migrate schema: %v", err)
+	}
+
+	store := turso.NewStoreWithDB(db)
+	reg := registry.New()
+	logs := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	mgr := NewTursoManager("", store, logger)
+	// A client-less syncer never Pulls, and AttachRegistry only rebuilds the
+	// syncer when a cloud client is connected, so this hand-bound instance
+	// survives server startup. SyncOnce still runs the real reload path:
+	// revision check -> LoadCatalogSnapshot -> registry swap.
+	syncer := turso.NewSyncer(nil, store, reg, turso.SyncerConfig{
+		Interval:  time.Hour,
+		EnvLookup: os.LookupEnv,
+		Logger:    logger,
+	})
+	mgr.syncer = syncer
+
+	deps := RouterDeps{
+		Snapshots:    reg,
+		Registry:     reg,
+		TenantStore:  auth.NewStore(reg),
+		Limiter:      limits.New(),
+		TursoManager: mgr,
+		Logger:       logger,
+	}
+	if mutate != nil {
+		mutate(&deps)
+	}
+
+	env := &providersEnv{
+		t:     t,
+		db:    db,
+		store: store,
+		reg:   reg,
+		sync:  syncer,
+		s:     New(Config{Addr: "0.0.0.0:8080"}, deps, ctx, logger),
+		logs:  logs,
+	}
+	env.reseedSyncCursor()
+	return env
+}
+
+// reseedSyncCursor pins the reload cursor to the current revision: setup writes
+// during a test bump the revision and must not be mistaken for the mutation
+// under test.
+func (e *providersEnv) reseedSyncCursor() int64 {
+	e.t.Helper()
+	rev, err := e.store.GetCatalogRevision(context.Background())
+	if err != nil {
+		e.t.Fatalf("read catalog revision: %v", err)
+	}
+	e.sync.SetInitialRevision(rev)
+	return rev
+}
+
+func (e *providersEnv) revision() int64 {
+	e.t.Helper()
+	rev, err := e.store.GetCatalogRevision(context.Background())
+	if err != nil {
+		e.t.Fatalf("read catalog revision: %v", err)
+	}
+	return rev
+}
+
+func (e *providersEnv) exec(query string, args ...any) {
+	e.t.Helper()
+	if _, err := e.db.ExecContext(context.Background(), query, args...); err != nil {
+		e.t.Fatalf("exec %q: %v", query, err)
+	}
+}
+
+func (e *providersEnv) countProviders() int {
+	e.t.Helper()
+	var n int
+	if err := e.db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM providers").Scan(&n); err != nil {
+		e.t.Fatalf("count providers: %v", err)
+	}
+	return n
+}
+
+type apiKeyRow struct {
+	ID         int64
+	ProviderID int64
+	Status     string
+	IsActive   int
+	CreatedAt  int64
+	UpdatedAt  int64
+	LastUsed   int64
+	Requests   int64
+	Meta       sql.NullString
+}
+
+func (e *providersEnv) keyRow(apiKey string) apiKeyRow {
+	e.t.Helper()
+	var row apiKeyRow
+	err := e.db.QueryRowContext(context.Background(), `
+		SELECT id, provider_id, status, is_active, created_at, updated_at,
+		       last_used_at, total_requests, account_metadata
+		FROM api_keys WHERE api_key = ?
+	`, apiKey).Scan(&row.ID, &row.ProviderID, &row.Status, &row.IsActive,
+		&row.CreatedAt, &row.UpdatedAt, &row.LastUsed, &row.Requests, &row.Meta)
+	if err != nil {
+		e.t.Fatalf("read api key row: %v", err)
+	}
+	return row
+}
+
+// seedLinkedUpstream creates a provider holding the given keys and links an
+// upstream to it through upstreams.provider_id — the very join the snapshot
+// loader reads — so a seeded key becomes routable after a reload. It returns the
+// provider's currently active key ids, in id order.
+func (e *providersEnv) seedLinkedUpstream(providerName, upstreamName string, apiKeys ...string) []int64 {
+	e.t.Helper()
+	ctx := context.Background()
+
+	baseURL := "https://api." + providerName + ".test"
+	active := true
+	rec, err := e.store.CreateProviderRecord(ctx, turso.ProviderUpdate{
+		Name:     &providerName,
+		BaseURL:  &baseURL,
+		IsActive: &active,
+	})
+	if err != nil {
+		e.t.Fatalf("seed provider %q: %v", providerName, err)
+	}
+
+	entries := make([]turso.ProviderKeySyncEntry, 0, len(apiKeys))
+	for _, k := range apiKeys {
+		entries = append(entries, turso.ProviderKeySyncEntry{APIKey: k})
+	}
+	res, err := e.store.UpsertProviderKeyRecords(ctx, rec.ID, entries, false)
+	if err != nil {
+		e.t.Fatalf("seed keys for provider %q: %v", providerName, err)
+	}
+
+	enabled := true
+	if err := e.store.SaveSettings(ctx, config.SettingsDTO{
+		Upstreams: []config.UpstreamDTO{{
+			Name:        upstreamName,
+			Protocol:    "openai",
+			BaseURL:     baseURL,
+			ProviderID:  &rec.ID,
+			KeyStrategy: "round_robin",
+			Enabled:     &enabled,
+		}},
+	}); err != nil {
+		e.t.Fatalf("link upstream %q to provider %q: %v", upstreamName, providerName, err)
+	}
+	return res.KeyIDs
 }
 
 // do issues one JSON request through the real server handler.
@@ -363,7 +542,8 @@ func TestProvidersAdmin_ProviderCRUDRoundTrip(t *testing.T) {
 		t.Fatalf("deactivate result = %v", prov)
 	}
 
-	// The name is the harvester's natural key: renaming would orphan the pool.
+	// The name is the pool's natural key: renaming would orphan it instead of
+	// moving it.
 	w = env.admin(http.MethodPut, fmt.Sprintf("/api/providers/%d", id), map[string]any{"name": "renamed"})
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("rename: status = %d, want 400; body = %s", w.Code, w.Body.String())
@@ -500,8 +680,8 @@ func TestProvidersAdmin_KeyLifecycle(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("provider mismatch in body: status = %d, want 400; body = %s", w.Code, w.Body.String())
 	}
-	// The operator surface issues lifecycle commands, so it is narrower than the
-	// harvester snapshot: known statuses only, and millisecond expiry only.
+	// The operator surface issues lifecycle commands, so it accepts only the
+	// states Firefly's own writers produce, and millisecond expiry only.
 	w = env.upsertKeys(id, map[string]any{"keys": []map[string]any{
 		{"api_key": "sk-life-ffffffff", "status": "dead"},
 	}})
@@ -515,13 +695,13 @@ func TestProvidersAdmin_KeyLifecycle(t *testing.T) {
 		t.Fatalf("second-scale expires_at: status = %d, want 400; body = %s", w.Code, w.Body.String())
 	}
 	w = env.upsertKeys(id, map[string]any{"keys": []map[string]any{
-		{"api_key": "sk-life-hhhhhhhh", "account_metadata": `"` + strings.Repeat("v", maxHarvesterMetadataBytes+1) + `"`},
+		{"api_key": "sk-life-hhhhhhhh", "account_metadata": `"` + strings.Repeat("v", maxProviderKeyMetadataBytes+1) + `"`},
 	}})
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("oversized account_metadata: status = %d, want 400; body = %s", w.Code, w.Body.String())
 	}
-	oversized := make([]map[string]any, 0, maxHarvesterSyncKeys+1)
-	for i := 0; i <= maxHarvesterSyncKeys; i++ {
+	oversized := make([]map[string]any, 0, maxProviderKeyBatch+1)
+	for i := 0; i <= maxProviderKeyBatch; i++ {
 		oversized = append(oversized, map[string]any{"api_key": fmt.Sprintf("sk-batch-%d", i)})
 	}
 	w = env.upsertKeys(id, map[string]any{"keys": oversized})

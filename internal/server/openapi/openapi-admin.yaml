@@ -417,8 +417,8 @@ paths:
         owned by another provider is refused with 409
         unless the body sets `reassign: true`, in which case it moves here and
         the previous provider's bound credentials are dropped. The whole batch
-        is one transaction: a rejected entry changes nothing. Body limits match
-        the harvester sync endpoint.
+        is one transaction: a rejected entry changes nothing. Limits are this
+        route's own: 32 MiB per request and at most 10000 keys per batch.
       operationId: upsertProviderKeys
       parameters:
         - $ref: "#/components/parameters/ProviderID"

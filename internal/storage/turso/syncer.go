@@ -39,7 +39,7 @@ type SyncerConfig struct {
 // and hot-swaps the CatalogSnapshot when catalog revisions change.
 type Syncer struct {
 	// mu serializes sync cycles: the periodic loop and on-demand callers (the
-	// harvester sync endpoint) share the lastKnown* cursors below, so letting two
+	// admin write path's TriggerSync) share the lastKnown* cursors below, so letting two
 	// cycles overlap would race on them and could double-apply a reload.
 	mu                 sync.Mutex
 	client             *Client

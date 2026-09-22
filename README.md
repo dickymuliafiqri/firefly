@@ -92,8 +92,7 @@ Every request entering Firefly follows a strict, deterministic lifecycle:
 - `POST /v1/compress` -> Standalone prompt and conversation token optimization endpoint.
 - `GET, POST, PUT, DELETE /api/tenants` & `/api/tenants/{name}` -> Admin CRUD API for tenant catalog lifecycle, persisting to Turso / JSON files with immediate hot-swapping.
 - `POST /api/tenants/topup` -> Admin/Webhook endpoint for topping up token balances and extending validity days.
-- `GET, POST, PUT, DELETE /api/providers` & `/api/providers/{id}`, `GET, POST /api/providers/{id}/keys`, `PATCH, DELETE /api/keys/{id}` -> Admin CRUD API for the native provider/key catalog. Reads are hint-only (a masked `api_key_hint`, never the raw secret) and a `PATCH` that carries a new `api_key` rotates the secret in place while preserving the row `id`, so credential refs (`<upstream>-key-<id>`) stay stable.
-- `POST /api/harvester/sync` -> Machine-to-machine key sync endpoint for the external harvester, guarded by its own service token (constant-time compare, `503` when the token is unset) and idempotent — a replayed batch writes no duplicate rows and returns no secrets.
+- `GET, POST, PUT, DELETE /api/providers` & `/api/providers/{id}`, `GET, POST /api/providers/{id}/keys`, `PATCH, DELETE /api/keys/{id}` -> Admin CRUD API for the native provider/key catalog. Reads are hint-only (a masked `api_key_hint`, never the raw secret) and a `PATCH` that carries a new `api_key` rotates the secret in place while preserving the row `id`, so credential refs (`<upstream>-key-<id>`) stay stable. The external harvester writes through this same surface with the admin token.
 
 ### 4. Tenant Route Protection (`deps.protected`)
 Before parsing the request body, requests pass through tenant protection:
@@ -339,7 +338,6 @@ make build
 - `-addr` / `FIREFLY_ADDR`: Data plane listen address for incoming AI traffic. Default: `0.0.0.0:8080`.
 - `-admin-addr` / `FIREFLY_ADMIN_ADDR`: Admin plane listen address for `/metrics` and `/api/*`. Disabled if empty. Default: `""`.
 - `-admin-token` / `FIREFLY_ADMIN_TOKEN`: Bearer token protecting administrative endpoints.
-- `-harvester-token` / `FIREFLY_HARVESTER_TOKEN`: Separate service token guarding `POST /api/harvester/sync` for machine callers. Kept distinct from the admin token so an automation credential never grants dashboard-level access; when empty, the endpoint fails closed with `503`.
 - `-log-level` / `FIREFLY_LOG_LEVEL`: Structured logging level (`debug`, `info`, `warn`, `error`). Default: `info`.
 - `-health-check-interval`: Frequency of background health probes (duration, e.g. `15s`; `0` disables). Default: `15s`.
 - `-shutdown-grace-seconds` / `FIREFLY_SHUTDOWN_GRACE_SECONDS`: Maximum time allowed for active SSE streams to finish during shutdown. Default: `30`.

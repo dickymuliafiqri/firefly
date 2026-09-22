@@ -25,24 +25,14 @@ var openAPISpec []byte
 //go:embed openapi/openapi-admin.yaml
 var openAPISpecAdmin []byte
 
-// openAPISpecHarvester is the OpenAPI 3.1 document for the harvester
-// credential-pool sync surface. It is validated against the registered
-// /api/harvester* routes by openapi_harvester_test.go. Like the other two
-// documents it is static description and leaks no credentials, so it is served
-// unauthenticated; the endpoint it describes is service-token gated.
-//
-//go:embed openapi/openapi-harvester.yaml
-var openAPISpecHarvester []byte
-
-// servedSpec, servedSpecAdmin, and servedSpecHarvester are the document bodies
-// actually returned to clients. Each begins as the embedded bytes and is swapped
-// by SetBuildVersion for a copy whose info.version matches the running build.
-// specMu lets handlers read concurrently with a stamp applied at startup.
+// servedSpec and servedSpecAdmin are the document bodies actually returned to
+// clients. Each begins as the embedded bytes and is swapped by SetBuildVersion
+// for a copy whose info.version matches the running build. specMu lets handlers
+// read concurrently with a stamp applied at startup.
 var (
-	specMu              sync.RWMutex
-	servedSpec          = openAPISpec
-	servedSpecAdmin     = openAPISpecAdmin
-	servedSpecHarvester = openAPISpecHarvester
+	specMu          sync.RWMutex
+	servedSpec      = openAPISpec
+	servedSpecAdmin = openAPISpecAdmin
 )
 
 // infoVersionRe matches the info.version scalar. Two-space indent keeps it
@@ -88,11 +78,9 @@ func SetBuildVersion(v string) {
 	}
 	stamped := stampVersion(openAPISpec, v)
 	stampedAdmin := stampVersion(openAPISpecAdmin, v)
-	stampedHarvester := stampVersion(openAPISpecHarvester, v)
 	specMu.Lock()
 	servedSpec = stamped
 	servedSpecAdmin = stampedAdmin
-	servedSpecHarvester = stampedHarvester
 	specMu.Unlock()
 }
 
@@ -140,19 +128,6 @@ func (deps RouterDeps) handleOpenAPISpec(w http.ResponseWriter, r *http.Request)
 func (deps RouterDeps) handleOpenAPISpecAdmin(w http.ResponseWriter, r *http.Request) {
 	specMu.RLock()
 	body := servedSpecAdmin
-	specMu.RUnlock()
-
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Content-Type", "application/yaml; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(body)
-}
-
-// handleOpenAPISpecHarvester serves the raw harvester OpenAPI YAML document.
-func (deps RouterDeps) handleOpenAPISpecHarvester(w http.ResponseWriter, r *http.Request) {
-	specMu.RLock()
-	body := servedSpecHarvester
 	specMu.RUnlock()
 
 	w.Header().Set("Access-Control-Allow-Origin", "*")

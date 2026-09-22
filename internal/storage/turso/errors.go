@@ -7,12 +7,11 @@ var (
 	ErrConflict = errors.New("concurrent modification detected: version mismatch")
 	// ErrNotFound is returned when a requested entity does not exist.
 	ErrNotFound = errors.New("resource not found")
-	// ErrInvalidSyncPayload is returned when a harvester sync batch is missing a
-	// required field (provider name, key secret, or key provider). Maps to 400.
+	// ErrInvalidSyncPayload is returned when a credential whose expires_at could
+	// not be decoded reaches the store writer. Handlers validate before opening
+	// the transaction, so this is the rollback path rather than the normal one.
+	// Maps to 400.
 	ErrInvalidSyncPayload = errors.New("invalid sync payload")
-	// ErrProviderUnknown is returned when a sync batch references a provider that
-	// is neither declared in the same payload nor present in the database. Maps to 400.
-	ErrProviderUnknown = errors.New("unknown provider")
 	// ErrKeyProviderMismatch is returned when an existing api_key row (matched by
 	// the secret itself) belongs to a different provider than the payload claims.
 	// Because UNIQUE(api_key) is global, applying the move would hand one

@@ -36,7 +36,7 @@ Before modifying or adding code to Firefly, every AI Agent **must understand and
 | `loadtest` | `cmd/loadtest/` | Standalone CLI load tester, in-process mock server, and 100/1,000 concurrency low/medium/heavy synchronized benchmark runner. |
 | `domain` | `internal/domain/` | Core domain models: `CatalogSnapshot`, `Tenant`, `Upstream`, `Model`, `Combo`, `KeyRing`, `KeySlot`, `Target`. Pure data structures without side-effects. |
 | `ports` | `internal/ports/` | Go interface contracts: `UpstreamAdapter`, `TenantStore`, `UsageRecorder`, `AdapterRegistry`, `ForwardRequest`. |
-| `server` | `internal/server/` | HTTP server construction, Go 1.22+ `http.ServeMux` routing, middleware chain assembly, shared forward handler (`forwardEndpoint`), drain guard. Admin surfaces live here too: `/api/providers*` + `/api/keys/{id}` operator CRUD (`providers_admin.go`), the harvester machine endpoint (`harvester_api.go` + `service_auth.go`, a fail-closed token guard separate from `authorizeAdmin`), and the single catalog-file writer (`catalog_files.go`). |
+| `server` | `internal/server/` | HTTP server construction, Go 1.22+ `http.ServeMux` routing, middleware chain assembly, shared forward handler (`forwardEndpoint`), drain guard. Admin surfaces live here too: `/api/providers*` + `/api/keys/{id}` operator CRUD (`providers_admin.go`) and the single catalog-file writer (`catalog_files.go`). Machine callers (the external harvester) use that same CRUD with the admin token. |
 | `config` | `internal/config/` | JSON configuration loader (`upstreams.json`, `models.json`, `tenants.json`, `combos.json`) with strict schema validation and keyless free tier auto-provisioning. |
 | `registry` | `internal/registry/` | Thread-safe catalog snapshot store backed by `atomic.Pointer[domain.CatalogSnapshot]`. Zero-downtime hot-swap configuration reloads. |
 | `limits` | `internal/limits/` | Token-bucket rate limiters (`golang.org/x/time/rate`) per tenant, and CAS atomic concurrency gates per-credential/keyslot. |
@@ -58,7 +58,7 @@ Before modifying or adding code to Firefly, every AI Agent **must understand and
 | `logging` | `internal/observability/logging/` | Structured `slog.Logger` wrapper with custom `RedactHandler` for automatic token and credential header masking. |
 | `metrics` | `internal/observability/metrics/` | Isolated Prometheus registry exposing latencies, in-flight gauges, cooldown counters, and circuit breaker states. |
 | `usage` | `internal/observability/usage/` | Usage recorder and token ledger for metering inference traffic. |
-| `turso` | `internal/storage/turso/` | Optional Turso/libSQL backing store: catalog + settings persistence (`SaveSettings`/`LoadSettings`), provider/key harvester, periodic syncer, and the usage flusher that persists key lifecycle actions. Deletes are gated by authoritative `manage_*` flags so a partial/stale save never wipes the catalog. Coordinated via `Client.Lock`/`RLock` with single-connection pooling, exponential busy backoff, and self-healing rollback to prevent stale transaction deadlocks. |
+| `turso` | `internal/storage/turso/` | Optional Turso/libSQL backing store: catalog + settings persistence (`SaveSettings`/`LoadSettings`), the provider/key CRUD store (`provider_store.go`), periodic syncer, and the usage flusher that persists key lifecycle actions. Deletes are gated by authoritative `manage_*` flags so a partial/stale save never wipes the catalog. Coordinated via `Client.Lock`/`RLock` with single-connection pooling, exponential busy backoff, and self-healing rollback to prevent stale transaction deadlocks. |
 | `analytics` | `internal/storage/analytics/` | Persistent disk store for request execution logs, token ledger metrics, and manual/automatic circuit breaker overrides. |
 
 ---
@@ -88,9 +88,6 @@ Before modifying or adding code to Firefly, every AI Agent **must understand and
     ├── GET  /api/providers/{id}/keys : Hint-only key listing (`api_key_hint`, never the raw secret)
     ├── POST /api/providers/{id}/keys : Batch key upsert; `PATCH /api/keys/{id}` rotates a secret
     │                                   in place preserving the row `id` (refs stay stable)
-    ├── POST /api/harvester/sync  : Machine sync for the external harvester. Separate service token
-    │                               (`-harvester-token`), constant-time compare, 503 when unset,
-    │                               idempotent replay, no secrets in the response
     ├── GET  /v1/models           : AuthMiddleware -> Filter catalog by tenant access -> JSON
     ├── GET  /v1/models/{id}      : AuthMiddleware -> Check model access -> JSON / 404
     └── POST /v1/chat/completions : Protected Handler (Auth -> Admission -> forwardEndpoint)

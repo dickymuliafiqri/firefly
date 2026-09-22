@@ -7,12 +7,32 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 
 	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
 	"github.com/dickymuliafiqri/firefly/internal/storage/turso"
 )
+
+const (
+	// Bounds on one key batch. A pool can hold thousands of credentials, so the
+	// cap is high enough for a full re-push in one call; the 32 MB global body
+	// limit is the backstop for oversized payloads.
+	maxProviderKeyBatch = 10000
+	// A single vault blob is capped well above the largest observed value so a
+	// malformed client cannot write a multi-megabyte row. The store enforces the
+	// same limit, so it is declared once there.
+	maxProviderKeyMetadataBytes = turso.MaxKeyMetadataBytes
+)
+
+// log returns a non-nil logger; RouterDeps literals in tests omit it.
+func (deps RouterDeps) log() *slog.Logger {
+	if deps.Logger != nil {
+		return deps.Logger
+	}
+	return slog.Default()
+}
 
 // Provider & credential-pool administration endpoints (dashboard).
 //
@@ -26,12 +46,12 @@ import (
 //	PATCH  /api/keys/{id}              rotate secret / status / is_active / expires_at
 //	DELETE /api/keys/{id}              hard delete one key
 //
-// These are the operator side of the harvester ownership shift: before them,
-// providers/api_keys had no writer except the harvester and the data-plane key
-// policy. The tables live in Turso storage; when no database is configured the
-// same reads are served read-only from the live snapshot (see providers_file.go)
-// and every mutation answers 501, so the dashboard works in file-config mode
-// without offering edits that a reload would discard.
+// These are the operator writer of the provider catalog: the tables live in
+// Turso storage, where the harvester reaches them by calling this API rather
+// than by holding database credentials of its own. When no database is
+// configured the same reads are served read-only from the live snapshot (see
+// providers_file.go) and every mutation answers 501, so the dashboard works in
+// file-config mode without offering edits that a reload would discard.
 //
 // Security notes:
 //   - Every handler is gated by authorizeAdmin (dashboard session or admin token).
@@ -354,8 +374,9 @@ type providerKeysUpsertRequest struct {
 }
 
 // handleUpsertProviderKeysAdmin applies a key batch to one provider. Bodies are
-// bounded by the harvester batch limits, and account_metadata is written through
-// to the vault column without ever being echoed.
+// bounded by the limits below (32 MiB, maxProviderKeyBatch keys, 64 KiB of
+// account_metadata each), and account_metadata is written through to the vault
+// column without ever being echoed.
 func (deps RouterDeps) handleUpsertProviderKeysAdmin(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
@@ -372,9 +393,9 @@ func (deps RouterDeps) handleUpsertProviderKeysAdmin(w http.ResponseWriter, r *h
 	if !ok {
 		return
 	}
-	if len(req.Keys) > maxHarvesterSyncKeys {
+	if len(req.Keys) > maxProviderKeyBatch {
 		openai.WriteError(w, http.StatusBadRequest, openai.TypeInvalidRequest,
-			"too many keys in one batch: limit is "+strconv.Itoa(maxHarvesterSyncKeys))
+			"too many keys in one batch: limit is "+strconv.Itoa(maxProviderKeyBatch))
 		return
 	}
 	for i := range req.Keys {
@@ -386,9 +407,9 @@ func (deps RouterDeps) handleUpsertProviderKeysAdmin(w http.ResponseWriter, r *h
 				"keys["+strconv.Itoa(i)+"].api_key is a masked hint, not a secret")
 			return
 		}
-		if len(req.Keys[i].AccountMetadata) > maxHarvesterMetadataBytes {
+		if len(req.Keys[i].AccountMetadata) > maxProviderKeyMetadataBytes {
 			openai.WriteError(w, http.StatusBadRequest, openai.TypeInvalidRequest,
-				"account_metadata exceeds the "+strconv.Itoa(maxHarvesterMetadataBytes>>10)+"KiB limit for one key")
+				"account_metadata exceeds the "+strconv.Itoa(maxProviderKeyMetadataBytes>>10)+"KiB limit for one key")
 			return
 		}
 	}

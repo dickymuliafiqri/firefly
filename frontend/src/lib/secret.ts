@@ -1,8 +1,8 @@
 /**
  * Mirrors the server's hint-shape check. Surfaces that only ever display masked
  * hints must refuse input in this shape: echoing a display string back would
- * otherwise store a placeholder as a routable credential. The harvester sync
- * path is deliberately exempt — it holds real secrets and never sees hints.
+ * otherwise store a placeholder as a routable credential. The server applies
+ * the same rule to every operator credential write — batch upsert and rotation.
  */
 export function looksMasked(value: string): boolean {
   return value.includes('...') || value === '[REDACTED]';

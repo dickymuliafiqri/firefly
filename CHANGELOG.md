@@ -5,6 +5,14 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed
+- **Harvester Machine Endpoint (`internal/server/harvester_api.go`, `service_auth.go`, `internal/server/openapi/openapi-harvester.yaml`)**: `POST /api/harvester/sync`, its dedicated service token (`-harvester-token` / `FIREFLY_HARVESTER_TOKEN`), and its OpenAPI spec are gone. The external harvester writes through the operator surface instead, authenticated with the admin token: `POST /api/providers/{id}/keys` reaches the same store path with the same three-intent `expires_at` and the same write-only `account_metadata`, and `PATCH /api/keys/{id}` covers status changes and secret rotation. One surface means one validation pass, one guard, and one spec; the price is a per-provider batch and mass deactivation as N `PATCH` calls, since there is no `deactivate_keys` list any more. The store engine behind the deleted endpoint (`SyncProviderKeys`) is gone with it — the batch path is `UpsertProviderKeyRecords`.
+
+### Fixed
+- **Rejected Key Batches Reporting Rolled-Back Counters (`internal/storage/turso/provider_store.go`)**: `UpsertProviderKeyRecords` returned the counters and ids it had accumulated when a later entry failed the batch, even though the transaction rolled every write back — a caller logging the result on error described rows that never existed. A failed batch now reports the empty result, and the doc comment states that contract.
+
 ## [1.14.0] - 2026-09-22
 
 ### Added

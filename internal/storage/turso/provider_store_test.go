@@ -11,11 +11,42 @@ import (
 	"time"
 )
 
-// syncCtx bundles the store under test with the context every sync call uses.
-func syncCtx(t *testing.T) (*Store, context.Context) {
+// These tests drive the operator CRUD entry points of provider_store.go: the
+// provider and api_keys rows the dashboard writes, and the catalog bookkeeping
+// every write has to move. They run against a real in-memory database so the
+// guarantees under test are the SQL-level ones — UNIQUE(api_key), one
+// transaction per batch, the mirrors into upstream_credentials.
+//
+// Fixtures: storeCtx opens the store, seedProvider creates a provider row, and
+// seedKeys writes a key batch at it.
+
+// storeCtx bundles the store under test with the context every call uses.
+func storeCtx(t *testing.T) (*Store, context.Context) {
 	t.Helper()
 	store, _ := setupTestDB(t)
 	return store, context.Background()
+}
+
+// seedProvider creates one provider and returns its id.
+func seedProvider(t *testing.T, store *Store, name string) int64 {
+	t.Helper()
+	baseURL := "https://" + name + ".example.com"
+	rec, err := store.CreateProviderRecord(context.Background(), ProviderUpdate{Name: &name, BaseURL: &baseURL})
+	if err != nil {
+		t.Fatalf("seed provider %q: %v", name, err)
+	}
+	return rec.ID
+}
+
+// seedKeys applies one key batch to a seeded provider. Reassignment stays off: a
+// fixture must never silently move another provider's key.
+func seedKeys(t *testing.T, store *Store, providerID int64, entries ...ProviderKeySyncEntry) ProviderKeyUpsertResult {
+	t.Helper()
+	res, err := store.UpsertProviderKeyRecords(context.Background(), providerID, entries, false)
+	if err != nil {
+		t.Fatalf("seed keys for provider %d: %v", providerID, err)
+	}
+	return res
 }
 
 // msExpiry renders a millisecond timestamp the way the wire contract carries it,
@@ -29,7 +60,8 @@ func msExpiry(ms int64) json.RawMessage {
 var clearExpiry = json.RawMessage("null")
 
 // keyRow reads the raw api_keys row for one secret so tests can assert on the
-// columns the sync must never touch (metering) as well as on identity stability.
+// columns the writers must never touch (metering) as well as on identity
+// stability across replays and rotations.
 type keyRow struct {
 	ID            int64
 	ProviderID    int64
@@ -83,30 +115,140 @@ func readRevision(t *testing.T, store *Store) int64 {
 	return rev
 }
 
-func TestSyncProviderKeys_CreatesProviderAndKey(t *testing.T) {
-	store, ctx := syncCtx(t)
+// A create is refused when the shape does not fit the columns the adopting
+// migration declares, and when the name is already taken: providers are matched
+// by name, so a duplicate insert would silently capture the existing pool. None
+// of the refusals may publish a revision — a reload for nothing rebuilds every
+// snapshot.
+func TestCreateProviderRecord_RefusesDuplicateNameAndInvalidShape(t *testing.T) {
+	store, ctx := storeCtx(t)
+
+	txt := func(s string) *string { return &s }
+	longName := strings.Repeat("n", maxProviderNameLen+1)
+	longURL := strings.Repeat("u", maxProviderURLLen+1)
+	longDesc := strings.Repeat("d", maxProviderDescLen+1)
+
+	cases := []struct {
+		name    string
+		in      ProviderUpdate
+		wantSub string
+	}{
+		{
+			name:    "missing name",
+			in:      ProviderUpdate{BaseURL: txt("https://gate.example.com")},
+			wantSub: "name is required",
+		},
+		{
+			name:    "empty name",
+			in:      ProviderUpdate{Name: txt(""), BaseURL: txt("https://gate.example.com")},
+			wantSub: "name is required",
+		},
+		{
+			name:    "missing base_url",
+			in:      ProviderUpdate{Name: txt("gate")},
+			wantSub: "base_url is required",
+		},
+		{
+			name:    "empty base_url",
+			in:      ProviderUpdate{Name: txt("gate"), BaseURL: txt("")},
+			wantSub: "base_url is required",
+		},
+		{
+			name:    "name too long",
+			in:      ProviderUpdate{Name: &longName, BaseURL: txt("https://gate.example.com")},
+			wantSub: "name exceeds",
+		},
+		{
+			name:    "base_url too long",
+			in:      ProviderUpdate{Name: txt("gate"), BaseURL: &longURL},
+			wantSub: "base_url exceeds",
+		},
+		{
+			name:    "description too long",
+			in:      ProviderUpdate{Name: txt("gate"), BaseURL: txt("https://gate.example.com"), Description: &longDesc},
+			wantSub: "description exceeds",
+		},
+	}
+
+	before := readRevision(t, store)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := store.CreateProviderRecord(ctx, tc.in); !errors.Is(err, ErrInvalidPayload) {
+				t.Fatalf("err = %v, want ErrInvalidPayload", err)
+			} else if !strings.Contains(err.Error(), tc.wantSub) {
+				t.Errorf("error %q does not mention %q", err, tc.wantSub)
+			}
+		})
+	}
+	var providers int
+	if err := store.DB().QueryRowContext(ctx, "SELECT COUNT(*) FROM providers").Scan(&providers); err != nil {
+		t.Fatalf("count providers: %v", err)
+	}
+	if providers != 0 {
+		t.Errorf("refused creates left %d provider rows behind", providers)
+	}
+	if got := readRevision(t, store); got != before {
+		t.Errorf("revision = %d, want %d: a refused create must not publish", got, before)
+	}
+
+	pid := seedProvider(t, store, "acme")
+	if pid <= 0 {
+		t.Fatalf("provider id = %d, want the inserted row id", pid)
+	}
+	if got := readRevision(t, store); got != before+1 {
+		t.Errorf("revision = %d, want %d for one create", got, before+1)
+	}
+
+	// The name is the natural key, so a second create is refused whatever else it
+	// carries: a different base_url must not be enough to fork the pool.
+	for _, in := range []ProviderUpdate{
+		{Name: txt("acme"), BaseURL: txt("https://acme.example.com")},
+		{Name: txt("acme"), BaseURL: txt("https://elsewhere.example.com")},
+	} {
+		if _, err := store.CreateProviderRecord(ctx, in); !errors.Is(err, ErrProviderExists) {
+			t.Fatalf("duplicate create = %v, want ErrProviderExists", err)
+		}
+	}
+	rec, err := store.GetProviderRecord(ctx, pid)
+	if err != nil {
+		t.Fatalf("read provider back: %v", err)
+	}
+	if rec.Name != "acme" || rec.BaseURL != "https://acme.example.com" || !rec.IsActive {
+		t.Errorf("provider = %+v, want the created row untouched by the refused duplicates", rec)
+	}
+	if rec.ActiveKeys != 0 {
+		t.Errorf("active_keys = %d, want 0 for a provider with no keys", rec.ActiveKeys)
+	}
+	if got := readRevision(t, store); got != before+1 {
+		t.Errorf("revision = %d, want %d: refused duplicates must not publish", got, before+1)
+	}
+}
+
+// One batch creates its keys, binds them to the route's provider, and publishes
+// the change. The revision bump is what tells every instance to rebuild, and the
+// returned ids are the routable set the caller reconciles against.
+func TestUpsertProviderKeyRecords_CreatesAndReportsRevision(t *testing.T) {
+	store, ctx := storeCtx(t)
+	pid := seedProvider(t, store, "openai")
 	before := readRevision(t, store)
 
-	res, err := store.SyncProviderKeys(ctx, ProviderSyncRequest{
-		Providers: []ProviderSyncEntry{{Name: "openai", BaseURL: "https://api.openai.com"}},
-		Keys:      []ProviderKeySyncEntry{{Provider: "openai", APIKey: "sk-alpha"}},
-	})
+	res, err := store.UpsertProviderKeyRecords(ctx, pid, []ProviderKeySyncEntry{{APIKey: "sk-alpha"}}, false)
 	if err != nil {
-		t.Fatalf("sync: %v", err)
+		t.Fatalf("upsert: %v", err)
 	}
-	if res.Created != 1 || res.Updated != 0 || res.Unchanged != 0 {
-		t.Fatalf("counters = created:%d updated:%d unchanged:%d, want 1/0/0", res.Created, res.Updated, res.Unchanged)
+	if res.Created != 1 || res.Updated != 0 || res.Unchanged != 0 || res.Reassigned != 0 {
+		t.Fatalf("counters = %+v, want one created key", res)
 	}
 	if res.Revision != before+1 {
-		t.Fatalf("revision = %d, want %d (one bump per sync)", res.Revision, before+1)
+		t.Errorf("revision = %d, want %d", res.Revision, before+1)
 	}
 	if res.Pushed {
 		t.Error("Pushed = true without a turso client")
 	}
 
 	row := readKeyRow(t, store, "sk-alpha")
-	if row.ProviderID != readProviderID(t, store, "openai") {
-		t.Errorf("key bound to provider %d, want the provider created by this batch", row.ProviderID)
+	if row.ProviderID != pid {
+		t.Errorf("key bound to provider %d, want %d", row.ProviderID, pid)
 	}
 	if row.Status != "active" || row.IsActive != 1 {
 		t.Errorf("status/is_active = %q/%d, want active/1", row.Status, row.IsActive)
@@ -114,31 +256,26 @@ func TestSyncProviderKeys_CreatesProviderAndKey(t *testing.T) {
 	if row.LastUsedAt != 0 || row.TotalRequests != 0 {
 		t.Errorf("metering = last_used_at:%d total_requests:%d, want 0/0 for a new key", row.LastUsedAt, row.TotalRequests)
 	}
-	if got := res.KeyIDs["openai"]; len(got) != 1 || got[0] != row.ID {
-		t.Errorf("key_ids[openai] = %v, want [%d]", got, row.ID)
+	if len(res.KeyIDs) != 1 || res.KeyIDs[0] != row.ID {
+		t.Errorf("key_ids = %v, want [%d]", res.KeyIDs, row.ID)
 	}
-
-	// A second sync of the same provider must reuse the row (no duplicate) and
-	// must not have written a provider active flag of 0.
-	var providers int
-	if err := store.DB().QueryRowContext(ctx, "SELECT COUNT(*) FROM providers WHERE name = 'openai'").Scan(&providers); err != nil {
-		t.Fatalf("count providers: %v", err)
+	rec, err := store.GetProviderRecord(ctx, pid)
+	if err != nil {
+		t.Fatalf("read provider back: %v", err)
 	}
-	if providers != 1 {
-		t.Errorf("providers named openai = %d, want 1", providers)
+	if rec.ActiveKeys != 1 {
+		t.Errorf("active_keys = %d, want the count to follow the batch", rec.ActiveKeys)
 	}
 }
 
-func TestSyncProviderKeys_IdempotentReplayPreservesIdentityAndMetering(t *testing.T) {
-	store, ctx := syncCtx(t)
-
-	first, err := store.SyncProviderKeys(ctx, ProviderSyncRequest{
-		Providers: []ProviderSyncEntry{{Name: "anthropic", BaseURL: "https://api.anthropic.com", Description: "claude"}},
-		Keys:      []ProviderKeySyncEntry{{Provider: "anthropic", APIKey: "sk-beta"}},
-	})
-	if err != nil {
-		t.Fatalf("first sync: %v", err)
-	}
+// A replayed batch converges on the same row: identity, created_at, and the
+// traffic counters survive. updated_at must not move either — MAX(updated_at) is
+// the syncer's structural-change signal, and a heartbeat on it would reload every
+// instance per push. The revision still advances: the batch did run.
+func TestUpsertProviderKeyRecords_IdempotentReplayPreservesIdentityAndMetering(t *testing.T) {
+	store, ctx := storeCtx(t)
+	pid := seedProvider(t, store, "anthropic")
+	seedKeys(t, store, pid, ProviderKeySyncEntry{APIKey: "sk-beta"})
 	id := readKeyRow(t, store, "sk-beta").ID
 
 	// Simulate live traffic metering: this is what the usage flusher writes.
@@ -150,16 +287,12 @@ func TestSyncProviderKeys_IdempotentReplayPreservesIdentityAndMetering(t *testin
 	metered := readKeyRow(t, store, "sk-beta")
 
 	before := readRevision(t, store)
-	replay, err := store.SyncProviderKeys(ctx, ProviderSyncRequest{
-		Providers: []ProviderSyncEntry{{Name: "anthropic", BaseURL: "https://api.anthropic.com", Description: "claude"}},
-		Keys:      []ProviderKeySyncEntry{{Provider: "anthropic", APIKey: "sk-beta"}},
-	})
+	replay, err := store.UpsertProviderKeyRecords(ctx, pid, []ProviderKeySyncEntry{{APIKey: "sk-beta"}}, false)
 	if err != nil {
-		t.Fatalf("replay sync: %v", err)
+		t.Fatalf("replay: %v", err)
 	}
 	if replay.Unchanged != 1 || replay.Created != 0 || replay.Updated != 0 {
-		t.Fatalf("replay counters = created:%d updated:%d unchanged:%d, want 0/0/1",
-			replay.Created, replay.Updated, replay.Unchanged)
+		t.Fatalf("replay counters = %+v, want the row unchanged", replay)
 	}
 
 	after := readKeyRow(t, store, "sk-beta")
@@ -170,355 +303,47 @@ func TestSyncProviderKeys_IdempotentReplayPreservesIdentityAndMetering(t *testin
 		t.Errorf("metering rewritten by replay: last_used_at %d->%d total_requests %d->%d",
 			metered.LastUsedAt, after.LastUsedAt, metered.TotalRequests, after.TotalRequests)
 	}
-	if after.CreatedAt != first.KeyIDs["anthropic"][0] && after.CreatedAt <= 0 {
-		t.Errorf("created_at = %d, want the original insert timestamp", after.CreatedAt)
+	if after.CreatedAt != metered.CreatedAt {
+		t.Errorf("created_at = %d, want the original insert timestamp %d", after.CreatedAt, metered.CreatedAt)
 	}
 	if after.UpdatedAt != metered.UpdatedAt {
-		t.Errorf("updated_at advanced on an unchanged key: %d -> %d; MAX(updated_at) is a structural signal", metered.UpdatedAt, after.UpdatedAt)
+		t.Errorf("updated_at advanced on an unchanged key: %d -> %d; MAX(updated_at) is a structural signal",
+			metered.UpdatedAt, after.UpdatedAt)
 	}
-	// The revision still advances: the bump is unconditional so a replay can
-	// never be mistaken for "nothing was applied" by the reload loop.
 	if replay.Revision != before+1 {
 		t.Errorf("revision = %d, want %d", replay.Revision, before+1)
 	}
 }
 
-func TestSyncProviderKeys_UpdatesChangedFieldsOnly(t *testing.T) {
-	store, ctx := syncCtx(t)
-
-	active := false
-	if _, err := store.SyncProviderKeys(ctx, ProviderSyncRequest{
-		Providers: []ProviderSyncEntry{{Name: "grok", BaseURL: "https://api.x.ai", IsActive: &active}},
-		Keys:      []ProviderKeySyncEntry{{Provider: "grok", APIKey: "sk-gamma"}},
-	}); err != nil {
-		t.Fatalf("seed sync: %v", err)
-	}
-	seed := readKeyRow(t, store, "sk-gamma")
-
-	expiry := int64(4_102_444_800_000)
-	res, err := store.SyncProviderKeys(ctx, ProviderSyncRequest{
-		Providers: []ProviderSyncEntry{{Name: "grok", BaseURL: "https://api.x.ai", IsActive: &active}},
-		Keys:      []ProviderKeySyncEntry{{Provider: "grok", APIKey: "sk-gamma", Status: "rate_limited", ExpiresAt: msExpiry(expiry)}},
-	})
-	if err != nil {
-		t.Fatalf("update sync: %v", err)
-	}
-	if res.Updated != 1 || res.Unchanged != 0 {
-		t.Fatalf("counters = updated:%d unchanged:%d, want 1/0", res.Updated, res.Unchanged)
-	}
-
-	updated := readKeyRow(t, store, "sk-gamma")
-	if updated.ID != seed.ID || updated.CreatedAt != seed.CreatedAt {
-		t.Errorf("identity changed: id %d->%d created_at %d->%d", seed.ID, updated.ID, seed.CreatedAt, updated.CreatedAt)
-	}
-	if updated.Status != "rate_limited" || updated.IsActive != 0 {
-		t.Errorf("status/is_active = %q/%d, want rate_limited/0", updated.Status, updated.IsActive)
-	}
-	if updated.ExpiresAt == nil || *updated.ExpiresAt != expiry {
-		t.Errorf("expires_at = %v, want %d", updated.ExpiresAt, expiry)
-	}
-	if updated.LastUsedAt != seed.LastUsedAt || updated.TotalRequests != seed.TotalRequests {
-		t.Error("metering columns touched by a structural update")
-	}
-	// is_active is derived from status, so a non-active key is not routable.
-	if got := res.KeyIDs["grok"]; len(got) != 0 {
-		t.Errorf("key_ids[grok] = %v, want empty for a rate_limited key", got)
-	}
-
-	// A provider-only change must not touch key rows at all.
-	activeTrue := true
-	beforeRev := readRevision(t, store)
-	res2, err := store.SyncProviderKeys(ctx, ProviderSyncRequest{
-		Providers: []ProviderSyncEntry{{Name: "grok", BaseURL: "https://api.x.ai/v1", IsActive: &activeTrue}},
-	})
-	if err != nil {
-		t.Fatalf("provider-only sync: %v", err)
-	}
-	if res2.Created != 0 || res2.Updated != 0 || res2.Unchanged != 0 {
-		t.Errorf("key counters = %d/%d/%d, want all zero for a provider-only batch",
-			res2.Created, res2.Updated, res2.Unchanged)
-	}
-	if res2.Revision != beforeRev+1 {
-		t.Errorf("revision = %d, want %d", res2.Revision, beforeRev+1)
-	}
-}
-
-func TestSyncProviderKeys_RejectsProviderMismatch(t *testing.T) {
-	store, ctx := syncCtx(t)
-
-	if _, err := store.SyncProviderKeys(ctx, ProviderSyncRequest{
-		Providers: []ProviderSyncEntry{
-			{Name: "provider-a", BaseURL: "https://a.example.com"},
-			{Name: "provider-b", BaseURL: "https://b.example.com"},
-		},
-		Keys: []ProviderKeySyncEntry{{Provider: "provider-a", APIKey: "sk-shared"}},
-	}); err != nil {
-		t.Fatalf("seed sync: %v", err)
-	}
-	seed := readKeyRow(t, store, "sk-shared")
-	revBefore := readRevision(t, store)
-
-	// UNIQUE(api_key) is global, so re-homing a secret would move provider-a's
-	// quota to provider-b. The whole batch must be refused.
-	_, err := store.SyncProviderKeys(ctx, ProviderSyncRequest{
-		Keys: []ProviderKeySyncEntry{{Provider: "provider-b", APIKey: "sk-shared"}},
-	})
-	if !errors.Is(err, ErrKeyProviderMismatch) {
-		t.Fatalf("err = %v, want ErrKeyProviderMismatch", err)
-	}
-
-	after := readKeyRow(t, store, "sk-shared")
-	if after.ProviderID != seed.ProviderID {
-		t.Errorf("key moved to provider %d despite the rejection (was %d)", after.ProviderID, seed.ProviderID)
-	}
-	if revAfter := readRevision(t, store); revAfter != revBefore {
-		t.Errorf("revision advanced on a rejected batch: %d -> %d", revBefore, revAfter)
-	}
-}
-
-func TestSyncProviderKeys_ValidatesRequiredFields(t *testing.T) {
-	store, ctx := syncCtx(t)
-	before := readRevision(t, store)
-
-	cases := []struct {
-		name    string
-		req     ProviderSyncRequest
-		wantErr error
-	}{
-		{
-			name:    "provider without name",
-			req:     ProviderSyncRequest{Providers: []ProviderSyncEntry{{BaseURL: "https://x.example.com"}}},
-			wantErr: ErrInvalidSyncPayload,
-		},
-		{
-			name:    "key without provider",
-			req:     ProviderSyncRequest{Keys: []ProviderKeySyncEntry{{APIKey: "sk-x"}}},
-			wantErr: ErrInvalidSyncPayload,
-		},
-		{
-			name: "key without secret",
-			req: ProviderSyncRequest{
-				Providers: []ProviderSyncEntry{{Name: "p", BaseURL: "https://p.example.com"}},
-				Keys:      []ProviderKeySyncEntry{{Provider: "p"}},
-			},
-			wantErr: ErrInvalidSyncPayload,
-		},
-		{
-			name:    "key for unknown provider",
-			req:     ProviderSyncRequest{Keys: []ProviderKeySyncEntry{{Provider: "ghost", APIKey: "sk-ghost"}}},
-			wantErr: ErrProviderUnknown,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if _, err := store.SyncProviderKeys(ctx, tc.req); !errors.Is(err, tc.wantErr) {
-				t.Fatalf("err = %v, want %v", err, tc.wantErr)
-			}
-		})
-	}
-
-	// Every rejected batch must roll back completely: no rows and no revision.
-	var providers, keys int
-	if err := store.DB().QueryRowContext(ctx, "SELECT COUNT(*) FROM providers").Scan(&providers); err != nil {
-		t.Fatalf("count providers: %v", err)
-	}
-	if err := store.DB().QueryRowContext(ctx, "SELECT COUNT(*) FROM api_keys").Scan(&keys); err != nil {
-		t.Fatalf("count keys: %v", err)
-	}
-	if providers != 0 || keys != 0 {
-		t.Errorf("rejected batches left data behind: providers=%d keys=%d", providers, keys)
-	}
-	if after := readRevision(t, store); after != before {
-		t.Errorf("revision advanced by rejected batches: %d -> %d", before, after)
-	}
-}
-
-func TestSyncProviderKeys_DeactivatesExplicitIDs(t *testing.T) {
-	store, ctx := syncCtx(t)
-
-	if _, err := store.SyncProviderKeys(ctx, ProviderSyncRequest{
-		Providers: []ProviderSyncEntry{
-			{Name: "doomed", BaseURL: "https://doomed.example.com"},
-			{Name: "kept", BaseURL: "https://kept.example.com"},
-		},
-		Keys: []ProviderKeySyncEntry{
-			{Provider: "doomed", APIKey: "sk-doom-1"},
-			{Provider: "doomed", APIKey: "sk-doom-2"},
-			{Provider: "kept", APIKey: "sk-keep-1"},
-		},
-	}); err != nil {
-		t.Fatalf("seed sync: %v", err)
-	}
-
-	doomed1 := readKeyRow(t, store, "sk-doom-1").ID
-	doomed2 := readKeyRow(t, store, "sk-doom-2").ID
-	kept := readKeyRow(t, store, "sk-keep-1").ID
-
-	// Bind an upstream credential to the key being deactivated so the mirror is
-	// observable (the error-policy path does the same).
-	up := &UpstreamRecord{Name: "doomed-up", Protocol: "openai", BaseURL: "https://doomed.example.com", KeyStrategy: "round_robin", Enabled: true}
-	if err := store.SaveUpstream(ctx, up); err != nil {
-		t.Fatalf("save upstream: %v", err)
-	}
-	if _, err := store.DB().ExecContext(ctx, `
-		INSERT INTO upstream_credentials (upstream_id, api_key_id, ref, secret, status, is_active, created_at, updated_at)
-		VALUES (?, ?, 'doomed-cred-1', 'sk-doom-1', 'active', 1, ?, ?)
-	`, up.ID, doomed1, int64(1), int64(1)); err != nil {
-		t.Fatalf("seed upstream credential: %v", err)
-	}
-
-	res, err := store.SyncProviderKeys(ctx, ProviderSyncRequest{
-		DeactivateKeys: []int64{doomed1, doomed2, doomed1, 0, -5, 999_999},
-	})
-	if err != nil {
-		t.Fatalf("deactivate sync: %v", err)
-	}
-	if res.Deactivated != 2 {
-		t.Errorf("deactivated = %d, want 2 (deduped, real transitions only)", res.Deactivated)
-	}
-	if res.Created != 0 || res.Updated != 0 || res.Unchanged != 0 {
-		t.Errorf("key counters = %d/%d/%d, want all zero for a deactivate-only batch",
-			res.Created, res.Updated, res.Unchanged)
-	}
-	if len(res.KeyIDs) != 0 {
-		t.Errorf("key_ids = %v, want empty when no provider is touched", res.KeyIDs)
-	}
-
-	for _, secret := range []string{"sk-doom-1", "sk-doom-2"} {
-		row := readKeyRow(t, store, secret)
-		if row.IsActive != 0 || row.Status != "deactivated" {
-			t.Errorf("%s: is_active/status = %d/%q, want 0/deactivated", secret, row.IsActive, row.Status)
-		}
-	}
-	if row := readKeyRow(t, store, "sk-keep-1"); row.IsActive != 1 {
-		t.Errorf("unlisted key was deactivated: is_active = %d", row.IsActive)
-	}
-	if row := readKeyRow(t, store, "sk-keep-1"); row.ID != kept {
-		t.Errorf("unlisted key id changed: %d -> %d", kept, row.ID)
-	}
-
-	var credActive int
-	var credStatus string
-	if err := store.DB().QueryRowContext(ctx,
-		"SELECT is_active, status FROM upstream_credentials WHERE api_key_id = ?", doomed1).
-		Scan(&credActive, &credStatus); err != nil {
-		t.Fatalf("read upstream credential: %v", err)
-	}
-	if credActive != 0 || credStatus != "deactivated" {
-		t.Errorf("bound credential not mirrored: is_active/status = %d/%q", credActive, credStatus)
-	}
-
-	// Replaying a deactivation is a no-op and reports zero, so a retrying client
-	// can resend its batch idempotently.
-	replay, err := store.SyncProviderKeys(ctx, ProviderSyncRequest{DeactivateKeys: []int64{doomed1, doomed2}})
-	if err != nil {
-		t.Fatalf("replay deactivate: %v", err)
-	}
-	if replay.Deactivated != 0 {
-		t.Errorf("replayed deactivation counted %d, want 0", replay.Deactivated)
-	}
-}
-
-func TestSyncProviderKeys_AccountMetadataVaultSemantics(t *testing.T) {
-	store, ctx := syncCtx(t)
-
-	const vault = `{"private_key":"0xdeadbeef","password":"hunter2"}`
-
-	res, err := store.SyncProviderKeys(ctx, ProviderSyncRequest{
-		Providers: []ProviderSyncEntry{{Name: "vault", BaseURL: "https://vault.example.com"}},
-		Keys:      []ProviderKeySyncEntry{{Provider: "vault", APIKey: "sk-vault", AccountMetadata: json.RawMessage(vault)}},
-	})
-	if err != nil {
-		t.Fatalf("sync: %v", err)
-	}
-	if row := readKeyRow(t, store, "sk-vault"); row.Metadata == nil || *row.Metadata != vault {
-		t.Fatalf("account_metadata stored as %v, want the blob written verbatim", row.Metadata)
-	}
-
-	// The secret vault must never travel back out through the sync result.
-	encoded, err := json.Marshal(res)
-	if err != nil {
-		t.Fatalf("marshal result: %v", err)
-	}
-	for _, forbidden := range []string{"sk-vault", "private_key", "0xdeadbeef", "hunter2"} {
-		if strings.Contains(string(encoded), forbidden) {
-			t.Errorf("sync result leaked %q: %s", forbidden, encoded)
-		}
-	}
-
-	// An omitted blob means "keep what is stored" — not "erase it".
-	omitted, err := store.SyncProviderKeys(ctx, ProviderSyncRequest{
-		Keys: []ProviderKeySyncEntry{{Provider: "vault", APIKey: "sk-vault"}},
-	})
-	if err != nil {
-		t.Fatalf("omitted-metadata sync: %v", err)
-	}
-	if omitted.Unchanged != 1 {
-		t.Errorf("counters = %+v, want the key unchanged when the blob is omitted", omitted)
-	}
-	if row := readKeyRow(t, store, "sk-vault"); row.Metadata == nil || *row.Metadata != vault {
-		t.Errorf("omitted blob erased the stored vault: %v", row.Metadata)
-	}
-
-	// Whitespace-only differences are not a change; a different blob is.
-	same, err := store.SyncProviderKeys(ctx, ProviderSyncRequest{
-		Keys: []ProviderKeySyncEntry{{Provider: "vault", APIKey: "sk-vault", AccountMetadata: json.RawMessage("\n  " + vault + "  \n")}},
-	})
-	if err != nil {
-		t.Fatalf("whitespace-metadata sync: %v", err)
-	}
-	if same.Unchanged != 1 {
-		t.Errorf("whitespace-padded blob counted as a change: %+v", same)
-	}
-
-	rotated := `{"private_key":"0xfeedface"}`
-	changed, err := store.SyncProviderKeys(ctx, ProviderSyncRequest{
-		Keys: []ProviderKeySyncEntry{{Provider: "vault", APIKey: "sk-vault", AccountMetadata: json.RawMessage(rotated)}},
-	})
-	if err != nil {
-		t.Fatalf("rotated-metadata sync: %v", err)
-	}
-	if changed.Updated != 1 {
-		t.Errorf("counters = %+v, want the key updated for a rotated blob", changed)
-	}
-	if row := readKeyRow(t, store, "sk-vault"); row.Metadata == nil || *row.Metadata != rotated {
-		t.Errorf("account_metadata = %v, want the rotated blob", row.Metadata)
-	}
-}
-
-func TestSyncProviderKeys_ExpiryGateMatchesSnapshotLoader(t *testing.T) {
-	store, ctx := syncCtx(t)
+// expires_at is a routing-time filter, not a write: an expired key stays stored
+// and active, and the ids a batch reports exclude it — the same predicate the
+// snapshot loader re-evaluates on every rebuild.
+func TestUpsertProviderKeyRecords_ExpiryGateMatchesSnapshotLoader(t *testing.T) {
+	store, ctx := storeCtx(t)
+	pid := seedProvider(t, store, "gated")
 
 	expired := time.Now().Add(-24 * time.Hour).UnixMilli()
 	future := int64(4_102_444_800_000)
-	res, err := store.SyncProviderKeys(ctx, ProviderSyncRequest{
-		Providers: []ProviderSyncEntry{{Name: "gated", BaseURL: "https://gated.example.com"}},
-		Keys: []ProviderKeySyncEntry{
-			{Provider: "gated", APIKey: "sk-live"},
-			{Provider: "gated", APIKey: "sk-stale", ExpiresAt: msExpiry(expired)},
-			{Provider: "gated", APIKey: "sk-future", ExpiresAt: msExpiry(future)},
-		},
-	})
+	res, err := store.UpsertProviderKeyRecords(ctx, pid, []ProviderKeySyncEntry{
+		{APIKey: "sk-live"},
+		{APIKey: "sk-stale", ExpiresAt: msExpiry(expired)},
+		{APIKey: "sk-future", ExpiresAt: msExpiry(future)},
+	}, false)
 	if err != nil {
-		t.Fatalf("sync: %v", err)
+		t.Fatalf("upsert: %v", err)
 	}
 
 	live := readKeyRow(t, store, "sk-live").ID
 	futureID := readKeyRow(t, store, "sk-future").ID
 	want := map[int64]bool{live: true, futureID: true}
-	got := res.KeyIDs["gated"]
-	if len(got) != len(want) {
-		t.Fatalf("key_ids[gated] = %v, want ids for the two non-expired keys", got)
+	if len(res.KeyIDs) != len(want) {
+		t.Fatalf("key_ids = %v, want ids for the two non-expired keys", res.KeyIDs)
 	}
-	for _, id := range got {
+	for _, id := range res.KeyIDs {
 		if !want[id] {
 			t.Errorf("key id %d is expired and must not be routable", id)
 		}
 	}
-
-	// The expired key stays stored and active — expiry is a routing-time filter,
-	// not a write — which is exactly what the snapshot loader re-evaluates.
 	if row := readKeyRow(t, store, "sk-stale"); row.IsActive != 1 || row.Status != "active" {
 		t.Errorf("expired key rewritten: is_active/status = %d/%q, want 1/active", row.IsActive, row.Status)
 	}
@@ -527,11 +352,9 @@ func TestSyncProviderKeys_ExpiryGateMatchesSnapshotLoader(t *testing.T) {
 	// refreshing this row is not the one that set its lifetime, and a silent wipe
 	// would put an expired credential back into rotation. It is also a no-op, so
 	// the row must not be counted as updated.
-	kept, err := store.SyncProviderKeys(ctx, ProviderSyncRequest{
-		Keys: []ProviderKeySyncEntry{{Provider: "gated", APIKey: "sk-stale"}},
-	})
+	kept, err := store.UpsertProviderKeyRecords(ctx, pid, []ProviderKeySyncEntry{{APIKey: "sk-stale"}}, false)
 	if err != nil {
-		t.Fatalf("omit-expiry sync: %v", err)
+		t.Fatalf("omit-expiry upsert: %v", err)
 	}
 	if kept.Updated != 0 || kept.Unchanged != 1 {
 		t.Errorf("counters = %+v, want unchanged when expires_at is omitted", kept)
@@ -542,11 +365,11 @@ func TestSyncProviderKeys_ExpiryGateMatchesSnapshotLoader(t *testing.T) {
 
 	// An explicit null is the documented way back: it returns a key whose lifetime
 	// has passed to the pool once the underlying credential is genuinely renewed.
-	cleared, err := store.SyncProviderKeys(ctx, ProviderSyncRequest{
-		Keys: []ProviderKeySyncEntry{{Provider: "gated", APIKey: "sk-stale", ExpiresAt: clearExpiry}},
-	})
+	cleared, err := store.UpsertProviderKeyRecords(ctx, pid, []ProviderKeySyncEntry{
+		{APIKey: "sk-stale", ExpiresAt: clearExpiry},
+	}, false)
 	if err != nil {
-		t.Fatalf("clear-expiry sync: %v", err)
+		t.Fatalf("clear-expiry upsert: %v", err)
 	}
 	if cleared.Updated != 1 {
 		t.Errorf("counters = %+v, want the key updated when expires_at is cleared", cleared)
@@ -554,274 +377,341 @@ func TestSyncProviderKeys_ExpiryGateMatchesSnapshotLoader(t *testing.T) {
 	if row := readKeyRow(t, store, "sk-stale"); row.ExpiresAt != nil {
 		t.Errorf("expires_at = %v, want NULL", row.ExpiresAt)
 	}
-	if ids := cleared.KeyIDs["gated"]; len(ids) != 3 {
-		t.Errorf("key_ids[gated] = %v, want all three keys routable after the clear", ids)
+	if len(cleared.KeyIDs) != 3 {
+		t.Errorf("key_ids = %v, want all three keys routable after the clear", cleared.KeyIDs)
 	}
 }
 
-func TestSyncProviderKeys_KeyResolvesProviderDeclaredInSameBatch(t *testing.T) {
-	store, ctx := syncCtx(t)
+// account_metadata is a credential vault: written verbatim, never read back. An
+// omitted blob means "keep the stored one" — it is large write-only data a client
+// may legitimately not resend — whitespace-only differences are not a change, and
+// a different blob is.
+func TestUpsertProviderKeyRecords_AccountMetadataVaultSemantics(t *testing.T) {
+	store, ctx := storeCtx(t)
+	pid := seedProvider(t, store, "vault")
 
-	// A batch that declares a provider and immediately uses it must not need a
-	// prior round trip through the database.
-	res, err := store.SyncProviderKeys(ctx, ProviderSyncRequest{
-		Providers: []ProviderSyncEntry{{Name: "fresh", BaseURL: "https://fresh.example.com"}},
-		Keys: []ProviderKeySyncEntry{
-			{Provider: "fresh", APIKey: "sk-fresh-1"},
-			{Provider: "fresh", APIKey: "sk-fresh-2"},
-		},
-	})
+	const vault = `{"private_key":"0xdeadbeef","password":"hunter2"}`
+	res, err := store.UpsertProviderKeyRecords(ctx, pid, []ProviderKeySyncEntry{
+		{APIKey: "sk-vault", AccountMetadata: json.RawMessage(vault)},
+	}, false)
 	if err != nil {
-		t.Fatalf("sync: %v", err)
+		t.Fatalf("upsert: %v", err)
 	}
-	if res.Created != 2 {
-		t.Fatalf("created = %d, want 2", res.Created)
-	}
-	if len(res.KeyIDs["fresh"]) != 2 {
-		t.Errorf("key_ids[fresh] = %v, want both keys", res.KeyIDs["fresh"])
+	if row := readKeyRow(t, store, "sk-vault"); row.Metadata == nil || *row.Metadata != vault {
+		t.Fatalf("account_metadata stored as %v, want the blob written verbatim", row.Metadata)
 	}
 
-	// An existing key for an existing provider resolves from the database.
-	if _, err := store.SyncProviderKeys(ctx, ProviderSyncRequest{
-		Keys: []ProviderKeySyncEntry{{Provider: "fresh", APIKey: "sk-fresh-3"}},
-	}); err != nil {
-		t.Fatalf("db-resolved sync: %v", err)
+	// The vault must never travel back out through the result.
+	encoded, err := json.Marshal(res)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
 	}
-	if got := readKeyRow(t, store, "sk-fresh-3").ProviderID; got != readProviderID(t, store, "fresh") {
-		t.Errorf("db-resolved key bound to provider %d, want %d", got, readProviderID(t, store, "fresh"))
+	for _, forbidden := range []string{"sk-vault", "private_key", "0xdeadbeef", "hunter2"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Errorf("upsert result leaked %q: %s", forbidden, encoded)
+		}
+	}
+
+	omitted, err := store.UpsertProviderKeyRecords(ctx, pid, []ProviderKeySyncEntry{{APIKey: "sk-vault"}}, false)
+	if err != nil {
+		t.Fatalf("omitted-metadata upsert: %v", err)
+	}
+	if omitted.Unchanged != 1 {
+		t.Errorf("counters = %+v, want the key unchanged when the blob is omitted", omitted)
+	}
+	if row := readKeyRow(t, store, "sk-vault"); row.Metadata == nil || *row.Metadata != vault {
+		t.Errorf("omitted blob erased the stored vault: %v", row.Metadata)
+	}
+
+	same, err := store.UpsertProviderKeyRecords(ctx, pid, []ProviderKeySyncEntry{
+		{APIKey: "sk-vault", AccountMetadata: json.RawMessage("\n  " + vault + "  \n")},
+	}, false)
+	if err != nil {
+		t.Fatalf("whitespace-metadata upsert: %v", err)
+	}
+	if same.Unchanged != 1 {
+		t.Errorf("whitespace-padded blob counted as a change: %+v", same)
+	}
+
+	rotated := `{"private_key":"0xfeedface"}`
+	changed, err := store.UpsertProviderKeyRecords(ctx, pid, []ProviderKeySyncEntry{
+		{APIKey: "sk-vault", AccountMetadata: json.RawMessage(rotated)},
+	}, false)
+	if err != nil {
+		t.Fatalf("rotated-metadata upsert: %v", err)
+	}
+	if changed.Updated != 1 {
+		t.Errorf("counters = %+v, want the key updated for a rotated blob", changed)
+	}
+	if row := readKeyRow(t, store, "sk-vault"); row.Metadata == nil || *row.Metadata != rotated {
+		t.Errorf("account_metadata = %v, want the rotated blob", row.Metadata)
 	}
 }
 
-func TestSyncProviderKeys_RequiresInitializedStore(t *testing.T) {
-	var nilStore *Store
-	if _, err := nilStore.SyncProviderKeys(context.Background(), ProviderSyncRequest{}); err == nil {
-		t.Error("nil store returned no error")
+// UNIQUE(api_key) is global, so a key already owned by another provider is
+// refused: applying the move would hand one provider's quota to another. The
+// operator-only reassignment exists to do exactly that on purpose, and it drops
+// the old provider's bound credential rows so the key cannot keep serving on both
+// pools at once.
+func TestUpsertProviderKeyRecords_RejectsCrossProviderKeyUnlessReassigned(t *testing.T) {
+	store, ctx := storeCtx(t)
+	from := seedProvider(t, store, "provider-a")
+	to := seedProvider(t, store, "provider-b")
+	seedKeys(t, store, from, ProviderKeySyncEntry{APIKey: "sk-shared"})
+	key := readKeyRow(t, store, "sk-shared")
+
+	// Bind a credential to the key on the owning provider, so the reassignment's
+	// cleanup is observable rather than inferred from the join.
+	up := &UpstreamRecord{
+		Name: "a-up", Protocol: "openai", BaseURL: "https://provider-a.example.com",
+		KeyStrategy: "round_robin", Enabled: true, ProviderID: &from,
 	}
-	if _, err := (&Store{}).SyncProviderKeys(context.Background(), ProviderSyncRequest{}); err == nil {
-		t.Error("store without a db handle returned no error")
+	if err := store.SaveUpstream(ctx, up); err != nil {
+		t.Fatalf("save upstream: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO upstream_credentials (upstream_id, api_key_id, ref, secret, status, is_active, created_at, updated_at)
+		VALUES (?, ?, 'a-cred-1', 'sk-shared', 'active', 1, 1, 1)
+	`, up.ID, key.ID); err != nil {
+		t.Fatalf("seed bound credential: %v", err)
+	}
+
+	before := readRevision(t, store)
+	_, err := store.UpsertProviderKeyRecords(ctx, to, []ProviderKeySyncEntry{{APIKey: "sk-shared"}}, false)
+	if !errors.Is(err, ErrKeyProviderMismatch) {
+		t.Fatalf("err = %v, want ErrKeyProviderMismatch", err)
+	}
+	if after := readKeyRow(t, store, "sk-shared"); after.ProviderID != from {
+		t.Errorf("key moved to provider %d despite the rejection (was %d)", after.ProviderID, from)
+	}
+	if got := readRevision(t, store); got != before {
+		t.Errorf("revision advanced on a rejected batch: %d -> %d", before, got)
+	}
+	if _, updatedAt := boundCredential(t, store, key.ID); updatedAt != 1 {
+		t.Errorf("bound credential touched by a rejected batch: updated_at = %d", updatedAt)
+	}
+
+	// The correction path is explicit: reassign applies the move.
+	res, err := store.UpsertProviderKeyRecords(ctx, to, []ProviderKeySyncEntry{{APIKey: "sk-shared"}}, true)
+	if err != nil {
+		t.Fatalf("reassign: %v", err)
+	}
+	if res.Updated != 1 || res.Reassigned != 1 {
+		t.Errorf("counters = %+v, want one reassigned update", res)
+	}
+	if after := readKeyRow(t, store, "sk-shared"); after.ProviderID != to || after.ID != key.ID {
+		t.Errorf("row = provider %d id %d, want provider %d with the row id preserved", after.ProviderID, after.ID, to)
+	}
+	if len(res.KeyIDs) != 1 || res.KeyIDs[0] != key.ID {
+		t.Errorf("key_ids = %v, want [%d]: the key is routable on its new provider", res.KeyIDs, key.ID)
+	}
+	var left int
+	if err := store.DB().QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM upstream_credentials WHERE api_key_id = ?", key.ID).Scan(&left); err != nil {
+		t.Fatalf("count bound credentials: %v", err)
+	}
+	if left != 0 {
+		t.Errorf("bound credentials left on the old provider = %d, want the key to stop serving there", left)
 	}
 }
 
-func TestSyncProviderKeys_RejectsMalformedBatch(t *testing.T) {
+// The route decides the provider, and the store validates before opening its
+// transaction: a non-positive id and an empty batch are rejected payloads, an
+// unseeded id is a 404, and none of them may write or publish anything.
+func TestUpsertProviderKeyRecords_RejectsUnusableRouteTarget(t *testing.T) {
+	store, ctx := storeCtx(t)
+	pid := seedProvider(t, store, "route")
+	before := readRevision(t, store)
+
+	if _, err := store.UpsertProviderKeyRecords(ctx, 0, []ProviderKeySyncEntry{{APIKey: "sk-x"}}, false); !errors.Is(err, ErrInvalidPayload) {
+		t.Errorf("provider id 0 = %v, want ErrInvalidPayload", err)
+	}
+	if _, err := store.UpsertProviderKeyRecords(ctx, pid, nil, false); !errors.Is(err, ErrInvalidPayload) {
+		t.Errorf("empty batch = %v, want ErrInvalidPayload", err)
+	}
+	if _, err := store.UpsertProviderKeyRecords(ctx, 999_999, []ProviderKeySyncEntry{{APIKey: "sk-x"}}, false); !errors.Is(err, ErrNotFound) {
+		t.Errorf("unknown provider = %v, want ErrNotFound", err)
+	}
+
+	var keys int
+	if err := store.DB().QueryRowContext(ctx, "SELECT COUNT(*) FROM api_keys").Scan(&keys); err != nil {
+		t.Fatalf("count api keys: %v", err)
+	}
+	if keys != 0 {
+		t.Errorf("rejected batches left %d key rows behind", keys)
+	}
+	if got := readRevision(t, store); got != before {
+		t.Errorf("revision advanced by rejected batches: %d -> %d", before, got)
+	}
+}
+
+// Every malformed entry refuses the whole batch: the well-formed sibling riding
+// along in each case is what makes the rollback observable, and the revision must
+// stay put so a refused batch cannot trigger a reload.
+func TestUpsertProviderKeyRecords_RejectsMalformedEntries(t *testing.T) {
 	repeat := func(n int, c byte) string { return strings.Repeat(string(c), n) }
 	seconds := time.Now().Unix()
-	negative := int64(-1)
 
 	cases := []struct {
 		name    string
-		req     ProviderSyncRequest
+		entry   ProviderKeySyncEntry
 		wantSub string
 	}{
 		{
+			name:    "missing secret",
+			entry:   ProviderKeySyncEntry{},
+			wantSub: "requires api_key",
+		},
+		{
+			name:    "oversized secret",
+			entry:   ProviderKeySyncEntry{APIKey: repeat(maxKeySecretLen+1, 'k')},
+			wantSub: "api_key exceeds",
+		},
+		{
+			name:    "unsupported status",
+			entry:   ProviderKeySyncEntry{APIKey: "sk-bad", Status: "dead"},
+			wantSub: "unsupported status",
+		},
+		{
+			name:    "status differing only in case",
+			entry:   ProviderKeySyncEntry{APIKey: "sk-bad", Status: "ACTIVE"},
+			wantSub: "unsupported status",
+		},
+		{
 			name:    "second-scale expiry",
-			req:     ProviderSyncRequest{Keys: []ProviderKeySyncEntry{{Provider: "gate", APIKey: "sk-bad", ExpiresAt: msExpiry(seconds)}}},
+			entry:   ProviderKeySyncEntry{APIKey: "sk-bad", ExpiresAt: msExpiry(seconds)},
 			wantSub: "Unix millisecond",
 		},
 		{
 			name:    "negative expiry",
-			req:     ProviderSyncRequest{Keys: []ProviderKeySyncEntry{{Provider: "gate", APIKey: "sk-bad", ExpiresAt: msExpiry(negative)}}},
+			entry:   ProviderKeySyncEntry{APIKey: "sk-bad", ExpiresAt: msExpiry(-1)},
 			wantSub: "Unix millisecond",
 		},
 		{
 			name:    "expiry as a string",
-			req:     ProviderSyncRequest{Keys: []ProviderKeySyncEntry{{Provider: "gate", APIKey: "sk-bad", ExpiresAt: json.RawMessage(`"4102444800000"`)}}},
+			entry:   ProviderKeySyncEntry{APIKey: "sk-bad", ExpiresAt: json.RawMessage(`"4102444800000"`)},
 			wantSub: "unix millisecond timestamp or null",
 		},
 		{
 			name:    "expiry as a fraction",
-			req:     ProviderSyncRequest{Keys: []ProviderKeySyncEntry{{Provider: "gate", APIKey: "sk-bad", ExpiresAt: json.RawMessage("4102444800.5")}}},
+			entry:   ProviderKeySyncEntry{APIKey: "sk-bad", ExpiresAt: json.RawMessage("4102444800.5")},
 			wantSub: "unix millisecond timestamp or null",
 		},
 		{
 			name:    "expiry as an object",
-			req:     ProviderSyncRequest{Keys: []ProviderKeySyncEntry{{Provider: "gate", APIKey: "sk-bad", ExpiresAt: json.RawMessage("{}")}}},
+			entry:   ProviderKeySyncEntry{APIKey: "sk-bad", ExpiresAt: json.RawMessage("{}")},
 			wantSub: "unix millisecond timestamp or null",
 		},
 		{
-			name:    "oversized status",
-			req:     ProviderSyncRequest{Keys: []ProviderKeySyncEntry{{Provider: "gate", APIKey: "sk-bad", Status: repeat(maxKeyStatusLen+1, 's')}}},
-			wantSub: "status exceeds",
-		},
-		{
-			name:    "padded status",
-			req:     ProviderSyncRequest{Keys: []ProviderKeySyncEntry{{Provider: "gate", APIKey: "sk-bad", Status: " active"}}},
-			wantSub: "whitespace",
-		},
-		{
-			name:    "control character in status",
-			req:     ProviderSyncRequest{Keys: []ProviderKeySyncEntry{{Provider: "gate", APIKey: "sk-bad", Status: "ac\x00tive"}}},
-			wantSub: "control characters",
-		},
-		{
-			name:    "oversized vault blob",
-			req:     ProviderSyncRequest{Keys: []ProviderKeySyncEntry{{Provider: "gate", APIKey: "sk-bad", AccountMetadata: json.RawMessage(repeat(MaxKeyMetadataBytes+1, 'v'))}}},
+			name: "oversized vault blob",
+			entry: ProviderKeySyncEntry{
+				APIKey:          "sk-bad",
+				AccountMetadata: json.RawMessage(repeat(MaxKeyMetadataBytes+1, 'v')),
+			},
 			wantSub: "account_metadata exceeds",
 		},
 		{
-			name:    "oversized secret",
-			req:     ProviderSyncRequest{Keys: []ProviderKeySyncEntry{{Provider: "gate", APIKey: repeat(maxKeySecretLen+1, 'k')}}},
-			wantSub: "api_key exceeds",
-		},
-		{
-			name:    "missing secret",
-			req:     ProviderSyncRequest{Keys: []ProviderKeySyncEntry{{Provider: "gate", APIKey: ""}}},
-			wantSub: "requires both provider and api_key",
-		},
-		{
-			name:    "empty provider name",
-			req:     ProviderSyncRequest{Providers: []ProviderSyncEntry{{Name: "", BaseURL: "https://gate.example.com"}}},
-			wantSub: "empty name",
-		},
-		{
-			name:    "provider name too long",
-			req:     ProviderSyncRequest{Providers: []ProviderSyncEntry{{Name: repeat(maxProviderNameLen+1, 'n'), BaseURL: "https://gate.example.com"}}},
-			wantSub: "name exceeds",
-		},
-		{
-			name:    "provider base_url too long",
-			req:     ProviderSyncRequest{Providers: []ProviderSyncEntry{{Name: "gate", BaseURL: repeat(maxProviderURLLen+1, 'u')}}},
-			wantSub: "base_url exceeds",
-		},
-		{
-			name:    "provider description too long",
-			req:     ProviderSyncRequest{Providers: []ProviderSyncEntry{{Name: "gate", BaseURL: "https://gate.example.com", Description: repeat(maxProviderDescLen+1, 'd')}}},
-			wantSub: "description exceeds",
+			name:    "entry names another provider",
+			entry:   ProviderKeySyncEntry{Provider: "elsewhere", APIKey: "sk-bad"},
+			wantSub: "route targets",
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			store, ctx := syncCtx(t)
-			revBefore, err := store.GetCatalogRevision(ctx)
-			if err != nil {
-				t.Fatalf("read catalog revision: %v", err)
-			}
+			store, ctx := storeCtx(t)
+			pid := seedProvider(t, store, "gate")
+			before := readRevision(t, store)
 
-			// A well-formed sibling rides along with the malformed entry. If the
-			// batch were applied partially, both would be found in the database.
-			req := tc.req
-			req.Providers = append([]ProviderSyncEntry{{Name: "gate", BaseURL: "https://gate.example.com"}}, req.Providers...)
-			req.Keys = append([]ProviderKeySyncEntry{{Provider: "gate", APIKey: "sk-sibling"}}, req.Keys...)
-
-			res, err := store.SyncProviderKeys(ctx, req)
-			if !errors.Is(err, ErrInvalidSyncPayload) {
-				t.Fatalf("error = %v, want ErrInvalidSyncPayload", err)
+			res, err := store.UpsertProviderKeyRecords(ctx, pid,
+				[]ProviderKeySyncEntry{{APIKey: "sk-sibling"}, tc.entry}, false)
+			if !errors.Is(err, ErrInvalidPayload) {
+				t.Fatalf("error = %v, want ErrInvalidPayload", err)
 			}
 			if !strings.Contains(err.Error(), tc.wantSub) {
 				t.Errorf("error %q does not mention %q", err, tc.wantSub)
 			}
-			if res.Created != 0 || res.Updated != 0 || res.Unchanged != 0 || res.Deactivated != 0 {
+			if res.Created != 0 || res.Updated != 0 || res.Unchanged != 0 ||
+				res.Reassigned != 0 || len(res.KeyIDs) != 0 {
 				t.Errorf("counters = %+v, want a rejected batch to report nothing", res)
 			}
 
-			var providers, keys int
-			if err := store.DB().QueryRowContext(ctx, "SELECT COUNT(*) FROM providers").Scan(&providers); err != nil {
-				t.Fatalf("count providers: %v", err)
-			}
+			var keys int
 			if err := store.DB().QueryRowContext(ctx, "SELECT COUNT(*) FROM api_keys").Scan(&keys); err != nil {
 				t.Fatalf("count api keys: %v", err)
 			}
-			if providers != 0 || keys != 0 {
-				t.Errorf("rejected batch left rows behind: providers=%d api_keys=%d, want 0/0", providers, keys)
+			if keys != 0 {
+				t.Errorf("rejected batch left %d key rows behind", keys)
 			}
-			revAfter, err := store.GetCatalogRevision(ctx)
-			if err != nil {
-				t.Fatalf("read catalog revision: %v", err)
-			}
-			if revAfter != revBefore {
-				t.Errorf("catalog revision moved %d -> %d for a rejected batch", revBefore, revAfter)
+			if got := readRevision(t, store); got != before {
+				t.Errorf("catalog revision moved %d -> %d for a rejected batch", before, got)
 			}
 		})
 	}
 }
 
-// The status vocabulary belongs to the writer, so an unknown but well-formed
-// state is stored verbatim instead of refused: rejecting it would freeze an
-// entire batch over a state Firefly has simply never seen. What must hold is
-// that any non-'active' status stays out of routing.
-func TestSyncProviderKeys_StoresUnknownStatusVerbatim(t *testing.T) {
-	store, ctx := syncCtx(t)
-	if _, err := store.SyncProviderKeys(ctx, ProviderSyncRequest{
-		Providers: []ProviderSyncEntry{{Name: "legacy", BaseURL: "https://legacy.example.com"}},
-	}); err != nil {
-		t.Fatalf("seed provider: %v", err)
+// Status is authoritative on every write, and an omitted status means "active" —
+// which is what lets a batch both retire a key and bring it back. Every accepted
+// status keeps the row exactly as written, and the ids a batch reports exclude
+// anything that is not active.
+func TestUpsertProviderKeyRecords_StatusDrivesRoutability(t *testing.T) {
+	store, ctx := storeCtx(t)
+	pid := seedProvider(t, store, "lifecycle")
+
+	seedKeys(t, store, pid, ProviderKeySyncEntry{APIKey: "sk-life"})
+	key := readKeyRow(t, store, "sk-life")
+	if key.Status != "active" || key.IsActive != 1 {
+		t.Fatalf("omitted status = %q/%d, want active/1", key.Status, key.IsActive)
 	}
 
-	for _, status := range []string{"dead", "cooldown", "banned", "rate limited", "ACTIVE"} {
-		secret := "sk-" + strings.NewReplacer(" ", "-", "_", "-").Replace(status)
-		res, err := store.SyncProviderKeys(ctx, ProviderSyncRequest{
-			Keys: []ProviderKeySyncEntry{{Provider: "legacy", APIKey: secret, Status: status}},
-		})
+	for _, status := range []string{"deactivated", "expired", "revoked"} {
+		retired, err := store.UpsertProviderKeyRecords(ctx, pid,
+			[]ProviderKeySyncEntry{{APIKey: "sk-life", Status: status}}, false)
 		if err != nil {
-			t.Fatalf("sync status %q: %v", status, err)
+			t.Fatalf("retire as %q: %v", status, err)
 		}
-		if res.Created != 1 {
-			t.Fatalf("sync status %q counters = %+v, want one created key", status, res)
+		if retired.Updated != 1 || retired.Unchanged != 0 {
+			t.Errorf("retire as %q counters = %+v, want one update", status, retired)
 		}
-		row := readKeyRow(t, store, secret)
-		if row.Status != status {
-			t.Errorf("stored status = %q, want %q", row.Status, status)
+		if row := readKeyRow(t, store, "sk-life"); row.Status != status || row.IsActive != 0 {
+			t.Errorf("row = %q/%d, want %q/0", row.Status, row.IsActive, status)
 		}
-		if row.IsActive != 0 {
-			t.Errorf("is_active = %d for non-active status %q, want 0", row.IsActive, status)
+		if len(retired.KeyIDs) != 0 {
+			t.Errorf("key_ids = %v with status %q, want no routable keys", retired.KeyIDs, status)
 		}
-		if len(res.KeyIDs["legacy"]) != 0 {
-			t.Errorf("key_ids[legacy] = %v with status %q, want no routable keys", res.KeyIDs["legacy"], status)
+
+		// Replaying the retirement converges on the same state without churning
+		// the row it already retired.
+		replay, err := store.UpsertProviderKeyRecords(ctx, pid,
+			[]ProviderKeySyncEntry{{APIKey: "sk-life", Status: status}}, false)
+		if err != nil {
+			t.Fatalf("replay %q: %v", status, err)
+		}
+		if replay.Unchanged != 1 {
+			t.Errorf("replay of %q counters = %+v, want the row unchanged", status, replay)
+		}
+
+		// A re-push that no longer mentions the retirement reactivates the key.
+		back, err := store.UpsertProviderKeyRecords(ctx, pid, []ProviderKeySyncEntry{{APIKey: "sk-life"}}, false)
+		if err != nil {
+			t.Fatalf("reactivate from %q: %v", status, err)
+		}
+		if back.Updated != 1 || len(back.KeyIDs) != 1 || back.KeyIDs[0] != key.ID {
+			t.Errorf("reactivation from %q = %+v, want the key routable again", status, back)
+		}
+		if row := readKeyRow(t, store, "sk-life"); row.Status != "active" || row.IsActive != 1 {
+			t.Errorf("row = %q/%d, want active/1", row.Status, row.IsActive)
 		}
 	}
 }
 
-// poolSecret reads one credential out of the pool a catalog rebuild would hand to
-// the data plane. That pool, not the api_keys row, is what authenticates upstream
-// requests, so it is the only honest place to assert a rotation took effect.
-func poolSecret(t *testing.T, store *Store, upstreamName, ref string) string {
-	t.Helper()
-	settings, err := store.LoadSettings(context.Background())
-	if err != nil {
-		t.Fatalf("load settings: %v", err)
-	}
-	for _, up := range settings.Upstreams {
-		if up.Name != upstreamName {
-			continue
-		}
-		for _, cred := range up.CredentialPool {
-			if cred.Ref == ref {
-				return cred.Secret
-			}
-		}
-		t.Fatalf("upstream %q has no pooled credential %q", upstreamName, ref)
-	}
-	t.Fatalf("settings have no upstream %q", upstreamName)
-	return ""
-}
-
-func boundCredential(t *testing.T, store *Store, keyID int64) (string, int64) {
-	t.Helper()
-	var (
-		secret    string
-		updatedAt int64
-	)
-	if err := store.DB().QueryRowContext(context.Background(),
-		"SELECT secret, updated_at FROM upstream_credentials WHERE api_key_id = ?", keyID).
-		Scan(&secret, &updatedAt); err != nil {
-		t.Fatalf("read credential bound to key %d: %v", keyID, err)
-	}
-	return secret, updatedAt
-}
-
-// The operator batch carries expires_at in the same wire form as the sync, so it
-// must carry the same three intents: a number sets, an explicit null clears, and an
-// omitted field leaves the stored expiry alone. Wiping the lifetime as a side
-// effect of editing something else would put an expired credential back in rotation.
+// The operator batch carries expires_at in the same three intents a lifecycle
+// command has: a number sets, an explicit null clears, an omitted field leaves the
+// stored expiry alone. Wiping the lifetime as a side effect of editing something
+// else would put an expired credential back in rotation.
 func TestUpsertProviderKeyRecords_ExpiryIntentIsThreeWay(t *testing.T) {
-	store, ctx := syncCtx(t)
-
-	if _, err := store.SyncProviderKeys(ctx, ProviderSyncRequest{
-		Providers: []ProviderSyncEntry{{Name: "operator", BaseURL: "https://operator.example.com"}},
-	}); err != nil {
-		t.Fatalf("seed provider: %v", err)
-	}
-	pid := readProviderID(t, store, "operator")
+	store, ctx := storeCtx(t)
+	pid := seedProvider(t, store, "operator")
 
 	const (
 		secret = "sk-op-expiry"
@@ -877,141 +767,42 @@ func TestUpsertProviderKeyRecords_ExpiryIntentIsThreeWay(t *testing.T) {
 	}
 }
 
-// A rotation replaces a row's identity material while keeping its id, because the
-// "<upstream>-key-<id>" refs are derived from that id. The bound upstream_credentials
-// row holds its own copy of the secret and the loader prefers it over the joined
-// api_keys value, so a rotation that stopped at api_keys would keep authenticating
-// with the retired credential.
-func TestPatchProviderKeyRecord_RotatesSecretInPlace(t *testing.T) {
-	store, ctx := syncCtx(t)
-
-	if _, err := store.SyncProviderKeys(ctx, ProviderSyncRequest{
-		Providers: []ProviderSyncEntry{{Name: "rot", BaseURL: "https://rot.example.com"}},
-		Keys:      []ProviderKeySyncEntry{{Provider: "rot", APIKey: "sk-rot-old"}},
-	}); err != nil {
-		t.Fatalf("seed sync: %v", err)
-	}
-	id := readKeyRow(t, store, "sk-rot-old").ID
-
-	// Metering plus a pinned updated_at: a rotation is structural, so it must
-	// advance the column the syncer watches while the traffic counters stay put.
-	if _, err := store.DB().ExecContext(ctx,
-		"UPDATE api_keys SET last_used_at = ?, total_requests = ?, updated_at = ? WHERE id = ?",
-		int64(1_700_000_000_000), int64(77), int64(1_000), id); err != nil {
-		t.Fatalf("seed metering: %v", err)
-	}
-
-	up := &UpstreamRecord{Name: "rot-up", Protocol: "openai", BaseURL: "https://rot.example.com", KeyStrategy: "round_robin", Enabled: true}
-	if err := store.SaveUpstream(ctx, up); err != nil {
-		t.Fatalf("save upstream: %v", err)
-	}
-	if _, err := store.DB().ExecContext(ctx, `
-		INSERT INTO upstream_credentials (upstream_id, api_key_id, ref, secret, status, is_active, created_at, updated_at)
-		VALUES (?, ?, 'rot-cred-1', 'sk-rot-old', 'active', 1, ?, ?)
-	`, up.ID, id, int64(1), int64(1)); err != nil {
-		t.Fatalf("seed bound credential: %v", err)
-	}
-	_, seededAt := boundCredential(t, store, id)
-	if seededAt != 1 {
-		t.Fatalf("precondition: bound credential updated_at = %d, want the seeded 1", seededAt)
-	}
-	if got := poolSecret(t, store, "rot-up", "rot-cred-1"); got != "sk-rot-old" {
-		t.Fatalf("pre-rotation pool secret = %q, want the stale bound copy to be what serves", got)
-	}
-	res, err := store.PatchProviderKeyRecord(ctx, id, ProviderKeyPatch{APIKey: "sk-rot-new"})
+// poolSecret reads one credential out of the pool a catalog rebuild would hand to
+// the data plane. That pool, not the api_keys row, is what authenticates upstream
+// requests, so it is the only honest place to assert a rotation took effect.
+func poolSecret(t *testing.T, store *Store, upstreamName, ref string) string {
+	t.Helper()
+	settings, err := store.LoadSettings(context.Background())
 	if err != nil {
-		t.Fatalf("rotate: %v", err)
+		t.Fatalf("load settings: %v", err)
 	}
-	if res.Key.ID != id || res.Key.Secret != "sk-rot-new" {
-		t.Fatalf("patch returned id %d with secret %q, want id %d rotated", res.Key.ID, res.Key.Secret, id)
+	for _, up := range settings.Upstreams {
+		if up.Name != upstreamName {
+			continue
+		}
+		for _, cred := range up.CredentialPool {
+			if cred.Ref == ref {
+				return cred.Secret
+			}
+		}
+		t.Fatalf("upstream %q has no pooled credential %q", upstreamName, ref)
 	}
-	if res.Key.ProviderID != readProviderID(t, store, "rot") {
-		t.Errorf("rotation moved the key to provider %d", res.Key.ProviderID)
-	}
-
-	row := readKeyRow(t, store, "sk-rot-new")
-	if row.ID != id {
-		t.Fatalf("rotated row id = %d, want %d", row.ID, id)
-	}
-	if row.LastUsedAt != 1_700_000_000_000 || row.TotalRequests != 77 {
-		t.Errorf("rotation rewrote metering: last_used_at=%d total_requests=%d", row.LastUsedAt, row.TotalRequests)
-	}
-	if row.UpdatedAt <= 1_000 {
-		t.Errorf("updated_at = %d, want a rotation to advance the structural signal", row.UpdatedAt)
-	}
-	var retired int
-	if err := store.DB().QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM api_keys WHERE api_key = 'sk-rot-old'").Scan(&retired); err != nil {
-		t.Fatalf("count retired key: %v", err)
-	}
-	if retired != 0 {
-		t.Error("the retired secret is still stored as a credential")
-	}
-
-	rotatedSecret, mirroredAt := boundCredential(t, store, id)
-	if rotatedSecret != "sk-rot-new" {
-		t.Errorf("bound credential secret = %q, want the rotated value", rotatedSecret)
-	}
-	if mirroredAt <= seededAt {
-		t.Errorf("bound credential updated_at = %d, want the mirror to rewrite the row", mirroredAt)
-	}
-	if got := poolSecret(t, store, "rot-up", "rot-cred-1"); got != "sk-rot-new" {
-		t.Errorf("rebuilt snapshot serves %q, want the rotated secret", got)
-	}
-
-	// Replaying the same rotation must not churn the bound row: re-writing an
-	// unchanged secret would move a write signal on every retry.
-	if _, err := store.PatchProviderKeyRecord(ctx, id, ProviderKeyPatch{APIKey: "sk-rot-new"}); err != nil {
-		t.Fatalf("replayed rotate: %v", err)
-	}
-	if _, replayedAt := boundCredential(t, store, id); replayedAt != mirroredAt {
-		t.Errorf("replayed rotation rewrote bound credentials: updated_at %d -> %d", mirroredAt, replayedAt)
-	}
+	t.Fatalf("settings have no upstream %q", upstreamName)
+	return ""
 }
 
-// UNIQUE(api_key) is global, so rotating onto a secret another row already holds
-// would merge two providers' credentials into one row. The request is refused, and
-// refused without a trace; malformed secrets are refused before anything is written.
-func TestPatchProviderKeyRecord_RefusesTakenOrMalformedSecret(t *testing.T) {
-	store, ctx := syncCtx(t)
-
-	if _, err := store.SyncProviderKeys(ctx, ProviderSyncRequest{
-		Providers: []ProviderSyncEntry{{Name: "taken", BaseURL: "https://taken.example.com"}},
-		Keys: []ProviderKeySyncEntry{
-			{Provider: "taken", APIKey: "sk-holder"},
-			{Provider: "taken", APIKey: "sk-rotator"},
-		},
-	}); err != nil {
-		t.Fatalf("seed sync: %v", err)
+func boundCredential(t *testing.T, store *Store, keyID int64) (string, int64) {
+	t.Helper()
+	var (
+		secret    string
+		updatedAt int64
+	)
+	if err := store.DB().QueryRowContext(context.Background(),
+		"SELECT secret, updated_at FROM upstream_credentials WHERE api_key_id = ?", keyID).
+		Scan(&secret, &updatedAt); err != nil {
+		t.Fatalf("read credential bound to key %d: %v", keyID, err)
 	}
-	holder := readKeyRow(t, store, "sk-holder")
-	rotator := readKeyRow(t, store, "sk-rotator")
-
-	before := readRevision(t, store)
-	_, err := store.PatchProviderKeyRecord(ctx, rotator.ID, ProviderKeyPatch{APIKey: "sk-holder"})
-	if !errors.Is(err, ErrAPIKeyTaken) {
-		t.Fatalf("rotate onto a taken secret = %v, want ErrAPIKeyTaken", err)
-	}
-	// The conflict names the owning row so the operator can find it; it never
-	// repeats the secret, which is what made it identifiable in the first place.
-	if !strings.Contains(err.Error(), strconv.FormatInt(holder.ID, 10)) {
-		t.Errorf("error %q does not name the holding key id %d", err, holder.ID)
-	}
-	if row := readKeyRow(t, store, "sk-rotator"); row.ID != rotator.ID || row.UpdatedAt != rotator.UpdatedAt {
-		t.Errorf("rejected rotation changed the row: %+v", row)
-	}
-	if got := readRevision(t, store); got != before {
-		t.Errorf("revision = %d, want %d: a rejected patch must not trigger a reload", got, before)
-	}
-
-	for _, bad := range []string{" sk-padded", "sk-inner\x00null", "sk-trailing\n", strings.Repeat("s", maxKeySecretLen+1)} {
-		if _, err := store.PatchProviderKeyRecord(ctx, rotator.ID, ProviderKeyPatch{APIKey: bad}); !errors.Is(err, ErrInvalidPayload) {
-			t.Errorf("secret %q error = %v, want ErrInvalidPayload", strings.ToValidUTF8(bad, "?"), err)
-		}
-	}
-	if row := readKeyRow(t, store, "sk-rotator"); row.UpdatedAt != rotator.UpdatedAt {
-		t.Error("a malformed secret patch reached the row")
-	}
+	return secret, updatedAt
 }
 
 // Retiring a key by status is a lifecycle command the operator batch can issue
@@ -1021,18 +812,12 @@ func TestPatchProviderKeyRecord_RefusesTakenOrMalformedSecret(t *testing.T) {
 // "<upstream>-key-<id>" ref a settings save copies into a pool with no binding.
 // A key retired in api_keys alone would keep serving traffic through either.
 func TestUpsertProviderKeyRecords_StatusChangeRetiresBoundCredentials(t *testing.T) {
-	store, ctx := syncCtx(t)
-
-	if _, err := store.SyncProviderKeys(ctx, ProviderSyncRequest{
-		Providers: []ProviderSyncEntry{{Name: "ret", BaseURL: "https://ret.example.com"}},
-		Keys: []ProviderKeySyncEntry{
-			{Provider: "ret", APIKey: "sk-ret-live"},
-			{Provider: "ret", APIKey: "sk-ret-keep"},
-		},
-	}); err != nil {
-		t.Fatalf("seed sync: %v", err)
-	}
-	pid := readProviderID(t, store, "ret")
+	store, ctx := storeCtx(t)
+	pid := seedProvider(t, store, "ret")
+	seedKeys(t, store, pid,
+		ProviderKeySyncEntry{APIKey: "sk-ret-live"},
+		ProviderKeySyncEntry{APIKey: "sk-ret-keep"},
+	)
 	id := readKeyRow(t, store, "sk-ret-live").ID
 	keepRef := fmt.Sprintf("ret-up-key-%d", readKeyRow(t, store, "sk-ret-keep").ID)
 
@@ -1175,19 +960,142 @@ func TestUpsertProviderKeyRecords_StatusChangeRetiresBoundCredentials(t *testing
 	}
 }
 
+// A rotation replaces a row's identity material while keeping its id, because the
+// "<upstream>-key-<id>" refs are derived from that id. The bound upstream_credentials
+// row holds its own copy of the secret and the loader prefers it over the joined
+// api_keys value, so a rotation that stopped at api_keys would keep authenticating
+// with the retired credential.
+func TestPatchProviderKeyRecord_RotatesSecretInPlace(t *testing.T) {
+	store, ctx := storeCtx(t)
+	pid := seedProvider(t, store, "rot")
+	seedKeys(t, store, pid, ProviderKeySyncEntry{APIKey: "sk-rot-old"})
+	id := readKeyRow(t, store, "sk-rot-old").ID
+
+	// Metering plus a pinned updated_at: a rotation is structural, so it must
+	// advance the column the syncer watches while the traffic counters stay put.
+	if _, err := store.DB().ExecContext(ctx,
+		"UPDATE api_keys SET last_used_at = ?, total_requests = ?, updated_at = ? WHERE id = ?",
+		int64(1_700_000_000_000), int64(77), int64(1_000), id); err != nil {
+		t.Fatalf("seed metering: %v", err)
+	}
+
+	up := &UpstreamRecord{Name: "rot-up", Protocol: "openai", BaseURL: "https://rot.example.com", KeyStrategy: "round_robin", Enabled: true}
+	if err := store.SaveUpstream(ctx, up); err != nil {
+		t.Fatalf("save upstream: %v", err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO upstream_credentials (upstream_id, api_key_id, ref, secret, status, is_active, created_at, updated_at)
+		VALUES (?, ?, 'rot-cred-1', 'sk-rot-old', 'active', 1, ?, ?)
+	`, up.ID, id, int64(1), int64(1)); err != nil {
+		t.Fatalf("seed bound credential: %v", err)
+	}
+	_, seededAt := boundCredential(t, store, id)
+	if seededAt != 1 {
+		t.Fatalf("precondition: bound credential updated_at = %d, want the seeded 1", seededAt)
+	}
+	if got := poolSecret(t, store, "rot-up", "rot-cred-1"); got != "sk-rot-old" {
+		t.Fatalf("pre-rotation pool secret = %q, want the stale bound copy to be what serves", got)
+	}
+	res, err := store.PatchProviderKeyRecord(ctx, id, ProviderKeyPatch{APIKey: "sk-rot-new"})
+	if err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+	if res.Key.ID != id || res.Key.Secret != "sk-rot-new" {
+		t.Fatalf("patch returned id %d with secret %q, want id %d rotated", res.Key.ID, res.Key.Secret, id)
+	}
+	if res.Key.ProviderID != pid {
+		t.Errorf("rotation moved the key to provider %d", res.Key.ProviderID)
+	}
+
+	row := readKeyRow(t, store, "sk-rot-new")
+	if row.ID != id {
+		t.Fatalf("rotated row id = %d, want %d", row.ID, id)
+	}
+	if row.LastUsedAt != 1_700_000_000_000 || row.TotalRequests != 77 {
+		t.Errorf("rotation rewrote metering: last_used_at=%d total_requests=%d", row.LastUsedAt, row.TotalRequests)
+	}
+	if row.UpdatedAt <= 1_000 {
+		t.Errorf("updated_at = %d, want a rotation to advance the structural signal", row.UpdatedAt)
+	}
+	var retired int
+	if err := store.DB().QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM api_keys WHERE api_key = 'sk-rot-old'").Scan(&retired); err != nil {
+		t.Fatalf("count retired key: %v", err)
+	}
+	if retired != 0 {
+		t.Error("the retired secret is still stored as a credential")
+	}
+
+	rotatedSecret, mirroredAt := boundCredential(t, store, id)
+	if rotatedSecret != "sk-rot-new" {
+		t.Errorf("bound credential secret = %q, want the rotated value", rotatedSecret)
+	}
+	if mirroredAt <= seededAt {
+		t.Errorf("bound credential updated_at = %d, want the mirror to rewrite the row", mirroredAt)
+	}
+	if got := poolSecret(t, store, "rot-up", "rot-cred-1"); got != "sk-rot-new" {
+		t.Errorf("rebuilt snapshot serves %q, want the rotated secret", got)
+	}
+
+	// Replaying the same rotation must not churn the bound row: re-writing an
+	// unchanged secret would move a write signal on every retry.
+	if _, err := store.PatchProviderKeyRecord(ctx, id, ProviderKeyPatch{APIKey: "sk-rot-new"}); err != nil {
+		t.Fatalf("replayed rotate: %v", err)
+	}
+	if _, replayedAt := boundCredential(t, store, id); replayedAt != mirroredAt {
+		t.Errorf("replayed rotation rewrote bound credentials: updated_at %d -> %d", mirroredAt, replayedAt)
+	}
+}
+
+// UNIQUE(api_key) is global, so rotating onto a secret another row already holds
+// would merge two providers' credentials into one row. The request is refused, and
+// refused without a trace; malformed secrets are refused before anything is written.
+func TestPatchProviderKeyRecord_RefusesTakenOrMalformedSecret(t *testing.T) {
+	store, ctx := storeCtx(t)
+	pid := seedProvider(t, store, "taken")
+	seedKeys(t, store, pid,
+		ProviderKeySyncEntry{APIKey: "sk-holder"},
+		ProviderKeySyncEntry{APIKey: "sk-rotator"},
+	)
+	holder := readKeyRow(t, store, "sk-holder")
+	rotator := readKeyRow(t, store, "sk-rotator")
+
+	before := readRevision(t, store)
+	_, err := store.PatchProviderKeyRecord(ctx, rotator.ID, ProviderKeyPatch{APIKey: "sk-holder"})
+	if !errors.Is(err, ErrAPIKeyTaken) {
+		t.Fatalf("rotate onto a taken secret = %v, want ErrAPIKeyTaken", err)
+	}
+	// The conflict names the owning row so the operator can find it; it never
+	// repeats the secret, which is what made it identifiable in the first place.
+	if !strings.Contains(err.Error(), strconv.FormatInt(holder.ID, 10)) {
+		t.Errorf("error %q does not name the holding key id %d", err, holder.ID)
+	}
+	if row := readKeyRow(t, store, "sk-rotator"); row.ID != rotator.ID || row.UpdatedAt != rotator.UpdatedAt {
+		t.Errorf("rejected rotation changed the row: %+v", row)
+	}
+	if got := readRevision(t, store); got != before {
+		t.Errorf("revision = %d, want %d: a rejected patch must not trigger a reload", got, before)
+	}
+
+	for _, bad := range []string{" sk-padded", "sk-inner\x00null", "sk-trailing\n", strings.Repeat("s", maxKeySecretLen+1)} {
+		if _, err := store.PatchProviderKeyRecord(ctx, rotator.ID, ProviderKeyPatch{APIKey: bad}); !errors.Is(err, ErrInvalidPayload) {
+			t.Errorf("secret %q error = %v, want ErrInvalidPayload", strings.ToValidUTF8(bad, "?"), err)
+		}
+	}
+	if row := readKeyRow(t, store, "sk-rotator"); row.UpdatedAt != rotator.UpdatedAt {
+		t.Error("a malformed secret patch reached the row")
+	}
+}
+
 // A patch that resolves to the values already stored is not a change. Writing it
 // anyway would advance api_keys.updated_at — which the syncer watches as its
 // structural-change signal — and bump the catalog revision, making every instance
 // rebuild the whole snapshot for nothing.
 func TestPatchProviderKeyRecord_NoOpPatchLeavesChangeSignalsAlone(t *testing.T) {
-	store, ctx := syncCtx(t)
+	store, ctx := storeCtx(t)
+	pid := seedProvider(t, store, "noop")
+	seedKeys(t, store, pid, ProviderKeySyncEntry{APIKey: "sk-noop-live"})
 
-	if _, err := store.SyncProviderKeys(ctx, ProviderSyncRequest{
-		Providers: []ProviderSyncEntry{{Name: "noop", BaseURL: "https://noop.example.com"}},
-		Keys:      []ProviderKeySyncEntry{{Provider: "noop", APIKey: "sk-noop-live"}},
-	}); err != nil {
-		t.Fatalf("seed sync: %v", err)
-	}
 	id := readKeyRow(t, store, "sk-noop-live").ID
 	if _, err := store.DB().ExecContext(ctx, "UPDATE api_keys SET updated_at = 1000 WHERE id = ?", id); err != nil {
 		t.Fatalf("pin updated_at: %v", err)
@@ -1222,5 +1130,36 @@ func TestPatchProviderKeyRecord_NoOpPatchLeavesChangeSignalsAlone(t *testing.T) 
 	}
 	if row := readKeyRow(t, store, "sk-noop-live"); row.Status != "deactivated" || row.UpdatedAt <= 1000 {
 		t.Errorf("row = %q/updated_at:%d, want the transition applied and signalled", row.Status, row.UpdatedAt)
+	}
+}
+
+// Every entry point refuses a store that was never given a database handle
+// instead of panicking on a nil one.
+func TestProviderRecords_RequiresInitializedStore(t *testing.T) {
+	ctx := context.Background()
+	status := "active"
+	patch := ProviderKeyPatch{Status: &status}
+	batch := []ProviderKeySyncEntry{{APIKey: "sk-x"}}
+
+	var nilStore *Store
+	if _, err := nilStore.CreateProviderRecord(ctx, ProviderUpdate{}); err == nil {
+		t.Error("nil store created a provider")
+	}
+	if _, err := nilStore.UpsertProviderKeyRecords(ctx, 1, batch, false); err == nil {
+		t.Error("nil store upserted a key batch")
+	}
+	if _, err := nilStore.PatchProviderKeyRecord(ctx, 1, patch); err == nil {
+		t.Error("nil store patched a key")
+	}
+
+	empty := &Store{}
+	if _, err := empty.CreateProviderRecord(ctx, ProviderUpdate{}); err == nil {
+		t.Error("store without a db handle created a provider")
+	}
+	if _, err := empty.UpsertProviderKeyRecords(ctx, 1, batch, false); err == nil {
+		t.Error("store without a db handle upserted a key batch")
+	}
+	if _, err := empty.PatchProviderKeyRecord(ctx, 1, patch); err == nil {
+		t.Error("store without a db handle patched a key")
 	}
 }

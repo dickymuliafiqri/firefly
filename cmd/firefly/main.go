@@ -85,7 +85,6 @@ func run() error {
 		logLevel             = flag.String("log-level", "info", "log level: debug|info|warn|error")
 		graceSecs            = flag.Int("shutdown-grace-seconds", 30, "max seconds to drain in-flight requests on shutdown")
 		adminToken           = flag.String("admin-token", "", "bearer token guarding /debug/* endpoints (defaults to $FIREFLY_ADMIN_TOKEN; empty disables them)")
-		harvesterToken       = flag.String("harvester-token", "", "service token guarding POST /api/harvester/sync (defaults to $FIREFLY_HARVESTER_TOKEN; empty returns 503)")
 		dashboardPassword    = flag.String("dashboard-password", "", "master password for dashboard access (defaults to $INITIAL_PASSWORD, $FIREFLY_DASHBOARD_PASSWORD, or 12345678)")
 		healthInterval       = flag.Duration("health-check-interval", upstream.DefaultHealthCheckInterval, "interval between background upstream health checks (0 to disable)")
 		showVersion          = flag.Bool("version", false, "print version information and exit")
@@ -118,9 +117,6 @@ func run() error {
 	}
 	if *adminToken == "" {
 		*adminToken = os.Getenv("FIREFLY_ADMIN_TOKEN")
-	}
-	if *harvesterToken == "" {
-		*harvesterToken = os.Getenv("FIREFLY_HARVESTER_TOKEN")
 	}
 	if *tursoURL == "" {
 		*tursoURL = os.Getenv("TURSO_DATABASE_URL")
@@ -545,7 +541,6 @@ func run() error {
 		Registry:      reg,
 		ConfigDir:     *configDir,
 		AdminToken:    *adminToken,
-		ServiceToken:  *harvesterToken,
 		Auth:          authMgr,
 		TenantStore:   tenantStore,
 		Limiter:       limits.New(),

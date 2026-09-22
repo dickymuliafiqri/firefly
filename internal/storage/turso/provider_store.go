@@ -12,149 +12,6 @@ import (
 	"time"
 )
 
-// SyncProviderKeys applies a harvester snapshot to providers/api_keys in a
-// single transaction and reports what changed.
-//
-// Invariants enforced here:
-//   - api_keys.id is stable: an existing row matched by api_key is updated in
-//     place, never deleted and reinserted (credential refs are derived from it
-//     as "<upstream>-key-<id>").
-//   - Usage metering (total_requests, last_used_at) is never written, and
-//     updated_at advances only for rows that actually changed — the syncer
-//     treats MAX(updated_at) as a structural-change signal.
-//   - Moving an existing secret to another provider is refused (ErrKeyProviderMismatch)
-//     instead of applied, because UNIQUE(api_key) is global.
-//   - catalog_revisions is bumped inside the same transaction, so the reload is
-//     deterministic and does not depend on the MAX(updated_at) heuristic, which
-//     cannot observe second-scale legacy rows.
-//   - account_metadata is written verbatim into the vault column and never read
-//     back into a response.
-func (s *Store) SyncProviderKeys(ctx context.Context, req ProviderSyncRequest) (ProviderSyncResult, error) {
-	res := ProviderSyncResult{KeyIDs: map[string][]int64{}}
-	if err := s.ensureReady(); err != nil {
-		return res, err
-	}
-
-	// Validate the complete batch before opening a transaction: one malformed
-	// entry must reject the whole payload rather than apply the rest of it.
-	for i, entry := range req.Providers {
-		if err := validateProviderShape(i, entry); err != nil {
-			return res, fmt.Errorf("%w: %w", ErrInvalidSyncPayload, err)
-		}
-	}
-	for i, key := range req.Keys {
-		if err := validateKeyShape(i, key); err != nil {
-			return res, fmt.Errorf("%w: %w", ErrInvalidSyncPayload, err)
-		}
-	}
-
-	s.lock()
-	defer s.unlock()
-
-	tx, err := s.beginTx(ctx)
-	if err != nil {
-		return res, fmt.Errorf("begin provider sync: %w", err)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-
-	now := time.Now().UnixMilli()
-	// Providers referenced by the request, in payload order, resolved lazily so a
-	// key batch may target a provider created by an earlier batch.
-	var touched []string
-	providerIDs := map[string]int64{}
-
-	for _, entry := range req.Providers {
-		id, err := s.upsertProviderTx(ctx, tx, entry, now)
-		if err != nil {
-			return res, err
-		}
-		if _, seen := providerIDs[entry.Name]; !seen {
-			touched = append(touched, entry.Name)
-		}
-		providerIDs[entry.Name] = id
-	}
-
-	for _, key := range req.Keys {
-		// resolveProviderTx seeds the cache, so decide "first sighting" before it runs.
-		_, known := providerIDs[key.Provider]
-		providerID, err := s.resolveProviderTx(ctx, tx, key.Provider, providerIDs)
-		if err != nil {
-			return res, err
-		}
-		if !known {
-			touched = append(touched, key.Provider)
-		}
-		outcome, err := s.upsertKeyTx(ctx, tx, key, providerID, now, false)
-		if err != nil {
-			return res, err
-		}
-		switch outcome {
-		case keyUpsertCreated:
-			res.Created++
-		case keyUpsertUpdated:
-			res.Updated++
-		case keyUpsertUnchanged:
-			res.Unchanged++
-		}
-	}
-
-	deactivated := map[int64]bool{}
-	for _, id := range req.DeactivateKeys {
-		if id <= 0 || deactivated[id] {
-			continue
-		}
-		deactivated[id] = true
-
-		r, err := tx.ExecContext(ctx, `
-			UPDATE api_keys
-			SET is_active = 0, status = 'deactivated', updated_at = ?
-			WHERE id = ? AND is_active = 1
-		`, now, id)
-		if err != nil {
-			return res, fmt.Errorf("deactivate key %d: %w", id, err)
-		}
-		if n, err := r.RowsAffected(); err == nil {
-			res.Deactivated += int(n)
-		}
-		// Mirror the deactivation onto credentials bound to this key, exactly as
-		// the error-policy path does, so a deactivated key cannot keep serving.
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE upstream_credentials
-			SET is_active = 0, status = 'deactivated', updated_at = ?
-			WHERE api_key_id = ?
-		`, now, id); err != nil {
-			return res, fmt.Errorf("deactivate credentials bound to key %d: %w", id, err)
-		}
-	}
-
-	for _, name := range touched {
-		ids, err := activeKeyIDsTx(ctx, tx, providerIDs[name], now)
-		if err != nil {
-			return res, err
-		}
-		res.KeyIDs[name] = ids
-	}
-
-	revision, err := bumpCatalogRevisionTx(ctx, tx)
-	if err != nil {
-		return res, err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return res, fmt.Errorf("commit provider sync: %w", err)
-	}
-	committed = true
-	res.Revision = revision
-
-	res.Pushed = s.pushAfterWrite(ctx, "provider sync")
-	return res, nil
-}
-
 // errStoreNotInitialized is returned by store methods invoked without a database
 // handle (nil Store, or a Store built before the client connected).
 var errStoreNotInitialized = errors.New("turso store is not initialized")
@@ -181,75 +38,6 @@ func (s *Store) pushAfterWrite(ctx context.Context, op string) bool {
 		return false
 	}
 	return true
-}
-
-// upsertProviderTx creates or updates one provider by name. Only differing rows
-// are written, so replaying a snapshot does not churn updated_at.
-func (s *Store) upsertProviderTx(ctx context.Context, tx *sql.Tx, entry ProviderSyncEntry, now int64) (int64, error) {
-	active := true
-	if entry.IsActive != nil {
-		active = *entry.IsActive
-	}
-	activeInt := 0
-	if active {
-		activeInt = 1
-	}
-
-	var (
-		id          int64
-		baseURL     string
-		description sql.NullString
-		isActive    int
-	)
-	err := tx.QueryRowContext(ctx,
-		"SELECT id, base_url, description, is_active FROM providers WHERE name = ?", entry.Name).
-		Scan(&id, &baseURL, &description, &isActive)
-	if errors.Is(err, sql.ErrNoRows) {
-		res, insErr := tx.ExecContext(ctx, `
-			INSERT INTO providers (name, base_url, description, is_active, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?)
-		`, entry.Name, entry.BaseURL, nullableText(entry.Description), activeInt, now, now)
-		if insErr != nil {
-			return 0, fmt.Errorf("insert provider %q: %w", entry.Name, insErr)
-		}
-		newID, insErr := res.LastInsertId()
-		if insErr != nil {
-			return 0, fmt.Errorf("read provider %q id: %w", entry.Name, insErr)
-		}
-		return newID, nil
-	}
-	if err != nil {
-		return 0, fmt.Errorf("query provider %q: %w", entry.Name, err)
-	}
-
-	if baseURL != entry.BaseURL || description.String != entry.Description || isActive != activeInt {
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE providers
-			SET base_url = ?, description = ?, is_active = ?, updated_at = ?
-			WHERE id = ?
-		`, entry.BaseURL, nullableText(entry.Description), activeInt, now, id); err != nil {
-			return 0, fmt.Errorf("update provider %q: %w", entry.Name, err)
-		}
-	}
-	return id, nil
-}
-
-// resolveProviderTx resolves a provider name to its id, preferring one declared
-// in this request and falling back to the database.
-func (s *Store) resolveProviderTx(ctx context.Context, tx *sql.Tx, name string, cache map[string]int64) (int64, error) {
-	if id, ok := cache[name]; ok {
-		return id, nil
-	}
-	var id int64
-	err := tx.QueryRowContext(ctx, "SELECT id FROM providers WHERE name = ?", name).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, fmt.Errorf("%w: %q is neither declared in this batch nor present in the database", ErrProviderUnknown, name)
-	}
-	if err != nil {
-		return 0, fmt.Errorf("query provider %q: %w", name, err)
-	}
-	cache[name] = id
-	return id, nil
 }
 
 // keyUpsertOutcome classifies what one upsertKeyTx call did to the row.
@@ -485,7 +273,6 @@ const (
 	maxProviderNameLen = 64
 	maxProviderURLLen  = 255
 	maxProviderDescLen = 255
-	maxKeyStatusLen    = 20
 	// maxKeySecretLen bounds one credential. api_keys.api_key is unbounded TEXT and
 	// SQLite enforces nothing, so this is the writer's own bound: every stored
 	// secret is copied into a KeySlot on each catalog rebuild and then sent as a
@@ -502,28 +289,6 @@ const (
 	// time.Now().UnixMilli() silently drops that key from rotation forever.
 	minExpiryMillis = int64(100_000_000_000)
 )
-
-// validateStatusShape accepts any well-formed credential state. The set of
-// statuses is the writer's lifecycle vocabulary, so unknown values stay
-// pass-through (only 'active' routes; everything else is inert), while control
-// characters, padding and oversized values are refused: they produce states no
-// reader can render or match.
-func validateStatusShape(status string) error {
-	switch {
-	case status == "":
-		return nil
-	case len(status) > maxKeyStatusLen:
-		return fmt.Errorf("status exceeds %d characters", maxKeyStatusLen)
-	case strings.TrimSpace(status) != status:
-		return errors.New("status has leading or trailing whitespace")
-	}
-	for i := 0; i < len(status); i++ {
-		if status[i] < 0x20 || status[i] == 0x7f {
-			return errors.New("status contains control characters")
-		}
-	}
-	return nil
-}
 
 // validateKeySecret checks a credential the operator is writing. Unlike the
 // batch shape check it also rejects padding and control characters, because a
@@ -579,49 +344,6 @@ func expiryIntent(raw json.RawMessage) (*int64, bool, error) {
 		return nil, false, err
 	}
 	return &ts, false, nil
-}
-
-// validateProviderShape checks one batch entry against the columns it lands in.
-// Messages carry the array index instead of the value: a batch is credential
-// material and its contents never leave the process.
-func validateProviderShape(index int, entry ProviderSyncEntry) error {
-	if entry.Name == "" {
-		return fmt.Errorf("providers[%d] has an empty name", index)
-	}
-	switch {
-	case len(entry.Name) > maxProviderNameLen:
-		return fmt.Errorf("providers[%d] name exceeds %d characters", index, maxProviderNameLen)
-	case len(entry.BaseURL) > maxProviderURLLen:
-		return fmt.Errorf("providers[%d] base_url exceeds %d characters", index, maxProviderURLLen)
-	case len(entry.Description) > maxProviderDescLen:
-		return fmt.Errorf("providers[%d] description exceeds %d characters", index, maxProviderDescLen)
-	}
-	return nil
-}
-
-// validateKeyShape checks one batch credential against the columns it lands in.
-func validateKeyShape(index int, key ProviderKeySyncEntry) error {
-	if key.Provider == "" || key.APIKey == "" {
-		return fmt.Errorf("keys[%d] requires both provider and api_key", index)
-	}
-	// Only the width is refused here, not padding or control characters: rows
-	// harvested before these rules exist can legitimately hold a trailing newline,
-	// and rejecting one freezes the whole batch (up to 10 000 keys) over a value
-	// that already serves traffic. The operator surface, which writes one key at a
-	// time, checks the full shape in validateKeySecret.
-	if len(key.APIKey) > maxKeySecretLen {
-		return fmt.Errorf("keys[%d] api_key exceeds %d bytes", index, maxKeySecretLen)
-	}
-	if err := validateStatusShape(key.Status); err != nil {
-		return fmt.Errorf("keys[%d] %w", index, err)
-	}
-	if _, _, err := expiryIntent(key.ExpiresAt); err != nil {
-		return fmt.Errorf("keys[%d] %w", index, err)
-	}
-	if len(key.AccountMetadata) > MaxKeyMetadataBytes {
-		return fmt.Errorf("keys[%d] account_metadata exceeds %d bytes", index, MaxKeyMetadataBytes)
-	}
-	return nil
 }
 
 // -----------------------------------------------------------------------------
@@ -1144,9 +866,10 @@ func (s *Store) ListProviderKeyRecords(ctx context.Context, providerID int64) ([
 // unless reassign is set — the operator-only correction path O2b reserves —
 // in which case it moves here and the old provider's bound credential rows are
 // dropped so it cannot keep serving on both pools. The whole batch is one
-// transaction: a rejected entry rolls the batch back.
-func (s *Store) UpsertProviderKeyRecords(ctx context.Context, providerID int64, entries []ProviderKeySyncEntry, reassign bool) (ProviderKeyUpsertResult, error) {
-	res := ProviderKeyUpsertResult{KeyIDs: []int64{}}
+// transaction, and a failed batch reports nothing: every count and id describes
+// rows that are actually committed.
+func (s *Store) UpsertProviderKeyRecords(ctx context.Context, providerID int64, entries []ProviderKeySyncEntry, reassign bool) (res ProviderKeyUpsertResult, err error) {
+	res = ProviderKeyUpsertResult{KeyIDs: []int64{}}
 	if err := s.ensureReady(); err != nil {
 		return res, err
 	}
@@ -1157,9 +880,9 @@ func (s *Store) UpsertProviderKeyRecords(ctx context.Context, providerID int64, 
 		return res, fmt.Errorf("%w: at least one key is required", ErrInvalidPayload)
 	}
 
-	// The operator surface issues lifecycle commands, so unlike the harvester
-	// snapshot it accepts only the states Firefly's own writers produce. Whole
-	// batch is refused before anything is written.
+	// The operator surface issues lifecycle commands, so it accepts only the
+	// states Firefly's own writers produce; the whole batch is refused before
+	// anything is written.
 	for i, entry := range entries {
 		if entry.APIKey == "" {
 			return res, fmt.Errorf("%w: keys[%d] requires api_key", ErrInvalidPayload, i)
@@ -1189,9 +912,13 @@ func (s *Store) UpsertProviderKeyRecords(ctx context.Context, providerID int64, 
 		return res, fmt.Errorf("begin key upsert: %w", err)
 	}
 	committed := false
+	// A batch that fails after its first write is rolled back whole, so the counts
+	// and ids it gathered on the way are dropped with it: reporting them would
+	// describe rows that no longer exist.
 	defer func() {
 		if !committed {
 			_ = tx.Rollback()
+			res = ProviderKeyUpsertResult{KeyIDs: []int64{}}
 		}
 	}()
 
