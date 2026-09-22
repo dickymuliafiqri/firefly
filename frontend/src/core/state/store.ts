@@ -128,9 +128,12 @@ export function buildSettingsPayload(overrides: SettingsPayloadOverrides = {}): 
 
 export const useActiveToolId = () => useAppStore((state) => state.activeToolId);
 export const useSetActiveToolId = () => useAppStore((state) => state.setActiveToolId);
+export const useTelemetryCollapsed = () => useAppStore((state) => state.telemetryCollapsed);
+export const useToggleTelemetry = () => useAppStore((state) => state.toggleTelemetry);
 
 const TOOLS_ACTIONS = {
   setActiveToolId: (...args: Parameters<AppStore['setActiveToolId']>) => useAppStore.getState().setActiveToolId(...args),
+  toggleTelemetry: () => useAppStore.getState().toggleTelemetry(),
 };
 
 export const useToolsActions = () => TOOLS_ACTIONS;
