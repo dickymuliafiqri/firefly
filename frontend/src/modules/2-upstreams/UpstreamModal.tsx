@@ -102,7 +102,7 @@ export interface ModelBatchItemResult {
   keyRef?: string;
 }
 
-type TabType = 'general' | 'keys' | 'models' | 'load_balancing' | 'network';
+type TabType = 'general' | 'keys' | 'models' | 'load_balancing' | 'error_policy' | 'network';
 
 function parseDraftNumber(value: string): number | null {
   if (value.trim() === '') return null;
@@ -2187,7 +2187,7 @@ export const UpstreamModal = React.memo(function UpstreamModal({
             type="button"
             onClick={() => setActiveTab('general')}
             className={cn(
-              'px-3 py-1.5 rounded-lg text-xs font-mono transition-colors cursor-pointer',
+              'px-3 py-1.5 rounded-lg text-xs font-mono transition-colors shrink-0 whitespace-nowrap cursor-pointer',
               activeTab === 'general'
                 ? 'bg-white/[0.08] text-white border border-white/[0.1]'
                 : 'text-neutral-400 hover:text-white hover:bg-white/[0.02]'
@@ -2200,7 +2200,7 @@ export const UpstreamModal = React.memo(function UpstreamModal({
             type="button"
             onClick={() => setActiveTab('keys')}
             className={cn(
-              'px-3 py-1.5 rounded-lg text-xs font-mono transition-colors flex items-center gap-1.5 cursor-pointer',
+              'px-3 py-1.5 rounded-lg text-xs font-mono transition-colors shrink-0 whitespace-nowrap flex items-center gap-1.5 cursor-pointer',
               activeTab === 'keys'
                 ? 'bg-white/[0.08] text-white border border-white/[0.1]'
                 : 'text-neutral-400 hover:text-white hover:bg-white/[0.02]'
@@ -2216,7 +2216,7 @@ export const UpstreamModal = React.memo(function UpstreamModal({
             type="button"
             onClick={() => setActiveTab('models')}
             className={cn(
-              'px-3 py-1.5 rounded-lg text-xs font-mono transition-colors flex items-center gap-1.5 cursor-pointer',
+              'px-3 py-1.5 rounded-lg text-xs font-mono transition-colors shrink-0 whitespace-nowrap flex items-center gap-1.5 cursor-pointer',
               activeTab === 'models'
                 ? 'bg-white/[0.08] text-white border border-white/[0.1]'
                 : 'text-neutral-400 hover:text-white hover:bg-white/[0.02]'
@@ -2234,7 +2234,7 @@ export const UpstreamModal = React.memo(function UpstreamModal({
             type="button"
             onClick={() => setActiveTab('load_balancing')}
             className={cn(
-              'px-3 py-1.5 rounded-lg text-xs font-mono transition-colors cursor-pointer',
+              'px-3 py-1.5 rounded-lg text-xs font-mono transition-colors shrink-0 whitespace-nowrap cursor-pointer',
               activeTab === 'load_balancing'
                 ? 'bg-white/[0.08] text-white border border-white/[0.1]'
                 : 'text-neutral-400 hover:text-white hover:bg-white/[0.02]'
@@ -2245,9 +2245,31 @@ export const UpstreamModal = React.memo(function UpstreamModal({
 
           <button
             type="button"
+            onClick={() => setActiveTab('error_policy')}
+            className={cn(
+              'px-3 py-1.5 rounded-lg text-xs font-mono transition-colors shrink-0 whitespace-nowrap flex items-center gap-1.5 cursor-pointer',
+              activeTab === 'error_policy'
+                ? 'bg-white/[0.08] text-white border border-white/[0.1]'
+                : 'text-neutral-400 hover:text-white hover:bg-white/[0.02]'
+            )}
+          >
+            <span>Key Error Policy</span>
+            {parseDraftNumber(keyErrorThreshold) ? (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                Active
+              </span>
+            ) : (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/[0.04] text-neutral-500 border border-white/[0.06]">
+                Disabled
+              </span>
+            )}
+          </button>
+
+          <button
+            type="button"
             onClick={() => setActiveTab('network')}
             className={cn(
-              'px-3 py-1.5 rounded-lg text-xs font-mono transition-colors cursor-pointer',
+              'px-3 py-1.5 rounded-lg text-xs font-mono transition-colors shrink-0 whitespace-nowrap cursor-pointer',
               activeTab === 'network'
                 ? 'bg-white/[0.08] text-white border border-white/[0.1]'
                 : 'text-neutral-400 hover:text-white hover:bg-white/[0.02]'
@@ -3498,8 +3520,36 @@ export const UpstreamModal = React.memo(function UpstreamModal({
                 </div>
               ) : null}
 
-              {/* 4. Key Error Resilience Policy */}
-              <div className="space-y-3 pt-4 border-t border-white/[0.06]">
+              {/* 4. 2-Layer Resilience Architecture */}
+              <div className="p-3.5 rounded-lg border border-white/[0.06] bg-white/[0.015] text-xs font-mono space-y-2 pt-4 border-t border-white/[0.06]">
+                <div className="text-neutral-300 font-medium text-[11px] tracking-tight">
+                  2-Layer Resilience & Fault Isolation Architecture
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[10px] text-neutral-400 leading-relaxed">
+                  <div className="p-2.5 rounded bg-white/[0.01] border border-white/[0.03] space-y-1">
+                    <div className="text-neutral-200 font-medium">Layer 1: KeyRing Fault Handling (429 / 401)</div>
+                    <p className="text-neutral-500">
+                      HTTP 429 parses <code className="text-neutral-300">Retry-After</code> dynamically and sets temporary cooldown on the key, immediately failing over to the next healthy key. HTTP 401 revokes the credential until reload.
+                    </p>
+                  </div>
+                  <div className="p-2.5 rounded bg-white/[0.01] border border-white/[0.03] space-y-1">
+                    <div className="text-neutral-200 font-medium">Layer 2: Host Circuit Breaker (5xx / Net)</div>
+                    <p className="text-neutral-500">
+                      Protects against upstream outages. 5 consecutive host network/5xx failures trip the breaker to OPEN. Client 4xx or Key 429 quota exhaustion never count as host failures.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {/* ============================================================== */}
+          {/* TAB 5: KEY ERROR RESILIENCE POLICY */}
+          {/* ============================================================== */}
+          {activeTab === 'error_policy' ? (
+            <div className="space-y-4">
+              {/* Consecutive Key Error Resilience Policy */}
+              <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <div>
                     <h4 className="text-white font-medium text-xs tracking-tight flex items-center gap-2">
@@ -3600,32 +3650,11 @@ export const UpstreamModal = React.memo(function UpstreamModal({
                   </div>
                 )}
               </div>
-
-              {/* 5. 2-Layer Resilience Architecture */}
-              <div className="p-3.5 rounded-lg border border-white/[0.06] bg-white/[0.015] text-xs font-mono space-y-2 pt-4 border-t border-white/[0.06]">
-                <div className="text-neutral-300 font-medium text-[11px] tracking-tight">
-                  2-Layer Resilience & Fault Isolation Architecture
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[10px] text-neutral-400 leading-relaxed">
-                  <div className="p-2.5 rounded bg-white/[0.01] border border-white/[0.03] space-y-1">
-                    <div className="text-neutral-200 font-medium">Layer 1: KeyRing Fault Handling (429 / 401)</div>
-                    <p className="text-neutral-500">
-                      HTTP 429 parses <code className="text-neutral-300">Retry-After</code> dynamically and sets temporary cooldown on the key, immediately failing over to the next healthy key. HTTP 401 revokes the credential until reload.
-                    </p>
-                  </div>
-                  <div className="p-2.5 rounded bg-white/[0.01] border border-white/[0.03] space-y-1">
-                    <div className="text-neutral-200 font-medium">Layer 2: Host Circuit Breaker (5xx / Net)</div>
-                    <p className="text-neutral-500">
-                      Protects against upstream outages. 5 consecutive host network/5xx failures trip the breaker to OPEN. Client 4xx or Key 429 quota exhaustion never count as host failures.
-                    </p>
-                  </div>
-                </div>
-              </div>
             </div>
           ) : null}
 
           {/* ============================================================== */}
-          {/* TAB 5: ADVANCED NETWORK & TIMEOUTS */}
+          {/* TAB 6: ADVANCED NETWORK & TIMEOUTS */}
           {/* ============================================================== */}
           {activeTab === 'network' ? (
             <div className="space-y-4">
