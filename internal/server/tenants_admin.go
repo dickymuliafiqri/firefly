@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 
 	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
 	"github.com/dickymuliafiqri/firefly/internal/config"
@@ -548,23 +547,19 @@ func (deps RouterDeps) persistSettings(ctx context.Context, settings config.Sett
 		tenIndent, _ := json.MarshalIndent(tenFile, "", "  ")
 		combIndent, _ := json.MarshalIndent(combFile, "", "  ")
 
-		if err := os.WriteFile(filepath.Join(deps.ConfigDir, config.FileNameUpstreams), upIndent, 0o644); err != nil {
-			return 0, nil, fmt.Errorf("write upstreams config: %w", err)
-		}
-		if err := os.WriteFile(filepath.Join(deps.ConfigDir, config.FileNameModels), modIndent, 0o644); err != nil {
-			return 0, nil, fmt.Errorf("write models config: %w", err)
-		}
-		if err := os.WriteFile(filepath.Join(deps.ConfigDir, config.FileNameTenants), tenIndent, 0o644); err != nil {
-			return 0, nil, fmt.Errorf("write tenants config: %w", err)
-		}
-		if err := os.WriteFile(filepath.Join(deps.ConfigDir, config.FileNameCombos), combIndent, 0o644); err != nil {
-			return 0, nil, fmt.Errorf("write combos config: %w", err)
-		}
+		var tsIndent []byte
 		if settings.TokenSaver != nil {
-			tsIndent, _ := json.MarshalIndent(settings.TokenSaver, "", "  ")
-			if err := os.WriteFile(filepath.Join(deps.ConfigDir, config.FileNameTokenSaver), tsIndent, 0o644); err != nil {
-				return 0, nil, fmt.Errorf("write tokensaver config: %w", err)
-			}
+			tsIndent, _ = json.MarshalIndent(settings.TokenSaver, "", "  ")
+		}
+
+		if err := writeCatalogFiles(deps.ConfigDir, catalogFileSet{
+			upstreams:  upIndent,
+			models:     modIndent,
+			tenants:    tenIndent,
+			combos:     combIndent,
+			tokenSaver: tsIndent,
+		}); err != nil {
+			return 0, nil, err
 		}
 	}
 

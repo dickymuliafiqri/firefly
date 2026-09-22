@@ -47,9 +47,9 @@ func NewClient(ctx context.Context, cfg Config) (*Client, error) {
 	}
 
 	// Ensure parent directory for the local database exists
-	dir := filepath.Dir(cfg.LocalPath)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("create local db directory %q: %w", dir, err)
+	dir, err := ensureLocalDir(cfg.LocalPath, logger)
+	if err != nil {
+		return nil, err
 	}
 
 	// The tursogo loader extracts a native shared library at runtime. By default it
@@ -92,6 +92,13 @@ func NewClient(ctx context.Context, cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("connect to local replica db: %w", err)
 	}
 
+	// libSQL decides the mode of the replica file (and of the -wal/-shm siblings
+	// it creates later) from the process umask, so the file is restricted here
+	// too: the replica mirrors raw upstream credentials.
+	if err := os.Chmod(cfg.LocalPath, 0o600); err != nil {
+		logger.Warn("could not restrict local db file permissions", "path", cfg.LocalPath, "err", err)
+	}
+
 	// Single connection ensures committed and rolled-back transactions share a pager
 	// without multi-connection lock contention on the local SQLite replica.
 	db.SetMaxOpenConns(1)
@@ -120,6 +127,21 @@ func NewClient(ctx context.Context, cfg Config) (*Client, error) {
 	}
 
 	return client, nil
+}
+
+// ensureLocalDir creates the parent directory of localPath owner-only and
+// tightens a pre-existing one (earlier releases created it at 0755). The replica
+// mirrors raw upstream credentials and libSQL controls the mode of the database
+// file itself, so the directory is the layer Firefly can guarantee.
+func ensureLocalDir(localPath string, logger *slog.Logger) (string, error) {
+	dir := filepath.Dir(localPath)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("create local db directory %q: %w", dir, err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil && logger != nil {
+		logger.Warn("could not restrict local db directory permissions", "dir", dir, "err", err)
+	}
+	return dir, nil
 }
 
 // DB returns the underlying standard sql.DB handle.

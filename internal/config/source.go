@@ -96,6 +96,8 @@ func FileSetFromMap(m map[string][]byte) FileSet {
 // EnsureConfigFiles ensures that the configuration directory and the JSON
 // configuration files exist. If any file does not exist, an empty initial JSON
 // template is created so that the directory is immediately valid and observable.
+// Credential-bearing files (upstreams.json, tenants.json) are written owner-only
+// and existing ones are tightened to that mode.
 func EnsureConfigFiles(dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
@@ -104,20 +106,28 @@ func EnsureConfigFiles(dir string) error {
 	defaults := []struct {
 		name    string
 		content []byte
+		perm    os.FileMode
 	}{
-		{FileNameUpstreams, []byte("{\n  \"upstreams\": []\n}\n")},
-		{FileNameModels, []byte("{\n  \"models\": []\n}\n")},
-		{FileNameTenants, []byte("{\n  \"tenants\": []\n}\n")},
-		{FileNameCombos, []byte("{\n  \"combos\": []\n}\n")},
-		{FileNameTLS, []byte("{\n  \"enabled\": false\n}\n")},
-		{FileNameTokenSaver, []byte("{\n  \"enabled\": false,\n  \"compress_tool_output\": true,\n  \"terse_output\": false,\n  \"minimal_code\": false,\n  \"compress_context\": false,\n  \"max_tool_output_chars\": 12000,\n  \"context_threshold\": 32000\n}\n")},
+		{FileNameUpstreams, []byte("{\n  \"upstreams\": []\n}\n"), SecretFileMode},
+		{FileNameModels, []byte("{\n  \"models\": []\n}\n"), 0o644},
+		{FileNameTenants, []byte("{\n  \"tenants\": []\n}\n"), SecretFileMode},
+		{FileNameCombos, []byte("{\n  \"combos\": []\n}\n"), 0o644},
+		{FileNameTLS, []byte("{\n  \"enabled\": false\n}\n"), 0o644},
+		{FileNameTokenSaver, []byte("{\n  \"enabled\": false,\n  \"compress_tool_output\": true,\n  \"terse_output\": false,\n  \"minimal_code\": false,\n  \"compress_context\": false,\n  \"max_tool_output_chars\": 12000,\n  \"context_threshold\": 32000\n}\n"), 0o644},
 	}
 
 	for _, d := range defaults {
 		path := filepath.Join(dir, d.name)
 		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-			if err := os.WriteFile(path, d.content, 0o644); err != nil {
+			if err := os.WriteFile(path, d.content, d.perm); err != nil {
 				return fmt.Errorf("create default %s: %w", d.name, err)
+			}
+			continue
+		}
+		if d.perm == SecretFileMode {
+			// Tighten credential files created by older releases at the default umask.
+			if err := tightenSecretFile(path); err != nil {
+				return err
 			}
 		}
 	}

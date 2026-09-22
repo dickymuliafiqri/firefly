@@ -12,12 +12,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dickymuliafiqri/firefly/internal/security/auth"
+	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
 	"github.com/dickymuliafiqri/firefly/internal/config"
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/limits"
-	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
+	"github.com/dickymuliafiqri/firefly/internal/security/auth"
 )
 
 func TestSettingsCORS(t *testing.T) {
@@ -147,6 +147,18 @@ func TestSettingsGetAndPost(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(tmpDir, config.FileNameTenants)); err != nil {
 		t.Errorf("tenants.json was not written: %v", err)
+	}
+
+	// Credential-bearing files must be owner-only: upstreams.json holds raw
+	// provider keys and tenants.json holds tenant gateway keys.
+	for _, name := range []string{config.FileNameUpstreams, config.FileNameTenants} {
+		info, err := os.Stat(filepath.Join(tmpDir, name))
+		if err != nil {
+			t.Fatalf("stat %s: %v", name, err)
+		}
+		if got := info.Mode().Perm(); got != config.SecretFileMode {
+			t.Errorf("%s mode = %o, want %o", name, got, config.SecretFileMode)
+		}
 	}
 
 	// 3. GET /api/settings should return settings with masked secrets
@@ -332,7 +344,7 @@ func TestTursoProvidersConfiguredFlow(t *testing.T) {
 		t.Fatalf("GET /api/turso/providers status = %d, want 200", w.Code)
 	}
 	var resp struct {
-		Configured bool `json:"configured"`
+		Configured bool  `json:"configured"`
 		Providers  []any `json:"providers"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
@@ -366,7 +378,7 @@ func TestTursoProvidersConfiguredFlow(t *testing.T) {
 		t.Fatalf("GET /api/turso/providers status = %d, want 200", w2.Code)
 	}
 	var resp2 struct {
-		Configured bool `json:"configured"`
+		Configured bool  `json:"configured"`
 		Providers  []any `json:"providers"`
 	}
 	if err := json.NewDecoder(w2.Body).Decode(&resp2); err != nil {
@@ -621,6 +633,18 @@ func TestSettingsTenantAPIKeyPlaintext(t *testing.T) {
 	if tSnap.APIKey != rawKey {
 		t.Fatalf("expected tenant.APIKey %q, got %q", rawKey, tSnap.APIKey)
 	}
+
+	// The files were seeded world-readable (0644) above; the save must tighten
+	// them, since os.WriteFile alone leaves an existing file's mode untouched.
+	for _, name := range []string{"upstreams.json", "tenants.json"} {
+		info, err := os.Stat(filepath.Join(tmpDir, name))
+		if err != nil {
+			t.Fatalf("stat %s: %v", name, err)
+		}
+		if got := info.Mode().Perm(); got != config.SecretFileMode {
+			t.Errorf("%s mode after save = %o, want %o", name, got, config.SecretFileMode)
+		}
+	}
 }
 
 // TestRestoreMaskedSecretsDropsUnresolvablePoolEntries covers the second half of
@@ -767,7 +791,3 @@ func TestRestoreMaskedSecretsDropsUnresolvablePoolEntries(t *testing.T) {
 		}
 	})
 }
-
-
-
-

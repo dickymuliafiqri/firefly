@@ -142,10 +142,10 @@ func TestTenantsAdmin_CRUDRoundTrip(t *testing.T) {
 
 	// Create: key material is generated when omitted.
 	createBody := map[string]any{
-		"name":          "acme",
-		"max_tokens":    1000,
+		"name":           "acme",
+		"max_tokens":     1000,
 		"allowed_models": []string{"*"},
-		"metadata":      map[string]string{"plan": "pro"},
+		"metadata":       map[string]string{"plan": "pro"},
 	}
 	w := doTenantsRequest(t, s, http.MethodPost, "/api/tenants", createBody)
 	if w.Code != http.StatusCreated {
@@ -187,6 +187,15 @@ func TestTenantsAdmin_CRUDRoundTrip(t *testing.T) {
 	}
 	if !strings.Contains(string(disk), `"acme"`) {
 		t.Errorf("tenants.json does not contain the created tenant: %s", disk)
+	}
+	// The tenant CRUD save path is a second catalog writer: tenants.json holds raw
+	// gateway keys, so it must land owner-only.
+	diskInfo, err := os.Stat(tmpDir + "/" + config.FileNameTenants)
+	if err != nil {
+		t.Fatalf("stat tenants.json: %v", err)
+	}
+	if got := diskInfo.Mode().Perm(); got != config.SecretFileMode {
+		t.Errorf("tenants.json mode = %o, want %o", got, config.SecretFileMode)
 	}
 
 	// List contains exactly the new tenant.
@@ -291,7 +300,7 @@ func TestTenantsAdmin_ValidationAndConflict(t *testing.T) {
 
 	// Unknown allowed model → 400 from catalog validation.
 	w = doTenantsRequest(t, s, http.MethodPost, "/api/tenants", map[string]any{
-		"name":          "bogus",
+		"name":           "bogus",
 		"allowed_models": []string{"no-such-model"},
 	})
 	if w.Code != http.StatusBadRequest {
