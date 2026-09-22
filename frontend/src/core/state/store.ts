@@ -5,8 +5,9 @@ import { createTelemetrySlice, type TelemetrySlice } from './telemetrySlice';
 import { createUISlice, type UISlice } from './uiSlice';
 import { createToolsSlice, type ToolsSlice } from './toolsSlice';
 import { createPlaygroundSlice, type PlaygroundSlice } from './playgroundSlice';
+import { createBenchmarkSlice, type BenchmarkSlice } from './benchmarkSlice';
 
-export type AppStore = SettingsSlice & TelemetrySlice & UISlice & ToolsSlice & PlaygroundSlice;
+export type AppStore = SettingsSlice & TelemetrySlice & UISlice & ToolsSlice & BenchmarkSlice & PlaygroundSlice;
 
 /**
  * Root Zustand Store combining Settings, Telemetry, UI, and Playground slices.
@@ -18,6 +19,7 @@ export const useAppStore = create<AppStore>()((...a) => ({
   ...createTelemetrySlice(...a),
   ...createUISlice(...a),
   ...createToolsSlice(...a),
+  ...createBenchmarkSlice(...a),
   ...createPlaygroundSlice(...a),
 }));
 
@@ -137,6 +139,31 @@ const TOOLS_ACTIONS = {
 };
 
 export const useToolsActions = () => TOOLS_ACTIONS;
+
+// ================= BENCHMARK SELECTOR HOOKS =================
+
+export const useBenchmarkModel = () => useAppStore((state) => state.benchmarkModel);
+export const useBenchmarkPrompt = () => useAppStore((state) => state.benchmarkPrompt);
+export const useBenchmarkRequests = () => useAppStore((state) => state.benchmarkRequests);
+export const useBenchmarkConcurrency = () => useAppStore((state) => state.benchmarkConcurrency);
+export const useBenchmarkStatus = () => useAppStore((state) => state.benchmarkStatus);
+export const useBenchmarkTotal = () => useAppStore((state) => state.benchmarkTotal);
+export const useBenchmarkCompleted = () => useAppStore((state) => state.benchmarkCompleted);
+export const useBenchmarkResults = () => useAppStore((state) => state.benchmarkResults);
+export const useBenchmarkWallClockMs = () => useAppStore((state) => state.benchmarkWallClockMs);
+
+const BENCHMARK_ACTIONS = {
+  setBenchmarkModel: (...args: Parameters<AppStore['setBenchmarkModel']>) => useAppStore.getState().setBenchmarkModel(...args),
+  setBenchmarkPrompt: (...args: Parameters<AppStore['setBenchmarkPrompt']>) => useAppStore.getState().setBenchmarkPrompt(...args),
+  setBenchmarkRequests: (...args: Parameters<AppStore['setBenchmarkRequests']>) => useAppStore.getState().setBenchmarkRequests(...args),
+  setBenchmarkConcurrency: (...args: Parameters<AppStore['setBenchmarkConcurrency']>) => useAppStore.getState().setBenchmarkConcurrency(...args),
+  startBenchmark: (...args: Parameters<AppStore['startBenchmark']>) => useAppStore.getState().startBenchmark(...args),
+  appendBenchmarkResult: (...args: Parameters<AppStore['appendBenchmarkResult']>) => useAppStore.getState().appendBenchmarkResult(...args),
+  finishBenchmark: (...args: Parameters<AppStore['finishBenchmark']>) => useAppStore.getState().finishBenchmark(...args),
+  resetBenchmark: () => useAppStore.getState().resetBenchmark(),
+};
+
+export const useBenchmarkActions = () => BENCHMARK_ACTIONS;
 
 // ================= PLAYGROUND SELECTOR HOOKS =================
 

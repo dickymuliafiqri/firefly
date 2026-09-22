@@ -1,10 +1,11 @@
 import React from 'react';
-import { MessageSquare } from 'lucide-react';
+import { Gauge, MessageSquare } from 'lucide-react';
 import type { FireflyModuleDefinition } from '../types';
 
 export type ToolDefinition = FireflyModuleDefinition;
 
 const ChatTool = React.lazy(() => import('./chat/ChatTool'));
+const BenchmarkTool = React.lazy(() => import('./benchmark/BenchmarkTool'));
 
 /**
  * Pluggable registry for the tools inside the Tools module, mirroring the shape of
@@ -19,6 +20,14 @@ export const TOOL_REGISTRY = {
     icon: MessageSquare,
     component: ChatTool,
     preload: () => import('./chat/ChatTool'),
+  },
+  benchmark: {
+    title: 'Benchmark',
+    description: 'Run N concurrent requests and compare gateway latency',
+    order: 2,
+    icon: Gauge,
+    component: BenchmarkTool,
+    preload: () => import('./benchmark/BenchmarkTool'),
   },
 } satisfies Record<string, ToolDefinition>;
 
