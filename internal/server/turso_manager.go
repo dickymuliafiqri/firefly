@@ -25,6 +25,7 @@ type TursoManager struct {
 	client       *turso.Client
 	store        *turso.Store
 	reg          *registry.Registry
+	syncer       *turso.Syncer
 	syncerCancel context.CancelFunc
 }
 
@@ -76,6 +77,7 @@ func (m *TursoManager) startSyncerLocked(client *turso.Client, store *turso.Stor
 		m.syncerCancel()
 		m.syncerCancel = nil
 	}
+	m.syncer = nil
 	if client == nil || store == nil || m.reg == nil {
 		return
 	}
@@ -89,12 +91,34 @@ func (m *TursoManager) startSyncerLocked(client *turso.Client, store *turso.Stor
 	})
 	initialRev, _ := store.GetCatalogRevision(ctx)
 	syncer.SetInitialRevision(initialRev)
+	m.syncer = syncer
 
 	go func() {
 		if err := syncer.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			m.logger.Warn("turso background syncer encountered warning", "err", err)
 		}
 	}()
+}
+
+// TriggerSync runs one pull-and-reload cycle immediately instead of waiting for
+// the background syncer's next tick, so a harvester batch is visible to routing
+// before the HTTP response returns.
+//
+// It returns nil when no syncer is running (file-storage mode, or a store that
+// is not attached to a registry). That is not a failure: the caller's write has
+// already bumped the catalog revision, which the 15s tick observes. The manager
+// lock is held across the cycle so a concurrent Close/UpdateConfig cannot swap
+// the client out from under it; SyncOnce serializes overlapping cycles.
+func (m *TursoManager) TriggerSync(ctx context.Context) error {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.syncer == nil {
+		return nil
+	}
+	return m.syncer.SyncOnce(ctx)
 }
 
 // GetOrInitStore returns the currently active turso.Store, or attempts to initialize
@@ -181,6 +205,7 @@ func (m *TursoManager) UpdateConfig(ctx context.Context, cfg config.TursoDTO) (*
 			m.client = nil
 		}
 		m.store = nil
+		m.syncer = nil
 		return nil, nil
 	}
 
@@ -195,6 +220,7 @@ func (m *TursoManager) UpdateConfig(ctx context.Context, cfg config.TursoDTO) (*
 		_ = m.client.Close()
 		m.client = nil
 		m.store = nil
+		m.syncer = nil
 	}
 
 	client, err := turso.NewClient(ctx, turso.Config{
@@ -238,6 +264,7 @@ func (m *TursoManager) Close() error {
 		err := m.client.Close()
 		m.client = nil
 		m.store = nil
+		m.syncer = nil
 		return err
 	}
 	return nil

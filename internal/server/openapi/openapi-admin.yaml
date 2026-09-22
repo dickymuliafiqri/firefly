@@ -10,12 +10,21 @@ info:
     session token (obtained via `POST /api/auth/login`) or the configured
     admin bearer token, presented as `Authorization: Bearer <token>`.
 
-    This document covers tenant lifecycle management under `/api/tenants`.
-    Tenant mutations persist through the same validate-then-store pipeline as
-    the bulk settings endpoint (Turso when configured, otherwise the config
-    files) and hot-swap the routing snapshot, so changes take effect
-    immediately without a restart. The public `/v1/*` surface is documented
-    separately at `/api/openapi.yaml`.
+    This document covers tenant lifecycle management under `/api/tenants`
+    and provider/credential-pool administration under `/api/providers` and
+    `/api/keys`. Tenant mutations persist through the same validate-then-store
+    pipeline as the bulk settings endpoint (Turso when configured, otherwise
+    the config files) and hot-swap the routing snapshot, so changes take effect
+    immediately without a restart. Provider and key records live only in the
+    Turso database and are refused with 503 when no store is configured. The
+    public `/v1/*` surface is documented separately at `/api/openapi.yaml`.
+
+    Credential discipline: stored keys are never returned. Key reads carry a
+    masked `api_key_hint` only, and because that hint is the sole credential
+    shape this surface ever shows, a secret in mask shape is refused on writes
+    instead of being stored as a routable credential. `account_metadata` — the
+    vault holding private keys, mnemonics, and OAuth material — is accepted on
+    writes but never read back by any endpoint.
   contact:
     name: Firefly
     url: https://github.com/dickymuliafiqri/firefly
@@ -27,6 +36,13 @@ servers:
 tags:
   - name: Tenants
     description: Tenant catalog lifecycle (CRUD plus balance top-up).
+  - name: Providers
+    description: >
+      Provider records and their credential pools (CRUD, key batch upsert, and
+      per-key status control plus in-place secret rotation). Backed exclusively
+      by the Turso database: every handler fails closed with 503 when no store
+      is configured. Sensitive
+      fields are write-only or masked, never echoed.
 
 security:
   - AdminAuth: []
@@ -204,6 +220,318 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
+  /api/providers:
+    get:
+      tags: [Providers]
+      summary: List providers
+      description: >
+        Returns every provider record, active or inactive, ordered by name,
+        each with the count of keys currently routable through the same
+        predicate the data plane uses. Unlike the legacy
+        `GET /api/turso/providers`, a storage failure is surfaced as an error
+        instead of degrading to an empty list.
+      operationId: listProviders
+      responses:
+        "200":
+          description: The provider catalog.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    post:
+      tags: [Providers]
+      summary: Create provider
+      description: >
+        Inserts one provider. `name` and `base_url` are required, and the name
+        must be unique because it is the natural key the harvester syncs
+        against — a duplicate returns 409 rather than silently capturing the
+        existing pool. The catalog revision is bumped and an immediate reload
+        is attempted, so the record is visible to routing before the response
+        returns.
+      operationId: createProvider
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProviderCreate"
+      responses:
+        "201":
+          description: Provider created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderMutationResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/providers/{id}:
+    get:
+      tags: [Providers]
+      summary: Retrieve a provider
+      description: Returns one provider by numeric id, active or not.
+      operationId: getProvider
+      parameters:
+        - $ref: "#/components/parameters/ProviderID"
+      responses:
+        "200":
+          description: The provider.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    put:
+      tags: [Providers]
+      summary: Update provider
+      description: >
+        Partial update: `base_url`, `description`, and `is_active` are applied
+        when present, and an absent field keeps its stored value. The name is
+        not editable (providers are matched by name, so a rename would orphan
+        the credential pool); sending a different name is a 400. An empty body
+        is rejected as a client bug rather than treated as a no-op.
+      operationId: updateProvider
+      parameters:
+        - $ref: "#/components/parameters/ProviderID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProviderUpdate"
+      responses:
+        "200":
+          description: Provider updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderMutationResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    delete:
+      tags: [Providers]
+      summary: Delete provider
+      description: >
+        Hard-deletes the provider together with its keys and their bound
+        credentials (the operator-only right; the harvester can only upsert and
+        deactivate). Refused with 409 while any upstream still references the
+        provider, because the delete would silently detach that upstream's
+        credential pool — detach or delete the upstreams first.
+      operationId: deleteProvider
+      parameters:
+        - $ref: "#/components/parameters/ProviderID"
+      responses:
+        "200":
+          description: Provider and its keys deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderDeleteResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/providers/{id}/keys:
+    get:
+      tags: [Providers]
+      summary: List provider keys
+      description: >
+        Returns every key of one provider in any lifecycle state, each with a
+        masked `api_key_hint` instead of its secret. `account_metadata` is
+        never included.
+      operationId: listProviderKeys
+      parameters:
+        - $ref: "#/components/parameters/ProviderID"
+      responses:
+        "200":
+          description: The provider's keys.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderKeyListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    post:
+      tags: [Providers]
+      summary: Upsert provider keys
+      description: >
+        Applies a batch of credentials to one provider. Rows are matched by the
+        secret itself (`api_key` is globally unique) and keep their id, so
+        replaying a batch never duplicates or renumbers credentials. An omitted
+        `status` means `active`. `expires_at` carries three distinct intents: a
+        number replaces the stored expiry, an explicit `null` clears it, and an
+        omitted field keeps whatever is already stored, because a batch that
+        refreshes a row it did not create must not silently un-expire it. An
+        omitted `account_metadata` keeps the stored vault blob because it is
+        large write-only data clients may legitimately not resend. This endpoint
+        only ever returns masked hints, so a secret in mask shape is refused
+        with 400 rather than stored as a routable credential. A key already
+        owned by another provider is refused with 409
+        unless the body sets `reassign: true`, in which case it moves here and
+        the previous provider's bound credentials are dropped. The whole batch
+        is one transaction: a rejected entry changes nothing. Body limits match
+        the harvester sync endpoint.
+      operationId: upsertProviderKeys
+      parameters:
+        - $ref: "#/components/parameters/ProviderID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProviderKeyUpsertRequest"
+      responses:
+        "200":
+          description: Batch applied.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderKeyUpsertResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/keys/{id}:
+    patch:
+      tags: [Providers]
+      summary: Update key state or rotate its secret
+      description: >
+        Partial update of one key's `api_key`, `status`, `is_active`, and/or
+        `expires_at`. A status-only edit keeps `is_active` coherent with it,
+        because routing requires both to agree. `expires_at` is a Unix
+        millisecond timestamp, or `null` to clear the expiry. A key that is no
+        longer routable is mirrored onto the credentials bound to it so it stops
+        serving immediately. At least one field is required; an empty patch is a
+        400.
+
+        `api_key` rotates the credential in place: the row keeps its id, which
+        is what upstream credential refs are derived from, so rotation does not
+        renumber the pool or require a delete-and-reinsert. Every
+        `upstream_credentials` row bound to the key is rewritten with the new
+        secret in the same transaction, because the snapshot loader prefers that
+        copy over the joined key value and would otherwise keep serving the
+        retired credential. A secret another row already holds is refused with
+        409 — applying it would merge two providers' credentials into one row.
+        The response returns the masked hint of the new secret and never either
+        secret.
+      operationId: patchProviderKey
+      parameters:
+        - $ref: "#/components/parameters/KeyID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/KeyPatchRequest"
+      responses:
+        "200":
+          description: Key updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KeyPatchResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    delete:
+      tags: [Providers]
+      summary: Delete key
+      description: >
+        Hard-deletes one credential and every `upstream_credentials` row bound
+        to it, so its refs disappear from all upstreams. This is the
+        operator-only right: the harvester path can upsert and deactivate but
+        never delete.
+      operationId: deleteProviderKey
+      parameters:
+        - $ref: "#/components/parameters/KeyID"
+      responses:
+        "200":
+          description: Key deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KeyDeleteResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
 components:
   securitySchemes:
     AdminAuth:
@@ -222,6 +550,26 @@ components:
       schema:
         type: string
         examples: ["acme-corp"]
+    ProviderID:
+      name: id
+      in: path
+      required: true
+      description: Numeric provider id (`providers.id`).
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+        examples: [3]
+    KeyID:
+      name: id
+      in: path
+      required: true
+      description: Numeric credential id (`api_keys.id`). Stable across upserts.
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+        examples: [184]
 
   responses:
     Unauthorized:
@@ -243,13 +591,17 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
     NotFound:
-      description: No tenant with that name exists.
+      description: The requested tenant, provider, or key does not exist.
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
     Conflict:
-      description: A tenant with that name already exists.
+      description: >
+        The request conflicts with stored state: a duplicate tenant or provider
+        name, a provider still referenced by upstreams, or a credential already
+        owned by another row — submitted to a batch without `reassign: true`, or
+        to a rotation that cannot merge two keys into one secret.
       content:
         application/json:
           schema:
@@ -528,3 +880,334 @@ components:
         status:
           type: string
           enum: [active, suspended, exhausted, expired]
+
+    Provider:
+      type: object
+      description: A provider record as stored.
+      required: [id, name, base_url, is_active]
+      properties:
+        id:
+          type: integer
+          format: int64
+          examples: [3]
+        name:
+          type: string
+          description: >
+            Unique provider name; the natural key the harvester syncs against,
+            and therefore not editable.
+          examples: ["openai-pool"]
+        base_url:
+          type: string
+          description: Provider API origin, e.g. `https://api.openai.com`.
+        description:
+          type: string
+        is_active:
+          type: boolean
+          description: >
+            Operator switch. Inactive providers are still listed but excluded
+            from routing decisions.
+        active_keys:
+          type: integer
+          readOnly: true
+          description: >
+            Keys currently routable through this provider, counted with the
+            same predicate the data plane uses (active status, enabled, not
+            expired).
+        created_at:
+          type: integer
+          format: int64
+        updated_at:
+          type: integer
+          format: int64
+
+    ProviderCreate:
+      type: object
+      description: Payload for `POST /api/providers`.
+      required: [name, base_url]
+      properties:
+        name:
+          type: string
+          maxLength: 64
+        base_url:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+          maxLength: 255
+        is_active:
+          type: boolean
+          description: Defaults to `true`.
+
+    ProviderUpdate:
+      type: object
+      description: >
+        Payload for `PUT /api/providers/{id}`. Overlay semantics: an absent
+        field keeps its stored value. `name`, when present, must equal the
+        stored name.
+      properties:
+        name:
+          type: string
+          description: Echo of the stored name; a different value is a 400.
+        base_url:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+          maxLength: 255
+        is_active:
+          type: boolean
+
+    ProviderResponse:
+      type: object
+      required: [provider]
+      properties:
+        provider:
+          $ref: "#/components/schemas/Provider"
+
+    ProviderListResponse:
+      type: object
+      required: [count, providers]
+      properties:
+        count:
+          type: integer
+        providers:
+          type: array
+          items:
+            $ref: "#/components/schemas/Provider"
+
+    ProviderMutationResponse:
+      type: object
+      required: [provider, reloaded]
+      properties:
+        provider:
+          $ref: "#/components/schemas/Provider"
+        reloaded:
+          type: boolean
+          description: >
+            Whether the routing snapshot was rebuilt before this response was
+            written. `false` is not an error: the write committed and bumped
+            the catalog revision, so the periodic syncer publishes it on its
+            next tick.
+
+    ProviderDeleteResponse:
+      type: object
+      required: [status, id, deleted_keys, reloaded]
+      properties:
+        status:
+          type: string
+          const: ok
+        id:
+          type: integer
+          format: int64
+        deleted_keys:
+          type: integer
+          description: Number of credentials removed along with the provider.
+        reloaded:
+          type: boolean
+
+    ProviderKey:
+      type: object
+      description: >
+        One stored credential. The secret itself is never returned; reads carry
+        a masked hint only. `account_metadata` is write-only and never appears
+        in any response.
+      required: [id, provider_id, status, is_active]
+      properties:
+        id:
+          type: integer
+          format: int64
+        provider_id:
+          type: integer
+          format: int64
+        status:
+          type: string
+          enum: [active, deactivated, expired, revoked]
+          description: >
+            Only `active` is routable. `deactivated` and `revoked` are written
+            by the data-plane key policy, `expired` by the expiry sweep, and
+            all four may be set by an operator through the patch endpoint.
+        is_active:
+          type: boolean
+        expires_at:
+          type: [integer, "null"]
+          format: int64
+          description: Expiry as a Unix epoch in milliseconds; absent means never expires.
+        last_used_at:
+          type: integer
+          format: int64
+        total_requests:
+          type: integer
+          format: int64
+        created_at:
+          type: integer
+          format: int64
+        updated_at:
+          type: integer
+          format: int64
+        api_key_hint:
+          type: string
+          readOnly: true
+          description: >
+            Masked hint (`first 3 + "..." + last 4` characters, or
+            `[REDACTED]` for short secrets) so an operator can recognize a key
+            without it being recoverable.
+          examples: ["sk-...mnop"]
+
+    ProviderKeyListResponse:
+      type: object
+      required: [provider_id, count, keys]
+      properties:
+        provider_id:
+          type: integer
+          format: int64
+        count:
+          type: integer
+        keys:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProviderKey"
+
+    ProviderKeyUpsertEntry:
+      type: object
+      description: >
+        One credential in an upsert batch. `provider` is optional and, when
+        present, must match the provider in the route path.
+      required: [api_key]
+      properties:
+        provider:
+          type: string
+          description: Provider name; a mismatch with the route is a 400.
+        api_key:
+          type: string
+          description: >
+            The credential material. Stored, never echoed back, and capped at
+            4096 bytes. A value in mask shape (the `api_key_hint` form) is
+            refused with 400, because this surface only ever returns hints and
+            storing one would create a routable credential that no upstream
+            accepts.
+        status:
+          type: string
+          enum: [active, deactivated, expired, revoked]
+          description: Authoritative on every write; omitted means `active`.
+        expires_at:
+          type: [integer, "null"]
+          format: int64
+          minimum: 100000000000
+          description: >
+            Unix milliseconds. Three distinct intents: a number replaces the
+            stored expiry, an explicit null clears it, and an omitted field keeps
+            whatever is stored. A value below 100000000000 is a 400 — it can only
+            be a second-scale timestamp, which reads as expired in 1970 against a
+            millisecond column.
+        account_metadata:
+          type: object
+          description: >
+            Free-form vault blob (private keys, mnemonics, OAuth material).
+            Write-only: an omitted value keeps the stored blob, and no read
+            endpoint ever returns it. Capped at 64 KiB per key.
+
+    ProviderKeyUpsertRequest:
+      type: object
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          description: At least one entry; capped at 10,000 per batch.
+          items:
+            $ref: "#/components/schemas/ProviderKeyUpsertEntry"
+        reassign:
+          type: boolean
+          description: >
+            Allow entries whose secret is already owned by another provider to
+            move here. Without it such an entry fails the whole batch with 409.
+
+    ProviderKeyUpsertResponse:
+      type: object
+      required: [created, updated, unchanged, reassigned, key_ids, revision, pushed, reloaded]
+      properties:
+        created:
+          type: integer
+        updated:
+          type: integer
+        unchanged:
+          type: integer
+          description: Entries whose stored row already matched the payload.
+        reassigned:
+          type: integer
+          description: How many of `updated` moved between providers.
+        key_ids:
+          type: array
+          description: >
+            Every currently routable key id of the provider after the batch,
+            ordered by id — the authoritative list for the operator's view.
+          items:
+            type: integer
+            format: int64
+        revision:
+          type: integer
+          format: int64
+          description: Catalog revision after the write.
+        pushed:
+          type: boolean
+          description: Whether the local replica reached the Turso cloud.
+        reloaded:
+          type: boolean
+
+    KeyPatchRequest:
+      type: object
+      description: At least one property is required.
+      properties:
+        api_key:
+          type: string
+          description: >
+            New credential secret, max 4096 bytes. Rotates the key in place and
+            re-mirrors the credentials bound to it. A value already held by
+            another key is a 409; a masked hint, padding, or control characters
+            are a 400.
+        status:
+          type: string
+          enum: [active, deactivated, expired, revoked]
+        is_active:
+          type: boolean
+          description: >
+            Explicit routing switch; when set it wins over the value implied by
+            `status`.
+        expires_at:
+          type: [integer, "null"]
+          format: int64
+          minimum: 100000000000
+          description: >
+            Unix milliseconds, or null to clear the stored expiry. Omitting the
+            field keeps it. A second-scale value is a 400.
+
+    KeyPatchResponse:
+      type: object
+      required: [key, revision, pushed, reloaded]
+      properties:
+        key:
+          $ref: "#/components/schemas/ProviderKey"
+        revision:
+          type: integer
+          format: int64
+        pushed:
+          type: boolean
+        reloaded:
+          type: boolean
+
+    KeyDeleteResponse:
+      type: object
+      required: [status, id, revision, pushed, reloaded]
+      properties:
+        status:
+          type: string
+          const: ok
+        id:
+          type: integer
+          format: int64
+        revision:
+          type: integer
+          format: int64
+        pushed:
+          type: boolean
+        reloaded:
+          type: boolean

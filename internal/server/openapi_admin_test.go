@@ -79,16 +79,16 @@ func TestOpenAPIAdminSpec_RefsResolve(t *testing.T) {
 	}
 }
 
-// adminRoutesFromSource extracts the METHOD /api/tenants* routes registered in
-// router.go so the admin spec is checked against the actual mux registrations
-// rather than a hand-maintained list.
+// adminRoutesFromSource extracts the METHOD /api/tenants*, /api/providers* and
+// /api/keys* routes registered in router.go so the admin spec is checked
+// against the actual mux registrations rather than a hand-maintained list.
 func adminRoutesFromSource(t *testing.T) map[string]bool {
 	t.Helper()
 	src, err := os.ReadFile("router.go")
 	if err != nil {
 		t.Fatalf("read router.go: %v", err)
 	}
-	re := regexp.MustCompile(`"(GET|POST|PUT|DELETE) (/api/tenants[A-Za-z0-9/_{}]*)"`)
+	re := regexp.MustCompile(`"(GET|POST|PUT|PATCH|DELETE) (/api/(?:tenants|providers|keys)[A-Za-z0-9/_{}]*)"`)
 	routes := map[string]bool{}
 	for _, m := range re.FindAllStringSubmatch(string(src), -1) {
 		// Skip OPTIONS/preflight; the spec documents the functional verbs only.
@@ -120,7 +120,7 @@ func TestOpenAPIAdminSpec_NoDriftFromRoutes(t *testing.T) {
 	sort.Strings(undocumented)
 	sort.Strings(phantom)
 	if len(undocumented) > 0 {
-		t.Errorf("tenant routes registered but missing from openapi-admin.yaml:\n  %s", strings.Join(undocumented, "\n  "))
+		t.Errorf("admin routes registered but missing from openapi-admin.yaml:\n  %s", strings.Join(undocumented, "\n  "))
 	}
 	if len(phantom) > 0 {
 		t.Errorf("paths documented in openapi-admin.yaml but not registered as routes:\n  %s", strings.Join(phantom, "\n  "))
@@ -131,9 +131,52 @@ func TestOpenAPIAdminSpec_NoDriftFromRoutes(t *testing.T) {
 // passing because it extracted zero routes (a regex/refactor regression).
 func TestOpenAPIAdminSpec_SanityRouteCount(t *testing.T) {
 	routes := adminRoutesFromSource(t)
-	// GET+POST /api/tenants, GET+PUT+DELETE /api/tenants/{name}, POST /api/tenants/topup = 6
-	if len(routes) != 6 {
-		t.Fatalf("expected 6 tenant routes extracted from router.go, got %d: %v", len(routes), routes)
+	// Tenants: GET+POST /api/tenants, GET+PUT+DELETE /api/tenants/{name},
+	// POST /api/tenants/topup = 6.
+	// Providers/keys: GET+POST /api/providers, GET+PUT+DELETE /api/providers/{id},
+	// GET+POST /api/providers/{id}/keys, PATCH+DELETE /api/keys/{id} = 9.
+	if len(routes) != 15 {
+		t.Fatalf("expected 15 admin routes extracted from router.go, got %d: %v", len(routes), routes)
+	}
+}
+
+// TestOpenAPIAdminSpec_KeyWriteSemantics pins the documented contract for the
+// two state machines on the key write surfaces: expires_at carries three
+// distinct intents, and a rotation is documented (including the 409 it can
+// return). A prose regression here is a real bug for whoever codes against the
+// spec, because "omitted clears" would silently un-expire keys a batch refreshed.
+func TestOpenAPIAdminSpec_KeyWriteSemantics(t *testing.T) {
+	var raw map[string]any
+	if err := yaml.Unmarshal(openAPISpecAdmin, &raw); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	patch := dig(t, raw, "components", "schemas", "KeyPatchRequest")
+	patchProps := patch["properties"].(map[string]any)
+	if _, ok := patchProps["api_key"]; !ok {
+		t.Error("KeyPatchRequest does not document api_key; the patch handler rotates secrets")
+	}
+	for _, schema := range []string{"KeyPatchRequest", "ProviderKeyUpsertEntry"} {
+		props := dig(t, raw, "components", "schemas", schema)["properties"].(map[string]any)
+		expiry, ok := props["expires_at"].(map[string]any)
+		if !ok {
+			t.Errorf("%s.expires_at missing", schema)
+			continue
+		}
+		rawDesc, _ := expiry["description"].(string)
+		desc := strings.ToLower(rawDesc)
+		if desc == "" {
+			t.Errorf("%s.expires_at has no description", schema)
+			continue
+		}
+		if !strings.Contains(desc, "omit") || !strings.Contains(desc, "keep") {
+			t.Errorf("%s.expires_at must document that an omitted value keeps the stored expiry: %q", schema, rawDesc)
+		}
+	}
+
+	patchOp := dig(t, raw, "paths", "/api/keys/{id}", "patch")
+	if _, ok := patchOp["responses"].(map[string]any)["409"]; !ok {
+		t.Error("PATCH /api/keys/{id} documents no 409, but rotating onto a taken secret is a conflict")
 	}
 }
 

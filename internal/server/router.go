@@ -9,38 +9,41 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/dickymuliafiqri/firefly/internal/storage/analytics"
-	"github.com/dickymuliafiqri/firefly/internal/security/auth"
+	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
 	"github.com/dickymuliafiqri/firefly/internal/domain"
-	"github.com/dickymuliafiqri/firefly/internal/transport/httpx"
 	"github.com/dickymuliafiqri/firefly/internal/limits"
 	"github.com/dickymuliafiqri/firefly/internal/observability/metrics"
-	"github.com/dickymuliafiqri/firefly/internal/security/oauth"
-	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
+	"github.com/dickymuliafiqri/firefly/internal/security/auth"
+	"github.com/dickymuliafiqri/firefly/internal/security/oauth"
+	"github.com/dickymuliafiqri/firefly/internal/storage/analytics"
 	"github.com/dickymuliafiqri/firefly/internal/storage/turso"
+	"github.com/dickymuliafiqri/firefly/internal/transport/httpx"
 	"github.com/dickymuliafiqri/firefly/internal/transport/warp"
 )
 
 // RouterDeps carries everything the HTTP routes need.
 type RouterDeps struct {
-	Snapshots   SnapshotProvider
-	Registry    *registry.Registry
-	ConfigDir   string
-	AdminToken  string
-	Auth        *auth.Manager
-	TenantStore ports.TenantStore
-	Limiter     *limits.Limiter
-	Adapters    ports.AdapterRegistry
-	Adapter     ports.UpstreamAdapter
-	Breakers    openai.BreakerLookup
-	Analytics   *analytics.Store
+	Snapshots  SnapshotProvider
+	Registry   *registry.Registry
+	ConfigDir  string
+	AdminToken string
+	// ServiceToken authenticates the harvester's machine-to-machine sync calls.
+	// Empty means the harvester surface fails closed with 503.
+	ServiceToken string
+	Auth         *auth.Manager
+	TenantStore  ports.TenantStore
+	Limiter      *limits.Limiter
+	Adapters     ports.AdapterRegistry
+	Adapter      ports.UpstreamAdapter
+	Breakers     openai.BreakerLookup
+	Analytics    *analytics.Store
 
-	Usage    ports.UsageRecorder
-	Logger   *slog.Logger
-	Metrics  *metrics.Metrics
-	LiveLogs *LiveLogHub
+	Usage        ports.UsageRecorder
+	Logger       *slog.Logger
+	Metrics      *metrics.Metrics
+	LiveLogs     *LiveLogHub
 	AutoTLS      *AutoTLS
 	OAuthManager *oauth.Manager
 	TursoStore   *turso.Store
@@ -146,13 +149,14 @@ func (s *Server) buildHandler(deps RouterDeps) http.Handler {
 	// Root dashboard & static frontend assets (embedded SPA)
 	deps.registerFrontendRoutes(mux)
 
-	// Public API reference: interactive docs + raw OpenAPI spec (no auth; the
-	// specs only describe the API surface and leak no secrets — the admin
-	// endpoints themselves stay admin-gated).
+	// Public API reference: interactive docs + raw OpenAPI specs (no auth; the
+	// specs only describe the API surface and leak no secrets — the admin and
+	// harvester endpoints themselves stay gated).
 	mux.HandleFunc("GET /api/docs", deps.handleAPIDocs)
 	mux.HandleFunc("GET /api/docs/admin", deps.handleAPIDocsAdmin)
 	mux.HandleFunc("GET /api/openapi.yaml", deps.handleOpenAPISpec)
 	mux.HandleFunc("GET /api/openapi-admin.yaml", deps.handleOpenAPISpecAdmin)
+	mux.HandleFunc("GET /api/openapi-harvester.yaml", deps.handleOpenAPISpecHarvester)
 
 	// Authentication & Backend Credential Authorization Endpoints
 	mux.HandleFunc("OPTIONS /api/auth/login", deps.handleOptionsAuth)
@@ -185,6 +189,23 @@ func (s *Server) buildHandler(deps RouterDeps) http.Handler {
 	mux.HandleFunc("PUT /api/tenants/{name}", deps.handleUpdateTenant)
 	mux.HandleFunc("DELETE /api/tenants/{name}", deps.handleDeleteTenant)
 
+	// Provider & Credential Pool Administration API (admin-authorized; the
+	// operator side of the harvester ownership shift). Providers and keys live
+	// only in Turso, so these handlers fail closed without a configured store.
+	mux.HandleFunc("OPTIONS /api/providers", deps.handleOptionsSettings)
+	mux.HandleFunc("GET /api/providers", deps.handleListProvidersAdmin)
+	mux.HandleFunc("POST /api/providers", deps.handleCreateProviderAdmin)
+	mux.HandleFunc("OPTIONS /api/providers/{id}", deps.handleOptionsSettings)
+	mux.HandleFunc("GET /api/providers/{id}", deps.handleGetProviderAdmin)
+	mux.HandleFunc("PUT /api/providers/{id}", deps.handleUpdateProviderAdmin)
+	mux.HandleFunc("DELETE /api/providers/{id}", deps.handleDeleteProviderAdmin)
+	mux.HandleFunc("OPTIONS /api/providers/{id}/keys", deps.handleOptionsSettings)
+	mux.HandleFunc("GET /api/providers/{id}/keys", deps.handleListProviderKeysAdmin)
+	mux.HandleFunc("POST /api/providers/{id}/keys", deps.handleUpsertProviderKeysAdmin)
+	mux.HandleFunc("OPTIONS /api/keys/{id}", deps.handleOptionsSettings)
+	mux.HandleFunc("PATCH /api/keys/{id}", deps.handlePatchKeyAdmin)
+	mux.HandleFunc("DELETE /api/keys/{id}", deps.handleDeleteKeyAdmin)
+
 	// Turso Centralized Database API
 	mux.HandleFunc("OPTIONS /api/turso/providers", deps.handleOptionsSettings)
 	mux.HandleFunc("GET /api/turso/providers", deps.handleGetTursoProviders)
@@ -194,6 +215,10 @@ func (s *Server) buildHandler(deps RouterDeps) http.Handler {
 	mux.HandleFunc("GET /api/turso/keys", deps.handleGetTursoProviderKeys)
 	mux.HandleFunc("OPTIONS /api/turso/test", deps.handleOptionsSettings)
 	mux.HandleFunc("POST /api/turso/test", deps.handleTestTurso)
+
+	// Harvester Credential Pool Sync API (service-token gated, server-to-server
+	// only: no CORS preflight route is registered on purpose).
+	mux.HandleFunc("POST /api/harvester/sync", deps.handleHarvesterSync)
 
 	// Upstream Health Check Probe & Model Discovery API
 	mux.HandleFunc("OPTIONS /api/upstreams/check", deps.handleOptionsUpstreamCheck)

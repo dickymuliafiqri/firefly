@@ -1,6 +1,10 @@
 package turso
 
-import "github.com/dickymuliafiqri/firefly/internal/domain"
+import (
+	"encoding/json"
+
+	"github.com/dickymuliafiqri/firefly/internal/domain"
+)
 
 // UpstreamRecord represents a row in the upstreams table.
 type UpstreamRecord struct {
@@ -99,4 +103,63 @@ type RawAPIKeyRecord struct {
 	Status    string `json:"status"`
 	IsActive  bool   `json:"is_active"`
 	ExpiresAt *int64 `json:"expires_at,omitempty"`
+}
+
+// ProviderSyncEntry is one provider in a harvester snapshot. Name is the
+// natural key: an entry upserts the row with that name and never renames it.
+type ProviderSyncEntry struct {
+	Name        string `json:"name"`
+	BaseURL     string `json:"base_url"`
+	Description string `json:"description,omitempty"`
+	IsActive    *bool  `json:"is_active,omitempty"`
+}
+
+// ProviderKeySyncEntry is one credential in a harvester snapshot. Provider is
+// the provider name (not id) so the client never has to track server ids.
+// Status is authoritative on every write: an omitted status means "active" (so
+// a batch can reactivate a key). Status values are the writer's lifecycle
+// vocabulary and are stored verbatim — only "active" routes — so the endpoint
+// checks their shape (<= 20 chars, no control characters or padding) rather
+// than an enum, and refuses to freeze a batch over a state it has not seen.
+// ExpiresAt carries three intents, distinguished on the wire exactly as the
+// operator PATCH does: absent keeps the stored expiry, JSON null clears it, a
+// number replaces it. Absence must not mean "clear" because one writer refreshes
+// rows other writers created, and a table that a key silently stops expiring
+// from is worse than one that keeps an expiry it was told to replace. It must be
+// Unix milliseconds: a second-scale value is rejected, because in a millisecond
+// column it reads as expired in 1970 and the key quietly leaves rotation.
+// AccountMetadata follows the same absent-means-keep rule, because it is large
+// write-only data the client may legitimately not resend. It is written verbatim
+// and is never returned by any endpoint: it is a credential vault (private keys,
+// mnemonics, OAuth tokens), not display metadata.
+type ProviderKeySyncEntry struct {
+	Provider        string          `json:"provider"`
+	APIKey          string          `json:"api_key"`
+	Status          string          `json:"status,omitempty"`
+	ExpiresAt       json.RawMessage `json:"expires_at,omitempty"`
+	AccountMetadata json.RawMessage `json:"account_metadata,omitempty"`
+}
+
+// ProviderSyncRequest is the harvester batch payload. Every write is idempotent:
+// replaying the same payload creates nothing new and never changes api_keys.id
+// (credential refs are derived from that id). Deactivation is explicit-id only —
+// the server never infers deletions from absence, so the client stays the owner
+// of "what disappeared".
+type ProviderSyncRequest struct {
+	Providers      []ProviderSyncEntry    `json:"providers"`
+	Keys           []ProviderKeySyncEntry `json:"keys"`
+	DeactivateKeys []int64                `json:"deactivate_keys,omitempty"`
+}
+
+// ProviderSyncResult reports what the batch changed. Created/Updated/Unchanged
+// count API keys only; KeyIDs lists every currently active key id per provider
+// touched by the request.
+type ProviderSyncResult struct {
+	Created     int                `json:"created"`
+	Updated     int                `json:"updated"`
+	Unchanged   int                `json:"unchanged"`
+	Deactivated int                `json:"deactivated"`
+	KeyIDs      map[string][]int64 `json:"key_ids"`
+	Revision    int64              `json:"revision"`
+	Pushed      bool               `json:"pushed"`
 }

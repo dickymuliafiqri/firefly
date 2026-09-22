@@ -13,17 +13,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
 	"github.com/dickymuliafiqri/firefly/internal/config"
 	"github.com/dickymuliafiqri/firefly/internal/domain"
-	"github.com/dickymuliafiqri/firefly/internal/transport/httpx"
-	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
 	"github.com/dickymuliafiqri/firefly/internal/storage/turso"
+	"github.com/dickymuliafiqri/firefly/internal/transport/httpx"
 )
 
 // handleOptionsSettings serves CORS preflight requests for the settings API.
 func (deps RouterDeps) handleOptionsSettings(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -470,33 +470,21 @@ func (deps RouterDeps) handleUpdateSettings(w http.ResponseWriter, r *http.Reque
 		tenIndent, _ := json.MarshalIndent(tenFile, "", "  ")
 		combIndent, _ := json.MarshalIndent(combFile, "", "  ")
 
-		if err := os.WriteFile(filepath.Join(deps.ConfigDir, config.FileNameUpstreams), upIndent, 0o644); err != nil {
-			rollbackTLS()
-			openai.WriteError(w, http.StatusInternalServerError, openai.TypeAPI, "write upstreams config: "+err.Error())
-			return
-		}
-		if err := os.WriteFile(filepath.Join(deps.ConfigDir, config.FileNameModels), modIndent, 0o644); err != nil {
-			rollbackTLS()
-			openai.WriteError(w, http.StatusInternalServerError, openai.TypeAPI, "write models config: "+err.Error())
-			return
-		}
-		if err := os.WriteFile(filepath.Join(deps.ConfigDir, config.FileNameTenants), tenIndent, 0o644); err != nil {
-			rollbackTLS()
-			openai.WriteError(w, http.StatusInternalServerError, openai.TypeAPI, "write tenants config: "+err.Error())
-			return
-		}
-		if err := os.WriteFile(filepath.Join(deps.ConfigDir, config.FileNameCombos), combIndent, 0o644); err != nil {
-			rollbackTLS()
-			openai.WriteError(w, http.StatusInternalServerError, openai.TypeAPI, "write combos config: "+err.Error())
-			return
-		}
+		var tsIndent []byte
 		if payload.TokenSaver != nil {
-			tsIndent, _ := json.MarshalIndent(payload.TokenSaver, "", "  ")
-			if err := os.WriteFile(filepath.Join(deps.ConfigDir, config.FileNameTokenSaver), tsIndent, 0o644); err != nil {
-				rollbackTLS()
-				openai.WriteError(w, http.StatusInternalServerError, openai.TypeAPI, "write tokensaver config: "+err.Error())
-				return
-			}
+			tsIndent, _ = json.MarshalIndent(payload.TokenSaver, "", "  ")
+		}
+
+		if err := writeCatalogFiles(deps.ConfigDir, catalogFileSet{
+			upstreams:  upIndent,
+			models:     modIndent,
+			tenants:    tenIndent,
+			combos:     combIndent,
+			tokenSaver: tsIndent,
+		}); err != nil {
+			rollbackTLS()
+			openai.WriteError(w, http.StatusInternalServerError, openai.TypeAPI, err.Error())
+			return
 		}
 		if err := config.SaveAutoTLS(deps.ConfigDir, nextTLS); err != nil {
 			rollbackTLS()
@@ -587,6 +575,19 @@ func (deps RouterDeps) handleGetTursoProviders(w http.ResponseWriter, r *http.Re
 	})
 }
 
+// legacyProviderKey is a provider key as exposed by the legacy /api/turso read
+// surface. Only a masked hint leaves the server: routing already takes the real
+// secret straight from the store (upstream-bound providers are pooled at load
+// time), so the dashboard never needed the raw value except to copy it into a
+// config, which is exactly the leak this shape closes.
+type legacyProviderKey struct {
+	ID         int64  `json:"id"`
+	ProviderID int64  `json:"provider_id"`
+	APIKeyHint string `json:"api_key_hint"`
+	Status     string `json:"status"`
+	IsActive   bool   `json:"is_active"`
+}
+
 // handleGetTursoProviderKeys retrieves active keys from the Turso database for a provider.
 func (deps RouterDeps) handleGetTursoProviderKeys(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -625,11 +626,22 @@ func (deps RouterDeps) handleGetTursoProviderKeys(w http.ResponseWriter, r *http
 		return
 	}
 
+	hints := make([]legacyProviderKey, 0, len(keys))
+	for _, k := range keys {
+		hints = append(hints, legacyProviderKey{
+			ID:         k.ID,
+			ProviderID: k.ProviderID,
+			APIKeyHint: maskSecret(k.APIKey),
+			Status:     k.Status,
+			IsActive:   k.IsActive,
+		})
+	}
+
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"ok":          true,
 		"provider_id": providerID,
-		"count":       len(keys),
-		"keys":        keys,
+		"count":       len(hints),
+		"keys":        hints,
 	})
 }
 

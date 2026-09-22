@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/dickymuliafiqri/firefly/internal/observability/metrics"
@@ -22,6 +23,10 @@ type SyncerConfig struct {
 // Syncer periodically pulls updates from Turso Cloud into the local SQLite replica
 // and hot-swaps the CatalogSnapshot when catalog revisions change.
 type Syncer struct {
+	// mu serializes SyncOnce: the periodic ticker and on-demand callers (the
+	// harvester sync endpoint) share the lastKnown* cursors below, so letting two
+	// cycles overlap would race on them and could double-apply a reload.
+	mu                 sync.Mutex
 	client             *Client
 	store              *Store
 	reg                *registry.Registry
@@ -49,6 +54,8 @@ func NewSyncer(client *Client, store *Store, reg *registry.Registry, cfg SyncerC
 
 // SetInitialRevision records the initial revision so the syncer knows the starting point.
 func (s *Syncer) SetInitialRevision(rev int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.lastKnownRevision = rev
 }
 
@@ -73,7 +80,12 @@ func (s *Syncer) Run(ctx context.Context) error {
 }
 
 // SyncOnce performs a single pull and checks if the catalog revision was updated.
+// It is safe to call concurrently with Run: cycles are serialized so the cursors
+// advance one cycle at a time.
 func (s *Syncer) SyncOnce(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// 1. Pull changes from Turso Cloud
 	if s.client != nil {
 		if err := s.client.Pull(ctx); err != nil {
