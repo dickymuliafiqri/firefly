@@ -92,6 +92,8 @@ Every request entering Firefly follows a strict, deterministic lifecycle:
 - `POST /v1/compress` -> Standalone prompt and conversation token optimization endpoint.
 - `GET, POST, PUT, DELETE /api/tenants` & `/api/tenants/{name}` -> Admin CRUD API for tenant catalog lifecycle, persisting to Turso / JSON files with immediate hot-swapping.
 - `POST /api/tenants/topup` -> Admin/Webhook endpoint for topping up token balances and extending validity days.
+- `GET, POST, PUT, DELETE /api/providers` & `/api/providers/{id}`, `GET, POST /api/providers/{id}/keys`, `PATCH, DELETE /api/keys/{id}` -> Admin CRUD API for the native provider/key catalog. Reads are hint-only (a masked `api_key_hint`, never the raw secret) and a `PATCH` that carries a new `api_key` rotates the secret in place while preserving the row `id`, so credential refs (`<upstream>-key-<id>`) stay stable.
+- `POST /api/harvester/sync` -> Machine-to-machine key sync endpoint for the external harvester, guarded by its own service token (constant-time compare, `503` when the token is unset) and idempotent — a replayed batch writes no duplicate rows and returns no secrets.
 
 ### 4. Tenant Route Protection (`deps.protected`)
 Before parsing the request body, requests pass through tenant protection:
@@ -284,7 +286,8 @@ Firefly provides out-of-the-box support for API key commercialization, allowing 
 Firefly ships with a nocturnal React 19 Single Page Application embedded directly into the standalone binary (`//go:embed all:dist`):
 - **Responsive Mobile & Desktop**: Clean, unified navigation across all viewports with a nocturnal bioluminescent mobile burger menu, adaptive viewport stability (`min-h-[100dvh]`), and touch-friendly controls.
 - **Public Overview & Sanitized Settings**: Unauthenticated visitors can view real-time traffic pulse, particle canvas physics, latency charts, active upstream/model names, and recent activity logs. Sensitive credentials (upstream API keys, credential pools, tenant keys, rate limits, Turso DB credentials, and Auto-TLS certificates) are strictly redacted or omitted on the backend until admin authentication.
-- **Protected Route Navigation**: Accessing management modules (*Upstreams, Models, Combos, Tenants, Telemetry, Settings, Playground*) is gated behind backend session token authentication (default: `12345678`).
+- **Protected Route Navigation**: Accessing management modules (*Upstreams, Models, Combos, Tenants, Telemetry, Settings, Playground, Providers*) is gated behind backend session token authentication (default: `12345678`).
+- **Provider & Key Management**: The **Providers** tab manages the native provider/key catalog without touching the database — create/edit/delete providers, upsert keys in batch, patch status/routability/expiry, and rotate a secret in place. Raw secrets never reach the browser: the table shows masked hints only, and "Bind Provider Keys" pulls a provider's pooled credentials into an upstream server-side.
 - **Backend Credential Vault**: Passwords and session tokens are stored and verified exclusively on the backend (`configs/auth.json`), eliminating sensitive credential storage in browser `localStorage`.
 - **In-Browser LLM Playground**: Test model endpoints, inspect token streaming waterfalls, and review raw SSE packet diagnostics.
 
@@ -336,6 +339,7 @@ make build
 - `-addr` / `FIREFLY_ADDR`: Data plane listen address for incoming AI traffic. Default: `0.0.0.0:8080`.
 - `-admin-addr` / `FIREFLY_ADMIN_ADDR`: Admin plane listen address for `/metrics` and `/api/*`. Disabled if empty. Default: `""`.
 - `-admin-token` / `FIREFLY_ADMIN_TOKEN`: Bearer token protecting administrative endpoints.
+- `-harvester-token` / `FIREFLY_HARVESTER_TOKEN`: Separate service token guarding `POST /api/harvester/sync` for machine callers. Kept distinct from the admin token so an automation credential never grants dashboard-level access; when empty, the endpoint fails closed with `503`.
 - `-log-level` / `FIREFLY_LOG_LEVEL`: Structured logging level (`debug`, `info`, `warn`, `error`). Default: `info`.
 - `-health-check-interval`: Frequency of background health probes (duration, e.g. `15s`; `0` disables). Default: `15s`.
 - `-shutdown-grace-seconds` / `FIREFLY_SHUTDOWN_GRACE_SECONDS`: Maximum time allowed for active SSE streams to finish during shutdown. Default: `30`.

@@ -36,7 +36,7 @@ Before modifying or adding code to Firefly, every AI Agent **must understand and
 | `loadtest` | `cmd/loadtest/` | Standalone CLI load tester, in-process mock server, and 100/1,000 concurrency low/medium/heavy synchronized benchmark runner. |
 | `domain` | `internal/domain/` | Core domain models: `CatalogSnapshot`, `Tenant`, `Upstream`, `Model`, `Combo`, `KeyRing`, `KeySlot`, `Target`. Pure data structures without side-effects. |
 | `ports` | `internal/ports/` | Go interface contracts: `UpstreamAdapter`, `TenantStore`, `UsageRecorder`, `AdapterRegistry`, `ForwardRequest`. |
-| `server` | `internal/server/` | HTTP server construction, Go 1.22+ `http.ServeMux` routing, middleware chain assembly, shared forward handler (`forwardEndpoint`), drain guard. |
+| `server` | `internal/server/` | HTTP server construction, Go 1.22+ `http.ServeMux` routing, middleware chain assembly, shared forward handler (`forwardEndpoint`), drain guard. Admin surfaces live here too: `/api/providers*` + `/api/keys/{id}` operator CRUD (`providers_admin.go`), the harvester machine endpoint (`harvester_api.go` + `service_auth.go`, a fail-closed token guard separate from `authorizeAdmin`), and the single catalog-file writer (`catalog_files.go`). |
 | `config` | `internal/config/` | JSON configuration loader (`upstreams.json`, `models.json`, `tenants.json`, `combos.json`) with strict schema validation and keyless free tier auto-provisioning. |
 | `registry` | `internal/registry/` | Thread-safe catalog snapshot store backed by `atomic.Pointer[domain.CatalogSnapshot]`. Zero-downtime hot-swap configuration reloads. |
 | `limits` | `internal/limits/` | Token-bucket rate limiters (`golang.org/x/time/rate`) per tenant, and CAS atomic concurrency gates per-credential/keyslot. |
@@ -84,6 +84,13 @@ Before modifying or adding code to Firefly, every AI Agent **must understand and
     ├── GET  /api/docs{,/admin}   : Interactive OpenAPI 3.1 reference docs
     ├── GET  /api/openapi*.yaml   : OpenAPI 3.1 specs with build version stamping
     ├── CRUD /api/tenants{,/{name}}: Admin tenant management CRUD
+    ├── CRUD /api/providers{,/{id}}: Admin provider catalog CRUD (create/update/delete, operator-token only)
+    ├── GET  /api/providers/{id}/keys : Hint-only key listing (`api_key_hint`, never the raw secret)
+    ├── POST /api/providers/{id}/keys : Batch key upsert; `PATCH /api/keys/{id}` rotates a secret
+    │                                   in place preserving the row `id` (refs stay stable)
+    ├── POST /api/harvester/sync  : Machine sync for the external harvester. Separate service token
+    │                               (`-harvester-token`), constant-time compare, 503 when unset,
+    │                               idempotent replay, no secrets in the response
     ├── GET  /v1/models           : AuthMiddleware -> Filter catalog by tenant access -> JSON
     ├── GET  /v1/models/{id}      : AuthMiddleware -> Check model access -> JSON / 404
     └── POST /v1/chat/completions : Protected Handler (Auth -> Admission -> forwardEndpoint)
