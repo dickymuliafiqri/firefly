@@ -118,7 +118,6 @@ func TestKeyAndGlobalSaturationMetrics(t *testing.T) {
 	}
 }
 
-
 // TestNilReceiverIsSafe ensures callers may pass a nil *Metrics (tests, or a
 // build without metrics) without panicking.
 func TestNilReceiverIsSafe(t *testing.T) {

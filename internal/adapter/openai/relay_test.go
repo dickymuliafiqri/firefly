@@ -144,7 +144,6 @@ func TestRelaySSECompletesAndDoesNotLeakWatchdog(t *testing.T) {
 	t.Logf("goroutines before=%d after=%d (informational)", before, runtime.NumGoroutine())
 }
 
-
 type trackCloseBody struct {
 	ch         chan struct{}
 	closed     atomic.Bool
@@ -237,4 +236,3 @@ func BenchmarkRelaySSEMemory(b *testing.B) {
 		}
 	}
 }
-

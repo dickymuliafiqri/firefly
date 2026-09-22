@@ -17,16 +17,16 @@ import (
 
 	"go.uber.org/goleak"
 
-	"github.com/dickymuliafiqri/firefly/internal/security/auth"
+	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/limits"
 	"github.com/dickymuliafiqri/firefly/internal/observability/logging"
 	"github.com/dickymuliafiqri/firefly/internal/observability/metrics"
-	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
+	"github.com/dickymuliafiqri/firefly/internal/observability/usage"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
+	"github.com/dickymuliafiqri/firefly/internal/security/auth"
 	"github.com/dickymuliafiqri/firefly/internal/server"
 	"github.com/dickymuliafiqri/firefly/internal/transport/upstream"
-	"github.com/dickymuliafiqri/firefly/internal/observability/usage"
 )
 
 // TestEndToEndMetricsReflectTraffic drives an authenticated request and asserts
@@ -135,6 +135,7 @@ func TestAdminMetricsOnRealListener(t *testing.T) {
 		t.Fatal("admin server did not stop")
 	}
 }
+
 // TestPhase5_PrometheusKeyAndUpstreamSaturationMetrics verifies that key saturation,
 // inflight requests, and cooldown metrics are accurately exposed with bounded cardinality.
 func TestPhase5_PrometheusKeyAndUpstreamSaturationMetrics(t *testing.T) {
@@ -247,7 +248,6 @@ func TestPhase5_PrometheusKeyAndUpstreamSaturationMetrics(t *testing.T) {
 	}
 }
 
-
 // TestMain runs goleak for the whole integration package, catching any
 // goroutine a Phase-5 code path forgets to stop.
 // TestPhase5_SecretMaskingAndSecurityAudit verifies that plaintext secrets and sensitive
@@ -350,7 +350,6 @@ func TestPhase5_SecretMaskingAndSecurityAudit(t *testing.T) {
 		t.Fatalf("KeySlot json.Marshal leaked secret: %s", string(b))
 	}
 }
-
 
 func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m)

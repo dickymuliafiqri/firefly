@@ -250,4 +250,3 @@ func ParseBreakerState(s string) (BreakerState, bool) {
 		return StateClosed, false
 	}
 }
-

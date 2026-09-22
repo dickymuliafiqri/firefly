@@ -14,13 +14,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dickymuliafiqri/firefly/internal/security/auth"
 	"github.com/dickymuliafiqri/firefly/internal/config"
 	"github.com/dickymuliafiqri/firefly/internal/limits"
+	"github.com/dickymuliafiqri/firefly/internal/observability/usage"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
+	"github.com/dickymuliafiqri/firefly/internal/security/auth"
 	"github.com/dickymuliafiqri/firefly/internal/server"
-	"github.com/dickymuliafiqri/firefly/internal/observability/usage"
 )
 
 const gatewayKey = "sk-gw-demo-000000000000000000000000"
@@ -143,7 +143,6 @@ func writeConfigWithConcurrency(t *testing.T, dir, baseURL string, allowedModels
 		}
 	}
 }
-
 
 // setupServerWithAdapter starts a live server from reg with a caller-supplied
 // adapter, so tests can point the gateway at a fake upstream.

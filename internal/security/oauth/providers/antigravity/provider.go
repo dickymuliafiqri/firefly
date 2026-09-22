@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"github.com/dickymuliafiqri/firefly/internal/domain"
-	"github.com/dickymuliafiqri/firefly/internal/security/oauth"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
+	"github.com/dickymuliafiqri/firefly/internal/security/oauth"
 	"github.com/tidwall/gjson"
 )
 
@@ -150,7 +150,7 @@ func New(opts ...Option) *Provider {
 
 func (p *Provider) Name() string              { return "antigravity" }
 func (p *Provider) FlowType() domain.FlowType { return domain.FlowTypeStandardAuthCode }
-func (p *Provider) IsSensitive() bool          { return true }
+func (p *Provider) IsSensitive() bool         { return true }
 
 // PrepareAuth builds the Google OAuth2 consent URL.
 func (p *Provider) PrepareAuth(ctx context.Context, redirectURI string) (*ports.AuthSession, error) {

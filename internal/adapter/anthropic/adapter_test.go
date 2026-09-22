@@ -378,4 +378,3 @@ func TestAnthropicAdapter_MultiKeyFailover(t *testing.T) {
 		t.Fatalf("keys used = %v", usedKeys)
 	}
 }
-

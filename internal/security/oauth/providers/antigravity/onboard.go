@@ -172,4 +172,3 @@ func OnboardUser(ctx context.Context, client *http.Client, accessToken, prodBase
 
 	return "", errors.New("onboardUser timed out waiting for completion")
 }
-

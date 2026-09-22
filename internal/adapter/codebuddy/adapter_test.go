@@ -352,4 +352,3 @@ func TestAdapter_Forward_429CooldownAndFailover(t *testing.T) {
 	assert.False(t, breaker.reportedFailure)
 	assert.True(t, breaker.reportedSuccess)
 }
-

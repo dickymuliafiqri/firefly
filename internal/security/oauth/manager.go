@@ -380,7 +380,7 @@ func (s *dynamicTokenSource) Token(ctx context.Context) (string, error) {
 	}
 
 	// If token expires within 5 minutes, trigger refresh
-	if conn.Token.IsExpired(5 * time.Minute) && conn.Token.RefreshToken != "" {
+	if conn.Token.IsExpired(5*time.Minute) && conn.Token.RefreshToken != "" {
 		refreshed, err := s.manager.RefreshToken(ctx, s.connectionID)
 		if err == nil && refreshed != nil {
 			return refreshed.Token.AccessToken, nil
@@ -409,4 +409,3 @@ func (m *Manager) ResolveConnection(ctx context.Context, ref string) (*domain.OA
 	connID := strings.TrimPrefix(ref, "oauth:")
 	return m.store.Get(ctx, connID)
 }
-

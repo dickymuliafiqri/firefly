@@ -327,12 +327,12 @@ func TestLimiterConcurrent(t *testing.T) {
 	l := New()
 
 	const (
-		numTenants     = 5
-		numKeys        = 3
-		keyCap         = 6
-		tenantCap      = 10
-		totalRoutines  = 120
-		iterations     = 50
+		numTenants    = 5
+		numKeys       = 3
+		keyCap        = 6
+		tenantCap     = 10
+		totalRoutines = 120
+		iterations    = 50
 	)
 
 	// Keys shared across tenants
@@ -414,4 +414,3 @@ func TestLimiterConcurrent(t *testing.T) {
 		}
 	}
 }
-

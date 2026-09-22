@@ -19,14 +19,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dickymuliafiqri/firefly/internal/security/auth"
-	"github.com/dickymuliafiqri/firefly/internal/transport/httpx"
-	"github.com/dickymuliafiqri/firefly/internal/limits"
 	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
-	"github.com/dickymuliafiqri/firefly/internal/registry"
-	"github.com/dickymuliafiqri/firefly/internal/server"
-	"github.com/dickymuliafiqri/firefly/internal/transport/upstream"
+	"github.com/dickymuliafiqri/firefly/internal/limits"
 	"github.com/dickymuliafiqri/firefly/internal/observability/usage"
+	"github.com/dickymuliafiqri/firefly/internal/registry"
+	"github.com/dickymuliafiqri/firefly/internal/security/auth"
+	"github.com/dickymuliafiqri/firefly/internal/server"
+	"github.com/dickymuliafiqri/firefly/internal/transport/httpx"
+	"github.com/dickymuliafiqri/firefly/internal/transport/upstream"
 )
 
 // fakeUpstream is a minimal OpenAI-compatible server used as the upstream.
@@ -343,7 +343,6 @@ func TestPhase4_HighConcurrencyStreaming1000Users(t *testing.T) {
 	}
 }
 
-
 // TestPhase4_BurstLoadAdmissionQueueAndBackpressure tests bounded wait and fail-fast
 // 429 when burst traffic exceeds the global admission capacity.
 func TestPhase4_BurstLoadAdmissionQueueAndBackpressure(t *testing.T) {
@@ -494,4 +493,3 @@ func TestPhase4_AggressiveClientDisconnectClosesUpstream(t *testing.T) {
 		t.Fatal("upstream stream was not closed promptly upon client disconnect")
 	}
 }
-

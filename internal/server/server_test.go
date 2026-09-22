@@ -15,14 +15,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dickymuliafiqri/firefly/internal/security/auth"
-	"github.com/dickymuliafiqri/firefly/internal/domain"
-	"github.com/dickymuliafiqri/firefly/internal/transport/httpx"
-	"github.com/dickymuliafiqri/firefly/internal/limits"
 	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
+	"github.com/dickymuliafiqri/firefly/internal/domain"
+	"github.com/dickymuliafiqri/firefly/internal/limits"
+	"github.com/dickymuliafiqri/firefly/internal/observability/usage"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
-	"github.com/dickymuliafiqri/firefly/internal/observability/usage"
+	"github.com/dickymuliafiqri/firefly/internal/security/auth"
+	"github.com/dickymuliafiqri/firefly/internal/transport/httpx"
 
 	"go.uber.org/goleak"
 )
@@ -636,7 +636,6 @@ func (b *blockingAdapter) Forward(ctx context.Context, _ *domain.Target, _ ports
 	return nil
 }
 
-
 func BenchmarkForwardEndpointMemory(b *testing.B) {
 	fakeAd := &fakeAdapter{body: `{"id":"ok","object":"chat.completion","choices":[{"message":{"content":"hello"}}]}`}
 	deps, _ := testDepsWithAdapter(fakeAd)
@@ -659,5 +658,3 @@ func BenchmarkForwardEndpointMemory(b *testing.B) {
 		}
 	}
 }
-
-

@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dickymuliafiqri/firefly/internal/storage/analytics"
 	"github.com/dickymuliafiqri/firefly/internal/security/auth"
+	"github.com/dickymuliafiqri/firefly/internal/storage/analytics"
 	"github.com/dickymuliafiqri/firefly/internal/transport/upstream"
 )
 
@@ -118,7 +118,7 @@ func TestHistoryHandlers_Lifecycle(t *testing.T) {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 	var histResp struct {
-		Status  string     `json:"status"`
+		Status  string    `json:"status"`
 		History []LiveLog `json:"history"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&histResp); err != nil {

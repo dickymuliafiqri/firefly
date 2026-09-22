@@ -36,11 +36,11 @@ const (
 )
 
 type regionalConfig struct {
-	Name       string
-	BaseURL    string
-	Platform   string
-	UserAgent  string
-	Domain     string
+	Name      string
+	BaseURL   string
+	Platform  string
+	UserAgent string
+	Domain    string
 }
 
 var regions = map[Region]regionalConfig{

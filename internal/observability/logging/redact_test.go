@@ -118,7 +118,7 @@ func TestRedactsHTTPHeadersAndMaps(t *testing.T) {
 	}
 	rawMap := map[string]string{
 		"Authorization": "Bearer inline-map-secret",
-		"normal_field": "safe",
+		"normal_field":  "safe",
 	}
 
 	out := logTo(t, []any{
@@ -149,4 +149,3 @@ func TestRedactsHTTPHeadersAndMaps(t *testing.T) {
 		}
 	}
 }
-

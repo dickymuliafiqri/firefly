@@ -75,7 +75,7 @@ func (s *OAuthStore) Get(ctx context.Context, id string) (*domain.OAuthConnectio
 	defer s.rUnlock()
 
 	var (
-		provider, accessToken string
+		provider, accessToken           string
 		email, refreshToken, psDataJSON sql.NullString
 		expiresAt, createdAt, updatedAt int64
 	)

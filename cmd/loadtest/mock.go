@@ -14,14 +14,14 @@ import (
 	"time"
 
 	"github.com/dickymuliafiqri/firefly/internal/adapter/anthropic"
-	"github.com/dickymuliafiqri/firefly/internal/security/auth"
+	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/limits"
-	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
+	"github.com/dickymuliafiqri/firefly/internal/observability/usage"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
+	"github.com/dickymuliafiqri/firefly/internal/security/auth"
 	"github.com/dickymuliafiqri/firefly/internal/server"
 	"github.com/dickymuliafiqri/firefly/internal/transport/upstream"
-	"github.com/dickymuliafiqri/firefly/internal/observability/usage"
 	"github.com/tidwall/gjson"
 )
 

@@ -10,10 +10,10 @@ import (
 	"os"
 	"testing"
 
-	"github.com/dickymuliafiqri/firefly/internal/security/auth"
 	"github.com/dickymuliafiqri/firefly/internal/config"
 	"github.com/dickymuliafiqri/firefly/internal/limits"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
+	"github.com/dickymuliafiqri/firefly/internal/security/auth"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )

@@ -11,10 +11,10 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/dickymuliafiqri/firefly/internal/domain"
-	"github.com/dickymuliafiqri/firefly/internal/transport/httpx"
 	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
+	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
+	"github.com/dickymuliafiqri/firefly/internal/transport/httpx"
 	"github.com/dickymuliafiqri/firefly/internal/transport/upstream"
 )
 
@@ -378,4 +378,3 @@ func headerCommitted(w http.ResponseWriter) bool {
 	}
 	return false
 }
-

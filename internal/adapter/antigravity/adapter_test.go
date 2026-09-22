@@ -331,4 +331,3 @@ func TestAdapter_Forward_ProjectIDResolution(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "google-companion-project-888", receivedProject)
 }
-

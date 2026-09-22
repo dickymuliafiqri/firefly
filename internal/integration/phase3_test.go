@@ -17,15 +17,15 @@ import (
 	"time"
 
 	"github.com/dickymuliafiqri/firefly/internal/adapter/anthropic"
-	"github.com/dickymuliafiqri/firefly/internal/security/auth"
+	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
 	"github.com/dickymuliafiqri/firefly/internal/config"
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/limits"
-	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
+	"github.com/dickymuliafiqri/firefly/internal/observability/usage"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
+	"github.com/dickymuliafiqri/firefly/internal/security/auth"
 	"github.com/dickymuliafiqri/firefly/internal/server"
 	"github.com/dickymuliafiqri/firefly/internal/transport/upstream"
-	"github.com/dickymuliafiqri/firefly/internal/observability/usage"
 )
 
 // TestPhase3_UpstreamFallbackChain verifies that when the primary upstream's
@@ -265,7 +265,6 @@ func TestPhase3_MultiKeyRetryLoop(t *testing.T) {
 	}
 }
 
-
 // TestPhase3_AnthropicTransparentTranslation tests that a client sending an OpenAI
 // request to an Anthropic-backed model receives an OpenAI-compatible response.
 func TestPhase3_AnthropicTransparentTranslation(t *testing.T) {
@@ -386,4 +385,3 @@ func TestPhase3_AnthropicTransparentTranslation(t *testing.T) {
 		t.Fatalf("anthropic messages = %v", msgs)
 	}
 }
-

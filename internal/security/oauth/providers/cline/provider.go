@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"github.com/dickymuliafiqri/firefly/internal/domain"
-	"github.com/dickymuliafiqri/firefly/internal/security/oauth"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
+	"github.com/dickymuliafiqri/firefly/internal/security/oauth"
 	"github.com/tidwall/gjson"
 )
 

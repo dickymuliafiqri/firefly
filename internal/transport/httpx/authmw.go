@@ -3,10 +3,10 @@ package httpx
 import (
 	"net/http"
 
-	"github.com/dickymuliafiqri/firefly/internal/security/auth"
-	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
+	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
+	"github.com/dickymuliafiqri/firefly/internal/security/auth"
 )
 
 // AuthMiddleware authenticates the gateway key and injects the tenant into the

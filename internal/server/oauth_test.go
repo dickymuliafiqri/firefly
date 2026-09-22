@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dickymuliafiqri/firefly/internal/security/auth"
 	"github.com/dickymuliafiqri/firefly/internal/domain"
+	"github.com/dickymuliafiqri/firefly/internal/ports"
+	"github.com/dickymuliafiqri/firefly/internal/security/auth"
 	"github.com/dickymuliafiqri/firefly/internal/security/oauth"
 	cline "github.com/dickymuliafiqri/firefly/internal/security/oauth/providers/cline"
-	"github.com/dickymuliafiqri/firefly/internal/ports"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -25,9 +25,9 @@ type mockOAuthProvider struct {
 	name string
 }
 
-func (m *mockOAuthProvider) Name() string            { return m.name }
+func (m *mockOAuthProvider) Name() string              { return m.name }
 func (m *mockOAuthProvider) FlowType() domain.FlowType { return domain.FlowTypeStandardAuthCode }
-func (m *mockOAuthProvider) IsSensitive() bool        { return true }
+func (m *mockOAuthProvider) IsSensitive() bool         { return true }
 
 func (m *mockOAuthProvider) PrepareAuth(ctx context.Context, redirectURI string) (*ports.AuthSession, error) {
 	return &ports.AuthSession{
@@ -349,4 +349,3 @@ func TestServer_OAuthCallback_StatelessCline(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
-

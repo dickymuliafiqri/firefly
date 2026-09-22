@@ -9,11 +9,11 @@ const (
 	IDETypeAntigravity = 9
 	PluginTypeGemini   = 2
 
-	PlatformUnspecified = 0
-	PlatformDarwinAMD64 = 1
-	PlatformDarwinARM64 = 2
-	PlatformLinuxAMD64  = 3
-	PlatformLinuxARM64  = 4
+	PlatformUnspecified  = 0
+	PlatformDarwinAMD64  = 1
+	PlatformDarwinARM64  = 2
+	PlatformLinuxAMD64   = 3
+	PlatformLinuxARM64   = 4
 	PlatformWindowsAMD64 = 5
 
 	// AntigravityIDEVersion represents the official client release version.

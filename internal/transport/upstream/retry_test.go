@@ -145,8 +145,6 @@ func TestProcessAttemptOutcome_WarpAutoRotateOn429(t *testing.T) {
 	}
 }
 
-
-
 // mockBreaker records the ok/failure signals reported to the circuit breaker.
 type mockBreaker struct {
 	reports []bool

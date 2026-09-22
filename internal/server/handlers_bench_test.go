@@ -175,4 +175,3 @@ func BenchmarkRoutingInspection_UnmarshalMap(b *testing.B) {
 		})
 	}
 }
-

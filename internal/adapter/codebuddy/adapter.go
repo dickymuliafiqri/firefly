@@ -16,10 +16,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dickymuliafiqri/firefly/internal/domain"
-	"github.com/dickymuliafiqri/firefly/internal/transport/httpx"
 	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
+	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
+	"github.com/dickymuliafiqri/firefly/internal/transport/httpx"
 	"github.com/dickymuliafiqri/firefly/internal/transport/upstream"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -208,7 +208,6 @@ func (a *Adapter) resolveToken(ctx context.Context, u *domain.Upstream, t *domai
 
 	return "", false
 }
-
 
 func sanitizeSystemPrompts(raw []byte) []byte {
 	messages := gjson.GetBytes(raw, "messages")

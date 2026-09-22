@@ -23,7 +23,6 @@ type UpstreamAdapter interface {
 	Forward(ctx context.Context, t *domain.Target, req ForwardRequest, w io.Writer) error
 }
 
-
 // AdapterRegistry manages adapters keyed by protocol.
 type AdapterRegistry interface {
 	// Register associates an adapter with a wire protocol.

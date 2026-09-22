@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dickymuliafiqri/firefly/internal/security/auth"
 	"github.com/dickymuliafiqri/firefly/internal/config"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
+	"github.com/dickymuliafiqri/firefly/internal/security/auth"
 )
 
 func TestAuthEndpoints_CompleteLifecycle(t *testing.T) {

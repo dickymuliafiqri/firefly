@@ -500,4 +500,3 @@ func calculateQuantile(hist *dto.Histogram, q float64) float64 {
 	}
 	return prevBound
 }
-

@@ -288,14 +288,14 @@ func executeSingleRequest(
 // aggregateStats compiles statistical metrics across all request results.
 func aggregateStats(cfg RunConfig, results []RequestResult, totalDuration time.Duration) *SummaryStats {
 	stats := &SummaryStats{
-		Profile:         string(cfg.Profile.Name),
-		Description:     cfg.Profile.Description,
-		Concurrency:     cfg.Concurrency,
-		TotalRequests:   len(results),
-		TotalDuration:   totalDuration,
-		ThroughputRPS:   float64(len(results)) / totalDuration.Seconds(),
-		StatusCodes:     make(map[int]int),
-		IsStream:        cfg.Profile.Stream,
+		Profile:       string(cfg.Profile.Name),
+		Description:   cfg.Profile.Description,
+		Concurrency:   cfg.Concurrency,
+		TotalRequests: len(results),
+		TotalDuration: totalDuration,
+		ThroughputRPS: float64(len(results)) / totalDuration.Seconds(),
+		StatusCodes:   make(map[int]int),
+		IsStream:      cfg.Profile.Stream,
 	}
 
 	var (

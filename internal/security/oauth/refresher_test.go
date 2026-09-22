@@ -19,9 +19,9 @@ type mockRefresherProvider struct {
 	refreshedCh chan string
 }
 
-func (m *mockRefresherProvider) Name() string            { return m.name }
+func (m *mockRefresherProvider) Name() string              { return m.name }
 func (m *mockRefresherProvider) FlowType() domain.FlowType { return m.flow }
-func (m *mockRefresherProvider) IsSensitive() bool        { return m.sensitive }
+func (m *mockRefresherProvider) IsSensitive() bool         { return m.sensitive }
 
 func (m *mockRefresherProvider) PrepareAuth(ctx context.Context, redirectURI string) (*ports.AuthSession, error) {
 	return nil, nil
