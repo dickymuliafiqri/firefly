@@ -12,6 +12,9 @@ import {
   AlertCircle,
 } from 'lucide-react';
 import { cn, copyToClipboard } from '@/lib/utils';
+import { formatCompact } from '@/lib/format';
+import { toMillis } from '@/lib/datetime';
+import { maskSecret } from '@/lib/secret';
 import { useStoreActions } from '@/core/state/store';
 
 export interface TenantTableProps {
@@ -19,19 +22,6 @@ export interface TenantTableProps {
   onToggleStatus?: (tenant: TenantDTO) => void;
   onDelete?: (tenant: TenantDTO) => void;
   onTopup?: (tenant: TenantDTO) => void;
-}
-
-function formatTokens(count?: number | null): string {
-  if (count === undefined || count === null) return '0';
-  if (count >= 1_000_000_000) return `${(count / 1_000_000_000).toFixed(2)}B`;
-  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
-  if (count >= 1_000) return `${(count / 1_000).toFixed(1)}K`;
-  return count.toLocaleString();
-}
-
-function maskApiKey(key: string): string {
-  if (key.length <= 12) return '••••••••';
-  return `${key.slice(0, 7)}••••${key.slice(-4)}`;
 }
 
 const TenantRow = React.memo(function TenantRow({
@@ -53,12 +43,7 @@ const TenantRow = React.memo(function TenantRow({
   const rps = tenant.rate_limit?.rps ?? 20;
   const maxC = tenant.rate_limit?.max_concurrent ?? 20;
 
-  const expiryMs =
-    tenant.expires_at !== undefined && tenant.expires_at !== null && tenant.expires_at > 0
-      ? tenant.expires_at < 100_000_000_000
-        ? tenant.expires_at * 1000
-        : tenant.expires_at
-      : null;
+  const expiryMs = tenant.expires_at && tenant.expires_at > 0 ? toMillis(tenant.expires_at) : null;
   const isExpired = expiryMs !== null && expiryMs < Date.now();
   const maxTokens = tenant.max_tokens ?? 0;
   const usedTokens = tenant.used_tokens ?? 0;
@@ -98,7 +83,7 @@ const TenantRow = React.memo(function TenantRow({
   const keyDisplay = tenant.api_key ? (
     <div className="flex items-center gap-1.5 mt-0.5">
       <span className="font-mono text-[11px] text-neutral-400">
-        {showKey ? tenant.api_key : maskApiKey(tenant.api_key)}
+        {showKey ? tenant.api_key : maskSecret(tenant.api_key)}
       </span>
       <button
         type="button"
@@ -147,8 +132,8 @@ const TenantRow = React.memo(function TenantRow({
       <td className="py-3 px-4 min-w-[170px]">
         <div className="flex items-center justify-between text-[11px] mb-1">
           <span className="text-neutral-300 font-medium">
-            {formatTokens(usedTokens)}
-            <span className="text-neutral-500"> / {maxTokens > 0 ? formatTokens(maxTokens) : '∞'}</span>
+            {formatCompact(usedTokens)}
+            <span className="text-neutral-500"> / {maxTokens > 0 ? formatCompact(maxTokens) : '∞'}</span>
           </span>
           {maxTokens > 0 && (
             <span

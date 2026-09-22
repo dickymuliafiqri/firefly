@@ -5,8 +5,10 @@ import { LiveHistoryPanel } from './LiveHistoryPanel';
 import { useUpstreams, useUpstreamBreakers, useRecentLogs, useTelemetryStats, useIsAuthenticated, useStoreActions } from '@/core/state/store';
 import type { LiveConnectionLog } from '@/services/schema';
 import { AnimatedCountUp } from '@/components/ui/AnimatedCountUp';
+import { formatNumber } from '@/lib/format';
 
-const formatNumber = (n: number) => new Intl.NumberFormat('en-US').format(Math.floor(n));
+/** Counters here show whole units, so the shared formatter is floored first. */
+const formatCount = (n: number) => formatNumber(Math.floor(n));
 
 export default function OverviewView() {
   const upstreams = useUpstreams();
@@ -156,7 +158,7 @@ export default function OverviewView() {
               id="statTokenInput"
               className="text-xs sm:text-sm font-mono text-neutral-200 tabular-nums stat-value"
               value={stats.inputTokens}
-              formatter={formatNumber}
+              formatter={formatCount}
             />
             <span className="text-[10px] sm:text-[11px] font-mono text-neutral-400 uppercase tracking-wider mt-0.5 stat-label">
               Token Input
@@ -169,7 +171,7 @@ export default function OverviewView() {
               id="statTokenOutput"
               className="text-xs sm:text-sm font-mono text-neutral-200 tabular-nums stat-value"
               value={stats.outputTokens}
-              formatter={formatNumber}
+              formatter={formatCount}
             />
             <span className="text-[10px] sm:text-[11px] font-mono text-neutral-400 uppercase tracking-wider mt-0.5 stat-label">
               Token Output
@@ -182,7 +184,7 @@ export default function OverviewView() {
               id="statTotalToken"
               className="text-xs sm:text-sm font-mono text-neutral-200 tabular-nums stat-value"
               value={stats.totalTokens}
-              formatter={formatNumber}
+              formatter={formatCount}
             />
             <span className="text-[10px] sm:text-[11px] font-mono text-neutral-400 uppercase tracking-wider mt-0.5 stat-label">
               Total Token
@@ -195,7 +197,7 @@ export default function OverviewView() {
               id="statTotalRequest"
               className="text-xs sm:text-sm font-mono text-neutral-200 tabular-nums stat-value"
               value={stats.totalRequests}
-              formatter={formatNumber}
+              formatter={formatCount}
             />
             <span className="text-[10px] sm:text-[11px] font-mono text-neutral-400 uppercase tracking-wider mt-0.5 stat-label">
               Total Request

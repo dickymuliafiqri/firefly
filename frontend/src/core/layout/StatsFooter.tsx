@@ -1,6 +1,7 @@
 import React from 'react';
 import { Activity, Zap, Cpu } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { formatCurrency, formatNumber } from '@/lib/format';
 
 export interface TelemetryStats {
   inputTokens: number;
@@ -15,25 +16,6 @@ export interface TelemetryStats {
 export interface StatsFooterProps {
   stats?: Partial<TelemetryStats>;
   className?: string;
-}
-
-/**
- * Format large numbers cleanly with commas
- */
-function formatNumber(num: number): string {
-  return new Intl.NumberFormat('en-US').format(num);
-}
-
-/**
- * Format currency to 4 decimal places
- */
-function formatCurrency(amount: number): string {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 4,
-    maximumFractionDigits: 4,
-  }).format(amount);
 }
 
 export const StatsFooter = React.memo(function StatsFooter({

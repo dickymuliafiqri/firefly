@@ -14,7 +14,16 @@ import type {
   PollResponseDTO,
   TursoDTO,
   TursoProvidersResponse,
-  TursoKeysResponse,
+  TursoKeyHintsResponse,
+  ProviderListResponse,
+  ProviderMutationResponse,
+  ProviderDeleteResponse,
+  ProviderKeyListResponse,
+  ProviderKeyUpsertEntry,
+  ProviderKeyUpsertResponse,
+  KeyPatchRequest,
+  KeyPatchResponse,
+  KeyDeleteResponse,
   UpstreamModelsRequest,
   UpstreamModelsResponse,
   WarpStatusDTO,
@@ -921,12 +930,14 @@ export function useTestTursoMutation() {
 }
 
 /**
- * Fetch active provider keys from Turso centralized database: GET /api/turso/providers/{id}/keys or /api/turso/keys
+ * Fetch active provider keys from Turso: GET /api/turso/providers/{id}/keys or /api/turso/keys.
+ * Secret material stays on the server — every entry carries a masked `api_key_hint`
+ * plus the id/status the dashboard needs to reconcile its local list.
  */
-export async function fetchTursoProviderKeys(
+export async function fetchTursoProviderKeyHints(
   providerId?: number,
   adminToken?: string
-): Promise<TursoKeysResponse> {
+): Promise<TursoKeyHintsResponse> {
   const headers: Record<string, string> = {
     Accept: 'application/json',
   };
@@ -944,13 +955,6 @@ export async function fetchTursoProviderKeys(
     throw new ApiError(res.status, body?.error?.message || body?.message || 'Failed to fetch keys from Turso database');
   }
   return res.json().catch(() => ({ ok: false, count: 0, keys: [] }));
-}
-
-export function useFetchTursoKeysMutation() {
-  const adminToken = useAdminToken();
-  return useMutation({
-    mutationFn: (providerId?: number) => fetchTursoProviderKeys(providerId, adminToken),
-  });
 }
 
 /**
@@ -1020,5 +1024,170 @@ export function useRotateWarpMutation() {
     },
   });
 }
+
+/**
+ * Operator provider administration: `/api/providers*` and `/api/keys/{id}`.
+ * These routes write the shared `providers`/`api_keys` tables the harvester also
+ * feeds, so every mutation reports `reloaded`/`revision` and reads back hints
+ * only — no endpoint here returns a secret.
+ */
+async function adminProviderRequest<T>(
+  path: string,
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+  adminToken: string | undefined,
+  body?: unknown
+): Promise<T> {
+  const headers: Record<string, string> = { Accept: 'application/json' };
+  if (body !== undefined) {
+    headers['Content-Type'] = 'application/json';
+  }
+  if (adminToken) {
+    headers['Authorization'] = `Bearer ${adminToken}`;
+  }
+
+  const res = await fetch(`${BASE_URL}${path}`, {
+    method,
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    const message =
+      payload?.error?.message || `Provider request failed: ${res.statusText}`;
+    throw new ApiError(res.status, message, payload?.error?.type);
+  }
+
+  return res.json();
+}
+
+function invalidateProviders() {
+  queryClient.invalidateQueries({ queryKey: ['providers'] });
+  queryClient.invalidateQueries({ queryKey: ['turso', 'providers'] });
+}
+
+export async function fetchProviders(adminToken?: string): Promise<ProviderListResponse> {
+  return adminProviderRequest<ProviderListResponse>('/api/providers', 'GET', adminToken);
+}
+
+export function useProvidersQuery() {
+  const adminToken = useAdminToken();
+  return useQuery({
+    queryKey: ['providers', adminToken],
+    queryFn: () => fetchProviders(adminToken),
+    staleTime: 15000,
+  });
+}
+
+export async function fetchProviderKeys(
+  providerId: number,
+  adminToken?: string
+): Promise<ProviderKeyListResponse> {
+  return adminProviderRequest<ProviderKeyListResponse>(
+    `/api/providers/${providerId}/keys`,
+    'GET',
+    adminToken
+  );
+}
+
+export function useProviderKeysQuery(providerId: number | null) {
+  const adminToken = useAdminToken();
+  return useQuery({
+    queryKey: ['providers', providerId, 'keys', adminToken],
+    queryFn: () => fetchProviderKeys(providerId as number, adminToken),
+    enabled: providerId !== null && providerId > 0,
+    staleTime: 10000,
+  });
+}
+
+export interface CreateProviderPayload {
+  name: string;
+  base_url: string;
+  description?: string;
+  is_active?: boolean;
+}
+
+export function useCreateProviderMutation() {
+  const adminToken = useAdminToken();
+  return useMutation({
+    mutationFn: (payload: CreateProviderPayload) =>
+      adminProviderRequest<ProviderMutationResponse>('/api/providers', 'POST', adminToken, payload),
+    onSuccess: invalidateProviders,
+  });
+}
+
+export interface UpdateProviderPayload {
+  base_url?: string;
+  description?: string;
+  is_active?: boolean;
+}
+
+export function useUpdateProviderMutation() {
+  const adminToken = useAdminToken();
+  return useMutation({
+    mutationFn: ({ id, patch }: { id: number; patch: UpdateProviderPayload }) =>
+      adminProviderRequest<ProviderMutationResponse>(
+        `/api/providers/${id}`,
+        'PUT',
+        adminToken,
+        patch
+      ),
+    onSuccess: invalidateProviders,
+  });
+}
+
+export function useDeleteProviderMutation() {
+  const adminToken = useAdminToken();
+  return useMutation({
+    mutationFn: (id: number) =>
+      adminProviderRequest<ProviderDeleteResponse>(
+        `/api/providers/${id}`,
+        'DELETE',
+        adminToken
+      ),
+    onSuccess: invalidateProviders,
+  });
+}
+
+export function useUpsertProviderKeysMutation() {
+  const adminToken = useAdminToken();
+  return useMutation({
+    mutationFn: ({
+      providerId,
+      keys,
+      reassign,
+    }: {
+      providerId: number;
+      keys: ProviderKeyUpsertEntry[];
+      reassign?: boolean;
+    }) =>
+      adminProviderRequest<ProviderKeyUpsertResponse>(
+        `/api/providers/${providerId}/keys`,
+        'POST',
+        adminToken,
+        reassign ? { keys, reassign } : { keys }
+      ),
+    onSuccess: invalidateProviders,
+  });
+}
+
+export function usePatchProviderKeyMutation() {
+  const adminToken = useAdminToken();
+  return useMutation({
+    mutationFn: ({ id, patch }: { id: number; patch: KeyPatchRequest }) =>
+      adminProviderRequest<KeyPatchResponse>(`/api/keys/${id}`, 'PATCH', adminToken, patch),
+    onSuccess: invalidateProviders,
+  });
+}
+
+export function useDeleteProviderKeyMutation() {
+  const adminToken = useAdminToken();
+  return useMutation({
+    mutationFn: (id: number) =>
+      adminProviderRequest<KeyDeleteResponse>(`/api/keys/${id}`, 'DELETE', adminToken),
+    onSuccess: invalidateProviders,
+  });
+}
+
 
 

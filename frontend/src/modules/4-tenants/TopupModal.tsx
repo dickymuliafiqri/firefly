@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/Button';
 import { Coins, Calendar, PlusCircle } from 'lucide-react';
 import type { TenantDTO } from '@/services/schema';
 import { useTopupTenantMutation } from '@/services/api';
+import { toMillis } from '@/lib/datetime';
 
 export interface TopupModalProps {
   isOpen: boolean;
@@ -83,8 +84,8 @@ export const TopupModal = React.memo(function TopupModal({
   };
 
   const formatExpiry = (epoch?: number | null) => {
-    if (!epoch) return 'Never expires';
-    const epochMs = epoch < 100_000_000_000 ? epoch * 1000 : epoch;
+    const epochMs = toMillis(epoch);
+    if (epochMs === null) return 'Never expires';
     const d = new Date(epochMs);
     const isPast = epochMs < Date.now();
     return `${d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })} ${

@@ -12,7 +12,7 @@ import {
   useRotateWarpMutation,
   checkUpstreamHealth,
   fetchUpstreamModels,
-  fetchTursoProviderKeys,
+  fetchTursoProviderKeyHints,
   type UpstreamCheckResponse,
 } from '@/services/api';
 import {
@@ -31,6 +31,7 @@ import {
   Globe,
 } from 'lucide-react';
 import { cn, copyToClipboard } from '@/lib/utils';
+import { maskSecret } from '@/lib/secret';
 import { OAuthConnectDialog } from './OAuthConnectDialog';
 
 export function getOAuthDefaultUrl(proto: string): string {
@@ -137,16 +138,6 @@ function numericDraft(value: number | null | undefined, fallback: number): strin
 }
 
 /**
- * Helper to mask secrets cleanly for display
- */
-function maskKeyForDisplay(s: string): string {
-  if (!s) return '';
-  if (s.includes('...') || s === '[REDACTED]') return s;
-  if (s.length <= 8) return 'sk-***';
-  return `${s.slice(0, 4)}...${s.slice(-4)}`;
-}
-
-/**
  * KeyRowItem — Memoized key slot row for high performance rendering of 100+ keys
  * (Adheres to Vercel React Best Practice: rerender-memo & rendering-content-visibility)
  */
@@ -171,7 +162,7 @@ const KeyRowItem = React.memo(function KeyRowItem({
     }
   }, [item.secret]);
 
-  const displaySecret = maskKeyForDisplay(item.secret);
+  const displaySecret = maskSecret(item.secret);
 
   return (
     <div
@@ -540,7 +531,7 @@ export const UpstreamModal = React.memo(function UpstreamModal({
   const [keySearch, setKeySearch] = useState('');
   const deferredKeySearch = useDeferredValue(keySearch);
   const [keyFilter, setKeyFilter] = useState<'all' | 'valid' | 'invalid' | 'rate_limited' | 'unchecked'>('all');
-  const [isImportingDbKeys, setIsImportingDbKeys] = useState(false);
+  const [isBindingProviderKeys, setIsBindingProviderKeys] = useState(false);
   const [isDbPickerOpen, setIsDbPickerOpen] = useState(false);
   const [selectedImportProviderId, setSelectedImportProviderId] = useState('');
 
@@ -796,9 +787,13 @@ export const UpstreamModal = React.memo(function UpstreamModal({
   );
 
   // -------------------------------------------------------------
-  // Import Keys from Turso Database Handler
+  // Bind Provider Keys Handler
   // -------------------------------------------------------------
-  const handleImportKeysFromDatabase = useCallback(
+  // The gateway pools a bound provider's active keys server-side (the store
+  // reads api_keys when it builds the snapshot), so this action only needs the
+  // provider's key ids to keep the local list aligned. Key material never
+  // reaches the browser: the read surface answers with masked hints only.
+  const handleBindProviderKeys = useCallback(
     async (targetProviderId?: number) => {
       if (!isTursoConfigured) {
         addToast({
@@ -832,10 +827,6 @@ export const UpstreamModal = React.memo(function UpstreamModal({
         }
         if (tursoProviders.length === 1) {
           effectiveProviderId = tursoProviders[0].id;
-          setProviderId(String(tursoProviders[0].id));
-          if (tursoProviders[0].base_url && (!baseUrl || baseUrl === 'https://api.openai.com/v1')) {
-            setBaseUrl(tursoProviders[0].base_url);
-          }
         } else {
           // Open picker modal
           setSelectedImportProviderId(tursoProviders[0] ? String(tursoProviders[0].id) : '');
@@ -844,125 +835,55 @@ export const UpstreamModal = React.memo(function UpstreamModal({
         }
       }
 
-      setIsImportingDbKeys(true);
+      setIsBindingProviderKeys(true);
       try {
-        const res = await fetchTursoProviderKeys(effectiveProviderId, adminToken);
-        const incoming = res.keys || [];
-        if (incoming.length === 0) {
-          addToast({
-            title: 'No Active Keys',
-            message: 'No active keys found for this provider in the Turso database.',
-            type: 'info',
-          });
-          setIsDbPickerOpen(false);
-          return;
-        }
+        const res = await fetchTursoProviderKeyHints(effectiveProviderId, adminToken);
+        const activeIds = new Set((res.keys || []).map((k) => k.id));
 
-        // Reconcile the credential pool against the database set instead of
-        // blindly appending. The goal is that after import, the app's key list
-        // exactly mirrors the provider's active keys in the database:
-        //   - keys present in the DB but missing locally are ADDED
-        //   - keys present locally but no longer in the DB are REMOVED
-        //   - keys present in both are KEPT (preserving local rps/limits/status)
-        // This mirrors the background Turso syncer, which rebuilds the pool
-        // fresh from the DB on every load, and makes repeated imports idempotent
-        // (no duplicate accumulation).
-        //
-        // Identity is anchored to the DB `api_keys.id` (stable), with the
-        // trimmed secret as a fallback so keys imported before this change
-        // (which lacked a DB-anchored ref) still reconcile instead of duplicating.
-        const prefix = name.trim() || 'upstream';
-
-        // Extract the DB api_keys.id embedded in a ref of the form
-        // "<prefix>-key-<id>" (the scheme the backend syncer uses). Returns
-        // null when the ref does not carry a numeric DB id suffix.
+        // Identity is anchored to the DB api_keys.id embedded in a ref of the
+        // form "<prefix>-key-<id>" (the scheme the backend pooler mints). An
+        // entry anchored to an id the provider no longer serves would keep a
+        // dead credential in the pool, so it is dropped here — the same
+        // reconcile the raw-secret import used to perform. Locally minted refs
+        // are left untouched.
         const dbIdFromRef = (ref: string): number | null => {
           const m = /-key-(\d+)$/.exec(ref);
           if (!m) return null;
           const parsed = parseInt(m[1], 10);
           return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
         };
-
-        const validIncoming = incoming.filter((k) => k.api_key && k.api_key.trim());
-
-        // Index existing form-state keys by DB id and by secret for matching.
-        const existingById = new Map<number, KeyItem>();
-        const existingBySecret = new Map<string, KeyItem>();
-        for (const k of keys) {
+        let removed = 0;
+        const nextKeys = keys.filter((k) => {
           const id = dbIdFromRef(k.ref);
-          if (id !== null) existingById.set(id, k);
-          const sec = k.secret.trim();
-          if (sec) existingBySecret.set(sec, k);
-        }
-
-        // Build the reconciled list strictly from the database set.
-        let addedCount = 0;
-        let keptCount = 0;
-        const reconciled: KeyItem[] = validIncoming.map((item) => {
-          const secret = item.api_key.trim();
-          const canonicalRef = `${prefix}-key-${item.id}`;
-          const existing = existingById.get(item.id) ?? existingBySecret.get(secret);
-          if (existing) {
-            keptCount += 1;
-            // Preserve the operator's local overrides & last-known status, but
-            // re-anchor the ref/secret to the canonical DB identity so future
-            // imports match by id and stay idempotent.
-            return {
-              ...existing,
-              id: `turso-${item.id}`,
-              ref: canonicalRef,
-              secret,
-            };
-          }
-          addedCount += 1;
-          return {
-            id: `turso-${item.id}`,
-            ref: canonicalRef,
-            secret,
-            status: 'idle',
-          };
+          if (id === null || activeIds.has(id)) return true;
+          removed += 1;
+          return false;
         });
+        if (removed > 0) setKeys(nextKeys);
 
-        const removedCount = keys.length - keptCount;
-
-        if (addedCount === 0 && removedCount === 0) {
-          addToast({
-            title: 'Already In Sync',
-            message: `All ${reconciled.length} key(s) already match the database. Nothing to change.`,
-            type: 'info',
-          });
-          setIsDbPickerOpen(false);
-          return;
+        const provider = tursoProviders.find((p) => p.id === effectiveProviderId);
+        setProviderId(String(effectiveProviderId));
+        if (provider?.base_url && (!baseUrl || baseUrl === 'https://api.openai.com/v1')) {
+          setBaseUrl(provider.base_url);
         }
-
-        setKeys(reconciled);
         setIsDbPickerOpen(false);
 
-        // Update providerId and baseUrl if not yet set
-        if (!providerId && effectiveProviderId) {
-          setProviderId(String(effectiveProviderId));
-          const prov = tursoProviders.find((p) => p.id === effectiveProviderId);
-          if (prov && prov.base_url && (!baseUrl || baseUrl === 'https://api.openai.com/v1')) {
-            setBaseUrl(prov.base_url);
-          }
-        }
-
         addToast({
-          title: 'Keys Synced from Database',
+          title: 'Provider Keys Bound',
           message:
-            `Credential pool reconciled with the database: ` +
-            `${addedCount} added, ${removedCount} removed, ${keptCount} kept ` +
-            `(${reconciled.length} total).`,
+            `"${provider?.name ?? `provider ${effectiveProviderId}`}" supplies ${activeIds.size} active key(s) from ` +
+            `the database. The gateway loads them server-side, so no secret is copied into the browser.` +
+            (removed > 0 ? ` Removed ${removed} stale local entr${removed === 1 ? 'y' : 'ies'}.` : ''),
           type: 'success',
         });
       } catch (err) {
         addToast({
-          title: 'Database Import Failed',
-          message: err instanceof Error ? err.message : 'Failed to retrieve keys from database',
+          title: 'Provider Binding Failed',
+          message: err instanceof Error ? err.message : 'Failed to read provider keys from the database',
           type: 'error',
         });
       } finally {
-        setIsImportingDbKeys(false);
+        setIsBindingProviderKeys(false);
       }
     },
     [
@@ -971,7 +892,6 @@ export const UpstreamModal = React.memo(function UpstreamModal({
       tursoProviders,
       adminToken,
       keys,
-      name,
       baseUrl,
       addToast,
     ]
@@ -2753,18 +2673,18 @@ export const UpstreamModal = React.memo(function UpstreamModal({
                     type="button"
                     variant="minimal"
                     size="sm"
-                    onClick={() => handleImportKeysFromDatabase()}
-                    disabled={isImportingDbKeys || !isTursoConfigured}
+                    onClick={() => handleBindProviderKeys()}
+                    disabled={isBindingProviderKeys || !isTursoConfigured}
                     title={!isTursoConfigured ? 'Turso database is not configured in Settings' : undefined}
                     leftIcon={
-                      isImportingDbKeys ? (
+                      isBindingProviderKeys ? (
                         <Loader2 className="w-3.5 h-3.5 animate-spin text-neutral-400" />
                       ) : (
                         <Database className="w-3.5 h-3.5 text-neutral-400" />
                       )
                     }
                   >
-                    {isImportingDbKeys ? 'Importing...' : 'Import from Database'}
+                    {isBindingProviderKeys ? 'Binding...' : 'Bind Provider Keys'}
                   </Button>
 
                   <Button
@@ -3537,7 +3457,7 @@ export const UpstreamModal = React.memo(function UpstreamModal({
                         <div className="flex items-center gap-2 truncate min-w-0 flex-1">
                           <span className="text-[10px] text-neutral-500 tabular-nums w-6">#{idx + 1}</span>
                           <span className="text-neutral-300 font-medium text-[11px] truncate">{k.ref}</span>
-                          <span className="text-neutral-500 text-[10px] truncate">{maskKeyForDisplay(k.secret)}</span>
+                          <span className="text-neutral-500 text-[10px] truncate">{maskSecret(k.secret)}</span>
                         </div>
 
                         <div className="flex items-center gap-3 shrink-0">
@@ -4033,10 +3953,10 @@ export const UpstreamModal = React.memo(function UpstreamModal({
         title={
           <div className="flex items-center gap-2">
             <Database className="w-4 h-4 text-emerald-400" />
-            <span>Import Keys from Database</span>
+            <span>Bind Provider Keys</span>
           </div>
         }
-        description="Select a Harvester provider to import active keys from Turso database."
+        description="Select a Harvester provider: the gateway loads its active keys from Turso server-side, so no secret enters the dashboard."
         size="sm"
       >
         <div className="space-y-4 pt-1 font-mono text-xs">
@@ -4069,17 +3989,17 @@ export const UpstreamModal = React.memo(function UpstreamModal({
               type="button"
               variant="minimal"
               size="sm"
-              disabled={!selectedImportProviderId || isImportingDbKeys}
-              isLoading={isImportingDbKeys}
+              disabled={!selectedImportProviderId || isBindingProviderKeys}
+              isLoading={isBindingProviderKeys}
               onClick={() => {
                 const pid = parseInt(selectedImportProviderId, 10);
                 if (!isNaN(pid) && pid > 0) {
-                  void handleImportKeysFromDatabase(pid);
+                  void handleBindProviderKeys(pid);
                 }
               }}
               leftIcon={<Database className="w-3.5 h-3.5 text-neutral-400" />}
             >
-              Import Keys
+              Bind Provider
             </Button>
           </div>
         </div>

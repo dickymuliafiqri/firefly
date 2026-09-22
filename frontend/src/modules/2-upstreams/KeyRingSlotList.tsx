@@ -1,5 +1,6 @@
 import React from 'react';
 import type { CredentialKeyDTO } from '@/services/schema';
+import { maskSecret } from '@/lib/secret';
 import { Key } from 'lucide-react';
 
 export interface KeyRingSlotListProps {
@@ -31,13 +32,12 @@ export const KeyRingSlotList = React.memo(function KeyRingSlotList({
         {slots.slice(0, 2).map((slot, index) => {
           const isRevoked = slot.secret?.includes('revoked');
           const isCooldown = false;
-          const maskedSecret = slot.secret
-            ? slot.secret.length > 8
-              ? `${slot.secret.slice(0, 4)}...${slot.secret.slice(-3)}`
-              : slot.secret
-            : slot.api_key
-            ? `${slot.api_key.slice(0, 4)}...${slot.api_key.slice(-3)}`
-            : 'sk-***';
+          // Slot secrets arrive from the snapshot's KeyRing, but a slot list can
+          // also be rendered from the settings DTO, where the server already
+          // masked them — maskSecret is idempotent so either provenance renders
+          // correctly.
+          const rawSecret = slot.secret || slot.api_key || '';
+          const maskedSecret = rawSecret ? maskSecret(rawSecret) : 'sk-***';
 
           return (
             <div

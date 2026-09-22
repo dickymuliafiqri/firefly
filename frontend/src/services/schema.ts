@@ -228,19 +228,137 @@ export interface TursoProvidersResponse {
   providers: TursoProviderDTO[];
 }
 
-export interface TursoKeyDTO {
+/** Provider key as exposed by the legacy /api/turso read surface: the secret is
+ *  masked, so the dashboard can reconcile by id but never holds key material. */
+export interface TursoKeyHintDTO {
   id: number;
   provider_id: number;
-  api_key: string;
+  api_key_hint: string;
   status: string;
   is_active: boolean;
 }
 
-export interface TursoKeysResponse {
+export interface TursoKeyHintsResponse {
   ok: boolean;
   provider_id?: number;
   count: number;
-  keys: TursoKeyDTO[];
+  keys: TursoKeyHintDTO[];
+}
+
+/**
+ * Operator provider surface (`/api/providers*`). Mirrors `turso.ProviderRecord`:
+ * the row plus the count of keys routable right now.
+ */
+export interface ProviderRecordDTO {
+  id: number;
+  name: string;
+  base_url: string;
+  description?: string;
+  is_active: boolean;
+  active_keys: number;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ProviderListResponse {
+  count: number;
+  providers: ProviderRecordDTO[];
+}
+
+export interface ProviderMutationResponse {
+  provider: ProviderRecordDTO;
+  /** Whether the routing snapshot was rebuilt before the response was written.
+   *  `false` is not an error: the write committed and bumped the catalog
+   *  revision, so the periodic syncer publishes it on its next tick. */
+  reloaded: boolean;
+}
+
+export interface ProviderDeleteResponse {
+  status: string;
+  id: number;
+  deleted_keys: number;
+  reloaded: boolean;
+}
+
+export type ProviderKeyStatus = 'active' | 'deactivated' | 'expired' | 'revoked';
+
+/** The statuses an operator may set. Unknown statuses are accepted by the
+ *  machine sync path but stay inert, so the picker must not invent one. */
+export const PROVIDER_KEY_STATUSES: ProviderKeyStatus[] = [
+  'active',
+  'deactivated',
+  'expired',
+  'revoked',
+];
+
+/**
+ * One stored credential as the operator surface returns it: the row plus a
+ * masked `api_key_hint`. The secret is never returned, and `account_metadata`
+ * (a vault blob) is write-only.
+ */
+export interface ProviderKeyRecordDTO {
+  id: number;
+  provider_id: number;
+  status: ProviderKeyStatus | string;
+  is_active: boolean;
+  expires_at?: number | null;
+  last_used_at: number;
+  total_requests: number;
+  created_at: number;
+  updated_at: number;
+  api_key_hint: string;
+}
+
+export interface ProviderKeyListResponse {
+  provider_id: number;
+  count: number;
+  keys: ProviderKeyRecordDTO[];
+}
+
+/** One entry of a key batch. `api_key` must carry the real secret: this surface
+ *  only ever displays hints, so a hint-shaped value is refused by the server. */
+export interface ProviderKeyUpsertEntry {
+  api_key: string;
+  status?: ProviderKeyStatus | string;
+  /** Unix milliseconds. Omit to keep the stored expiry, `null` to clear it. */
+  expires_at?: number | null;
+  account_metadata?: Record<string, unknown>;
+}
+
+export interface ProviderKeyUpsertResponse {
+  created: number;
+  updated: number;
+  unchanged: number;
+  reassigned: number;
+  key_ids: number[];
+  revision: number;
+  pushed: boolean;
+  reloaded: boolean;
+}
+
+export interface KeyPatchRequest {
+  /** Rotates the credential in place; the key keeps its id, so bound
+   *  `<upstream>-key-<id>` refs survive. */
+  api_key?: string;
+  status?: ProviderKeyStatus | string;
+  is_active?: boolean;
+  /** Unix milliseconds, or `null` to clear the stored expiry. */
+  expires_at?: number | null;
+}
+
+export interface KeyPatchResponse {
+  key: ProviderKeyRecordDTO;
+  revision: number;
+  pushed: boolean;
+  reloaded: boolean;
+}
+
+export interface KeyDeleteResponse {
+  status: string;
+  id: number;
+  revision: number;
+  pushed: boolean;
+  reloaded: boolean;
 }
 
 export interface TokenSaverDTO {
