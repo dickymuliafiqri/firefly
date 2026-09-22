@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo } from 'react';
 import { BenchmarkForm } from './BenchmarkForm';
+import { BenchmarkResults } from './BenchmarkResults';
 import { useBenchmarkRun } from './useBenchmarkRun';
 import { summarize } from './benchmarkStats';
 import { MetricPill } from '../shared/MetricPill';
@@ -89,6 +90,8 @@ export default React.memo(function BenchmarkTool() {
         />
         <MetricPill label="Tokens" value={summary.totalTokens} />
       </div>
+
+      <BenchmarkResults results={results} />
     </div>
   );
 });
