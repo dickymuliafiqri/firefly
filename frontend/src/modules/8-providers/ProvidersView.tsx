@@ -320,7 +320,7 @@ export default function ProvidersView() {
               <div className="rounded-xl border border-white/[0.06] bg-transparent overflow-hidden">
                 <div className="px-4 py-2.5 border-b border-white/[0.06] flex items-center justify-between">
                   <span className="font-mono text-[10px] uppercase tracking-wider text-neutral-500">
-                    Credentials ({keys.length})
+                    Credentials ({keys.length.toLocaleString()})
                   </span>
                   <Button
                     variant="minimal"
@@ -333,6 +333,7 @@ export default function ProvidersView() {
                 </div>
 
                 <ProviderKeyTable
+                  providerId={selected.id}
                   keys={keys}
                   isLoading={keysQuery.isLoading}
                   onEdit={setPatchTarget}
