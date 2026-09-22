@@ -66,8 +66,10 @@ codebase (`App.tsx`, `core/layout/Shell.tsx`, the existing module views).
   are deliberately *not* slice fields, and no effect writes them. (React docs: "You Might
   Not Need an Effect".)
 - **Effects only synchronize with the outside world.** The benchmark run is started by the
-  click handler, not by an effect; the only effect is abort-on-unmount cleanup, mirroring
-  `chat/ChatWindow.tsx`'s existing teardown.
+  click handler, not by an effect. There is deliberately no unmount effect either: the run's
+  `AbortController` and run id live at module scope in `useBenchmarkRun.ts`, so switching tools
+  mid-run neither kills the run nor disables Stop — returning to the Benchmark tool shows the
+  live progress. `chat/ChatWindow.tsx` keeps its existing abort-on-unmount teardown unchanged.
 - **Suspense per tool.** `React.lazy` + `<Suspense fallback={<ModuleSkeleton />}>` per tool
   chunk, exactly like `App.tsx:169`, plus `preload()` on sidebar hover/focus like the header
   tabs. Tool switching wraps the store setter in `startTransition`, mirroring
@@ -79,8 +81,8 @@ codebase (`App.tsx`, `core/layout/Shell.tsx`, the existing module views).
 - **`React.memo` at the leaves** with stable props, and static JSX/icon nodes hoisted to
   module scope (`rendering-hoist-jsx`), as the existing components do.
 - **Refs for transient high-frequency values.** The worker queue, abort controller, and
-  in-flight bookkeeping live in refs/closures; only the bounded result list (≤ 100 entries)
-  enters the store.
+  in-flight bookkeeping live in module-scope closures (`useBenchmarkRun.ts`); only the bounded
+  result list (≤ 100 entries) enters the store.
 - **Stable identities.** Result rows are keyed by their 1-based request index, which is
   unique and never reordered.
 - **Accessibility by markup.** Sidebar entries and the collapse toggle are real `<button>`
@@ -187,9 +189,12 @@ scope and `preload` imports the same path.
   hide the reopen affordance), and it exposes `aria-expanded` plus `aria-controls` pointing at
   the panel's `id`. The transition is skipped under `prefers-reduced-motion`.
 - `shared/useModelOptions()` centralises what `chat/ChatWindow.tsx:127-199` does today (enabled
-  models/combos, availability via upstream enabled state and breaker state, auto-pick of a
-  default selection). Chat consumes it unchanged; Benchmark uses the same list for its model
-  dropdown. This is a pure extraction — the chat's rendered output must not change.
+  models/combos, availability via upstream enabled state and breaker state, the ordered
+  `options` list, and `firstAvailableId`). Chat consumes it unchanged; Benchmark uses the same
+  list for its model dropdown. Each tool keeps its own one-line auto-pick effect writing its own
+  store field (`playgroundSelectedModel` for chat, `benchmarkModel` for the benchmark), because
+  a shared hook cannot own writes to two different tools' state. This is a pure extraction —
+  the chat's rendered output must not change.
 - `shared/MetricPill.tsx` is the metric card primitive (`label`, `value`) already spelled out
   inline four times in `TokenStreamWaterfall` (`p-2 rounded-lg border border-white/[0.04]`,
   `text-[10px] text-neutral-500` label, `text-neutral-200 font-medium text-sm tabular-nums`
@@ -199,7 +204,7 @@ scope and `preload` imports the same path.
 ## State
 
 Two new slices registered in `core/state/store.ts` with the existing pattern (slice + atomic
-selector hooks + a map entry in the singleton action dispatcher):
+selector hooks + a per-slice action map like `PLAYGROUND_ACTIONS`):
 
 `core/state/toolsSlice.ts`
 
@@ -218,16 +223,20 @@ Actions: `setActiveToolId`, `toggleTelemetry`.
 | `benchmarkPrompt: string` | `'Write a short paragraph about a firefly.'` | editable |
 | `benchmarkRequests: number` | `10` | clamped 1–100 on input |
 | `benchmarkConcurrency: number` | `2` | clamped 1–20 on input |
-| `benchmarkStatus: 'idle' \| 'running' \| 'done' \| 'aborted'` | `'idle'` | |
+| `benchmarkStatus: BenchmarkRunState` | `'idle'` | run state, declared in `benchmarkSlice.ts` as `'idle' \| 'running' \| 'done' \| 'aborted'` |
 | `benchmarkTotal: number` | `0` | frozen at run start |
 | `benchmarkCompleted: number` | `0` | drives the `completed/total` progress |
 | `benchmarkResults: BenchmarkRequestResult[]` | `[]` | **replaced** at each run start, never appended across runs |
+| `benchmarkWallClockMs: number \| null` | `null` | wall-clock of the last run, measured by `useBenchmarkRun` (not derivable from the results); `null` until the first run ends |
 
 Actions: the field setters, `startBenchmark(total)`, `appendBenchmarkResult(result)`,
-`finishBenchmark(status)`, `resetBenchmark()`.
+`finishBenchmark(status, wallClockMs)`, `resetBenchmark()`.
 
-Aggregate statistics are **not** slice fields — they are `useMemo` derivations in
-`BenchmarkTool`/`BenchmarkResults` from `benchmarkResults` plus `benchmarkStats.ts` helpers.
+Aggregate statistics over the results are **not** slice fields — they are `useMemo` derivations
+in `BenchmarkTool`/`BenchmarkResults` from `benchmarkResults` plus `benchmarkStats.ts` helpers.
+`benchmarkWallClockMs` is the one exception: elapsed wall-clock across the whole run cannot be
+recovered from per-request durations once requests overlap, so the hook measures it and stores
+it at `finishBenchmark`.
 
 Benchmark state lives in the slice, not in component state, so the results survive switching
 to Chat and back — the same guarantee chat messages already have.
@@ -249,11 +258,11 @@ to Chat and back — the same guarantee chat messages already have.
 request:
 
 ```ts
-export type BenchmarkStatus = 'ok' | 'error' | 'aborted';
+export type BenchmarkRequestStatus = 'ok' | 'error' | 'aborted';
 
 export interface BenchmarkRequestResult {
   index: number;            // 1-based dispatch order
-  status: BenchmarkStatus;
+  status: BenchmarkRequestStatus;
   ttftMs: number | null;    // null when no content delta ever arrived
   totalMs: number;          // until [DONE] / socket close / abort
   tokens: number;           // content deltas received
@@ -337,8 +346,10 @@ follow-up.
 - The repo has **no JavaScript test runner** (no vitest/jest and no `test` script). Adding one
   is a separate tooling decision, so behavioural verification is done in a real browser and
   the static gates above stay the automated ones.
-- Browser sandbox (reusing the committed `configs/e2e-playground/`, whose upstream points at
-  `http://127.0.0.1:19099/v1` and whose tenant key is the demo key the UI auto-picks):
+- Browser sandbox (reusing the local `configs/e2e-playground/` directory, which `.gitignore:168`
+  excludes — `configs/` is not committed, so the plan carries the file contents and a mock
+  upstream script that can recreate it. Its upstream points at `http://127.0.0.1:19099/v1` and
+  its tenant key is the demo key the UI auto-picks):
   1. start a mock upstream on `127.0.0.1:19099` that streams OpenAI-shaped SSE;
   2. `go run ./cmd/firefly -config-dir configs/e2e-playground -addr 127.0.0.1:8080`;
   3. `cd frontend && npm run dev` (Vite on :3000, proxying `/v1` and `/api` to :8080);
