@@ -12,7 +12,8 @@ export type TabId =
   | 'tenants'
   | 'telemetry'
   | 'settings'
-  | 'playground';
+  | 'playground'
+  | 'providers';
 
 export interface TabItem {
   id: TabId;
@@ -27,6 +28,7 @@ export const TABS: readonly TabItem[] = [
   { id: 'telemetry', label: 'Telemetry' },
   { id: 'settings', label: 'Settings' },
   { id: 'playground', label: 'Playground' },
+  { id: 'providers', label: 'Providers' },
 ];
 
 export interface HeaderProps {

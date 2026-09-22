@@ -8,9 +8,10 @@ import {
   BarChart3,
   Sliders,
   Terminal,
+  Database,
 } from 'lucide-react';
 
-// Dynamic code-split imports for all 7 modules (Vercel Best Practice: bundle-dynamic-imports)
+// Dynamic code-split imports for all 8 modules (Vercel Best Practice: bundle-dynamic-imports)
 const OverviewView = lazy(() => import('./1-overview/OverviewView'));
 const UpstreamsView = lazy(() => import('./2-upstreams/UpstreamsView'));
 const ModelsView = lazy(() => import('./3-models/ModelsView'));
@@ -18,6 +19,7 @@ const TenantsView = lazy(() => import('./4-tenants/TenantsView'));
 const TelemetryView = lazy(() => import('./5-telemetry/TelemetryView'));
 const SettingsView = lazy(() => import('./6-settings/SettingsView'));
 const PlaygroundView = lazy(() => import('./7-playground/PlaygroundView'));
+const ProvidersView = lazy(() => import('./8-providers/ProvidersView'));
 
 /**
  * Pluggable Module Registry for Firefly
@@ -86,6 +88,15 @@ export const MODULE_REGISTRY: Record<string, FireflyModuleDefinition> = {
     icon: Terminal,
     component: PlaygroundView,
     preload: () => import('./7-playground/PlaygroundView'),
+  },
+  providers: {
+    id: 'providers',
+    title: 'Providers',
+    description: 'Stored provider credential pools and key lifecycle management',
+    order: 8,
+    icon: Database,
+    component: ProvidersView,
+    preload: () => import('./8-providers/ProvidersView'),
   },
 };
 

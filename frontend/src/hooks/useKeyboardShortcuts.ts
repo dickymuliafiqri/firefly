@@ -18,6 +18,7 @@ const TAB_KEYS: Record<string, TabId> = {
   '5': 'telemetry',
   '6': 'settings',
   '7': 'playground',
+  '8': 'providers',
 };
 
 const NATIVE_ACTIVATION_TAGS = new Set(['button', 'summary']);
