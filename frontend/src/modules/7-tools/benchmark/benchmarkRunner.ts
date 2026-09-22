@@ -88,48 +88,53 @@ export async function benchmarkRequest({
     const decoder = new TextDecoder();
     let buffer = '';
 
-    for (;;) {
-      const { done, value } = await reader.read();
-      const readEnd = performance.now();
-      if (done) break;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        const readEnd = performance.now();
+        if (done) break;
 
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
 
-      let batchTokens = 0;
-      let streamError: string | null = null;
-      let sawDone = false;
+        let batchTokens = 0;
+        let streamError: string | null = null;
+        let sawDone = false;
 
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith(':')) continue;
-        if (!trimmed.startsWith('data: ')) continue;
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith(':')) continue;
+          if (!trimmed.startsWith('data: ')) continue;
 
-        const payload = trimmed.slice(6);
-        if (payload === '[DONE]') {
-          sawDone = true;
-          continue;
-        }
-
-        try {
-          const parsed = JSON.parse(payload);
-          if (parsed?.error) {
-            streamError = parsed.error.message || parsed.error.type || 'upstream stream error';
+          const payload = trimmed.slice(6);
+          if (payload === '[DONE]') {
+            sawDone = true;
             continue;
           }
-          if (parsed?.choices?.[0]?.delta?.content) batchTokens++;
-        } catch {
-          // Ignore a partial frame; the next read completes it.
-        }
-      }
 
-      if (batchTokens > 0) {
-        tokens += batchTokens;
-        if (firstTokenTime === null) firstTokenTime = Math.round(readEnd - startTime);
+          try {
+            const parsed = JSON.parse(payload);
+            if (parsed?.error) {
+              streamError = parsed.error.message || parsed.error.type || 'upstream stream error';
+              continue;
+            }
+            if (parsed?.choices?.[0]?.delta?.content) batchTokens++;
+          } catch {
+            // Ignore a partial frame; the next read completes it.
+          }
+        }
+
+        if (batchTokens > 0) {
+          tokens += batchTokens;
+          if (firstTokenTime === null) firstTokenTime = Math.round(readEnd - startTime);
+        }
+        if (streamError) return finish('error', streamError);
+        if (sawDone) break;
       }
-      if (streamError) return finish('error', streamError);
-      if (sawDone) break;
+    } finally {
+      // Release the connection without draining the frames that follow [DONE].
+      await reader.cancel().catch(() => {});
     }
 
     return finish('ok', null);

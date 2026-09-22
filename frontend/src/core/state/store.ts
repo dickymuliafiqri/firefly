@@ -10,7 +10,7 @@ import { createBenchmarkSlice, type BenchmarkSlice } from './benchmarkSlice';
 export type AppStore = SettingsSlice & TelemetrySlice & UISlice & ToolsSlice & BenchmarkSlice & PlaygroundSlice;
 
 /**
- * Root Zustand Store combining Settings, Telemetry, UI, and Playground slices.
+ * Root Zustand Store combining Settings, Telemetry, UI, Tools, Benchmark, and Playground slices.
  * Adheres strictly to Vercel React Best Practice: rerender-defer-reads
  * by exposing granular atomic hooks rather than raw full-store subscriptions.
  */
