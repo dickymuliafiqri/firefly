@@ -1,6 +1,7 @@
 import React from 'react';
 import { Zap } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { MetricPill } from '../shared/MetricPill';
 import type { ChunkTiming } from '@/core/state/playgroundSlice';
 
 export type { ChunkTiming };
@@ -76,33 +77,13 @@ export const TokenStreamWaterfall = React.memo(function TokenStreamWaterfall({
 
       {/* Live Telemetry Pill Grid */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
-        <div className="p-2 rounded-lg bg-transparent border border-white/[0.04]">
-          <div className="text-[10px] text-neutral-500">TTFT</div>
-          <div className="text-neutral-200 font-medium text-sm tabular-nums mt-0.5">
-            {ttftMs !== null ? `${ttftMs}ms` : '—'}
-          </div>
-        </div>
-
-        <div className="p-2 rounded-lg bg-transparent border border-white/[0.04]">
-          <div className="text-[10px] text-neutral-500">Velocity</div>
-          <div className="text-neutral-200 font-medium text-sm tabular-nums mt-0.5">
-            {tps !== null ? `${tps} t/s` : '—'}
-          </div>
-        </div>
-
-        <div className="p-2 rounded-lg bg-transparent border border-white/[0.04]">
-          <div className="text-[10px] text-neutral-500">Chunks</div>
-          <div className="text-neutral-200 font-medium text-sm tabular-nums mt-0.5">
-            {totalTokens}
-          </div>
-        </div>
-
-        <div className="p-2 rounded-lg bg-transparent border border-white/[0.04]">
-          <div className="text-[10px] text-neutral-500">Elapsed</div>
-          <div className="text-neutral-200 font-medium text-sm tabular-nums mt-0.5">
-            {totalDurationMs !== null ? `${(totalDurationMs / 1000).toFixed(2)}s` : '—'}
-          </div>
-        </div>
+        <MetricPill label="TTFT" value={ttftMs !== null ? `${ttftMs}ms` : '—'} />
+        <MetricPill label="Velocity" value={tps !== null ? `${tps} t/s` : '—'} />
+        <MetricPill label="Chunks" value={totalTokens} />
+        <MetricPill
+          label="Elapsed"
+          value={totalDurationMs !== null ? `${(totalDurationMs / 1000).toFixed(2)}s` : '—'}
+        />
       </div>
 
       {/* Waterfall Timing Bars */}
