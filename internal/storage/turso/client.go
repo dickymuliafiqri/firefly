@@ -16,9 +16,11 @@ import (
 
 // Config configures the Turso embedded replica client.
 type Config struct {
-	RemoteURL    string
-	AuthToken    string
-	LocalPath    string
+	RemoteURL string
+	AuthToken string
+	LocalPath string
+	// SyncInterval is the base pull cadence; the syncer backs off from it when
+	// idle. Zero means DefaultSyncInterval.
 	SyncInterval time.Duration
 	Logger       *slog.Logger
 }
@@ -39,7 +41,7 @@ func NewClient(ctx context.Context, cfg Config) (*Client, error) {
 		cfg.LocalPath = "data/firefly.db"
 	}
 	if cfg.SyncInterval <= 0 {
-		cfg.SyncInterval = 15 * time.Second
+		cfg.SyncInterval = DefaultSyncInterval
 	}
 	logger := cfg.Logger
 	if logger == nil {

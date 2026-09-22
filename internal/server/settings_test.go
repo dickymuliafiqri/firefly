@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -19,6 +20,18 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/registry"
 	"github.com/dickymuliafiqri/firefly/internal/security/auth"
 )
+
+// skipUnlessPosixModes skips the enclosing subtest on Windows, where os.Chmod
+// only toggles the read-only flag and Stat reports 0666/0777 for every file, so
+// an owner-only assertion can never hold there. Call it from inside a t.Run so
+// the parent test's platform-independent checks still run; CI exercises the
+// real assertion on Linux, the platform the service ships on.
+func skipUnlessPosixModes(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits are not representable on Windows")
+	}
+}
 
 func TestSettingsCORS(t *testing.T) {
 	reg := registry.New()
@@ -151,15 +164,18 @@ func TestSettingsGetAndPost(t *testing.T) {
 
 	// Credential-bearing files must be owner-only: upstreams.json holds raw
 	// provider keys and tenants.json holds tenant gateway keys.
-	for _, name := range []string{config.FileNameUpstreams, config.FileNameTenants} {
-		info, err := os.Stat(filepath.Join(tmpDir, name))
-		if err != nil {
-			t.Fatalf("stat %s: %v", name, err)
+	t.Run("credential files are owner-only", func(t *testing.T) {
+		skipUnlessPosixModes(t)
+		for _, name := range []string{config.FileNameUpstreams, config.FileNameTenants} {
+			info, err := os.Stat(filepath.Join(tmpDir, name))
+			if err != nil {
+				t.Fatalf("stat %s: %v", name, err)
+			}
+			if got := info.Mode().Perm(); got != config.SecretFileMode {
+				t.Errorf("%s mode = %o, want %o", name, got, config.SecretFileMode)
+			}
 		}
-		if got := info.Mode().Perm(); got != config.SecretFileMode {
-			t.Errorf("%s mode = %o, want %o", name, got, config.SecretFileMode)
-		}
-	}
+	})
 
 	// 3. GET /api/settings should return settings with masked secrets
 	getReq := httptest.NewRequest("GET", "/api/settings", nil)
@@ -636,15 +652,18 @@ func TestSettingsTenantAPIKeyPlaintext(t *testing.T) {
 
 	// The files were seeded world-readable (0644) above; the save must tighten
 	// them, since os.WriteFile alone leaves an existing file's mode untouched.
-	for _, name := range []string{"upstreams.json", "tenants.json"} {
-		info, err := os.Stat(filepath.Join(tmpDir, name))
-		if err != nil {
-			t.Fatalf("stat %s: %v", name, err)
+	t.Run("save tightens seeded world-readable files", func(t *testing.T) {
+		skipUnlessPosixModes(t)
+		for _, name := range []string{"upstreams.json", "tenants.json"} {
+			info, err := os.Stat(filepath.Join(tmpDir, name))
+			if err != nil {
+				t.Fatalf("stat %s: %v", name, err)
+			}
+			if got := info.Mode().Perm(); got != config.SecretFileMode {
+				t.Errorf("%s mode after save = %o, want %o", name, got, config.SecretFileMode)
+			}
 		}
-		if got := info.Mode().Perm(); got != config.SecretFileMode {
-			t.Errorf("%s mode after save = %o, want %o", name, got, config.SecretFileMode)
-		}
-	}
+	})
 }
 
 // TestRestoreMaskedSecretsDropsUnresolvablePoolEntries covers the second half of

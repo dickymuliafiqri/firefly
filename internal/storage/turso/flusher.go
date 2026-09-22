@@ -35,6 +35,13 @@ type tenantUsageEvent struct {
 	tokens int64
 }
 
+// defaultMeteringPushInterval throttles cloud pushes for pure usage metering.
+// Counters are analytics, so a delayed push is harmless; key lifecycle changes
+// bypass the throttle entirely because a stale cloud row can resurrect a dead
+// credential on the next pull. Every push also costs Turso sync quota, which is
+// why metering updates ride along instead of pushing on every flush tick.
+const defaultMeteringPushInterval = 5 * time.Minute
+
 // UsageFlusher records usage, aggregates request counts per key, and persists
 // metrics and key updates into Turso, pushing updates to the primary cloud.
 type UsageFlusher struct {
@@ -45,8 +52,12 @@ type UsageFlusher struct {
 	actions       chan keyActionEvent
 	tenantEvents  chan tenantUsageEvent
 	flushInterval time.Duration
-	logger        *slog.Logger
-	mu            sync.Mutex
+	// meteringPushInterval is the minimum quiet period between two cloud pushes
+	// that carry only usage counters. It is a field so tests can shrink it.
+	meteringPushInterval time.Duration
+	lastMeteringPush     time.Time
+	logger               *slog.Logger
+	mu                   sync.Mutex
 }
 
 // NewUsageFlusher creates a new UsageFlusher.
@@ -58,14 +69,15 @@ func NewUsageFlusher(store *Store, inner ports.UsageRecorder, flushInterval time
 		logger = slog.Default()
 	}
 	return &UsageFlusher{
-		store:         store,
-		inner:         inner,
-		events:        make(chan usageEvent, 10000),
-		revocations:   make(chan string, 1000),
-		actions:       make(chan keyActionEvent, 1000),
-		tenantEvents:  make(chan tenantUsageEvent, 10000),
-		flushInterval: flushInterval,
-		logger:        logger,
+		store:                store,
+		inner:                inner,
+		events:               make(chan usageEvent, 10000),
+		revocations:          make(chan string, 1000),
+		actions:              make(chan keyActionEvent, 1000),
+		tenantEvents:         make(chan tenantUsageEvent, 10000),
+		flushInterval:        flushInterval,
+		meteringPushInterval: defaultMeteringPushInterval,
+		logger:               logger,
 	}
 }
 
@@ -158,7 +170,9 @@ func (f *UsageFlusher) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_ = f.Flush(flushCtx)
+			// Forced: the process is going away, so inside-window metering must
+			// reach the cloud now or the local-only rows are lost with the replica.
+			_ = f.FlushAll(flushCtx)
 			cancel()
 			return
 		case <-ticker.C:
@@ -170,7 +184,18 @@ func (f *UsageFlusher) Run(ctx context.Context) {
 }
 
 // Flush aggregates queued events and executes batch updates against the database.
+// Cloud pushes for counter-only updates are throttled; see FlushAll to bypass.
 func (f *UsageFlusher) Flush(ctx context.Context) error {
+	return f.flush(ctx, false)
+}
+
+// FlushAll behaves like Flush but always pushes to the cloud, skipping the
+// metering quiet window. Use it on shutdown so buffered counters are not lost.
+func (f *UsageFlusher) FlushAll(ctx context.Context) error {
+	return f.flush(ctx, true)
+}
+
+func (f *UsageFlusher) flush(ctx context.Context, forcePush bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -256,7 +281,8 @@ DRAINED_TENANTS:
 	}()
 
 	now := time.Now().UnixMilli()
-	updatedAny := false
+	structuralUpdated := false
+	meteringUpdated := false
 
 	// Update api_keys usage.
 	//
@@ -279,7 +305,7 @@ DRAINED_TENANTS:
 			`, ev.count, ev.at, keyID)
 			if err == nil {
 				if r, _ := res.RowsAffected(); r > 0 {
-					updatedAny = true
+					meteringUpdated = true
 				}
 			}
 		}
@@ -298,7 +324,7 @@ DRAINED_TENANTS:
 			`, now, keyID)
 			if err == nil {
 				if r, _ := res.RowsAffected(); r > 0 {
-					updatedAny = true
+					structuralUpdated = true
 				}
 			}
 		}
@@ -315,7 +341,7 @@ DRAINED_TENANTS:
 				res, err := tx.ExecContext(ctx, `DELETE FROM api_keys WHERE id = ?`, act.keyID)
 				if err == nil {
 					if r, _ := res.RowsAffected(); r > 0 {
-						updatedAny = true
+						structuralUpdated = true
 					}
 				}
 			} else {
@@ -334,7 +360,7 @@ DRAINED_TENANTS:
 				`, now, act.keyID)
 				if err == nil {
 					if r, _ := res.RowsAffected(); r > 0 {
-						updatedAny = true
+						structuralUpdated = true
 					}
 				}
 			}
@@ -354,7 +380,7 @@ DRAINED_TENANTS:
 		`, delta, now, key, key)
 		if err == nil {
 			if r, _ := res.RowsAffected(); r > 0 {
-				updatedAny = true
+				meteringUpdated = true
 			}
 		}
 	}
@@ -367,12 +393,38 @@ DRAINED_TENANTS:
 	}
 	committed = true
 
-	// Push usage updates to Turso Cloud
-	if updatedAny && f.store.Client() != nil {
-		_ = f.store.Client().PushLocked(ctx)
+	// Push updates to Turso Cloud. Unpushed local rows are rebased on top of
+	// remote changes by the next Pull, so a deferred counter push loses nothing.
+	if f.store.Client() == nil {
+		return nil
+	}
+	due := forcePush || structuralUpdated || f.meteringPushDue()
+	if (structuralUpdated || meteringUpdated) && due {
+		if f.pushLocked(ctx) {
+			f.lastMeteringPush = time.Now()
+		}
 	}
 
 	return nil
+}
+
+// meteringPushDue reports whether the counter-only push quiet window has elapsed.
+// It must be called with f.mu held.
+func (f *UsageFlusher) meteringPushDue() bool {
+	if f.meteringPushInterval <= 0 {
+		return true
+	}
+	return time.Since(f.lastMeteringPush) >= f.meteringPushInterval
+}
+
+// pushLocked pushes local changes to the cloud and reports success. A failed push
+// leaves the rows local, so the caller must not start a fresh quiet window.
+func (f *UsageFlusher) pushLocked(ctx context.Context) bool {
+	if err := f.store.Client().PushLocked(ctx); err != nil {
+		f.logger.Warn("turso usage push encountered warning", "err", err)
+		return false
+	}
+	return true
 }
 
 // extractAPIKeyID extracts the numeric key ID from a reference string formatted

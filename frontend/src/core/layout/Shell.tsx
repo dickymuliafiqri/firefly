@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react';
 import { Header } from './Header';
+import { useReducedMotion } from '@/hooks/useReducedMotion';
 import type { TabId } from '@/modules/registry';
 import { GITHUB_URL, SUPPORT_URL } from '@/core/constants';
 import { Github, Heart } from 'lucide-react';
@@ -19,8 +20,12 @@ export function Shell({
   children,
   isBackendHealthy = true,
 }: ShellProps) {
+  const reducedMotion = useReducedMotion();
+
   // Shooting Star System matching index.html lines 1894-1918
   useEffect(() => {
+    if (reducedMotion) return;
+
     const createShootingStar = () => {
       const star = document.createElement('div');
       star.className = 'shooting-star';
@@ -43,7 +48,7 @@ export function Shell({
     }, 8000);
 
     return () => clearInterval(interval);
-  }, []);
+  }, [reducedMotion]);
 
   return (
     <div className="min-h-[100dvh] flex flex-col font-sans transition-colors duration-200 antialiased relative selection:bg-lime-400/20 selection:text-lime-200">

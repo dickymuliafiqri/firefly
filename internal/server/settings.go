@@ -427,13 +427,22 @@ func (deps RouterDeps) handleUpdateSettings(w http.ResponseWriter, r *http.Reque
 	// Update Turso credentials if provided in payload
 	if payload.Turso != nil {
 		tursoCfg := *payload.Turso
+		savedCfg, _ := config.LoadTursoConfig(deps.ConfigDir)
 		if isMasked(tursoCfg.AuthToken) {
-			savedCfg, _ := config.LoadTursoConfig(deps.ConfigDir)
 			if savedCfg.AuthToken != "" {
 				tursoCfg.AuthToken = savedCfg.AuthToken
 			} else {
 				tursoCfg.AuthToken = os.Getenv("TURSO_AUTH_TOKEN")
 			}
+		}
+		// Pacing is an operator-side quota control the dashboard form does not
+		// render, so a payload that omits it must inherit the saved value rather
+		// than revert to the built-in default and silently raise sync frequency.
+		if tursoCfg.SyncIntervalSec <= 0 {
+			tursoCfg.SyncIntervalSec = savedCfg.SyncIntervalSec
+		}
+		if tursoCfg.SyncMaxIntervalSec <= 0 {
+			tursoCfg.SyncMaxIntervalSec = savedCfg.SyncMaxIntervalSec
 		}
 		if tursoCfg.LocalPath == "" {
 			tursoCfg.LocalPath = "data/firefly.db"

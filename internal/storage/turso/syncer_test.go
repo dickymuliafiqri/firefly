@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dickymuliafiqri/firefly/internal/config"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
@@ -33,6 +34,125 @@ func syncerTestSettings() config.SettingsDTO {
 			Enabled:       &enabled,
 			Capabilities:  &config.CapabilitiesDTO{Stream: true},
 		}},
+	}
+}
+
+func TestNextSyncInterval(t *testing.T) {
+	const (
+		base = 60 * time.Second
+		max  = 5 * time.Minute
+	)
+
+	tests := []struct {
+		name     string
+		current  time.Duration
+		base     time.Duration
+		max      time.Duration
+		changed  bool
+		expected time.Duration
+	}{
+		{
+			name:     "changed cycle resets to base",
+			current:  max,
+			base:     base,
+			max:      max,
+			changed:  true,
+			expected: base,
+		},
+		{
+			name:     "idle cycle doubles the delay",
+			current:  base,
+			base:     base,
+			max:      max,
+			changed:  false,
+			expected: 2 * base,
+		},
+		{
+			name:     "idle backoff stops at the ceiling",
+			current:  4 * base,
+			base:     base,
+			max:      max,
+			changed:  false,
+			expected: max,
+		},
+		{
+			name:     "delay never drops below base",
+			current:  time.Second,
+			base:     base,
+			max:      max,
+			changed:  false,
+			expected: base,
+		},
+		{
+			name:     "zero base falls back to the default",
+			current:  10 * DefaultSyncInterval,
+			base:     0,
+			max:      max,
+			changed:  false,
+			expected: max,
+		},
+		{
+			name:     "ceiling below base is raised to base",
+			current:  base,
+			base:     base,
+			max:      time.Second,
+			changed:  false,
+			expected: base,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := nextSyncInterval(tt.current, tt.base, tt.max, tt.changed)
+			if got != tt.expected {
+				t.Fatalf("nextSyncInterval(%s, %s, %s, %v) = %s, want %s",
+					tt.current, tt.base, tt.max, tt.changed, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestSyncerConfigDefaults(t *testing.T) {
+	tests := []struct {
+		name     string
+		cfg      SyncerConfig
+		wantBase time.Duration
+		wantMax  time.Duration
+	}{
+		{
+			name:     "zero values use package defaults",
+			cfg:      SyncerConfig{},
+			wantBase: DefaultSyncInterval,
+			wantMax:  DefaultSyncMaxInterval,
+		},
+		{
+			name:     "ceiling below base is raised",
+			cfg:      SyncerConfig{Interval: 10 * time.Minute, MaxInterval: time.Minute},
+			wantBase: 10 * time.Minute,
+			wantMax:  10 * time.Minute,
+		},
+		{
+			name:     "operator values are preserved",
+			cfg:      SyncerConfig{Interval: 2 * time.Minute, MaxInterval: 30 * time.Minute},
+			wantBase: 2 * time.Minute,
+			wantMax:  30 * time.Minute,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := NewSyncer(nil, nil, nil, tt.cfg)
+			if s.cfg.Interval != tt.wantBase {
+				t.Errorf("Interval = %s, want %s", s.cfg.Interval, tt.wantBase)
+			}
+			if s.cfg.MaxInterval != tt.wantMax {
+				t.Errorf("MaxInterval = %s, want %s", s.cfg.MaxInterval, tt.wantMax)
+			}
+			if s.cfg.MaxInterval < s.cfg.Interval {
+				t.Errorf("MaxInterval %s is below Interval %s; backoff would be inverted",
+					s.cfg.MaxInterval, s.cfg.Interval)
+			}
+		})
 	}
 }
 

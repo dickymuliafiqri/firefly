@@ -190,13 +190,16 @@ func TestTenantsAdmin_CRUDRoundTrip(t *testing.T) {
 	}
 	// The tenant CRUD save path is a second catalog writer: tenants.json holds raw
 	// gateway keys, so it must land owner-only.
-	diskInfo, err := os.Stat(tmpDir + "/" + config.FileNameTenants)
-	if err != nil {
-		t.Fatalf("stat tenants.json: %v", err)
-	}
-	if got := diskInfo.Mode().Perm(); got != config.SecretFileMode {
-		t.Errorf("tenants.json mode = %o, want %o", got, config.SecretFileMode)
-	}
+	t.Run("tenants.json lands owner-only", func(t *testing.T) {
+		skipUnlessPosixModes(t)
+		diskInfo, err := os.Stat(tmpDir + "/" + config.FileNameTenants)
+		if err != nil {
+			t.Fatalf("stat tenants.json: %v", err)
+		}
+		if got := diskInfo.Mode().Perm(); got != config.SecretFileMode {
+			t.Errorf("tenants.json mode = %o, want %o", got, config.SecretFileMode)
+		}
+	})
 
 	// List contains exactly the new tenant.
 	w = doTenantsRequest(t, s, http.MethodGet, "/api/tenants", nil)

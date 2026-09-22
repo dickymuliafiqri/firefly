@@ -356,3 +356,26 @@ main::before {
 .no-scrollbar::-webkit-scrollbar {
   display: none;
 }
+
+/*
+ * Reduced motion (WCAG 2.1 AA 2.3.3): aurora drift, stat glow, the breathing
+ * live dot, lofi equalizer bars and shooting stars are decorative, so the OS
+ * "reduce motion" setting switches them off. Spinners and short hover/focus
+ * transitions stay — they communicate state.
+ */
+@media (prefers-reduced-motion: reduce) {
+  body::after,
+  .stat-value,
+  .live-indicator,
+  .animate-pulse,
+  .lofi-bar-1,
+  .lofi-bar-2,
+  .lofi-bar-3,
+  .lofi-bar-4 {
+    animation: none !important;
+  }
+
+  .shooting-star {
+    display: none !important;
+  }
+}

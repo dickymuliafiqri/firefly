@@ -6,6 +6,7 @@ import { useUpstreams, useUpstreamBreakers, useRecentLogs, useTelemetryStats, us
 import type { LiveConnectionLog } from '@/services/schema';
 import { AnimatedCountUp } from '@/components/ui/AnimatedCountUp';
 import { formatNumber } from '@/lib/format';
+import { useReducedMotion } from '@/hooks/useReducedMotion';
 
 /** Counters here show whole units, so the shared formatter is floored first. */
 const formatCount = (n: number) => formatNumber(Math.floor(n));
@@ -20,6 +21,7 @@ export default function OverviewView() {
 
   const canvasRef = useRef<FireflyCanvasHandle>(null);
   const lastLogIdRef = useRef<string | null>(null);
+  const reducedMotion = useReducedMotion();
 
   // Base upstream definitions strictly from real backend configuration (zero dummy fallbacks)
   const fireflyUpstreams: FireflyUpstream[] = useMemo(() => {
@@ -35,7 +37,6 @@ export default function OverviewView() {
         base_url: u.base_url || (u.base_urls && u.base_urls[0]) || 'https://api.openai.com/v1',
         connected: isConnected,
         breaker_state: breakerState,
-        latency_ms: 184,
         inflight: inflightCount,
       };
     });
@@ -126,6 +127,7 @@ export default function OverviewView() {
             ref={canvasRef}
             upstreams={fireflyUpstreams}
             onToggleUpstream={handleToggleUpstream}
+            reducedMotion={reducedMotion}
           />
 
           {fireflyUpstreams.length === 0 ? (

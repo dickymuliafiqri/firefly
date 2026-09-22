@@ -43,7 +43,6 @@ export const FireflyCanvas = React.memo(function FireflyCanvas({
           base_url: u.base_url || (u.base_urls && u.base_urls[0]) || 'https://api.openai.com/v1',
           connected: isConnected,
           breaker_state: breakerState,
-          latency_ms: 184,
           inflight: inflightCount,
         };
       });

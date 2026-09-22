@@ -65,24 +65,37 @@ func main() {
 	}
 }
 
+// flagWasSet reports whether the named flag was supplied on the command line, so
+// an explicit flag can outrank the environment and the persisted config file.
+func flagWasSet(name string) bool {
+	set := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
+}
+
 func run() error {
 	var (
-		configDir         = flag.String("config-dir", "configs", "directory containing upstreams.json, models.json, tenants.json")
-		addr              = flag.String("addr", "0.0.0.0:8080", "listen address")
-		adminAddr         = flag.String("admin-addr", "", "admin listen address for /metrics and guarded /debug/* (empty disables)")
-		logLevel          = flag.String("log-level", "info", "log level: debug|info|warn|error")
-		graceSecs         = flag.Int("shutdown-grace-seconds", 30, "max seconds to drain in-flight requests on shutdown")
-		adminToken        = flag.String("admin-token", "", "bearer token guarding /debug/* endpoints (defaults to $FIREFLY_ADMIN_TOKEN; empty disables them)")
-		harvesterToken    = flag.String("harvester-token", "", "service token guarding POST /api/harvester/sync (defaults to $FIREFLY_HARVESTER_TOKEN; empty returns 503)")
-		dashboardPassword = flag.String("dashboard-password", "", "master password for dashboard access (defaults to $INITIAL_PASSWORD, $FIREFLY_DASHBOARD_PASSWORD, or 12345678)")
-		healthInterval    = flag.Duration("health-check-interval", upstream.DefaultHealthCheckInterval, "interval between background upstream health checks (0 to disable)")
-		showVersion       = flag.Bool("version", false, "print version information and exit")
-		tursoURL          = flag.String("turso-url", "", "Turso database URL (e.g. libsql://...; defaults to $TURSO_DATABASE_URL)")
-		tursoToken        = flag.String("turso-token", "", "Turso JWT auth token (defaults to $TURSO_AUTH_TOKEN)")
-		tursoLocalPath    = flag.String("turso-local-path", "data/firefly.db", "local embedded replica database path (defaults to $FIREFLY_TURSO_LOCAL_PATH)")
-		tursoSyncInterval = flag.Duration("turso-sync-interval", 15*time.Second, "interval to pull changes from Turso cloud (defaults to $FIREFLY_TURSO_SYNC_INTERVAL)")
-		openaiDefaultMax  = flag.Int64("openai-default-max-tokens", 0, "default max_tokens injected into OpenAI-protocol requests that omit an output-token limit (0 disables; defaults to $FIREFLY_OPENAI_DEFAULT_MAX_TOKENS)")
-		openaiMinMax      = flag.Int64("openai-min-max-tokens", 0, "minimum max_tokens floor for OpenAI-protocol requests; smaller client values are raised to this (0 disables; defaults to $FIREFLY_OPENAI_MIN_MAX_TOKENS)")
+		configDir            = flag.String("config-dir", "configs", "directory containing upstreams.json, models.json, tenants.json")
+		addr                 = flag.String("addr", "0.0.0.0:8080", "listen address")
+		adminAddr            = flag.String("admin-addr", "", "admin listen address for /metrics and guarded /debug/* (empty disables)")
+		logLevel             = flag.String("log-level", "info", "log level: debug|info|warn|error")
+		graceSecs            = flag.Int("shutdown-grace-seconds", 30, "max seconds to drain in-flight requests on shutdown")
+		adminToken           = flag.String("admin-token", "", "bearer token guarding /debug/* endpoints (defaults to $FIREFLY_ADMIN_TOKEN; empty disables them)")
+		harvesterToken       = flag.String("harvester-token", "", "service token guarding POST /api/harvester/sync (defaults to $FIREFLY_HARVESTER_TOKEN; empty returns 503)")
+		dashboardPassword    = flag.String("dashboard-password", "", "master password for dashboard access (defaults to $INITIAL_PASSWORD, $FIREFLY_DASHBOARD_PASSWORD, or 12345678)")
+		healthInterval       = flag.Duration("health-check-interval", upstream.DefaultHealthCheckInterval, "interval between background upstream health checks (0 to disable)")
+		showVersion          = flag.Bool("version", false, "print version information and exit")
+		tursoURL             = flag.String("turso-url", "", "Turso database URL (e.g. libsql://...; defaults to $TURSO_DATABASE_URL)")
+		tursoToken           = flag.String("turso-token", "", "Turso JWT auth token (defaults to $TURSO_AUTH_TOKEN)")
+		tursoLocalPath       = flag.String("turso-local-path", "data/firefly.db", "local embedded replica database path (defaults to $FIREFLY_TURSO_LOCAL_PATH)")
+		tursoSyncInterval    = flag.Duration("turso-sync-interval", turso.DefaultSyncInterval, "interval to pull changes from Turso cloud after an observed change (defaults to $FIREFLY_TURSO_SYNC_INTERVAL)")
+		tursoSyncMaxInterval = flag.Duration("turso-sync-max-interval", turso.DefaultSyncMaxInterval, "upper bound for the idle pull backoff; consecutive change-free pulls double the delay until it reaches this (defaults to $FIREFLY_TURSO_SYNC_MAX_INTERVAL)")
+		openaiDefaultMax     = flag.Int64("openai-default-max-tokens", 0, "default max_tokens injected into OpenAI-protocol requests that omit an output-token limit (0 disables; defaults to $FIREFLY_OPENAI_DEFAULT_MAX_TOKENS)")
+		openaiMinMax         = flag.Int64("openai-min-max-tokens", 0, "minimum max_tokens floor for OpenAI-protocol requests; smaller client values are raised to this (0 disables; defaults to $FIREFLY_OPENAI_MIN_MAX_TOKENS)")
 	)
 	flag.Parse()
 
@@ -115,28 +128,43 @@ func run() error {
 	if *tursoToken == "" {
 		*tursoToken = os.Getenv("TURSO_AUTH_TOKEN")
 	}
-	if *tursoURL == "" || *tursoToken == "" {
-		if tcfg, err := config.LoadTursoConfig(*configDir); err == nil {
-			if *tursoURL == "" && tcfg.DatabaseURL != "" {
-				*tursoURL = tcfg.DatabaseURL
-			}
-			if *tursoToken == "" && tcfg.AuthToken != "" {
-				*tursoToken = tcfg.AuthToken
-			}
-			if *tursoLocalPath == "data/firefly.db" && tcfg.LocalPath != "" {
-				*tursoLocalPath = tcfg.LocalPath
-			}
-			if tcfg.SyncIntervalSec > 0 {
-				*tursoSyncInterval = time.Duration(tcfg.SyncIntervalSec) * time.Second
-			}
+
+	// turso.json persists the replica options. Pacing and the local path must be
+	// picked up even when the credentials came from a flag or the environment:
+	// gating this block on the credential source previously discarded a
+	// configured sync interval whenever the URL came from outside the file.
+	tcfg, _ := config.LoadTursoConfig(*configDir)
+	if *tursoURL == "" {
+		*tursoURL = tcfg.DatabaseURL
+	}
+	if *tursoToken == "" {
+		*tursoToken = tcfg.AuthToken
+	}
+	if !flagWasSet("turso-local-path") {
+		if v := os.Getenv("FIREFLY_TURSO_LOCAL_PATH"); v != "" {
+			*tursoLocalPath = v
+		} else if tcfg.LocalPath != "" {
+			*tursoLocalPath = tcfg.LocalPath
 		}
 	}
-	if *tursoLocalPath == "data/firefly.db" && os.Getenv("FIREFLY_TURSO_LOCAL_PATH") != "" {
-		*tursoLocalPath = os.Getenv("FIREFLY_TURSO_LOCAL_PATH")
+	// Replica pull pacing, most specific source first: flag, then environment,
+	// then turso.json, else the built-in default.
+	if !flagWasSet("turso-sync-interval") {
+		if v := os.Getenv("FIREFLY_TURSO_SYNC_INTERVAL"); v != "" {
+			if d, err := time.ParseDuration(v); err == nil {
+				*tursoSyncInterval = d
+			}
+		} else if tcfg.SyncIntervalSec > 0 {
+			*tursoSyncInterval = time.Duration(tcfg.SyncIntervalSec) * time.Second
+		}
 	}
-	if envInterval := os.Getenv("FIREFLY_TURSO_SYNC_INTERVAL"); envInterval != "" {
-		if d, err := time.ParseDuration(envInterval); err == nil {
-			*tursoSyncInterval = d
+	if !flagWasSet("turso-sync-max-interval") {
+		if v := os.Getenv("FIREFLY_TURSO_SYNC_MAX_INTERVAL"); v != "" {
+			if d, err := time.ParseDuration(v); err == nil {
+				*tursoSyncMaxInterval = d
+			}
+		} else if tcfg.SyncMaxIntervalSec > 0 {
+			*tursoSyncMaxInterval = time.Duration(tcfg.SyncMaxIntervalSec) * time.Second
 		}
 	}
 	if *openaiDefaultMax == 0 {
@@ -238,10 +266,11 @@ func run() error {
 
 	if tursoClient != nil {
 		syncer := turso.NewSyncer(tursoClient, tursoStore, reg, turso.SyncerConfig{
-			Interval:  *tursoSyncInterval,
-			EnvLookup: os.LookupEnv,
-			Logger:    logger,
-			Metrics:   mx,
+			Interval:    *tursoSyncInterval,
+			MaxInterval: *tursoSyncMaxInterval,
+			EnvLookup:   os.LookupEnv,
+			Logger:      logger,
+			Metrics:     mx,
 		})
 		initialRev, _ := tursoStore.GetCatalogRevision(ctx)
 		syncer.SetInitialRevision(initialRev)

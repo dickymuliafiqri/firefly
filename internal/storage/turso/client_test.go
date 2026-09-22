@@ -3,10 +3,15 @@ package turso
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
 func TestEnsureLocalDirIsOwnerOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits are not representable on Windows")
+	}
+
 	root := t.TempDir()
 
 	fresh := filepath.Join(root, "nested", "data", "firefly.db")

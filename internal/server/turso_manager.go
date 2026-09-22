@@ -27,6 +27,11 @@ type TursoManager struct {
 	reg          *registry.Registry
 	syncer       *turso.Syncer
 	syncerCancel context.CancelFunc
+	// syncBase/syncMax hold the pull cadence resolved for the active client.
+	// startSyncerLocked reuses them so a syncer started later (AttachRegistry)
+	// keeps the operator's quota settings instead of reverting to the defaults.
+	syncBase time.Duration
+	syncMax  time.Duration
 }
 
 // NewTursoManager creates a TursoManager. If initialStore is provided, it is retained.
@@ -38,7 +43,26 @@ func NewTursoManager(configDir string, initialStore *turso.Store, logger *slog.L
 		configDir: configDir,
 		logger:    logger,
 		store:     initialStore,
+		syncBase:  turso.DefaultSyncInterval,
+		syncMax:   turso.DefaultSyncMaxInterval,
 	}
+}
+
+// resolveSyncIntervals maps the persisted Turso settings onto the syncer cadence,
+// defaulting to a 60s base and a 5m idle ceiling when unset.
+func resolveSyncIntervals(cfg config.TursoDTO) (base, maxInterval time.Duration) {
+	base = turso.DefaultSyncInterval
+	if cfg.SyncIntervalSec > 0 {
+		base = time.Duration(cfg.SyncIntervalSec) * time.Second
+	}
+	maxInterval = turso.DefaultSyncMaxInterval
+	if cfg.SyncMaxIntervalSec > 0 {
+		maxInterval = time.Duration(cfg.SyncMaxIntervalSec) * time.Second
+	}
+	if maxInterval < base {
+		maxInterval = base
+	}
+	return base, maxInterval
 }
 
 // resolveLocalPath makes the embedded-replica database path writable regardless of
@@ -85,9 +109,10 @@ func (m *TursoManager) startSyncerLocked(client *turso.Client, store *turso.Stor
 	m.syncerCancel = cancel
 
 	syncer := turso.NewSyncer(client, store, m.reg, turso.SyncerConfig{
-		Interval:  15 * time.Second,
-		EnvLookup: os.LookupEnv,
-		Logger:    m.logger,
+		Interval:    m.syncBase,
+		MaxInterval: m.syncMax,
+		EnvLookup:   os.LookupEnv,
+		Logger:      m.logger,
 	})
 	initialRev, _ := store.GetCatalogRevision(ctx)
 	syncer.SetInitialRevision(initialRev)
@@ -162,10 +187,7 @@ func (m *TursoManager) GetOrInitStore(ctx context.Context) (*turso.Store, error)
 	}
 	localPath = m.resolveLocalPath(localPath)
 
-	syncInterval := 15 * time.Second
-	if cfg.SyncIntervalSec > 0 {
-		syncInterval = time.Duration(cfg.SyncIntervalSec) * time.Second
-	}
+	syncInterval, syncMaxInterval := resolveSyncIntervals(cfg)
 
 	client, err := turso.NewClient(ctx, turso.Config{
 		RemoteURL:    remoteURL,
@@ -187,6 +209,8 @@ func (m *TursoManager) GetOrInitStore(ctx context.Context) (*turso.Store, error)
 
 	m.client = client
 	m.store = store
+	m.syncBase = syncInterval
+	m.syncMax = syncMaxInterval
 	m.startSyncerLocked(client, store)
 	return store, nil
 }
@@ -210,10 +234,7 @@ func (m *TursoManager) UpdateConfig(ctx context.Context, cfg config.TursoDTO) (*
 	}
 
 	localPath := m.resolveLocalPath(cfg.LocalPath)
-	syncInterval := 15 * time.Second
-	if cfg.SyncIntervalSec > 0 {
-		syncInterval = time.Duration(cfg.SyncIntervalSec) * time.Second
-	}
+	syncInterval, syncMaxInterval := resolveSyncIntervals(cfg)
 
 	// Close old client before opening new one
 	if m.client != nil {
@@ -243,6 +264,8 @@ func (m *TursoManager) UpdateConfig(ctx context.Context, cfg config.TursoDTO) (*
 
 	m.client = client
 	m.store = store
+	m.syncBase = syncInterval
+	m.syncMax = syncMaxInterval
 	m.startSyncerLocked(client, store)
 	return store, nil
 }

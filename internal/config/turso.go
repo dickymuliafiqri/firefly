@@ -17,6 +17,10 @@ type TursoDTO struct {
 	AuthToken       string `json:"auth_token"`
 	LocalPath       string `json:"local_path,omitempty"`
 	SyncIntervalSec int    `json:"sync_interval_sec,omitempty"`
+	// SyncMaxIntervalSec caps the idle backoff of the background pull loop. An
+	// idle gateway doubles its sync delay up to this ceiling so sync quota tracks
+	// actual activity. Zero means the built-in default (5 minutes).
+	SyncMaxIntervalSec int `json:"sync_max_interval_sec,omitempty"`
 }
 
 // LoadTursoConfig loads turso.json from the configuration directory.

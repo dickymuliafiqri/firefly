@@ -328,6 +328,38 @@ func TestOpenAPISpec_VersionStampRejectsUnsafeValues(t *testing.T) {
 	}
 }
 
+// TestStampVersionLineEndings pins the splice against the checkout's line
+// endings. git with core.autocrlf=true rewrites the embedded YAML to CRLF, and
+// a `$`-anchored pattern blind to the carriage return matched nothing there —
+// so a Windows build silently served the placeholder version, which is exactly
+// what TestOpenAPISpec_VersionStampedFromBuild reports. Stamping must also
+// rewrite the version without rewriting the document's line endings.
+func TestStampVersionLineEndings(t *testing.T) {
+	tests := []struct {
+		name string
+		eol  string
+	}{
+		{name: "lf", eol: "\n"},
+		{name: "crlf", eol: "\r\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc := strings.Join([]string{
+				"openapi: 3.1.0",
+				"info:",
+				`  title: Firefly`,
+				`  version: "0.0.0-dev"`,
+				"paths: {}",
+				"",
+			}, tt.eol)
+			want := strings.Replace(doc, `0.0.0-dev`, "v1.2.3", 1)
+			if got := string(stampVersion([]byte(doc), "v1.2.3")); got != want {
+				t.Errorf("stampVersion(%s doc) = %q, want %q", tt.name, got, want)
+			}
+		})
+	}
+}
+
 // TestOpenAPISpec_CompressContract pins the two /v1/compress behaviours that
 // previously drifted from the implementation: the 200 body is a union rather
 // than always a CompressResult, and the request tolerates unknown fields.

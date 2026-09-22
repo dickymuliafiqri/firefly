@@ -273,7 +273,7 @@ class FireflyParticle {
     c.save();
     c.font = '11px "JetBrains Mono", monospace';
     c.textAlign = 'center';
-    const labelAlpha = this.hovered ? 1.0 : (this.glow > 0.02 ? 0.65 + this.glow * 0.35 : 0.4);
+    const labelAlpha = this.hovered ? 1.0 : (this.glow > 0.02 ? 0.65 + this.glow * 0.35 : 0.6);
     c.fillStyle = `rgba(248, 250, 252, ${labelAlpha})`;
     c.fillText(this.upstream.name, this.x, this.y + 20);
     c.restore();
@@ -472,7 +472,7 @@ export function useFireflyPhysics({
           ? (isOnline ? 'Click to disable' : 'Click to activate')
           : 'Login required to toggle';
         const details = isOnline
-          ? `${(hit.upstream.protocol || 'OPENAI').toUpperCase()} · ${ep} · ${hit.upstream.latency_ms || 180}ms (Status: ACTIVE · ${actionHint})`
+          ? `${(hit.upstream.protocol || 'OPENAI').toUpperCase()} · ${ep} (Status: ACTIVE · ${actionHint})`
           : isHalfOpen
           ? `${(hit.upstream.protocol || 'OPENAI').toUpperCase()} · ${ep} · Status: HALF-OPEN (${actionHint})`
           : `Status: DISABLED (Circuit Open) · ${actionHint}`;
@@ -534,7 +534,7 @@ export function useFireflyPhysics({
             const isOnline = nextBreaker === 'CLOSED';
             const ep = hit.upstream.base_url || (hit.upstream.base_urls && hit.upstream.base_urls[0]) || '';
             const details = isOnline
-              ? `${(hit.upstream.protocol || 'OPENAI').toUpperCase()} · ${ep} · ${hit.upstream.latency_ms || 180}ms (Status: ACTIVE · Click to disable)`
+              ? `${(hit.upstream.protocol || 'OPENAI').toUpperCase()} · ${ep} (Status: ACTIVE · Click to disable)`
               : `Status: DISABLED (Circuit Open) · Click to activate`;
 
             renderTooltip(tooltip, hit.upstream.name, details);

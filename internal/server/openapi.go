@@ -46,8 +46,11 @@ var (
 )
 
 // infoVersionRe matches the info.version scalar. Two-space indent keeps it
-// from colliding with `openapi: 3.1.0`, which is unquoted and unindented.
-var infoVersionRe = regexp.MustCompile(`(?m)^  version: "[^"]*"$`)
+// from colliding with `openapi: 3.1.0`, which is unquoted and unindented. The
+// optional \r is load-bearing: a checkout with core.autocrlf=true (git for
+// Windows) rewrites the embedded YAML to CRLF, and a `$`-anchored pattern that
+// ignores the carriage return matches nothing and stamps nothing.
+var infoVersionRe = regexp.MustCompile(`(?m)^  version: "[^"]*"\r?$`)
 
 // safeVersionRe restricts a stamped version to characters that need no YAML
 // escaping, so it can be spliced into a double-quoted scalar verbatim. Release
@@ -58,8 +61,14 @@ var safeVersionRe = regexp.MustCompile(`^[A-Za-z0-9._+-]+$`)
 // pattern does not match, the embedded document is returned unchanged so a
 // malformed doc surfaces as a stamping no-op instead of a corrupted spec.
 func stampVersion(doc []byte, v string) []byte {
-	stamped := infoVersionRe.ReplaceAllFunc(doc, func([]byte) []byte {
-		return []byte(`  version: "` + v + `"`)
+	stamped := infoVersionRe.ReplaceAllFunc(doc, func(match []byte) []byte {
+		out := []byte(`  version: "` + v + `"`)
+		// The match may have consumed a trailing \r on a CRLF document; put it
+		// back so stamping rewrites the version without rewriting line endings.
+		if bytes.HasSuffix(match, []byte("\r")) {
+			out = append(out, '\r')
+		}
+		return out
 	})
 	if bytes.Equal(stamped, doc) {
 		return doc

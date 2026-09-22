@@ -546,6 +546,32 @@ func TestUsageFlusher_KeyActions(t *testing.T) {
 	}
 }
 
+// TestUsageFlusher_MeteringPushQuietWindow covers the throttle that keeps
+// counter-only updates from pushing to the cloud on every flush tick.
+func TestUsageFlusher_MeteringPushQuietWindow(t *testing.T) {
+	flusher := NewUsageFlusher(nil, nil, time.Minute, nil)
+
+	if !flusher.meteringPushDue() {
+		t.Fatal("a flusher that has never pushed must allow the first metering push")
+	}
+
+	flusher.lastMeteringPush = time.Now()
+	if flusher.meteringPushDue() {
+		t.Fatal("a just-completed push must open a quiet window")
+	}
+
+	flusher.lastMeteringPush = time.Now().Add(-defaultMeteringPushInterval - time.Second)
+	if !flusher.meteringPushDue() {
+		t.Fatal("an elapsed quiet window must allow the next metering push")
+	}
+
+	flusher.meteringPushInterval = 0
+	flusher.lastMeteringPush = time.Now()
+	if !flusher.meteringPushDue() {
+		t.Fatal("a zero quiet window must disable throttling")
+	}
+}
+
 // TestSaveSettings_DoesNotCascadeDeleteModelsOnPartialPayload verifies that a
 // stale/partial save (one that omits an upstream still referenced by surviving
 // models, or that carries an empty Models list) never wipes existing models.

@@ -9,7 +9,6 @@ export interface FireflyUpstream {
   base_urls?: string[];
   connected?: boolean;
   breaker_state?: 'CLOSED' | 'OPEN' | 'HALF-OPEN' | string;
-  latency_ms?: number;
   inflight?: number;
 }
 
