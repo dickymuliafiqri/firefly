@@ -16,11 +16,7 @@ import {
 } from 'lucide-react';
 import {
   useAdminToken,
-  useModels,
-  useCombos,
   useTenants,
-  useUpstreams,
-  useUpstreamBreakers,
   usePlaygroundMessages,
   usePlaygroundPrompt,
   usePlaygroundSelectedModel,
@@ -33,6 +29,7 @@ import {
   usePlaygroundErrorMessage,
   usePlaygroundActions,
 } from '@/core/state/store';
+import { useModelOptions } from '../shared/useModelOptions';
 import type { ChunkTiming, ChatMessage } from '@/core/state/playgroundSlice';
 import { cn } from '@/lib/utils';
 
@@ -80,11 +77,17 @@ export const ChatWindow = React.memo(function ChatWindow({
   onClearDiagnostics,
 }: ChatWindowProps) {
   const adminToken = useAdminToken();
-  const models = useModels();
-  const combos = useCombos();
+  const {
+    models,
+    combos,
+    enabledModels,
+    enabledCombos,
+    isModelAvailable,
+    isComboAvailable,
+    options,
+    firstAvailableId,
+  } = useModelOptions();
   const tenants = useTenants();
-  const upstreams = useUpstreams();
-  const upstreamBreakers = useUpstreamBreakers();
 
   // Store state subscriptions
   const messages = usePlaygroundMessages();
@@ -124,41 +127,6 @@ export const ChatWindow = React.memo(function ChatWindow({
   const abortControllerRef = useRef<AbortController | null>(null);
   const messagesScrollRef = useRef<HTMLDivElement | null>(null);
 
-  const enabledModels = models.filter((m) => m.enabled !== false);
-  const enabledCombos = combos.filter((c) => c.enabled !== false);
-
-  const isUpstreamActive = useCallback(
-    (name: string) => {
-      const u = upstreams.find((up) => up.name === name);
-      if (u && u.enabled === false) return false;
-      const st = upstreamBreakers[name] || 'CLOSED';
-      return st !== 'OPEN';
-    },
-    [upstreams, upstreamBreakers]
-  );
-
-  const isModelAvailable = useCallback(
-    (model: (typeof models)[0]) => {
-      if (model.enabled === false) return false;
-      const candidates = [model.upstream, ...(model.fallback_upstreams || [])].filter(Boolean);
-      if (candidates.length === 0) return false;
-      return candidates.some(isUpstreamActive);
-    },
-    [isUpstreamActive]
-  );
-
-  const isComboAvailable = useCallback(
-    (combo: (typeof combos)[0]) => {
-      if (combo.enabled === false) return false;
-      if (!combo.models || combo.models.length === 0) return false;
-      return combo.models.some((memberPublicName) => {
-        const m = models.find((mod) => mod.public_name === memberPublicName);
-        return m ? isModelAvailable(m) : false;
-      });
-    },
-    [models, isModelAvailable]
-  );
-
   const currentCombo = useMemo(
     () => combos.find((c) => c.name === selectedModel),
     [combos, selectedModel]
@@ -186,17 +154,11 @@ export const ChatWindow = React.memo(function ChatWindow({
 
   // Auto-pick default model/combo if not selected yet
   useEffect(() => {
-    const allOptions: Array<{ id: string; available: boolean }> = [
-      ...enabledCombos.map((c) => ({ id: c.name, available: isComboAvailable(c) })),
-      ...enabledModels.map((m) => ({ id: m.public_name, available: isModelAvailable(m) })),
-    ];
-    if (allOptions.length > 0) {
-      if (!selectedModel || !allOptions.some((o) => o.id === selectedModel)) {
-        const firstAvailable = allOptions.find((o) => o.available);
-        setPlaygroundSelectedModel(firstAvailable ? firstAvailable.id : allOptions[0].id);
-      }
+    if (!firstAvailableId) return;
+    if (!selectedModel || !options.some((o) => o.id === selectedModel)) {
+      setPlaygroundSelectedModel(firstAvailableId);
     }
-  }, [enabledCombos, enabledModels, selectedModel, setPlaygroundSelectedModel, isComboAvailable, isModelAvailable]);
+  }, [options, firstAvailableId, selectedModel, setPlaygroundSelectedModel]);
 
   // Auto-pick tenant key or admin session token only until the user edits the field.
   useEffect(() => {
