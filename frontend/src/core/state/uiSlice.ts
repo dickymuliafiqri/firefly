@@ -1,5 +1,5 @@
 import type { StateCreator } from 'zustand';
-import type { TabId } from '@/core/layout/Header';
+import type { TabId } from '@/modules/registry';
 
 export interface ToastItem {
   id: string;

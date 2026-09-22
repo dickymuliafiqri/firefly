@@ -1,5 +1,8 @@
 import React, { useEffect } from 'react';
-import { Header, type TabId } from './Header';
+import { Header } from './Header';
+import type { TabId } from '@/modules/registry';
+import { GITHUB_URL, SUPPORT_URL } from '@/core/constants';
+import { Github, Heart } from 'lucide-react';
 
 export interface ShellProps {
   activeTab: TabId;
@@ -57,8 +60,35 @@ export function Shell({
         {children}
       </main>
 
-      {/* Footer Spacer matching index.html line 355 */}
-      <footer className="w-full mt-auto relative z-10 py-6 pointer-events-none" />
+      {/* Footer: project links (spacer matching index.html line 355) */}
+      <footer className="w-full mt-auto relative z-10 py-6 flex items-center justify-center gap-4 font-mono text-[11px] text-neutral-500">
+        <a
+          href={GITHUB_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-1.5 hover:text-neutral-200 transition-colors"
+        >
+          <Github className="w-3 h-3" />
+          <span>GitHub</span>
+        </a>
+
+        {SUPPORT_URL ? (
+          <>
+            <span aria-hidden="true" className="text-neutral-700">
+              ·
+            </span>
+            <a
+              href={SUPPORT_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1.5 hover:text-rose-300 transition-colors"
+            >
+              <Heart className="w-3 h-3" />
+              <span>Support</span>
+            </a>
+          </>
+        ) : null}
+      </footer>
     </div>
   );
 }

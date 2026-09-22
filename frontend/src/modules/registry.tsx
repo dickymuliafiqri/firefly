@@ -24,10 +24,13 @@ const ProvidersView = lazy(() => import('./8-providers/ProvidersView'));
 /**
  * Pluggable Module Registry for Firefly
  * Every module provides an isolated chunk, lazy component, and proactive preload handler.
+ *
+ * This is the single source of truth for navigation: the header tabs, the keyboard
+ * hotkeys, and the router outlet all derive from these keys and `order` values, so
+ * adding a module requires touching exactly one entry here.
  */
-export const MODULE_REGISTRY: Record<string, FireflyModuleDefinition> = {
+export const MODULE_REGISTRY = {
   overview: {
-    id: 'overview',
     title: 'Overview',
     description: 'Living network canvas and real-time inference telemetry',
     order: 1,
@@ -36,7 +39,6 @@ export const MODULE_REGISTRY: Record<string, FireflyModuleDefinition> = {
     preload: () => import('./1-overview/OverviewView'),
   },
   upstreams: {
-    id: 'upstreams',
     title: 'Upstreams',
     description: 'Upstream provider fleet, circuit breakers, and KeyRing rotation',
     order: 2,
@@ -45,7 +47,6 @@ export const MODULE_REGISTRY: Record<string, FireflyModuleDefinition> = {
     preload: () => import('./2-upstreams/UpstreamsView'),
   },
   models: {
-    id: 'models',
     title: 'Models',
     description: 'Virtual model routing catalog and intelligent fallback chains',
     order: 3,
@@ -54,7 +55,6 @@ export const MODULE_REGISTRY: Record<string, FireflyModuleDefinition> = {
     preload: () => import('./3-models/ModelsView'),
   },
   tenants: {
-    id: 'tenants',
     title: 'Tenants',
     description: 'Tenant authentication, token-bucket rate limits, and model access',
     order: 4,
@@ -63,7 +63,6 @@ export const MODULE_REGISTRY: Record<string, FireflyModuleDefinition> = {
     preload: () => import('./4-tenants/TenantsView'),
   },
   telemetry: {
-    id: 'telemetry',
     title: 'Telemetry',
     description: 'Historical token throughput, latency percentiles, and error gauges',
     order: 5,
@@ -72,7 +71,6 @@ export const MODULE_REGISTRY: Record<string, FireflyModuleDefinition> = {
     preload: () => import('./5-telemetry/TelemetryView'),
   },
   settings: {
-    id: 'settings',
     title: 'Settings',
     description: 'Global gateway configuration and declarative raw JSON editor',
     order: 6,
@@ -81,7 +79,6 @@ export const MODULE_REGISTRY: Record<string, FireflyModuleDefinition> = {
     preload: () => import('./6-settings/SettingsView'),
   },
   playground: {
-    id: 'playground',
     title: 'Playground',
     description: 'Real-time SSE token stream tester and direct proxy verification',
     order: 7,
@@ -90,7 +87,6 @@ export const MODULE_REGISTRY: Record<string, FireflyModuleDefinition> = {
     preload: () => import('./7-playground/PlaygroundView'),
   },
   providers: {
-    id: 'providers',
     title: 'Providers',
     description: 'Stored provider credential pools and key lifecycle management',
     order: 8,
@@ -98,6 +94,26 @@ export const MODULE_REGISTRY: Record<string, FireflyModuleDefinition> = {
     component: ProvidersView,
     preload: () => import('./8-providers/ProvidersView'),
   },
-};
+} satisfies Record<string, FireflyModuleDefinition>;
 
-export const ORDERED_MODULES = Object.values(MODULE_REGISTRY).toSorted((a, b) => a.order - b.order);
+/** Every registry key is a valid route/tab identity. */
+export type TabId = keyof typeof MODULE_REGISTRY;
+
+/** A module definition joined with its registry key. */
+export type RegisteredModule = FireflyModuleDefinition & { id: TabId };
+
+/** Registry entries flattened into sorted modules, each carrying its own id. */
+export const ORDERED_MODULES: readonly RegisteredModule[] = (Object.keys(MODULE_REGISTRY) as TabId[])
+  .map((id) => ({ ...MODULE_REGISTRY[id], id }))
+  .toSorted((a, b) => a.order - b.order);
+
+/** Header navigation item — label and order are projected from the registry. */
+export interface NavTab {
+  id: TabId;
+  label: string;
+}
+
+export const NAV_TABS: readonly NavTab[] = ORDERED_MODULES.map(({ id, title }) => ({
+  id,
+  label: title,
+}));

@@ -1,8 +1,6 @@
 import React from 'react';
-import type { TabId } from '@/core/layout/Header';
 
 export interface FireflyModuleDefinition {
-  id: TabId;
   title: string;
   description: string;
   order: number;

@@ -1,35 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { useAudioState } from '@/core/audio/useAudioState';
 import { useIsAuthenticated, useStoreActions } from '@/core/state/store';
-import { Lock, Unlock, Menu, X } from 'lucide-react';
+import { Lock, Unlock, Menu, X, Github, Heart } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { APP_VERSION } from '@/core/constants';
-
-export type TabId =
-  | 'overview'
-  | 'upstreams'
-  | 'models'
-  | 'tenants'
-  | 'telemetry'
-  | 'settings'
-  | 'playground'
-  | 'providers';
-
-export interface TabItem {
-  id: TabId;
-  label: string;
-}
-
-export const TABS: readonly TabItem[] = [
-  { id: 'overview', label: 'Overview' },
-  { id: 'upstreams', label: 'Upstreams' },
-  { id: 'models', label: 'Models' },
-  { id: 'tenants', label: 'Tenants' },
-  { id: 'telemetry', label: 'Telemetry' },
-  { id: 'settings', label: 'Settings' },
-  { id: 'playground', label: 'Playground' },
-  { id: 'providers', label: 'Providers' },
-];
+import { APP_VERSION, GITHUB_URL, SUPPORT_URL } from '@/core/constants';
+import { NAV_TABS, type TabId } from '@/modules/registry';
 
 export interface HeaderProps {
   activeTab: TabId;
@@ -48,10 +23,10 @@ export const Header = React.memo(function Header({
   const { logout, addToast } = useStoreActions();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
-  // Close mobile menu on desktop breakpoint resize
+  // Close mobile menu once the desktop navigation breakpoint (lg) is reached
   useEffect(() => {
     const handleResize = () => {
-      if (window.innerWidth >= 768) {
+      if (window.innerWidth >= 1024) {
         setIsMobileMenuOpen(false);
       }
     };
@@ -85,7 +60,7 @@ export const Header = React.memo(function Header({
   return (
     <header className="w-full pt-5 sm:pt-6 px-4 sm:px-10 lg:px-16 flex items-center justify-between relative z-40 select-none bg-transparent">
       {/* Brand: firefly bare text with version */}
-      <div className="flex items-center gap-2 tracking-tight text-sm">
+      <div className="flex items-center gap-2 tracking-tight text-sm shrink-0">
         <button
           onClick={() => {
             onTabChange('overview');
@@ -104,26 +79,29 @@ export const Header = React.memo(function Header({
         </span>
       </div>
 
-      {/* Desktop Navigation (visible on md and up) */}
-      <nav className="hidden md:flex items-center gap-4 sm:gap-6 text-xs sm:text-sm font-normal">
-        {TABS.map((tab) => {
-          const isActive = activeTab === tab.id;
-          return (
-            <button
-              key={tab.id}
-              onClick={() => onTabChange(tab.id)}
-              onMouseEnter={() => onPreloadTab?.(tab.id)}
-              className={cn(
-                'nav-item transition-colors cursor-pointer bg-transparent border-none p-0 select-none',
-                isActive
-                  ? 'text-white font-medium'
-                  : 'text-neutral-400 hover:text-neutral-200'
-              )}
-            >
-              {tab.label}
-            </button>
-          );
-        })}
+      {/* Desktop Navigation (visible on lg and up) */}
+      <nav className="hidden lg:flex items-center gap-4 xl:gap-6 text-xs xl:text-sm font-normal min-w-0">
+        {/* Horizontally scrollable tab strip — new registry modules extend it instead of wrapping the pills */}
+        <div className="no-scrollbar flex items-center gap-4 xl:gap-6 min-w-0 overflow-x-auto">
+          {NAV_TABS.map((tab) => {
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => onTabChange(tab.id)}
+                onMouseEnter={() => onPreloadTab?.(tab.id)}
+                className={cn(
+                  'nav-item whitespace-nowrap shrink-0 transition-colors cursor-pointer bg-transparent border-none p-0 select-none',
+                  isActive
+                    ? 'text-white font-medium'
+                    : 'text-neutral-400 hover:text-neutral-200'
+                )}
+              >
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
 
         {/* Relaxing Lofi Music Toggle Button matching index.html */}
         <button
@@ -145,7 +123,9 @@ export const Header = React.memo(function Header({
             <span className="lofi-bar-4 w-[2px] h-[3px] bg-neutral-400 group-hover:bg-neutral-200 rounded-full transition-all" />
           </span>
           <span id="musicStatusText" className="tracking-wide text-[11px] sm:text-xs">
-            {isPlaying ? 'Lofi Night (On)' : 'Music Off'}
+            {/* Short label while space is tight at lg, full label from xl upward */}
+            <span className="xl:hidden">{isPlaying ? 'Lofi (On)' : 'Music Off'}</span>
+            <span className="hidden xl:inline">{isPlaying ? 'Lofi Night (On)' : 'Music Off'}</span>
           </span>
         </button>
 
@@ -177,10 +157,35 @@ export const Header = React.memo(function Header({
             <span className="tracking-wide text-[11px] sm:text-xs">Sign In</span>
           </button>
         )}
+
+        {/* Project links: icon-only and xl+ only — below that the header has no spare room */}
+        <a
+          href={GITHUB_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          title="Firefly on GitHub"
+          aria-label="Firefly on GitHub"
+          className="hidden xl:flex items-center justify-center w-7 h-7 rounded-full border border-transparent text-neutral-400 hover:text-white hover:bg-white/5 hover:border-white/10 transition-colors"
+        >
+          <Github className="w-3.5 h-3.5" />
+        </a>
+
+        {SUPPORT_URL ? (
+          <a
+            href={SUPPORT_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Support the project"
+            aria-label="Support the project"
+            className="hidden xl:flex items-center justify-center w-7 h-7 rounded-full border border-transparent text-neutral-400 hover:text-rose-300 hover:bg-white/5 hover:border-white/10 transition-colors"
+          >
+            <Heart className="w-3.5 h-3.5" />
+          </a>
+        ) : null}
       </nav>
 
-      {/* Mobile Burger Button (visible below md) */}
-      <div className="flex items-center gap-2 md:hidden">
+      {/* Mobile Burger Button (visible below lg) */}
+      <div className="flex items-center gap-2 lg:hidden">
         <button
           type="button"
           onClick={() => setIsMobileMenuOpen((open) => !open)}
@@ -206,17 +211,17 @@ export const Header = React.memo(function Header({
         <>
           {/* Subtle darkened backdrop overlay */}
           <div
-            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 md:hidden transition-opacity duration-200"
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 lg:hidden transition-opacity duration-200"
             onClick={() => setIsMobileMenuOpen(false)}
             aria-hidden="true"
           />
 
-          {/* Bioluminescent Dropdown Menu Panel */}
-          <div className="fixed inset-x-4 top-[64px] z-50 md:hidden animate-in fade-in slide-in-from-top-2 duration-200">
+          {/* Bioluminescent Dropdown Menu Panel (scrolls internally once the registry outgrows the viewport) */}
+          <div className="fixed inset-x-4 top-[64px] z-50 lg:hidden max-h-[calc(100dvh-88px)] overflow-y-auto no-scrollbar animate-in fade-in slide-in-from-top-2 duration-200">
             <div className="bg-[#090b10]/95 backdrop-blur-xl border border-white/[0.08] rounded-2xl p-4 shadow-2xl shadow-black/80 space-y-3 font-mono text-xs">
               {/* Navigation Tabs List */}
               <div className="flex flex-col space-y-1">
-                {TABS.map((tab) => {
+                {NAV_TABS.map((tab) => {
                   const isActive = activeTab === tab.id;
                   return (
                     <button
@@ -297,6 +302,36 @@ export const Header = React.memo(function Header({
                     <span className="tracking-wide text-[11px]">Sign In</span>
                   </button>
                 )}
+              </div>
+
+              {/* Project links: GitHub & optional support page */}
+              <div className="flex items-center justify-center gap-3 pt-1 text-[11px] text-neutral-500">
+                <a
+                  href={GITHUB_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1.5 hover:text-neutral-200 transition-colors"
+                >
+                  <Github className="w-3 h-3" />
+                  <span>GitHub</span>
+                </a>
+
+                {SUPPORT_URL ? (
+                  <>
+                    <span aria-hidden="true" className="text-neutral-700">
+                      ·
+                    </span>
+                    <a
+                      href={SUPPORT_URL}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-1.5 hover:text-rose-300 transition-colors"
+                    >
+                      <Heart className="w-3 h-3" />
+                      <span>Support</span>
+                    </a>
+                  </>
+                ) : null}
               </div>
             </div>
           </div>

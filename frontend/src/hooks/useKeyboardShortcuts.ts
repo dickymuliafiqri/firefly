@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import type { TabId } from '@/core/layout/Header';
+import { ORDERED_MODULES, type TabId } from '@/modules/registry';
 import { useLatest } from './useLatest';
 
 export interface KeyboardShortcutHandlers {
@@ -10,16 +10,11 @@ export interface KeyboardShortcutHandlers {
   onCloseOverlays: () => void;
 }
 
-const TAB_KEYS: Record<string, TabId> = {
-  '1': 'overview',
-  '2': 'upstreams',
-  '3': 'models',
-  '4': 'tenants',
-  '5': 'telemetry',
-  '6': 'settings',
-  '7': 'playground',
-  '8': 'providers',
-};
+// Digits follow the module registry order, so a newly registered module
+// claims the next free hotkey (1-9) without editing this map.
+const TAB_KEYS: Record<string, TabId> = Object.fromEntries(
+  ORDERED_MODULES.slice(0, 9).map((module, index) => [String(index + 1), module.id])
+);
 
 const NATIVE_ACTIVATION_TAGS = new Set(['button', 'summary']);
 
@@ -68,7 +63,7 @@ export function useKeyboardShortcuts(handlers: KeyboardShortcutHandlers) {
         return;
       }
 
-      // 1. Tab Navigation: '1' through '7'
+      // 1. Tab Navigation: '1' through '9' (module registry order)
       const targetTab = TAB_KEYS[e.key];
       if (targetTab) {
         e.preventDefault();

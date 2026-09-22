@@ -1,7 +1,7 @@
 import { cn } from './lib/utils';
 import React, { Suspense, useEffect, useTransition, useState } from 'react';
 import { Shell } from './core/layout/Shell';
-import type { TabId } from './core/layout/Header';
+import type { TabId } from './modules/registry';
 import { MODULE_REGISTRY } from './modules/registry';
 import { ModuleSkeleton } from './modules/ModuleSkeleton';
 import {

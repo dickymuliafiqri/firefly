@@ -2,7 +2,7 @@ import React, { useState, useEffect, useTransition } from 'react';
 import { Modal } from './Modal';
 import { Button } from './Button';
 import { Eye, EyeOff, Lock, ArrowRight, Loader2 } from 'lucide-react';
-import type { TabId } from '@/core/layout/Header';
+import type { TabId } from '@/modules/registry';
 
 export interface LoginModalProps {
   isOpen: boolean;
