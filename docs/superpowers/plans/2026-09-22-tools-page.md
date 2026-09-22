@@ -1982,7 +1982,7 @@ cd frontend && npm run typecheck && npm run build
 
 In the browser, open Tools → **Benchmark**, leave the defaults (10 requests, concurrency 2),
 press **Run**. Expected: status flips to `Running`, the counter climbs `1/10` … `10/10`, then
-`Completed`; cards show a wall clock around 1.5 s, TTFT p50 ≈ 120-160 ms, aggregate TPS ≈ 300,
+`Completed`; cards show a wall clock around 2.0 s, TTFT p50 ≈ 120-160 ms, aggregate TPS ≈ 30,
 error rate `0%`, tokens `120` (12 content deltas × 10 requests). Cross-check the mock:
 
 ```bash
@@ -2234,7 +2234,7 @@ Against `http://localhost:3000`, logged in with `12345678`:
 | 6 | Benchmark 5 requests @ 2 | progress reaches 5/5, status `Completed`; `curl /_mock/seen` grew by exactly 5 |
 | 7 | TTFT plausibility | TTFT p50 within ~100-200 ms (mock delays the first token by 120 ms) |
 | 8 | Stop mid-run | status `Stopped`; in-flight rows `aborted`; queued indices never dispatched (`/_mock/seen` lower than the requested count) |
-| 9 | `curl 'http://127.0.0.1:19099/_mock/force?status=500'` then run 3 | error rate `100%`; each row shows `forced 500`; run status `Completed` |
+| 9 | `curl 'http://127.0.0.1:19099/_mock/force?status=500'` then run 3 | error rate `100%`; each row shows the gateway's upstream-error message; run status `Completed` |
 | 10 | `curl http://127.0.0.1:19099/_mock/reset` then run 1 | error rate back to `0%` |
 | 11 | Other modules | tabs 1-6 and 8 render as before; Settings tab-guard text names **Tools** |
 | 12 | Console | no React key/act warnings, no unhandled rejections released by a tool switch |
@@ -2273,3 +2273,10 @@ here.
   slice field rather than a derivation (it cannot be recovered from overlapping per-request
   durations), and the run survives tool switching via a module-scope controller, which is why
   `useBenchmarkRun` has no unmount effect at all.
+- **Two expectations corrected at verification time (2026-09-22):** Task 6's check said
+  `aggregate TPS ≈ 300`, an arithmetic slip — 120 tokens over ~2.0 s at concurrency 2 caps the
+  aggregate at ≤60 t/s and the sandbox measures ≈30 t/s, matching the ~30 t/s the chat reports
+  against the same mock. Task 8 row 9's `each row shows forced 500` is unreachable: the gateway
+  retries internally before surfacing a failure, so one client request emits several breaker
+  failures and crosses the 5-failure threshold (the first row carries the raw upstream message,
+  later rows the breaker's `circuit open`).
