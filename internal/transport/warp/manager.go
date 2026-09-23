@@ -157,7 +157,13 @@ type Manager struct {
 	// onRotate lets the caller (main) drop keep-alive sockets that were pooled on
 	// the previous egress IP; a new session is useless if every request keeps
 	// reusing an old connection.
-	onRotate    atomic.Pointer[func()]
+	onRotate atomic.Pointer[func()]
+
+	// onAutoRotate reports the upstream whose 429 triggered a rotation, once that
+	// rotation has succeeded. Its quota was keyed to the egress IP that was just
+	// replaced, so the caller releases the key cooldowns charged against it.
+	onAutoRotate atomic.Pointer[func(string)]
+
 	closeOnce   sync.Once
 	closed      atomic.Bool
 	bgCtx       context.Context
@@ -209,6 +215,23 @@ func (m *Manager) SetRotationObserver(fn func()) {
 func (m *Manager) notifyRotation() {
 	if ptr := m.onRotate.Load(); ptr != nil && *ptr != nil {
 		(*ptr)()
+	}
+}
+
+// SetAutoRotationObserver registers a callback invoked with the upstream name
+// after an automated 429-driven rotation succeeds. It runs on the rotation
+// goroutine and must not block.
+func (m *Manager) SetAutoRotationObserver(fn func(string)) {
+	if fn == nil {
+		m.onAutoRotate.Store(nil)
+		return
+	}
+	m.onAutoRotate.Store(&fn)
+}
+
+func (m *Manager) notifyAutoRotation(upstreamName string) {
+	if ptr := m.onAutoRotate.Load(); ptr != nil && *ptr != nil {
+		(*ptr)(upstreamName)
 	}
 }
 
@@ -714,9 +737,13 @@ func (m *Manager) RotateAsync(upstreamName string) {
 		}()
 
 		m.logger.Info("triggering background warp rotation due to upstream 429", "upstream", upstreamName)
-		if _, err := m.Rotate(m.bgCtx); err != nil && !m.closed.Load() {
-			m.logger.Warn("async warp rotation failed", "err", err, "upstream", upstreamName)
+		if _, err := m.Rotate(m.bgCtx); err != nil {
+			if !m.closed.Load() {
+				m.logger.Warn("async warp rotation failed", "err", err, "upstream", upstreamName)
+			}
+			return
 		}
+		m.notifyAutoRotation(upstreamName)
 	}()
 }
 

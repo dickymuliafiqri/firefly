@@ -706,3 +706,51 @@ func TestSession_ConnectionRefcount(t *testing.T) {
 		t.Errorf("a refused acquire must not leave a reference behind, got %d", got)
 	}
 }
+
+// The upstream whose 429 triggered a rotation must learn about it exactly once,
+// even when the burst delivered several 429s.
+func TestManager_AutoRotationObserverFiresOnSuccess(t *testing.T) {
+	h := newHarness(t)
+
+	var mu sync.Mutex
+	var names []string
+	h.mgr.SetAutoRotationObserver(func(name string) {
+		mu.Lock()
+		names = append(names, name)
+		mu.Unlock()
+	})
+
+	for range 4 {
+		h.mgr.RotateAsync("opencode-free")
+	}
+
+	waitFor(t, 5*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(names) == 1
+	}, "auto-rotation observer never fired for a successful rotation")
+
+	// Give any surplus goroutine a chance to race past the throttle.
+	time.Sleep(300 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(names) != 1 || names[0] != "opencode-free" {
+		t.Fatalf("observer calls = %v, want exactly [opencode-free]", names)
+	}
+}
+
+// A rotation that failed changed no IP, so no cooldown may be released.
+func TestManager_AutoRotationObserverSkipsFailedRotation(t *testing.T) {
+	h := newHarness(t)
+
+	var fired atomic.Int64
+	h.mgr.SetAutoRotationObserver(func(string) { fired.Add(1) })
+
+	h.server.Close() // registration is now unreachable
+	h.mgr.RotateAsync("opencode-free")
+
+	time.Sleep(500 * time.Millisecond)
+	if got := fired.Load(); got != 0 {
+		t.Fatalf("observer fired %d times for a failed rotation, want 0", got)
+	}
+}

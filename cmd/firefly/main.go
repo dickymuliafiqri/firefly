@@ -338,6 +338,14 @@ func run() error {
 	// warm connections from the previous one. Drop those idle sockets so the new
 	// IP is actually used by the next request.
 	warpManager.SetRotationObserver(pool.CloseIdleWarpConnections)
+
+	// The 429 that triggered the rotation charged its cooldown to the key slot, but
+	// the free-tier quota belongs to the egress IP that was just replaced. Release
+	// those cooldowns so traffic resumes on the fresh identity instead of idling
+	// behind the penalty (measured: 302s of a 300s cap in the e2e sandbox).
+	warpManager.SetAutoRotationObserver(func(upstreamName string) {
+		upstream.ClearUpstreamKeyCooldowns(reg, upstreamName, logger)
+	})
 	breakers := upstream.NewBreakerRegistry(upstream.BreakerConfig{
 		FailureThreshold: 5,
 		SuccessThreshold: 2,
