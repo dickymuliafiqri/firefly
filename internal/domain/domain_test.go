@@ -37,3 +37,38 @@ func TestKeyRing_ClearCooldownsNilSafe(t *testing.T) {
 		t.Errorf("nil ring ClearCooldowns() = %d, want 0", got)
 	}
 }
+
+func TestKeyRing_ResetConsecutiveErrors(t *testing.T) {
+	now := time.Now().UnixNano()
+	ring := NewKeyRing(KeyStrategyRoundRobin, []*KeySlot{{Ref: "a"}, {Ref: "b"}, {Ref: "c"}})
+
+	ring.SlotByRef("a").ConsecutiveErrors.Store(3)
+	ring.SlotByRef("c").ConsecutiveErrors.Store(1)
+	ring.MarkCooldown("c", time.Minute, now)
+	ring.MarkRevoked("c")
+
+	if got := ring.ResetConsecutiveErrors(); got != 2 {
+		t.Fatalf("ResetConsecutiveErrors() = %d, want 2", got)
+	}
+	for _, slot := range ring.Slots {
+		if got := slot.ConsecutiveErrors.Load(); got != 0 {
+			t.Errorf("slot %q consecutive errors = %d, want 0", slot.Ref, got)
+		}
+	}
+	if ring.SlotByRef("c").CooldownUntil.Load() == 0 {
+		t.Error("ResetConsecutiveErrors cleared a cooldown; that state is separate")
+	}
+	if !ring.SlotByRef("c").Revoked.Load() {
+		t.Error("ResetConsecutiveErrors cleared a revocation; a fired action is not undone")
+	}
+	if got := ring.ResetConsecutiveErrors(); got != 0 {
+		t.Errorf("second ResetConsecutiveErrors() = %d, want 0", got)
+	}
+}
+
+func TestKeyRing_ResetConsecutiveErrorsNilSafe(t *testing.T) {
+	var ring *KeyRing
+	if got := ring.ResetConsecutiveErrors(); got != 0 {
+		t.Errorf("nil ring ResetConsecutiveErrors() = %d, want 0", got)
+	}
+}

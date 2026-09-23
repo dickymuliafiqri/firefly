@@ -347,6 +347,29 @@ func (kr *KeyRing) ClearCooldowns(nowNano int64) int {
 	return live
 }
 
+// ResetConsecutiveErrors clears the consecutive credential-error counter on every
+// slot in the ring and reports how many slots were actually carrying one. The
+// counter arms the KeyErrorThreshold deactivate/delete action, and the 429 that
+// drove an automatic WARP rotation was charged to the slot even though the quota
+// it reflects belongs to the egress IP the rotation just replaced — the same
+// reasoning as ClearCooldowns. Revocation is left untouched: once the threshold
+// action has fired it cannot be undone by resetting the counter that armed it.
+func (kr *KeyRing) ResetConsecutiveErrors() int {
+	if kr == nil {
+		return 0
+	}
+	reset := 0
+	for _, slot := range kr.Slots {
+		if slot == nil {
+			continue
+		}
+		if slot.ConsecutiveErrors.Swap(0) != 0 {
+			reset++
+		}
+	}
+	return reset
+}
+
 // Capabilities describes what a model supports. All fields default to false.
 type Capabilities struct {
 	Stream     bool
