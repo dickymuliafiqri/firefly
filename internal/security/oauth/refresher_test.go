@@ -33,7 +33,7 @@ func (m *mockRefresherProvider) ExchangeCode(ctx context.Context, code string, s
 
 func (m *mockRefresherProvider) RefreshToken(ctx context.Context, conn *domain.OAuthConnection) (*domain.OAuthToken, error) {
 	if m.refreshedCh != nil {
-		m.refreshedCh <- conn.Token.RefreshToken
+		m.refreshedCh <- conn.ID
 	}
 	return &domain.OAuthToken{
 		AccessToken:  "new-access-token",
@@ -118,8 +118,8 @@ func TestRefresher_Tick(t *testing.T) {
 
 	// Verify only conn-1 was refreshed
 	select {
-	case tok := <-refreshedCh:
-		assert.Equal(t, "refresh-token-1", tok)
+	case id := <-refreshedCh:
+		assert.Equal(t, "conn-1", id)
 	case <-time.After(1 * time.Second):
 		t.Fatal("timed out waiting for refresh")
 	}
@@ -176,10 +176,14 @@ func TestRefresher_Tick_ContextCancellation(t *testing.T) {
 		SensitiveDelay: 5 * time.Second,
 	})
 
+	// The sweep reads its work list from a map, so which of the two due connections
+	// is refreshed first is not deterministic. Capture the one the provider actually
+	// served and assert against that.
+	refreshedFirst := make(chan string, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		// Wait for first token to be processed, then cancel context during delay
-		<-refreshedCh
+		refreshedFirst <- <-refreshedCh
 		cancel()
 	}()
 
@@ -196,13 +200,20 @@ func TestRefresher_Tick_ContextCancellation(t *testing.T) {
 		t.Fatal("refresher.Tick did not abort promptly on context cancellation")
 	}
 
+	var refreshedID string
+	select {
+	case refreshedID = <-refreshedFirst:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the sweep never reported a refreshed connection")
+	}
+
 	// The sweep aborted, but the refresh it had already started is shared work: it
 	// finishes on its own so the rotated token is not lost. Wait for that write to
 	// land, otherwise the detached flight would race the t.TempDir cleanup. Get
 	// blocks on the store mutex Save holds across its write, so a successful read
 	// of the new token means the file is on disk.
 	require.Eventually(t, func() bool {
-		conn, err := store.Get(context.Background(), "conn-1")
+		conn, err := store.Get(context.Background(), refreshedID)
 		return err == nil && conn.Token.AccessToken == "new-access-token"
 	}, 2*time.Second, 5*time.Millisecond, "the shared refresh must persist the rotated token")
 }
