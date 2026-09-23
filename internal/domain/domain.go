@@ -324,25 +324,27 @@ func (kr *KeyRing) MarkRevoked(ref string) {
 	}
 }
 
-// ClearCooldowns releases the cooldown penalty on every slot in the ring and
-// reports how many slots were actually serving one. Revocation is a separate
-// state and is left untouched: a 401 condemns the credential, while a cooldown
-// mirrors a condition that may no longer hold (a quota keyed to the egress IP
-// that a WARP rotation has just replaced).
-func (kr *KeyRing) ClearCooldowns() int {
+// ClearCooldowns releases the cooldown deadline on every slot in the ring and
+// reports how many slots were actually serving one at nowNano. An already
+// expired deadline is released too — nothing resets the field once it lapses —
+// but it is not counted as live. Revocation is a separate state and is left
+// untouched: a 401 condemns the credential, while a cooldown mirrors a condition
+// that may no longer hold (a quota keyed to the egress IP that a WARP rotation
+// has just replaced).
+func (kr *KeyRing) ClearCooldowns(nowNano int64) int {
 	if kr == nil {
 		return 0
 	}
-	cleared := 0
+	live := 0
 	for _, slot := range kr.Slots {
 		if slot == nil {
 			continue
 		}
-		if slot.CooldownUntil.Swap(0) > 0 {
-			cleared++
+		if until := slot.CooldownUntil.Swap(0); until > nowNano {
+			live++
 		}
 	}
-	return cleared
+	return live
 }
 
 // Capabilities describes what a model supports. All fields default to false.
