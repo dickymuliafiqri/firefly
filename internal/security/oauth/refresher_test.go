@@ -17,6 +17,7 @@ type mockRefresherProvider struct {
 	flow        domain.FlowType
 	sensitive   bool
 	refreshedCh chan string
+	releaseCh   chan struct{}
 }
 
 func (m *mockRefresherProvider) Name() string              { return m.name }
@@ -34,6 +35,9 @@ func (m *mockRefresherProvider) ExchangeCode(ctx context.Context, code string, s
 func (m *mockRefresherProvider) RefreshToken(ctx context.Context, conn *domain.OAuthConnection) (*domain.OAuthToken, error) {
 	if m.refreshedCh != nil {
 		m.refreshedCh <- conn.ID
+	}
+	if m.releaseCh != nil {
+		<-m.releaseCh
 	}
 	return &domain.OAuthToken{
 		AccessToken:  "new-access-token",
@@ -146,11 +150,13 @@ func TestRefresher_Tick_ContextCancellation(t *testing.T) {
 	require.NoError(t, err)
 
 	refreshedCh := make(chan string, 10)
+	releaseProvider := make(chan struct{})
 	provider := &mockRefresherProvider{
 		name:        "sensitive-prov",
 		flow:        domain.FlowTypeAuthCodePKCE,
 		sensitive:   true,
 		refreshedCh: refreshedCh,
+		releaseCh:   releaseProvider,
 	}
 
 	mgr := NewManager(store)
@@ -182,9 +188,13 @@ func TestRefresher_Tick_ContextCancellation(t *testing.T) {
 	refreshedFirst := make(chan string, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		// Wait for first token to be processed, then cancel context during delay
+		// Wait for first token to be processed, then cancel context during delay. The
+		// provider stays held until the cancellation has landed, so the write that
+		// follows either runs on the flight's detached context (production) or sees an
+		// already-canceled one (regression) — deterministically, not by luck.
 		refreshedFirst <- <-refreshedCh
 		cancel()
+		close(releaseProvider)
 	}()
 
 	done := make(chan struct{})
