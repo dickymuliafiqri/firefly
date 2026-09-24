@@ -831,6 +831,106 @@ func TestHealthChecker_ThresholdActionOnProbeFailure(t *testing.T) {
 	if len(notifier.ids) != 1 || notifier.ids[0] != 101 {
 		t.Fatalf("expected notification key ID 101, got %v", notifier.ids)
 	}
+	if kr.SlotCount() != 0 {
+		t.Fatalf("expected KeyRing to have 0 slots after deactivate threshold action, got %d", kr.SlotCount())
+	}
+	if kr.SlotByRef("k1") != nil {
+		t.Fatal("expected k1 removed from KeyRing")
+	}
+}
+
+// TestHealthChecker_ThresholdDeleteRemovesKeyAndProbesRemainingKey verifies that
+// when a key is deleted by the threshold policy during background probes, it is
+// removed from the KeyRing so subsequent probes cleanly select the remaining key.
+func TestHealthChecker_ThresholdDeleteRemovesKeyAndProbesRemainingKey(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	var probedKeys []string
+	var mu sync.Mutex
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		mu.Lock()
+		probedKeys = append(probedKeys, auth)
+		mu.Unlock()
+
+		if auth == "Bearer sk-test-bad-k1" {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, `{"error":{"message":"Invalid key","type":"invalid_request_error"}}`)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"pong"}}]}`)
+	}))
+	defer srv.Close()
+
+	k1 := &domain.KeySlot{Ref: "k1", Secret: "sk-test-bad-k1", APIKeyID: 101}
+	k2 := &domain.KeySlot{Ref: "k2", Secret: "sk-test-good-k2", APIKeyID: 102}
+	kr := domain.NewKeyRing(domain.KeyStrategyRoundRobin, []*domain.KeySlot{k1, k2})
+
+	up := &domain.Upstream{
+		Name:              "probe-del-test",
+		BaseURL:           srv.URL,
+		ProbeModel:        "gpt-4o-mini",
+		KeyRing:           kr,
+		KeyErrorThreshold: 1,
+		KeyErrorAction:    "delete",
+	}
+
+	notifier := &mockKeyNotifier{}
+	checker := NewHealthCheckerWithStaticUpstreams(
+		HealthCheckConfig{Timeout: 1 * time.Second},
+		[]*domain.Upstream{up},
+		nil,
+		newMockBreakerReporter(),
+		notifier,
+	)
+
+	ctx := context.Background()
+
+	// Force probe 1 to select k1 by temporarily putting k2 in cooldown
+	k2.CooldownUntil.Store(time.Now().Add(time.Hour).UnixNano())
+
+	// Probe 1: probes bad key (k1) -> 401 -> threshold reached -> k1 deleted from KeyRing!
+	if err := checker.ProbeOnce(ctx); err != nil {
+		t.Fatalf("ProbeOnce #1 failed: %v", err)
+	}
+
+	if kr.SlotCount() != 1 {
+		t.Fatalf("expected 1 slot remaining in KeyRing, got %d", kr.SlotCount())
+	}
+	if kr.SlotByRef("k1") != nil {
+		t.Fatal("k1 must be removed from KeyRing")
+	}
+	if kr.SlotByRef("k2") != k2 {
+		t.Fatal("k2 must remain in KeyRing")
+	}
+
+	notifier.mu.Lock()
+	if len(notifier.actions) != 1 || notifier.actions[0] != ports.KeyActionDelete {
+		t.Fatalf("expected delete notification, got %v", notifier.actions)
+	}
+	notifier.mu.Unlock()
+
+	// Clear k2 cooldown so probe 2 can probe k2
+	k2.CooldownUntil.Store(0)
+
+	// Probe 2: k1 is gone, so checker MUST probe k2 -> 200 OK!
+	if err := checker.ProbeOnce(ctx); err != nil {
+		t.Fatalf("ProbeOnce #2 failed: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(probedKeys) != 2 {
+		t.Fatalf("expected 2 probes, got %d", len(probedKeys))
+	}
+	if probedKeys[0] != "Bearer sk-test-bad-k1" {
+		t.Errorf("probe 1 key mismatch: %s", probedKeys[0])
+	}
+	if probedKeys[1] != "Bearer sk-test-good-k2" {
+		t.Errorf("probe 2 key mismatch: %s", probedKeys[1])
+	}
 }
 
 // TestHealthChecker_ProbeSuccessResetsCounter verifies the reset half of the

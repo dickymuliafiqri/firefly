@@ -250,6 +250,50 @@ func TestKeyRing_Concurrent_Stress(t *testing.T) {
 	wg.Wait()
 }
 
+func TestKeyRing_Concurrent_RemoveSlot(t *testing.T) {
+	const totalKeys = 10
+	slots := make([]*domain.KeySlot, totalKeys)
+	for i := range slots {
+		slots[i] = &domain.KeySlot{Ref: fmt.Sprintf("K%d", i)}
+	}
+	kr := NewKeyRing(domain.KeyStrategyRoundRobin, slots)
+
+	var wg sync.WaitGroup
+	workers := 20
+	iterations := 1000
+
+	// Reader workers
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < iterations; i++ {
+				_, _ = kr.SelectKey()
+				_ = kr.SlotCount()
+				_ = kr.AllSlots()
+				_ = kr.SlotByRef("K0")
+				_ = kr.PrimarySlot()
+			}
+		}()
+	}
+
+	// Writer worker removing slots
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < totalKeys; i++ {
+			time.Sleep(time.Millisecond)
+			kr.RemoveSlot(fmt.Sprintf("K%d", i))
+		}
+	}()
+
+	wg.Wait()
+
+	if kr.SlotCount() != 0 {
+		t.Fatalf("expected 0 slots after all removed, got %d", kr.SlotCount())
+	}
+}
+
 func BenchmarkKeyRing_SelectKey_Parallel(b *testing.B) {
 	slots := make([]*domain.KeySlot, 4)
 	for i := range slots {

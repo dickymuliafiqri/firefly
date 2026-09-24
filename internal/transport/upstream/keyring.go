@@ -55,7 +55,7 @@ func (kr *KeyRing) SelectKey() (*domain.KeySlot, error) {
 // SelectKeyAt picks an available KeySlot evaluated at nowNano.
 // Returns ErrAllKeysExhausted if all slots are in cooldown, saturated, or revoked.
 func (kr *KeyRing) SelectKeyAt(nowNano int64) (*domain.KeySlot, error) {
-	if kr == nil || kr.KeyRing == nil || len(kr.Slots) == 0 {
+	if kr == nil || kr.KeyRing == nil {
 		return nil, ErrAllKeysExhausted
 	}
 	return kr.KeyRing.SelectKey(nowNano)
@@ -82,6 +82,14 @@ func (kr *KeyRing) MarkRevoked(ref string) {
 		return
 	}
 	kr.KeyRing.MarkRevoked(ref)
+}
+
+// RemoveSlot removes the key slot with the given ref from the keyring.
+func (kr *KeyRing) RemoveSlot(ref string) bool {
+	if kr == nil || kr.KeyRing == nil {
+		return false
+	}
+	return kr.KeyRing.RemoveSlot(ref)
 }
 
 // Handle429 parses the Retry-After header and places the key slot into cooldown.

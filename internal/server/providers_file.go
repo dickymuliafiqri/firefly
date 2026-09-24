@@ -99,7 +99,7 @@ func (s *fileProviderStore) ListProviderKeyRecords(ctx context.Context, id int64
 		requests = s.metrics.Snapshot().KeyRequests
 	}
 
-	slots := u.KeyRing.Slots
+	slots := u.KeyRing.AllSlots()
 	records := make([]turso.ProviderKeyRecord, 0, len(slots))
 	for _, slot := range slots {
 		records = append(records, fileKeyRecord(u.Name, slot, requests[u.Name+"/"+slot.Ref]))
@@ -144,7 +144,7 @@ func (s *fileProviderStore) DeleteProviderKeyRecord(context.Context, int64) (int
 // where the row comes from, so the page never reads as a Turso-backed catalog.
 func (s *fileProviderStore) providerRecord(u *domain.Upstream) turso.ProviderRecord {
 	active := 0
-	for _, slot := range u.KeyRing.Slots {
+	for _, slot := range u.KeyRing.AllSlots() {
 		if !slot.Revoked.Load() {
 			active++
 		}
@@ -176,7 +176,7 @@ func (s *fileProviderStore) upstreamByID(id int64) (*domain.Upstream, bool) {
 
 // hasCredentials reports whether an upstream carries a credential pool.
 func hasCredentials(u *domain.Upstream) bool {
-	return u != nil && u.KeyRing != nil && len(u.KeyRing.Slots) > 0
+	return u != nil && u.KeyRing != nil && u.KeyRing.SlotCount() > 0
 }
 
 // providerStoreProvenance names the backing store behind a providerAdminStore so

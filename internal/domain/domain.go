@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -161,12 +162,21 @@ func (ks *KeySlot) IsAvailable(nowNano int64) bool {
 	return true
 }
 
+// keyRingState stores the immutable generation state of slots and ref lookup
+// so concurrent readers never lock and never race with dynamic slot removal.
+type keyRingState struct {
+	slots []*KeySlot
+	byRef map[string]*KeySlot
+}
+
 // KeyRing holds a collection of credential slots for an upstream and tracks cursor.
 type KeyRing struct {
 	Strategy KeyStrategy
 	Slots    []*KeySlot
 	byRef    map[string]*KeySlot
 	cursor   atomic.Uint64
+	state    atomic.Pointer[keyRingState]
+	mu       sync.Mutex
 }
 
 // NewKeyRing constructs a KeyRing with the given strategy and slots.
@@ -174,17 +184,24 @@ func NewKeyRing(strategy KeyStrategy, slots []*KeySlot) *KeyRing {
 	if strategy == "" {
 		strategy = KeyStrategyRoundRobin
 	}
+	clonedSlots := make([]*KeySlot, 0, len(slots))
 	byRef := make(map[string]*KeySlot, len(slots))
 	for _, s := range slots {
 		if s != nil {
+			clonedSlots = append(clonedSlots, s)
 			byRef[s.Ref] = s
 		}
 	}
+	st := &keyRingState{
+		slots: clonedSlots,
+		byRef: byRef,
+	}
 	kr := &KeyRing{
 		Strategy: strategy,
-		Slots:    slots,
+		Slots:    clonedSlots,
 		byRef:    byRef,
 	}
+	kr.state.Store(st)
 	// Seed the starting cursor from the process-wide rotation counter so that
 	// rotation progress SURVIVES snapshot hot-swaps. Every config/DB reload
 	// rebuilds the KeyRing; if the cursor started at 0 each time, selection
@@ -198,20 +215,42 @@ func NewKeyRing(strategy KeyStrategy, slots []*KeySlot) *KeyRing {
 	return kr
 }
 
+func (kr *KeyRing) loadState() *keyRingState {
+	if kr == nil {
+		return nil
+	}
+	st := kr.state.Load()
+	if st != nil {
+		return st
+	}
+	return &keyRingState{
+		slots: kr.Slots,
+		byRef: kr.byRef,
+	}
+}
+
 // SlotCount returns the number of slots in the ring.
 func (kr *KeyRing) SlotCount() int {
 	if kr == nil {
 		return 0
 	}
-	return len(kr.Slots)
+	st := kr.loadState()
+	if st == nil {
+		return 0
+	}
+	return len(st.slots)
 }
 
 // PrimarySlot returns the primary (first) slot in the ring, or nil if empty.
 func (kr *KeyRing) PrimarySlot() *KeySlot {
-	if kr == nil || len(kr.Slots) == 0 {
+	if kr == nil {
 		return nil
 	}
-	return kr.Slots[0]
+	st := kr.loadState()
+	if st == nil || len(st.slots) == 0 {
+		return nil
+	}
+	return st.slots[0]
 }
 
 // SlotByRef returns the slot with the given ref, or nil if not found.
@@ -219,28 +258,88 @@ func (kr *KeyRing) SlotByRef(ref string) *KeySlot {
 	if kr == nil {
 		return nil
 	}
-	return kr.byRef[ref]
+	st := kr.loadState()
+	if st == nil || st.byRef == nil {
+		return nil
+	}
+	return st.byRef[ref]
+}
+
+// AllSlots returns a snapshot copy of the current slots in the ring.
+func (kr *KeyRing) AllSlots() []*KeySlot {
+	if kr == nil {
+		return nil
+	}
+	st := kr.loadState()
+	if st == nil {
+		return nil
+	}
+	return st.slots
+}
+
+// RemoveSlot removes the key slot with the given ref from the ring using
+// Copy-On-Write so concurrent readers are not blocked and do not data race.
+// It returns true if the slot was found and removed, false otherwise.
+func (kr *KeyRing) RemoveSlot(ref string) bool {
+	if kr == nil || ref == "" {
+		return false
+	}
+	kr.mu.Lock()
+	defer kr.mu.Unlock()
+
+	st := kr.loadState()
+	if st == nil || st.byRef == nil {
+		return false
+	}
+	if _, found := st.byRef[ref]; !found {
+		return false
+	}
+
+	newSlots := make([]*KeySlot, 0, len(st.slots)-1)
+	newByRef := make(map[string]*KeySlot, len(st.slots)-1)
+	for _, s := range st.slots {
+		if s != nil && s.Ref != ref {
+			newSlots = append(newSlots, s)
+			newByRef[s.Ref] = s
+		}
+	}
+
+	newSt := &keyRingState{
+		slots: newSlots,
+		byRef: newByRef,
+	}
+	kr.Slots = newSlots
+	kr.byRef = newByRef
+	kr.state.Store(newSt)
+	return true
 }
 
 // SelectKey picks an available KeySlot according to the configured Strategy.
 // It is lock-free and allocation-free on the happy path.
 func (kr *KeyRing) SelectKey(nowNano int64) (*KeySlot, error) {
-	if kr == nil || len(kr.Slots) == 0 {
+	if kr == nil {
+		return nil, ErrAllKeysExhausted
+	}
+	st := kr.loadState()
+	if st == nil || len(st.slots) == 0 {
 		return nil, ErrAllKeysExhausted
 	}
 
 	switch kr.Strategy {
 	case KeyStrategyLeastInflight:
-		return kr.selectLeastInflight(nowNano)
+		return kr.selectLeastInflight(st, nowNano)
 	default:
-		return kr.selectRoundRobin(nowNano)
+		return kr.selectRoundRobin(st, nowNano)
 	}
 }
 
-func (kr *KeyRing) selectRoundRobin(nowNano int64) (*KeySlot, error) {
-	n := len(kr.Slots)
+func (kr *KeyRing) selectRoundRobin(st *keyRingState, nowNano int64) (*KeySlot, error) {
+	n := len(st.slots)
+	if n == 0 {
+		return nil, ErrAllKeysExhausted
+	}
 	if n == 1 {
-		slot := kr.Slots[0]
+		slot := st.slots[0]
 		if slot != nil && slot.IsAvailable(nowNano) {
 			return slot, nil
 		}
@@ -250,7 +349,7 @@ func (kr *KeyRing) selectRoundRobin(nowNano int64) (*KeySlot, error) {
 	start := kr.cursor.Add(1) - 1
 	for i := 0; i < n; i++ {
 		idx := (start + uint64(i)) % uint64(n)
-		slot := kr.Slots[idx]
+		slot := st.slots[idx]
 		if slot != nil && slot.IsAvailable(nowNano) {
 			return slot, nil
 		}
@@ -258,10 +357,13 @@ func (kr *KeyRing) selectRoundRobin(nowNano int64) (*KeySlot, error) {
 	return nil, ErrAllKeysExhausted
 }
 
-func (kr *KeyRing) selectLeastInflight(nowNano int64) (*KeySlot, error) {
-	n := len(kr.Slots)
+func (kr *KeyRing) selectLeastInflight(st *keyRingState, nowNano int64) (*KeySlot, error) {
+	n := len(st.slots)
+	if n == 0 {
+		return nil, ErrAllKeysExhausted
+	}
 	if n == 1 {
-		slot := kr.Slots[0]
+		slot := st.slots[0]
 		if slot != nil && slot.IsAvailable(nowNano) {
 			return slot, nil
 		}
@@ -274,7 +376,7 @@ func (kr *KeyRing) selectLeastInflight(nowNano int64) (*KeySlot, error) {
 
 	for i := 0; i < n; i++ {
 		idx := (start + uint64(i)) % uint64(n)
-		slot := kr.Slots[idx]
+		slot := st.slots[idx]
 		if slot == nil || !slot.IsAvailable(nowNano) {
 			continue
 		}
@@ -335,8 +437,12 @@ func (kr *KeyRing) ClearCooldowns(nowNano int64) int {
 	if kr == nil {
 		return 0
 	}
+	st := kr.loadState()
+	if st == nil {
+		return 0
+	}
 	live := 0
-	for _, slot := range kr.Slots {
+	for _, slot := range st.slots {
 		if slot == nil {
 			continue
 		}
@@ -358,8 +464,12 @@ func (kr *KeyRing) ResetConsecutiveErrors() int {
 	if kr == nil {
 		return 0
 	}
+	st := kr.loadState()
+	if st == nil {
+		return 0
+	}
 	reset := 0
-	for _, slot := range kr.Slots {
+	for _, slot := range st.slots {
 		if slot == nil {
 			continue
 		}

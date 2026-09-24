@@ -222,12 +222,12 @@ func (h *HealthChecker) probeOne(ctx context.Context, u *domain.Upstream) {
 	trimmedBase := strings.TrimRight(u.BaseURL, "/")
 	var activeSlot *domain.KeySlot
 
-	if u.KeyRing != nil && len(u.KeyRing.Slots) > 0 {
+	if u.KeyRing != nil && u.KeyRing.SlotCount() > 0 {
 		activeSlot, _ = u.KeyRing.SelectKey(time.Now().UnixNano())
 		if activeSlot == nil {
 			activeSlot = u.KeyRing.PrimarySlot()
 			if activeSlot != nil && activeSlot.Revoked.Load() {
-				for _, s := range u.KeyRing.Slots {
+				for _, s := range u.KeyRing.AllSlots() {
 					if s != nil && !s.Revoked.Load() {
 						activeSlot = s
 						break

@@ -1,7 +1,7 @@
 /**
  * Application build and version constants.
  */
-export const APP_VERSION = 'v1.17.0';
+export const APP_VERSION = 'v1.17.1';
 
 /**
  * Outbound project links, surfaced in the footer, the header (xl and up only —

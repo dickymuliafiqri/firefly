@@ -123,8 +123,8 @@ func (a *Adapter) Forward(ctx context.Context, t *domain.Target, req ports.Forwa
 	if a.cfg.Retry != nil {
 		attempts = a.cfg.Retry.Attempts()
 	}
-	if u.KeyRing != nil && len(u.KeyRing.Slots) > attempts {
-		attempts = len(u.KeyRing.Slots)
+	if u.KeyRing != nil && u.KeyRing.SlotCount() > attempts {
+		attempts = u.KeyRing.SlotCount()
 	}
 
 	var lastErr error

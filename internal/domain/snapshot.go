@@ -239,7 +239,7 @@ func (s *CatalogSnapshot) ResolveTargetWithBreaker(
 			cred := tenant.CredentialRef
 			var slot *KeySlot
 			if cred == "" {
-				if up.KeyRing != nil && len(up.KeyRing.Slots) > 0 {
+				if up.KeyRing != nil && up.KeyRing.SlotCount() > 0 {
 					selectedSlot, err := up.KeyRing.SelectKey(nowNano)
 					if err != nil {
 						return nil, true, false
@@ -351,7 +351,7 @@ func (s *CatalogSnapshot) ResolveTargetWithBreaker(
 	cred := tenant.CredentialRef
 	var slot *KeySlot
 	if cred == "" {
-		if up.KeyRing != nil && len(up.KeyRing.Slots) > 0 {
+		if up.KeyRing != nil && up.KeyRing.SlotCount() > 0 {
 			selectedSlot, err := up.KeyRing.SelectKey(nowNano)
 			if err != nil {
 				return nil, false, ErrAllKeysExhausted

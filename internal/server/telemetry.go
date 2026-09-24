@@ -232,7 +232,7 @@ func (deps RouterDeps) handleGetTelemetry(w http.ResponseWriter, r *http.Request
 				var slotsDTO []KeySlotTelemetryDTO
 				var upstreamTotalReqs int64
 				if u.KeyRing != nil {
-					for _, slot := range u.KeyRing.Slots {
+					for _, slot := range u.KeyRing.AllSlots() {
 						cdUntil := slot.CooldownUntil.Load()
 						isCooldown := cdUntil > nowNano
 						var cdRem int64

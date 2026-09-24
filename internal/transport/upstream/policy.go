@@ -148,6 +148,9 @@ func applyRuleAction(
 	switch ports.KeyAction(action) {
 	case ports.KeyActionDelete:
 		slot.Revoked.Store(true)
+		if u.KeyRing != nil {
+			u.KeyRing.RemoveSlot(slot.Ref)
+		}
 		if logger != nil {
 			logger.Warn("key error rule triggered: deleting key",
 				"upstream", u.Name,
@@ -190,6 +193,9 @@ func applyRuleAction(
 
 	default: // Deactivate
 		slot.Revoked.Store(true)
+		if u.KeyRing != nil {
+			u.KeyRing.RemoveSlot(slot.Ref)
+		}
 		if logger != nil {
 			logger.Warn("key error rule triggered: deactivating key",
 				"upstream", u.Name,
@@ -221,6 +227,9 @@ func applyKeyAction(
 	switch ports.KeyAction(action) {
 	case ports.KeyActionDelete:
 		slot.Revoked.Store(true)
+		if u.KeyRing != nil {
+			u.KeyRing.RemoveSlot(slot.Ref)
+		}
 		if logger != nil {
 			logger.Warn("key error threshold reached: deleting key",
 				"upstream", u.Name,
@@ -257,6 +266,9 @@ func applyKeyAction(
 
 	default: // Deactivate
 		slot.Revoked.Store(true)
+		if u.KeyRing != nil {
+			u.KeyRing.RemoveSlot(slot.Ref)
+		}
 		if logger != nil {
 			logger.Warn("key error threshold reached: deactivating key",
 				"upstream", u.Name,

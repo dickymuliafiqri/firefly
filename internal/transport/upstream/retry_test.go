@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/dickymuliafiqri/firefly/internal/domain"
+	"github.com/dickymuliafiqri/firefly/internal/ports"
 )
 
 func TestRetryPolicyDefaults(t *testing.T) {
@@ -200,5 +201,67 @@ func TestProcessAttemptOutcome_WrappedClientCancel(t *testing.T) {
 	}
 	if got := slot.ConsecutiveErrors.Load(); got != 0 {
 		t.Errorf("wrapped client cancel must reset consecutive errors, got %d", got)
+	}
+}
+
+func TestProcessAttemptOutcome_ThresholdDeleteRemovesKeyAndFailsOver(t *testing.T) {
+	br := &mockBreaker{}
+	notifier := &mockKeyNotifier{}
+	k1 := &domain.KeySlot{Ref: "k1", APIKeyID: 101}
+	k2 := &domain.KeySlot{Ref: "k2", APIKeyID: 102}
+	kr := domain.NewKeyRing(domain.KeyStrategyRoundRobin, []*domain.KeySlot{k1, k2})
+
+	u := &domain.Upstream{
+		Name:              "up-failover",
+		KeyRing:           kr,
+		KeyErrorThreshold: 1,
+		KeyErrorAction:    "delete",
+	}
+	target := &domain.Target{
+		Upstream:      u,
+		KeySlot:       k1,
+		CredentialRef: k1.Ref,
+	}
+
+	// k1 returns 403 Forbidden -> reaches threshold of 1 -> deleted!
+	decision := ProcessAttemptOutcome(u, target, AttemptOutcome{
+		Status: http.StatusForbidden,
+	}, br, nil, notifier, nil)
+
+	if !decision.Failover {
+		t.Fatalf("expected Failover=true, got decision=%+v", decision)
+	}
+	if target.KeySlot != k2 {
+		t.Fatalf("expected target.KeySlot to rotate to k2, got %+v", target.KeySlot)
+	}
+	if target.CredentialRef != "k2" {
+		t.Fatalf("expected target.CredentialRef to be k2, got %q", target.CredentialRef)
+	}
+	if kr.SlotCount() != 1 {
+		t.Fatalf("expected 1 slot remaining in KeyRing, got %d", kr.SlotCount())
+	}
+	if kr.SlotByRef("k1") != nil {
+		t.Fatal("k1 must be removed from KeyRing")
+	}
+
+	notifier.mu.Lock()
+	if len(notifier.actions) != 1 || notifier.actions[0] != ports.KeyActionDelete {
+		t.Fatalf("expected delete action notified, got %v", notifier.actions)
+	}
+	notifier.mu.Unlock()
+
+	// Now k2 also returns 403 -> deleted -> no more keys left!
+	decision2 := ProcessAttemptOutcome(u, target, AttemptOutcome{
+		Status: http.StatusForbidden,
+	}, br, nil, notifier, nil)
+
+	if decision2.Failover {
+		t.Fatal("expected Failover=false when all keys in KeyRing are exhausted")
+	}
+	if !decision2.Relay {
+		t.Fatalf("expected Relay=true on exhausted 403, got %+v", decision2)
+	}
+	if kr.SlotCount() != 0 {
+		t.Fatalf("expected 0 slots in KeyRing, got %d", kr.SlotCount())
 	}
 }

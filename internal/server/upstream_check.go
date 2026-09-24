@@ -195,7 +195,7 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 						targetSlot = existingUp.KeyRing.SlotByRef(apiKey)
 					}
 					if targetSlot == nil && isMasked(apiKey) {
-						for _, slot := range existingUp.KeyRing.Slots {
+						for _, slot := range existingUp.KeyRing.AllSlots() {
 							if slot != nil && maskSecret(slot.Secret) == apiKey {
 								targetSlot = slot
 								break
@@ -1097,7 +1097,7 @@ func (deps RouterDeps) handleFetchUpstreamModels(w http.ResponseWriter, r *http.
 						targetSlot = existingUp.KeyRing.SlotByRef(apiKey)
 					}
 					if targetSlot == nil && isMasked(apiKey) {
-						for _, slot := range existingUp.KeyRing.Slots {
+						for _, slot := range existingUp.KeyRing.AllSlots() {
 							if slot != nil && maskSecret(slot.Secret) == apiKey {
 								targetSlot = slot
 								break

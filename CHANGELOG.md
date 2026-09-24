@@ -5,6 +5,17 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.1] - 2026-09-24
+
+### Fixed
+- **Automated Threshold Key Removal from KeyRing (`internal/domain/domain.go`, `internal/transport/upstream/policy.go`, `attempt.go`, `health.go`)**: When a key slot reached consecutive error thresholds (`KeyErrorThreshold` or matching `KeyErrorRules`) during background health probes or incoming requests, the execution action (`delete` / `deactivate`) notified the database sink (`ports.KeyActionNotifier`), but never removed the slot from the live in-memory `domain.KeyRing`. The dead or deleted key remained in `u.KeyRing.Slots`, keeping the slot count artificially high, allowing probe fallbacks to repeatedly re-probe dead credentials, and disrupting request failover. Key slots are now removed from the active `KeyRing` via thread-safe lock-free Copy-On-Write (`KeyRing.RemoveSlot`).
+- **Failover Across Remaining KeyRing Slots (`internal/transport/upstream/attempt.go`)**: `selectNextKey` previously refused failover if `len(u.KeyRing.Slots) <= 1`. When a multi-key ring was reduced to one remaining key after removing the failing slot, failover stopped prematurely. `selectNextKey` now rotates to the remaining key whenever `SlotCount() > 0` and the selected key differs from the failed attempt.
+- **Background Health Check Probe Fallback (`internal/transport/upstream/health.go`)**: Health check probes now evaluate `u.KeyRing.SlotCount()` and `u.KeyRing.AllSlots()`, ensuring probe fallbacks never target dead keys after threshold removal, and seamlessly rotate to healthy remaining keys on subsequent intervals.
+
+### Added
+- **Copy-On-Write `KeyRing.RemoveSlot` & `AllSlots` (`internal/domain/domain.go`, `internal/transport/upstream/keyring.go`)**: Lock-free state management backed by `atomic.Pointer[keyRingState]` and an internal mutex guard during removals. Happy-path key selection remains 0-allocation and lock-free (>20M ops/sec).
+- **Regression Tests**: `TestKeyRing_RemoveSlot`, `TestKeyRing_RemoveSlotNilSafe`, `TestKeyRing_Concurrent_RemoveSlot`, `TestHandleKeyOutcome_ThresholdDelete_RemovesFromKeyRing`, `TestHandleKeyOutcome_ThresholdDeactivate_RemovesFromKeyRing`, `TestHandleKeyOutcome_PerStatusRule_Delete_RemovesFromKeyRing`, `TestHandleKeyOutcome_ThresholdCooldown_KeepsKeyInKeyRing`, `TestProcessAttemptOutcome_ThresholdDeleteRemovesKeyAndFailsOver`, and `TestHealthChecker_ThresholdDeleteRemovesKeyAndProbesRemainingKey`.
+
 ## [1.17.0] - 2026-09-24
 
 ### Added

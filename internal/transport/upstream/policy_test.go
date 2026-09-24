@@ -319,3 +319,152 @@ func TestHandleKeyOutcome_PerStatusRules_FallbackToLegacyWhenUnmatched(t *testin
 	}
 }
 
+func TestHandleKeyOutcome_ThresholdDelete_RemovesFromKeyRing(t *testing.T) {
+	notifier := &mockKeyNotifier{}
+	k1 := &domain.KeySlot{Ref: "k1", APIKeyID: 10}
+	k2 := &domain.KeySlot{Ref: "k2", APIKeyID: 20}
+	kr := domain.NewKeyRing(domain.KeyStrategyRoundRobin, []*domain.KeySlot{k1, k2})
+
+	u := &domain.Upstream{
+		Name:              "del-up",
+		KeyRing:           kr,
+		KeyErrorThreshold: 2,
+		KeyErrorAction:    "delete",
+	}
+
+	// 1st error: below threshold -> not removed
+	k1.ConsecutiveErrors.Store(0)
+	action, failover := HandleKeyOutcome(u, k1, http.StatusTooManyRequests, "", notifier, nil)
+	if action || !failover {
+		t.Fatalf("first error should not trigger action: action=%v failover=%v", action, failover)
+	}
+	if kr.SlotCount() != 2 {
+		t.Fatalf("key must not be removed before threshold: slotCount=%d", kr.SlotCount())
+	}
+	if kr.SlotByRef("k1") == nil {
+		t.Fatal("k1 should still be in ring")
+	}
+
+	// 2nd error: reaches threshold -> executed (deleted)
+	action, failover = HandleKeyOutcome(u, k1, http.StatusTooManyRequests, "", notifier, nil)
+	if !action || !failover {
+		t.Fatalf("threshold reached: action=%v failover=%v", action, failover)
+	}
+	if !k1.Revoked.Load() {
+		t.Fatal("expected slot revoked")
+	}
+
+	// Key MUST be removed from KeyRing!
+	if kr.SlotCount() != 1 {
+		t.Fatalf("expected KeyRing to have 1 slot after delete, got %d", kr.SlotCount())
+	}
+	if kr.SlotByRef("k1") != nil {
+		t.Fatal("expected k1 to be removed from KeyRing")
+	}
+	if kr.SlotByRef("k2") != k2 {
+		t.Fatal("k2 should still be in KeyRing")
+	}
+
+	notifier.mu.Lock()
+	defer notifier.mu.Unlock()
+	if len(notifier.actions) != 1 || notifier.actions[0] != ports.KeyActionDelete {
+		t.Fatalf("expected KeyActionDelete notification, got %v", notifier.actions)
+	}
+}
+
+func TestHandleKeyOutcome_ThresholdDeactivate_RemovesFromKeyRing(t *testing.T) {
+	notifier := &mockKeyNotifier{}
+	k1 := &domain.KeySlot{Ref: "k1", APIKeyID: 10}
+	k2 := &domain.KeySlot{Ref: "k2", APIKeyID: 20}
+	kr := domain.NewKeyRing(domain.KeyStrategyRoundRobin, []*domain.KeySlot{k1, k2})
+
+	u := &domain.Upstream{
+		Name:              "deact-up",
+		KeyRing:           kr,
+		KeyErrorThreshold: 1,
+		KeyErrorAction:    "deactivate",
+	}
+
+	action, failover := HandleKeyOutcome(u, k1, http.StatusForbidden, "", notifier, nil)
+	if !action || !failover {
+		t.Fatalf("expected action=true failover=true, got action=%v failover=%v", action, failover)
+	}
+	if !k1.Revoked.Load() {
+		t.Fatal("expected slot revoked")
+	}
+
+	// Key MUST be removed from KeyRing on deactivate threshold action
+	if kr.SlotCount() != 1 {
+		t.Fatalf("expected 1 slot in KeyRing, got %d", kr.SlotCount())
+	}
+	if kr.SlotByRef("k1") != nil {
+		t.Fatal("expected k1 to be removed from KeyRing")
+	}
+	if kr.SlotByRef("k2") != k2 {
+		t.Fatal("k2 should still be in KeyRing")
+	}
+
+	notifier.mu.Lock()
+	defer notifier.mu.Unlock()
+	if len(notifier.actions) != 1 || notifier.actions[0] != ports.KeyActionDeactivate {
+		t.Fatalf("expected KeyActionDeactivate, got %v", notifier.actions)
+	}
+}
+
+func TestHandleKeyOutcome_PerStatusRule_Delete_RemovesFromKeyRing(t *testing.T) {
+	notifier := &mockKeyNotifier{}
+	k1 := &domain.KeySlot{Ref: "bad-key", APIKeyID: 55}
+	k2 := &domain.KeySlot{Ref: "good-key", APIKeyID: 56}
+	kr := domain.NewKeyRing(domain.KeyStrategyRoundRobin, []*domain.KeySlot{k1, k2})
+
+	u := &domain.Upstream{
+		Name:    "rule-up",
+		KeyRing: kr,
+		KeyErrorRules: []domain.KeyErrorRule{
+			{StatusCode: http.StatusPaymentRequired, Threshold: 1, Action: "delete"},
+		},
+		KeyErrorThreshold: 10,
+	}
+
+	action, failover := HandleKeyOutcome(u, k1, http.StatusPaymentRequired, "", notifier, nil)
+	if !action || !failover {
+		t.Fatalf("expected action=true failover=true, got action=%v failover=%v", action, failover)
+	}
+
+	if kr.SlotCount() != 1 {
+		t.Fatalf("expected 1 slot remaining, got %d", kr.SlotCount())
+	}
+	if kr.SlotByRef("bad-key") != nil {
+		t.Fatal("bad-key should be removed from KeyRing")
+	}
+	if kr.SlotByRef("good-key") != k2 {
+		t.Fatal("good-key should remain in KeyRing")
+	}
+}
+
+func TestHandleKeyOutcome_ThresholdCooldown_KeepsKeyInKeyRing(t *testing.T) {
+	k1 := &domain.KeySlot{Ref: "cd-key", APIKeyID: 77}
+	kr := domain.NewKeyRing(domain.KeyStrategyRoundRobin, []*domain.KeySlot{k1})
+
+	u := &domain.Upstream{
+		Name:                  "cd-up",
+		KeyRing:               kr,
+		KeyErrorThreshold:     1,
+		KeyErrorAction:        "cooldown",
+		KeyCooldownDurationMs: 60000,
+	}
+
+	action, failover := HandleKeyOutcome(u, k1, http.StatusTooManyRequests, "", nil, nil)
+	if !action || !failover {
+		t.Fatalf("expected action=true failover=true, got action=%v failover=%v", action, failover)
+	}
+
+	// Cooldown MUST NOT remove key from KeyRing!
+	if kr.SlotCount() != 1 {
+		t.Fatalf("cooldown must not remove key: got %d slots", kr.SlotCount())
+	}
+	if kr.SlotByRef("cd-key") == nil {
+		t.Fatal("cd-key must still be in KeyRing during cooldown")
+	}
+}
+

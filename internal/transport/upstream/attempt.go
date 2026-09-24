@@ -189,14 +189,18 @@ func ProcessAttemptOutcome(
 	return AttemptDecision{Fail: true, IsHostFailure: hostFailure}
 }
 
-// selectNextKey picks another available key slot when the ring has more than one
-// slot, updating target in place. It reports whether a new slot was selected.
+// selectNextKey picks another available key slot when the ring has an available
+// key different from the current one, updating target in place. It reports
+// whether a new slot was selected.
 func selectNextKey(u *domain.Upstream, target *domain.Target) bool {
-	if u.KeyRing == nil || len(u.KeyRing.Slots) <= 1 {
+	if u.KeyRing == nil || u.KeyRing.SlotCount() == 0 {
 		return false
 	}
 	nextSlot, err := u.KeyRing.SelectKey(time.Now().UnixNano())
 	if err != nil || nextSlot == nil {
+		return false
+	}
+	if target != nil && target.KeySlot != nil && nextSlot.Ref == target.KeySlot.Ref {
 		return false
 	}
 	target.KeySlot = nextSlot

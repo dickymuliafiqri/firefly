@@ -763,7 +763,7 @@ func settingsDTOFromSnapshot(snap *domain.CatalogSnapshot) config.SettingsDTO {
 			if u.KeyRing.PrimarySlot() != nil {
 				primaryKey = maskSecret(u.KeyRing.PrimarySlot().Secret)
 			}
-			for _, slot := range u.KeyRing.Slots {
+			for _, slot := range u.KeyRing.AllSlots() {
 				if slot != nil {
 					rps := slot.RPS
 					maxC := slot.MaxConcurrent
@@ -858,7 +858,7 @@ func ringHasSecret(ring *domain.KeyRing, secret string) bool {
 	if ring == nil || secret == "" {
 		return false
 	}
-	for _, s := range ring.Slots {
+	for _, s := range ring.AllSlots() {
 		if s != nil && s.Secret == secret {
 			return true
 		}
@@ -884,15 +884,15 @@ func restoreMaskedSecrets(payload *config.SettingsDTO, snap *domain.CatalogSnaps
 			if isMasked(u.APIKeys[j]) {
 				masked := u.APIKeys[j]
 				found := false
-				for _, slot := range existingUp.KeyRing.Slots {
+				for _, slot := range existingUp.KeyRing.AllSlots() {
 					if slot != nil && maskSecret(slot.Secret) == masked {
 						u.APIKeys[j] = slot.Secret
 						found = true
 						break
 					}
 				}
-				if !found && j < len(existingUp.KeyRing.Slots) && existingUp.KeyRing.Slots[j] != nil {
-					u.APIKeys[j] = existingUp.KeyRing.Slots[j].Secret
+				if !found && j < existingUp.KeyRing.SlotCount() && existingUp.KeyRing.AllSlots()[j] != nil {
+					u.APIKeys[j] = existingUp.KeyRing.AllSlots()[j].Secret
 				}
 			}
 		}
@@ -904,15 +904,15 @@ func restoreMaskedSecrets(payload *config.SettingsDTO, snap *domain.CatalogSnaps
 				if targetMasked == "" {
 					targetMasked = k.APIKey
 				}
-				for _, s := range existingUp.KeyRing.Slots {
+				for _, s := range existingUp.KeyRing.AllSlots() {
 					if s != nil && maskSecret(s.Secret) == targetMasked {
 						slot = s
 						break
 					}
 				}
 			}
-			if slot == nil && j < len(existingUp.KeyRing.Slots) {
-				slot = existingUp.KeyRing.Slots[j]
+			if slot == nil && j < existingUp.KeyRing.SlotCount() {
+				slot = existingUp.KeyRing.AllSlots()[j]
 			}
 			if slot != nil {
 				if isMasked(k.APIKey) {
