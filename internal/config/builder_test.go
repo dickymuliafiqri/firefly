@@ -752,8 +752,7 @@ func TestBuild_EgressModeAndProxy(t *testing.T) {
 				"name": "u-warp",
 				"base_url": "https://opencode.ai/zen/go/v1",
 				"api_key": "public",
-				"egress_mode": "warp",
-				"warp_auto_rotate_on_429": true
+				"egress_mode": "warp"
 			},
 			{
 				"name": "u-proxy",
@@ -780,8 +779,8 @@ func TestBuild_EgressModeAndProxy(t *testing.T) {
 	}
 
 	uWarp := res.Upstreams["u-warp"]
-	if uWarp.EgressMode != "warp" || !uWarp.WarpAutoRotateOn429 {
-		t.Errorf("expected warp with auto-rotate, got mode=%s autoRotate=%v", uWarp.EgressMode, uWarp.WarpAutoRotateOn429)
+	if uWarp.EgressMode != "warp" {
+		t.Errorf("expected warp egress, got mode=%s", uWarp.EgressMode)
 	}
 
 	uProxy := res.Upstreams["u-proxy"]

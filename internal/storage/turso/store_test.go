@@ -282,6 +282,11 @@ func TestStore_SaveAndLoadSettings(t *testing.T) {
 				BaseURL:     "https://api.bai.org",
 				KeyStrategy: "round_robin",
 				Enabled:     &isEn,
+				KeyErrorRules: []config.KeyErrorRuleDTO{
+					{StatusCode: 429, Threshold: 1, Action: "cooldown"},
+					{StatusCode: 403, Threshold: 1, Action: "delete"},
+					{StatusCode: 401, Threshold: 1, Action: "deactivate"},
+				},
 				CredentialPool: []config.CredentialKeyDTO{
 					{
 						Ref:    "bai-key-1",
@@ -332,6 +337,12 @@ func TestStore_SaveAndLoadSettings(t *testing.T) {
 	}
 	if len(loaded.Upstreams) != 1 || loaded.Upstreams[0].Name != "bai-upstream" {
 		t.Fatalf("unexpected loaded upstreams: %+v", loaded.Upstreams)
+	}
+	if len(loaded.Upstreams[0].KeyErrorRules) != 3 {
+		t.Fatalf("expected 3 KeyErrorRules, got: %+v", loaded.Upstreams[0].KeyErrorRules)
+	}
+	if loaded.Upstreams[0].KeyErrorRules[1].StatusCode != 403 || loaded.Upstreams[0].KeyErrorRules[1].Action != "delete" {
+		t.Fatalf("unexpected rule 1: %+v", loaded.Upstreams[0].KeyErrorRules[1])
 	}
 	if len(loaded.Models) != 1 || loaded.Models[0].PublicName != "gpt-4o" {
 		t.Fatalf("unexpected loaded models: %+v", loaded.Models)
@@ -1381,3 +1392,124 @@ func TestStore_SaveSettings_PrunesOrphanCredentials(t *testing.T) {
 		t.Fatalf("empty pool must not prune; dahl has %d credentials, want 4", got)
 	}
 }
+
+// TestLoadSettings_DeduplicatesHistoricalUpstreamCredentialCopies guards the
+// regression where an upstream bound to a provider has duplicate historical rows
+// in upstream_credentials (e.g. from an older import or rename saving
+// "upstream-key-<id>" alongside the provider's canonical "<upstream>-key-<id>"
+// rows). Both LoadSettings (used by GET /api/settings and the dashboard) and
+// LoadCatalogSnapshot must deduplicate by resolved secret so the reported pool
+// length and KeyRing match the true distinct credential count.
+func TestLoadSettings_DeduplicatesHistoricalUpstreamCredentialCopies(t *testing.T) {
+	ctx := context.Background()
+	store, db := setupTestDB(t)
+
+	now := time.Now().UnixMilli()
+	res, err := db.ExecContext(ctx, `
+		INSERT INTO providers (name, base_url, description, is_active, created_at, updated_at)
+		VALUES ('qoder', 'https://qoder.com', 'qoder test', 1, ?, ?)
+	`, now, now)
+	if err != nil {
+		t.Fatalf("insert provider: %v", err)
+	}
+	pID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("provider id: %v", err)
+	}
+
+	insertKey := func(id int64, secret string) {
+		t.Helper()
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO api_keys (
+				id, provider_id, api_key, status, is_active,
+				last_used_at, total_requests, created_at, updated_at
+			) VALUES (?, ?, ?, 'active', 1, 0, 0, ?, ?)
+		`, id, pID, secret, now, now); err != nil {
+			t.Fatalf("insert api_key %d: %v", id, err)
+		}
+	}
+	insertKey(201, "sk-qoder-secret-1")
+	insertKey(202, "sk-qoder-secret-2")
+
+	isEn := true
+	settings := config.SettingsDTO{
+		Upstreams: []config.UpstreamDTO{
+			{
+				Name:        "qoder",
+				Protocol:    "openai",
+				BaseURL:     "https://qoder.com",
+				KeyStrategy: "round_robin",
+				Enabled:     &isEn,
+				ProviderID:  &pID,
+			},
+		},
+		Models: []config.ModelDTO{
+			{
+				PublicName:    "qoder-model",
+				Upstream:      "qoder",
+				UpstreamModel: "qoder-model",
+				Enabled:       &isEn,
+				Capabilities:  &config.CapabilitiesDTO{Stream: true},
+			},
+		},
+	}
+	if err := store.SaveSettings(ctx, settings); err != nil {
+		t.Fatalf("SaveSettings: %v", err)
+	}
+
+	var upID int64
+	if err := db.QueryRowContext(ctx, "SELECT id FROM upstreams WHERE name = 'qoder'").Scan(&upID); err != nil {
+		t.Fatalf("resolve upstream id: %v", err)
+	}
+
+	// Inject 2 historical duplicate copies in upstream_credentials under a
+	// different ref family, plus 1 genuinely unique extra credential.
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO upstream_credentials (upstream_id, ref, secret, status, is_active, created_at, updated_at)
+		VALUES
+			(?, 'upstream-key-201', 'sk-qoder-secret-1', 'active', 1, ?, ?),
+			(?, 'upstream-key-202', 'sk-qoder-secret-2', 'active', 1, ?, ?),
+			(?, 'qoder-cred-extra', 'sk-qoder-unique-extra', 'active', 1, ?, ?)
+	`, upID, now, now, upID, now, now, upID, now, now); err != nil {
+		t.Fatalf("inject historical credentials: %v", err)
+	}
+
+	// 1. Verify LoadSettings deduplicates (dashboard / GET /api/settings surface)
+	loaded, err := store.LoadSettings(ctx)
+	if err != nil {
+		t.Fatalf("LoadSettings: %v", err)
+	}
+	if len(loaded.Upstreams) != 1 {
+		t.Fatalf("expected 1 upstream, got %d", len(loaded.Upstreams))
+	}
+	qUp := loaded.Upstreams[0]
+	// 2 provider keys + 1 unique extra = 3 total. The 2 "upstream-key-*" duplicates must be collapsed.
+	if got := len(qUp.CredentialPool); got != 3 {
+		t.Fatalf("LoadSettings CredentialPool length = %d, want 3 (duplicates collapsed)", got)
+	}
+	// The canonical provider-bound ref ("qoder-key-201") must win over the historical duplicate ("upstream-key-201")
+	poolRefs := make(map[string]bool, len(qUp.CredentialPool))
+	for _, c := range qUp.CredentialPool {
+		poolRefs[c.Ref] = true
+	}
+	if !poolRefs["qoder-key-201"] || !poolRefs["qoder-key-202"] || !poolRefs["qoder-cred-extra"] {
+		t.Fatalf("unexpected pool refs: %v", poolRefs)
+	}
+	if poolRefs["upstream-key-201"] || poolRefs["upstream-key-202"] {
+		t.Fatalf("historical duplicates should not appear in pool: %v", poolRefs)
+	}
+
+	// 2. Verify LoadCatalogSnapshot also deduplicates cleanly
+	snap, _, err := store.LoadCatalogSnapshot(ctx, func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatalf("LoadCatalogSnapshot: %v", err)
+	}
+	snapUp, ok := snap.Upstream("qoder")
+	if !ok || snapUp == nil || snapUp.KeyRing == nil {
+		t.Fatal("qoder upstream not resolved with key ring")
+	}
+	if got := snapUp.KeyRing.SlotCount(); got != 3 {
+		t.Fatalf("KeyRing SlotCount = %d, want 3", got)
+	}
+}
+

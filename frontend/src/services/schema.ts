@@ -71,6 +71,13 @@ export interface CredentialKeyDTO {
   max_concurrent?: number | null;
 }
 
+export interface KeyErrorRuleDTO {
+  status_code: number;
+  threshold: number;
+  action: 'deactivate' | 'delete' | 'cooldown' | string;
+  cooldown_duration_s?: number;
+}
+
 export interface UpstreamDTO {
   name: string;
   protocol?: Protocol | string;
@@ -94,10 +101,10 @@ export interface UpstreamDTO {
   key_error_threshold?: number | null;
   key_error_action?: 'deactivate' | 'delete' | 'cooldown' | string | null;
   key_cooldown_duration_ms?: number | null;
+  key_error_rules?: KeyErrorRuleDTO[] | null;
   probe_model?: string;
   egress_mode?: 'direct' | 'warp' | 'proxy' | string;
   proxy_url?: string;
-  warp_auto_rotate_on_429?: boolean | null;
   enabled?: boolean | null;
 }
 
@@ -113,6 +120,10 @@ export interface WarpStatusDTO {
   active_connections?: number;
   draining_sessions?: number;
   last_rotated_at?: string;
+  /** Periodic auto-rotation schedule in seconds (e.g. 300 for 5m). 0 = disabled. */
+  auto_rotate_interval_seconds?: number;
+  /** When the next scheduled auto-rotation is expected. */
+  next_rotation_at?: string;
   error?: string;
 }
 

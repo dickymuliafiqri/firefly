@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS upstreams (
     key_error_threshold     INTEGER DEFAULT 0,
     key_error_action        VARCHAR(32) DEFAULT 'deactivate',
     key_cooldown_duration_ms INTEGER DEFAULT 300000,
+    key_error_rules         TEXT DEFAULT '[]',
     probe_model             VARCHAR(128),
     egress_mode             VARCHAR(32) DEFAULT 'direct',
     proxy_url               VARCHAR(255),
@@ -186,6 +187,7 @@ func MigrateSchema(ctx context.Context, db *sql.DB) error {
 	_, _ = db.ExecContext(ctx, "ALTER TABLE upstreams ADD COLUMN key_error_threshold INTEGER DEFAULT 0")
 	_, _ = db.ExecContext(ctx, "ALTER TABLE upstreams ADD COLUMN key_error_action VARCHAR(32) DEFAULT 'deactivate'")
 	_, _ = db.ExecContext(ctx, "ALTER TABLE upstreams ADD COLUMN key_cooldown_duration_ms INTEGER DEFAULT 300000")
+	_, _ = db.ExecContext(ctx, "ALTER TABLE upstreams ADD COLUMN key_error_rules TEXT DEFAULT '[]'")
 	_, _ = db.ExecContext(ctx, "ALTER TABLE upstreams ADD COLUMN probe_model VARCHAR(128)")
 	_, _ = db.ExecContext(ctx, "ALTER TABLE upstreams ADD COLUMN egress_mode VARCHAR(32) DEFAULT 'direct'")
 	_, _ = db.ExecContext(ctx, "ALTER TABLE upstreams ADD COLUMN proxy_url VARCHAR(255)")

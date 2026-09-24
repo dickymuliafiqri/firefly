@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 
 	"github.com/dickymuliafiqri/firefly/internal/domain"
+	"github.com/dickymuliafiqri/firefly/internal/ports"
 )
 
 // ErrEmptyFile is returned when a config file has zero non-whitespace bytes.
@@ -500,6 +501,51 @@ func translateUpstream(i int, d UpstreamDTO, envLookup func(string) (string, boo
 		}
 	}
 
+	// Per-status key error rules: validate each row before accepting the build.
+	// Threshold must be >= 1 (0 would never fire, and would also read as
+	// "disabled" like the legacy field), action must be a known verb, and a
+	// cooldown rule should carry a sane duration (the UI default is 300s).
+	keyErrorRules := make([]domain.KeyErrorRule, 0, len(d.KeyErrorRules))
+	for j, r := range d.KeyErrorRules {
+		if r.StatusCode < 400 || r.StatusCode > 599 {
+			return nil, &ValidationError{
+				Field: fmt.Sprintf("upstreams[%d].key_error_rules[%d].status_code", i, j),
+				Msg:   "must be an HTTP error status between 400 and 599",
+			}
+		}
+		if r.Threshold < 1 {
+			return nil, &ValidationError{
+				Field: fmt.Sprintf("upstreams[%d].key_error_rules[%d].threshold", i, j),
+				Msg:   "must be >= 1 (1 fires on the first matching error)",
+			}
+		}
+		action := strings.ToLower(strings.TrimSpace(r.Action))
+		if action == "" {
+			action = string(ports.KeyActionDeactivate)
+		}
+		switch ports.KeyAction(action) {
+		case ports.KeyActionDeactivate, ports.KeyActionDelete, ports.KeyActionCooldown:
+		default:
+			return nil, &ValidationError{
+				Field: fmt.Sprintf("upstreams[%d].key_error_rules[%d].action", i, j),
+				Msg:   "must be one of: deactivate, delete, cooldown",
+			}
+		}
+		var cooldownS int
+		if r.CooldownDurationS != nil {
+			cooldownS = *r.CooldownDurationS
+		}
+		if ports.KeyAction(action) == ports.KeyActionCooldown && cooldownS <= 0 {
+			cooldownS = 300
+		}
+		keyErrorRules = append(keyErrorRules, domain.KeyErrorRule{
+			StatusCode:        r.StatusCode,
+			Threshold:         r.Threshold,
+			Action:            action,
+			CooldownDurationS: cooldownS,
+		})
+	}
+
 	return &domain.Upstream{
 		Name:                    d.Name,
 		Protocol:                domain.Protocol(proto),
@@ -521,10 +567,10 @@ func translateUpstream(i int, d UpstreamDTO, envLookup func(string) (string, boo
 		KeyErrorThreshold:       pickInt(d.KeyErrorThreshold, 0),
 		KeyErrorAction:          d.KeyErrorAction,
 		KeyCooldownDurationMs:   pickInt(d.KeyCooldownDurationMs, 300000),
+		KeyErrorRules:           keyErrorRules,
 		ProbeModel:              strings.TrimSpace(d.ProbeModel),
 		EgressMode:              egressMode,
 		ProxyURL:                proxyURL,
-		WarpAutoRotateOn429:     pickBool(d.WarpAutoRotateOn429, false),
 	}, nil
 }
 

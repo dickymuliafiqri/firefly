@@ -26,7 +26,15 @@ type Status struct {
 	// omitzero, not omitempty: a time.Time is a struct and omitempty never
 	// fires, which used to publish 0001-01-01 as the last rotation date.
 	RotatedAt time.Time `json:"last_rotated_at,omitzero"`
-	Error     string    `json:"error,omitempty"`
+
+	// AutoRotateIntervalSeconds reports the automated rotation schedule in seconds (e.g. 300 for 5 minutes).
+	// A value of 0 indicates that automated periodic rotation is disabled.
+	AutoRotateIntervalSeconds int `json:"auto_rotate_interval_seconds,omitempty"`
+
+	// NextRotationAt reports when the next automated rotation is expected.
+	NextRotationAt time.Time `json:"next_rotation_at,omitzero"`
+
+	Error string `json:"error,omitempty"`
 }
 
 // Dialer defines a context-aware network connection dialer interface.

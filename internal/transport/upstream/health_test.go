@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/dickymuliafiqri/firefly/internal/domain"
+	"github.com/dickymuliafiqri/firefly/internal/ports"
 	"go.uber.org/goleak"
 )
 
@@ -82,6 +83,7 @@ func TestHealthChecker_ProbeOnce(t *testing.T) {
 		[]*domain.Upstream{up1, up2, up3, up4},
 		nil,
 		reporter,
+		nil,
 	)
 
 	ctx := context.Background()
@@ -148,6 +150,7 @@ func TestHealthChecker_ConcurrencyLimit(t *testing.T) {
 		upstreams,
 		nil,
 		newMockBreakerReporter(),
+		nil,
 	)
 
 	ctx := context.Background()
@@ -194,6 +197,7 @@ func TestHealthChecker_BreakerTrippingAndRecovery(t *testing.T) {
 		[]*domain.Upstream{up},
 		nil,
 		breakers,
+		nil,
 	)
 
 	ctx := context.Background()
@@ -250,6 +254,7 @@ func TestHealthChecker_RunLifecycleAndCleanShutdown(t *testing.T) {
 		[]*domain.Upstream{up},
 		nil,
 		newMockBreakerReporter(),
+		nil,
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -317,6 +322,7 @@ func TestHealthChecker_ProbeModel_RevokesKeyOn401(t *testing.T) {
 		[]*domain.Upstream{up},
 		nil,
 		reporter,
+		nil,
 	)
 
 	ctx := context.Background()
@@ -379,6 +385,7 @@ func TestHealthChecker_ProbeModel_CooldownOn429(t *testing.T) {
 		[]*domain.Upstream{up},
 		nil,
 		reporter,
+		nil,
 	)
 
 	ctx := context.Background()
@@ -442,6 +449,7 @@ func TestHealthChecker_ProbeModel_AnthropicProtocol(t *testing.T) {
 		[]*domain.Upstream{up},
 		nil,
 		reporter,
+		nil,
 	)
 
 	ctx := context.Background()
@@ -508,6 +516,7 @@ func TestHealthChecker_RotatesKeySlotsAcrossIntervals(t *testing.T) {
 		[]*domain.Upstream{up},
 		nil,
 		newMockBreakerReporter(),
+		nil,
 	)
 
 	ctx := context.Background()
@@ -583,6 +592,7 @@ func TestHealthChecker_OpenCode_FreeResponsesProbe(t *testing.T) {
 		[]*domain.Upstream{up},
 		nil,
 		reporter,
+		nil,
 	)
 
 	if err := checker.ProbeOnce(context.Background()); err != nil {
@@ -643,6 +653,7 @@ func TestHealthChecker_OpenCode_DoesNotRevokePublicKeyOn401(t *testing.T) {
 		[]*domain.Upstream{up},
 		nil,
 		reporter,
+		nil,
 	)
 
 	if err := checker.ProbeOnce(context.Background()); err != nil {
@@ -694,6 +705,7 @@ func TestHealthChecker_OpenCode_HostFallbackOnModelFailure(t *testing.T) {
 		[]*domain.Upstream{up},
 		nil,
 		reporter,
+		nil,
 	)
 
 	if err := checker.ProbeOnce(context.Background()); err != nil {
@@ -735,6 +747,7 @@ func TestHealthChecker_OpenCode_HostProbeWithoutModel(t *testing.T) {
 		[]*domain.Upstream{up},
 		nil,
 		reporter,
+		nil,
 	)
 
 	if err := checker.ProbeOnce(context.Background()); err != nil {
@@ -748,5 +761,125 @@ func TestHealthChecker_OpenCode_HostProbeWithoutModel(t *testing.T) {
 	reps := reporter.getReports("probe-opencode-host")
 	if len(reps) != 1 || !reps[0] {
 		t.Fatalf("expected host reported healthy, got %v", reps)
+	}
+}
+
+// TestHealthChecker_ThresholdActionOnProbeFailure verifies the probe -> key
+// error policy wiring: consecutive 401 probe failures advance the slot's
+// ConsecutiveErrors counter, and reaching u.KeyErrorThreshold triggers the
+// configured deactivate action plus a ports.KeyActionNotifier notification
+// (which in production persists the DB row via the usage flusher).
+func TestHealthChecker_ThresholdActionOnProbeFailure(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"error":{"message":"Invalid API key","type":"invalid_request_error"}}`)
+	}))
+	defer srv.Close()
+
+	slot := &domain.KeySlot{
+		Ref:       "k1",
+		Secret:    "sk-test-threshold",
+		APIKeyID: 101,
+	}
+	kr := domain.NewKeyRing(domain.KeyStrategyRoundRobin, []*domain.KeySlot{slot})
+
+	up := &domain.Upstream{
+		Name:              "probe-threshold",
+		BaseURL:           srv.URL,
+		ProbeModel:        "gpt-4o-mini",
+		KeyRing:           kr,
+		KeyErrorThreshold: 3,
+		KeyErrorAction:    "deactivate",
+	}
+
+	notifier := &mockKeyNotifier{}
+	checker := NewHealthCheckerWithStaticUpstreams(
+		HealthCheckConfig{
+			Timeout:     1 * time.Second,
+			Concurrency: 2,
+		},
+		[]*domain.Upstream{up},
+		nil,
+		newMockBreakerReporter(),
+		notifier,
+	)
+
+	ctx := context.Background()
+	for i := 1; i <= 3; i++ {
+		if err := checker.ProbeOnce(ctx); err != nil {
+			t.Fatalf("ProbeOnce #%d failed: %v", i, err)
+		}
+	}
+
+	if got := slot.ConsecutiveErrors.Load(); got != 3 {
+		t.Fatalf("expected consecutive errors to reach 3 after three 401 probes, got %d", got)
+	}
+	if !slot.Revoked.Load() {
+		t.Fatal("expected slot revoked once threshold action executed")
+	}
+
+	notifier.mu.Lock()
+	defer notifier.mu.Unlock()
+	if len(notifier.actions) != 1 || notifier.actions[0] != ports.KeyActionDeactivate {
+		t.Fatalf("expected exactly one deactivate notification, got %v", notifier.actions)
+	}
+	if len(notifier.refs) != 1 || notifier.refs[0] != "k1" {
+		t.Fatalf("expected notification ref k1, got %v", notifier.refs)
+	}
+	if len(notifier.ids) != 1 || notifier.ids[0] != 101 {
+		t.Fatalf("expected notification key ID 101, got %v", notifier.ids)
+	}
+}
+
+// TestHealthChecker_ProbeSuccessResetsCounter verifies the reset half of the
+// invariant: a successful probe zeroes any accumulated consecutive errors and
+// never fires a key action notification.
+func TestHealthChecker_ProbeSuccessResetsCounter(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"pong"}}]}`)
+	}))
+	defer srv.Close()
+
+	slot := &domain.KeySlot{Ref: "k1", Secret: "sk-test-success", APIKeyID: 101}
+	slot.ConsecutiveErrors.Store(2)
+	kr := domain.NewKeyRing(domain.KeyStrategyRoundRobin, []*domain.KeySlot{slot})
+
+	up := &domain.Upstream{
+		Name:              "probe-reset",
+		BaseURL:           srv.URL,
+		ProbeModel:        "gpt-4o-mini",
+		KeyRing:           kr,
+		KeyErrorThreshold: 3,
+		KeyErrorAction:    "deactivate",
+	}
+
+	notifier := &mockKeyNotifier{}
+	checker := NewHealthCheckerWithStaticUpstreams(
+		HealthCheckConfig{Timeout: 1 * time.Second},
+		[]*domain.Upstream{up},
+		nil,
+		newMockBreakerReporter(),
+		notifier,
+	)
+
+	if err := checker.ProbeOnce(context.Background()); err != nil {
+		t.Fatalf("ProbeOnce failed: %v", err)
+	}
+
+	if got := slot.ConsecutiveErrors.Load(); got != 0 {
+		t.Fatalf("expected counter reset to 0 on probe success, got %d", got)
+	}
+	if slot.Revoked.Load() {
+		t.Fatal("slot must not be revoked on probe success")
+	}
+	notifier.mu.Lock()
+	defer notifier.mu.Unlock()
+	if len(notifier.actions) != 0 {
+		t.Fatalf("no key action should fire on probe success, got %v", notifier.actions)
 	}
 }

@@ -380,6 +380,23 @@ type Capabilities struct {
 	Audio      bool
 }
 
+// KeyErrorRule binds a single upstream HTTP error status to a threshold-counted
+// action executed against an individual key slot. E.g. {429 -> cooldown 5m} and
+// {403 -> delete} both fire on threshold 1. Rules override the global
+// KeyErrorThreshold/KeyErrorAction when a rule for that status code exists.
+type KeyErrorRule struct {
+	// StatusCode is the upstream HTTP error status (e.g. 401, 403, 429).
+	StatusCode int `json:"status_code"`
+	// Threshold is the number of consecutive errors of THIS status before the
+	// action executes. 1 = fire immediately on the first such error.
+	Threshold int `json:"threshold"`
+	// Action is "deactivate" (default), "delete", or "cooldown".
+	Action string `json:"action"`
+	// CooldownDurationS is the cooldown length in seconds when Action == "cooldown".
+	// Falls back to KeyCooldownDurationMs (or 300s) when <= 0.
+	CooldownDurationS int `json:"cooldown_duration_s,omitempty"`
+}
+
 // Upstream is a fully resolved backend definition. All defaults are applied
 // and the credential has been resolved to its ENV name (never its value).
 type Upstream struct {
@@ -421,6 +438,9 @@ type Upstream struct {
 	KeyErrorAction string
 	// KeyCooldownDurationMs is the cooldown duration in ms when KeyErrorAction is "cooldown".
 	KeyCooldownDurationMs int
+	// KeyErrorRules defines granular per-HTTP-status error handling rules (e.g. 429 -> cooldown 5m, 403 -> delete).
+	// When a matching rule exists for an error code, it takes precedence over the global KeyErrorThreshold/KeyErrorAction.
+	KeyErrorRules []KeyErrorRule
 
 	// ProbeModel is the designated model to use for deep health and quota verification.
 	// When empty, health checks fall back to reachability checks or registered catalog models.
@@ -434,10 +454,6 @@ type Upstream struct {
 	// ProxyURL is the target proxy endpoint when EgressMode is "proxy"
 	// (e.g. "socks5://user:pass@host:port" or "http://host:port").
 	ProxyURL string
-
-	// WarpAutoRotateOn429 indicates whether Cloudflare WARP WireGuard session
-	// should automatically rotate its IP upon receiving an HTTP 429 Too Many Requests.
-	WarpAutoRotateOn429 bool
 }
 
 // RoutingStrategy dictates how requests for a model are distributed across candidate upstreams.

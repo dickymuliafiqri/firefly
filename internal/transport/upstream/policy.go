@@ -60,7 +60,31 @@ func HandleKeyOutcome(
 	// 3. Increment consecutive error counter
 	consec := slot.ConsecutiveErrors.Add(1)
 
-	// 4. Check threshold
+	// 4. Check for a matching granular per-status rule in u.KeyErrorRules.
+	// A status-matched rule takes precedence over the global threshold/action.
+	rule := findMatchingRule(u.KeyErrorRules, statusCode)
+	if rule != nil {
+		if rule.Threshold > 0 && consec >= int64(rule.Threshold) {
+			reason := fmt.Sprintf("reached per-status rule threshold of %d for HTTP %d", rule.Threshold, statusCode)
+			return applyRuleAction(u, slot, rule, notifier, logger, reason)
+		}
+		// Rule matched but its threshold is not reached yet: keep rotating keys
+		// exactly like the legacy path so a failing key never pins the request.
+		if statusCode == http.StatusUnauthorized {
+			if u.KeyRing != nil {
+				FromDomain(u.KeyRing).Handle401(slot.Ref)
+			}
+			return false, true
+		}
+		if statusCode == http.StatusTooManyRequests ||
+			statusCode == http.StatusForbidden ||
+			statusCode == http.StatusPaymentRequired {
+			return false, true
+		}
+		return false, false
+	}
+
+	// 5. Legacy fallback: global KeyErrorThreshold/KeyErrorAction.
 	threshold := u.KeyErrorThreshold
 	if threshold > 0 && consec >= int64(threshold) {
 		reason := fmt.Sprintf("reached consecutive error threshold of %d (last status: %d)", threshold, statusCode)
@@ -85,7 +109,101 @@ func HandleKeyOutcome(
 		return false, true
 	}
 
+	// - 403: Forbidden (expired/revoked subscription key) -> fail over to the
+	// next key in the ring instead of pinning the request to the dead key.
+	if statusCode == http.StatusForbidden {
+		return false, true
+	}
+
 	return false, false
+}
+
+// findMatchingRule returns the per-status rule for statusCode, or nil when no
+// rule covers that code (the caller then falls back to the legacy policy).
+func findMatchingRule(rules []domain.KeyErrorRule, statusCode int) *domain.KeyErrorRule {
+	for i := range rules {
+		if rules[i].StatusCode == statusCode {
+			return &rules[i]
+		}
+	}
+	return nil
+}
+
+// applyRuleAction executes the threshold action declared by a matched
+// per-status rule (delete / deactivate / cooldown), mirroring applyKeyAction
+// but honoring the rule's own cooldown duration.
+func applyRuleAction(
+	u *domain.Upstream,
+	slot *domain.KeySlot,
+	rule *domain.KeyErrorRule,
+	notifier ports.KeyActionNotifier,
+	logger *slog.Logger,
+	reason string,
+) (actionTaken bool, failoverEligible bool) {
+	action := rule.Action
+	if action == "" {
+		action = string(ports.KeyActionDeactivate)
+	}
+
+	switch ports.KeyAction(action) {
+	case ports.KeyActionDelete:
+		slot.Revoked.Store(true)
+		if logger != nil {
+			logger.Warn("key error rule triggered: deleting key",
+				"upstream", u.Name,
+				"ref", slot.Ref,
+				"status", rule.StatusCode,
+				"consecutive_errors", slot.ConsecutiveErrors.Load(),
+				"reason", reason,
+			)
+		}
+		if !isNil(notifier) {
+			notifier.NotifyKeyAction(ports.KeyActionDelete, u.Name, slot.Ref, slot.APIKeyID, reason)
+		}
+		return true, true
+
+	case ports.KeyActionCooldown:
+		durationS := rule.CooldownDurationS
+		if durationS <= 0 {
+			if u.KeyCooldownDurationMs > 0 {
+				durationS = u.KeyCooldownDurationMs / 1000
+			} else {
+				durationS = 300 // 5 minutes default
+			}
+		}
+		dur := time.Duration(durationS) * time.Second
+		if u.KeyRing != nil {
+			FromDomain(u.KeyRing).MarkCooldown(slot.Ref, dur)
+		}
+		// Reset counter so after cooldown expires, key starts with a clean slate
+		slot.ConsecutiveErrors.Store(0)
+		if logger != nil {
+			logger.Warn("key error rule triggered: placing key in cooldown",
+				"upstream", u.Name,
+				"ref", slot.Ref,
+				"status", rule.StatusCode,
+				"duration", dur.String(),
+				"reason", reason,
+			)
+		}
+		return true, true
+
+	default: // Deactivate
+		slot.Revoked.Store(true)
+		if logger != nil {
+			logger.Warn("key error rule triggered: deactivating key",
+				"upstream", u.Name,
+				"ref", slot.Ref,
+				"status", rule.StatusCode,
+				"consecutive_errors", slot.ConsecutiveErrors.Load(),
+				"reason", reason,
+			)
+		}
+		if !isNil(notifier) {
+			notifier.NotifyKeyAction(ports.KeyActionDeactivate, u.Name, slot.Ref, slot.APIKeyID, reason)
+		}
+		return true, true
+	}
 }
 
 func applyKeyAction(

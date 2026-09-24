@@ -102,7 +102,7 @@ func newHarnessWithProbe(t *testing.T, probe func(*netstack.Net) (string, string
 	mgr.registrationURL = h.server.URL + "/reg"
 	mgr.edgeProbe = probe
 	mgr.sessionGrace = 2 * time.Second
-	mgr.minRotateInterval = time.Hour
+	mgr.autoRotateInterval = 0
 
 	h.mgr = mgr
 	t.Cleanup(mgr.Close)
@@ -285,55 +285,22 @@ func TestManager_CancelledCallerLeavesFlightRunning(t *testing.T) {
 	}, "the shared rotation should finish after the caller gave up")
 }
 
-func TestManager_RotateAsyncIsThrottled(t *testing.T) {
+func TestManager_AutoRotationPeriodicallyRotates(t *testing.T) {
 	h := newHarness(t)
-	h.mgr.minRotateInterval = time.Hour
+	// Fast interval for the test
+	h.mgr.SetAutoRotateInterval(50 * time.Millisecond)
+	h.mgr.StartAutoRotation()
 
-	for range 8 {
-		h.mgr.RotateAsync("test-upstream")
+	waitFor(t, 2*time.Second, func() bool {
+		return h.regCalls.Load() >= 2
+	}, "auto-rotation failed to trigger periodic device registrations")
+
+	if got := h.mgr.autoRotateInterval; got <= 0 {
+		t.Errorf("expected positive autoRotateInterval, got %v", got)
 	}
-
-	waitFor(t, 5*time.Second, func() bool { return h.regCalls.Load() >= 1 }, "async rotation never registered a device")
-
-	// Give any surplus goroutines a chance to race past the gate.
-	time.Sleep(300 * time.Millisecond)
-	if got := h.regCalls.Load(); got != 1 {
-		t.Errorf("expected 1 registration within the throttle window, got %d", got)
-	}
-}
-
-func TestManager_RotationAllowedClaimsOneWindow(t *testing.T) {
-	mgr := NewManager(quietLogger(), "")
-	defer mgr.Close()
-	mgr.minRotateInterval = 60 * time.Millisecond
-
-	if !mgr.rotationAllowed(time.Now()) {
-		t.Fatal("first rotation must always be allowed")
-	}
-	if mgr.rotationAllowed(time.Now()) {
-		t.Error("a second rotation inside the window must be rejected")
-	}
-
-	time.Sleep(80 * time.Millisecond)
-	if !mgr.rotationAllowed(time.Now()) {
-		t.Error("a rotation after the window must be allowed again")
-	}
-
-	// Under a 429 burst only one caller may claim the slot.
-	var wg sync.WaitGroup
-	var allowed atomic.Int64
-	for range 50 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if mgr.rotationAllowed(time.Now().Add(mgr.minRotateInterval)) {
-				allowed.Add(1)
-			}
-		}()
-	}
-	wg.Wait()
-	if got := allowed.Load(); got != 1 {
-		t.Errorf("expected exactly 1 admitted rotation, got %d", got)
+	st := h.mgr.Status()
+	if st.NextRotationAt.IsZero() {
+		t.Errorf("expected valid NextRotationAt")
 	}
 }
 

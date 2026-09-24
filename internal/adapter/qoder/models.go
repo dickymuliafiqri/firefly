@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -132,6 +133,22 @@ func (c *modelCache) fetchAndStore(ctx context.Context, client *http.Client, bas
 	return cat, nil
 }
 
+// ErrCatalogHTTP is returned by fetchQoderCatalog when the catalog endpoint
+// rejects the request with a non-200 HTTP status. Carrying the status through
+// lets the adapter relay genuine credential errors (401/403/429) into Layer 1
+// (HandleKeyOutcome failover) instead of masking them as terminal HTTP 400.
+type ErrCatalogHTTP struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *ErrCatalogHTTP) Error() string {
+	if e.Message != "" {
+		return fmt.Sprintf("qoder: model list returned %d: %s", e.StatusCode, e.Message)
+	}
+	return fmt.Sprintf("qoder: model list returned %d", e.StatusCode)
+}
+
 // fetchQoderCatalog performs the COSY-signed GET /model/list and parses the catalog.
 func fetchQoderCatalog(ctx context.Context, client *http.Client, base string, creds cosyCreds) (*modelCatalog, error) {
 	if creds.UserID == "" || creds.AuthToken == "" {
@@ -165,7 +182,9 @@ func fetchQoderCatalog(ctx context.Context, client *http.Client, base string, cr
 		_ = resp.Body.Close()
 	}()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("qoder: model list returned %d", resp.StatusCode)
+		snip, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		msg := strings.TrimSpace(string(snip))
+		return nil, &ErrCatalogHTTP{StatusCode: resp.StatusCode, Message: msg}
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {

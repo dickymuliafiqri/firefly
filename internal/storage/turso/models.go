@@ -25,6 +25,10 @@ type UpstreamRecord struct {
 	AllowInsecure       bool              `json:"allow_insecure"`
 	CredentialRPS       *float64          `json:"credential_rps,omitempty"`
 	CredentialMaxConcur *int              `json:"credential_max_concurrent,omitempty"`
+	KeyErrorThreshold   int               `json:"key_error_threshold,omitempty"`
+	KeyErrorAction      string            `json:"key_error_action,omitempty"`
+	KeyCooldownMs       int               `json:"key_cooldown_duration_ms,omitempty"`
+	KeyErrorRules       string            `json:"key_error_rules,omitempty"`
 	ProbeModel          string            `json:"probe_model,omitempty"`
 	Enabled             bool              `json:"enabled"`
 	Version             int               `json:"version"`

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/dickymuliafiqri/firefly/internal/domain"
+	"github.com/dickymuliafiqri/firefly/internal/ports"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -84,24 +85,30 @@ type ClientProvider interface {
 }
 
 // HealthChecker periodically and concurrently probes upstream hosts using errgroup
-// with bounded concurrency, reporting status to circuit breakers.
+// with bounded concurrency, reporting status to circuit breakers. Probe outcomes
+// on a selected key slot are routed through the shared key error policy
+// (HandleKeyOutcome) so background failures advance ConsecutiveErrors toward the
+// upstream's key_error_threshold and persist threshold actions via notifier.
 type HealthChecker struct {
 	cfg      HealthCheckConfig
 	provider SnapshotProvider
 	clients  ClientProvider
 	breakers BreakerManager
+	notifier ports.KeyActionNotifier
 	logger   *slog.Logger
 
 	// staticUpstreams is used when provider is nil (e.g. in targeted tests)
 	staticUpstreams []*domain.Upstream
 }
 
-// NewHealthChecker constructs a HealthChecker.
+// NewHealthChecker constructs a HealthChecker. notifier may be nil (or a
+// typed-nil) — threshold actions then stay in-memory only.
 func NewHealthChecker(
 	cfg HealthCheckConfig,
 	provider SnapshotProvider,
 	clients ClientProvider,
 	breakers BreakerManager,
+	notifier ports.KeyActionNotifier,
 ) *HealthChecker {
 	cfg = cfg.withDefaults()
 	return &HealthChecker{
@@ -109,6 +116,7 @@ func NewHealthChecker(
 		provider: provider,
 		clients:  clients,
 		breakers: breakers,
+		notifier: notifier,
 		logger:   cfg.Logger,
 	}
 }
@@ -119,6 +127,7 @@ func NewHealthCheckerWithStaticUpstreams(
 	upstreams []*domain.Upstream,
 	clients ClientProvider,
 	breakers BreakerManager,
+	notifier ports.KeyActionNotifier,
 ) *HealthChecker {
 	cfg = cfg.withDefaults()
 	return &HealthChecker{
@@ -126,6 +135,7 @@ func NewHealthCheckerWithStaticUpstreams(
 		staticUpstreams: upstreams,
 		clients:         clients,
 		breakers:        breakers,
+		notifier:        notifier,
 		logger:          cfg.Logger,
 	}
 }
@@ -383,6 +393,10 @@ func (h *HealthChecker) probeOne(ctx context.Context, u *domain.Upstream) {
 
 	resp, err := client.Do(req)
 	if err != nil {
+		// A transport failure is not a credential error: reset the slot's
+		// consecutive-error counter (Layer 1 invariant) so flaky probes never
+		// accumulate toward the key threshold.
+		h.handleProbeKeyOutcome(u, activeSlot, isFreeOpenCode, 0, "")
 		// If a model-level probe timed out or failed, verify host reachability before tripping circuit breaker
 		if canProbeModel && h.probeHostFallback(ctx, client, u, trimmedBase, isOpenCode, keySecret) {
 			return
@@ -397,6 +411,13 @@ func (h *HealthChecker) probeOne(ctx context.Context, u *domain.Upstream) {
 		_ = resp.Body.Close()
 	}
 
+	// Route the probe status through the shared key error policy BEFORE any
+	// early return: credential errors (429/401/402/403) advance the slot's
+	// ConsecutiveErrors toward key_error_threshold (triggering the configured
+	// deactivate/delete/cooldown action + DB notification when reached), while
+	// success, 4xx, and 5xx reset the counter — mirroring the data plane.
+	h.handleProbeKeyOutcome(u, activeSlot, isFreeOpenCode, resp.StatusCode, resp.Header.Get("Retry-After"))
+
 	// Status < 500 indicates the host is reachable and healthy at Layer 2.
 	// 4xx client errors (401/404/429) are Layer 1 / key issues, NOT host failures.
 	isHealthy := resp.StatusCode < 500
@@ -407,22 +428,48 @@ func (h *HealthChecker) probeOne(ctx context.Context, u *domain.Upstream) {
 		}
 	}
 	h.reportOutcome(u.Name, isHealthy, nil, resp.StatusCode)
+}
 
-	// If we probed a specific key slot with ProbeModel, handle Layer 1 key status updates:
-	if activeSlot != nil {
-		switch resp.StatusCode {
-		case http.StatusUnauthorized, http.StatusForbidden:
-			// NEVER mark public/free key slots as revoked
-			if !isFreeOpenCode && activeSlot.Ref != "opencode-free-public" && !strings.EqualFold(activeSlot.Secret, "public") {
-				activeSlot.Revoked.Store(true)
-				h.logger.Warn("key marked revoked during background probe", "upstream", u.Name, "key_ref", activeSlot.Ref, "status", resp.StatusCode)
-			}
-		case http.StatusTooManyRequests:
-			retryAfter := resp.Header.Get("Retry-After")
-			kr := &KeyRing{KeyRing: u.KeyRing}
-			dur := kr.Handle429(activeSlot.Ref, retryAfter)
-			h.logger.Warn("key placed in cooldown during background probe", "upstream", u.Name, "key_ref", activeSlot.Ref, "cooldown", dur)
+// handleProbeKeyOutcome feeds a background-probe result for the selected key
+// slot into HandleKeyOutcome. Free/public OpenCode slots are never counted or
+// acted on — they must stay routable regardless of probe status.
+func (h *HealthChecker) handleProbeKeyOutcome(
+	u *domain.Upstream,
+	slot *domain.KeySlot,
+	isFreeOpenCode bool,
+	statusCode int,
+	retryAfterHeader string,
+) {
+	if u == nil || slot == nil || isFreeOpenCode {
+		return
+	}
+	if slot.Ref == "opencode-free-public" || strings.EqualFold(slot.Secret, "public") {
+		return
+	}
+
+	actionTaken, _ := HandleKeyOutcome(u, slot, statusCode, retryAfterHeader, h.notifier, h.logger)
+
+	switch statusCode {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		if actionTaken {
+			// Threshold action already revoked the slot and notified the sink.
+			return
 		}
+		// Below threshold: keep the key out of in-memory rotation immediately;
+		// the DB row is handled once the threshold is reached.
+		slot.Revoked.Store(true)
+		h.logger.Warn("key marked revoked during background probe",
+			"upstream", u.Name, "key_ref", slot.Ref, "status", statusCode,
+			"consecutive_errors", slot.ConsecutiveErrors.Load(),
+			"threshold", u.KeyErrorThreshold,
+		)
+	case http.StatusTooManyRequests:
+		// HandleKeyOutcome already applied the Retry-After cooldown and counted it.
+		h.logger.Warn("key placed in cooldown during background probe",
+			"upstream", u.Name, "key_ref", slot.Ref,
+			"consecutive_errors", slot.ConsecutiveErrors.Load(),
+			"threshold", u.KeyErrorThreshold,
+		)
 	}
 }
 

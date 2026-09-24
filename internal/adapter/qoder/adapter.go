@@ -342,6 +342,14 @@ func (a *Adapter) attempt(ctx context.Context, u *domain.Upstream, req ports.For
 	if qoderKey == "" {
 		qoderKey = gjson.GetBytes(bodyBytes, "model").String()
 	}
+	// Free-tier alias: Qwen3.8-Flash lives at "qfmodel" (enable=true,
+	// is_free=true, price 0). The legacy "qmodel_latest" placeholder is
+	// disabled server-side, so normalize it (and common client-side
+	// spellings) to "qfmodel" before the catalog lookup.
+	switch strings.ToLower(qoderKey) {
+	case "qmodel_latest", "qoder-latest", "qwen-3.8-flash", "qwen3.8-flash", "qwen-flash", "qwen":
+		qoderKey = "qfmodel"
+	}
 	modelConfig, err := a.models.getModelConfig(ctx, client, base, creds, qoderKey)
 	if err != nil {
 		buf := openaiErrorJSON(err.Error())

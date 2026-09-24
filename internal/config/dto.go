@@ -24,6 +24,14 @@ type CredentialKeyDTO struct {
 	MaxConcurrent *int     `json:"max_concurrent,omitempty"`
 }
 
+// KeyErrorRuleDTO mirrors domain.KeyErrorRule over the wire and on disk.
+type KeyErrorRuleDTO struct {
+	StatusCode        int    `json:"status_code"`
+	Threshold         int    `json:"threshold"`
+	Action            string `json:"action,omitempty"`
+	CooldownDurationS *int   `json:"cooldown_duration_s,omitempty"`
+}
+
 // UpstreamsFile is the top-level shape of upstreams.json.
 type UpstreamsFile struct {
 	Upstreams []UpstreamDTO `json:"upstreams"`
@@ -53,14 +61,18 @@ type UpstreamDTO struct {
 	CredentialRPS           *float64 `json:"credential_rps,omitempty"`
 	CredentialMaxConcurrent *int     `json:"credential_max_concurrent,omitempty"`
 
-	KeyErrorThreshold     *int   `json:"key_error_threshold,omitempty"`
-	KeyErrorAction        string `json:"key_error_action,omitempty"`
-	KeyCooldownDurationMs *int   `json:"key_cooldown_duration_ms,omitempty"`
-	ProbeModel            string `json:"probe_model,omitempty"`
+	KeyErrorThreshold     *int              `json:"key_error_threshold,omitempty"`
+	KeyErrorAction        string            `json:"key_error_action,omitempty"`
+	KeyCooldownDurationMs *int              `json:"key_cooldown_duration_ms,omitempty"`
+	KeyErrorRules         []KeyErrorRuleDTO `json:"key_error_rules,omitempty"`
+	ProbeModel            string            `json:"probe_model,omitempty"`
 
-	EgressMode          string `json:"egress_mode,omitempty"`
-	ProxyURL            string `json:"proxy_url,omitempty"`
-	WarpAutoRotateOn429 *bool  `json:"warp_auto_rotate_on_429,omitempty"`
+	EgressMode string `json:"egress_mode,omitempty"`
+	ProxyURL   string `json:"proxy_url,omitempty"`
+	// WarpAutoRotateOn429 is deprecated and ignored. WARP rotation is now
+	// purely time-based (see -warp-rotate-interval / FIREFLY_WARP_ROTATE_INTERVAL,
+	// default 5m). Kept so old configs with this key still decode.
+	WarpAutoRotateOn429 *bool `json:"warp_auto_rotate_on_429,omitempty"`
 }
 
 // ModelsFile is the top-level shape of models.json.

@@ -34,9 +34,14 @@ const (
 	// session is drained instead of closed the moment it loses its slot.
 	DefaultSessionGrace = 60 * time.Second
 
-	// DefaultMinRotateInterval throttles 429-driven background rotations. Without
-	// it, a sustained 429 storm performs one Cloudflare registration back-to-back
-	// per burst; singleflight only coalesces strictly concurrent calls.
+	// DefaultAutoRotateInterval is the default period between automatic
+	// background WARP rotations. Time-based rotation replaces the old
+	// 429-driven trigger, which proved unreliable in production (e.g. behind
+	// 9router the 429 never reached the rotation path), while a steady timer
+	// keeps the egress IP fresh regardless of upstream response shape.
+	DefaultAutoRotateInterval = 5 * time.Minute
+
+	// DefaultMinRotateInterval throttles asynchronous manual/fallback background rotations.
 	DefaultMinRotateInterval = 60 * time.Second
 
 	defaultRotateTimeout = 30 * time.Second
@@ -135,10 +140,11 @@ type Manager struct {
 	registrationURL string
 	edgeProbe       func(tnet *netstack.Net) (publicIPv4, colo string)
 
-	sessionGrace      time.Duration
-	minRotateInterval time.Duration
-	rotateTimeout     time.Duration
-	probeTimeout      time.Duration
+	sessionGrace       time.Duration
+	autoRotateInterval time.Duration
+	minRotateInterval  time.Duration
+	rotateTimeout      time.Duration
+	probeTimeout       time.Duration
 
 	connTotal atomic.Int64
 	draining  atomic.Int64
@@ -149,10 +155,6 @@ type Manager struct {
 	// race Wait), so installSession publishes under this lock and Close takes it
 	// before it starts waiting.
 	publishMu sync.Mutex
-
-	// asyncRotations counts background 429-driven rotations. They are bounded by
-	// their own timeout and canceled by bgCtx, so shutdown does not wait on them.
-	asyncRotations atomic.Int64
 
 	// onRotate lets the caller (main) drop keep-alive sockets that were pooled on
 	// the previous egress IP; a new session is useless if every request keeps
@@ -185,21 +187,68 @@ func NewManager(logger *slog.Logger, licenseKey string, identityPath ...string) 
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &Manager{
-		logger:            logger.With("component", "warp"),
-		httpClient:        &http.Client{Timeout: 20 * time.Second},
-		licenseKey:        strings.TrimSpace(licenseKey),
-		identityPath:      idPath,
-		registrationURL:   DefaultRegistrationURL,
-		sessionGrace:      DefaultSessionGrace,
-		minRotateInterval: DefaultMinRotateInterval,
-		rotateTimeout:     defaultRotateTimeout,
-		probeTimeout:      defaultProbeTimeout,
-		bgCtx:             ctx,
-		bgCancel:          cancel,
-		drainDone:         make(chan struct{}),
+		logger:             logger.With("component", "warp"),
+		httpClient:         &http.Client{Timeout: 20 * time.Second},
+		licenseKey:         strings.TrimSpace(licenseKey),
+		identityPath:       idPath,
+		registrationURL:    DefaultRegistrationURL,
+		sessionGrace:       DefaultSessionGrace,
+		autoRotateInterval: DefaultAutoRotateInterval,
+		minRotateInterval:  DefaultMinRotateInterval,
+		rotateTimeout:      defaultRotateTimeout,
+		probeTimeout:       defaultProbeTimeout,
+		bgCtx:              ctx,
+		bgCancel:           cancel,
+		drainDone:          make(chan struct{}),
 	}
 	m.edgeProbe = m.probeEdgeTrace
 	return m
+}
+
+// SetAutoRotateInterval configures the background periodic rotation period.
+// Setting duration <= 0 disables automatic periodic rotations.
+func (m *Manager) SetAutoRotateInterval(d time.Duration) {
+	if m == nil {
+		return
+	}
+	m.autoRotateInterval = d
+}
+
+// StartAutoRotation launches a background goroutine that periodically rotates
+// the WARP WireGuard identity and IP address every interval. It returns immediately.
+func (m *Manager) StartAutoRotation() {
+	if m == nil || m.autoRotateInterval <= 0 {
+		return
+	}
+	go m.autoRotationLoop()
+}
+
+func (m *Manager) autoRotationLoop() {
+	ticker := time.NewTicker(m.autoRotateInterval)
+	defer ticker.Stop()
+
+	m.logger.Info("started background warp auto-rotation scheduler",
+		"interval", m.autoRotateInterval.String())
+
+	for {
+		select {
+		case <-m.bgCtx.Done():
+			return
+		case <-ticker.C:
+			if m.closed.Load() {
+				return
+			}
+			m.logger.Info("triggering periodic scheduled cloudflare warp rotation",
+				"interval", m.autoRotateInterval.String())
+			if _, err := m.Rotate(m.bgCtx); err != nil {
+				if !m.closed.Load() {
+					m.logger.Warn("periodic warp auto-rotation failed", "err", err)
+				}
+				continue
+			}
+			m.notifyAutoRotation("")
+		}
+	}
 }
 
 // SetRotationObserver registers a callback invoked after the active session
@@ -713,9 +762,8 @@ func (m *Manager) rotate() (*Session, error) {
 	return session, nil
 }
 
-// RotateAsync triggers a background rotation without blocking the caller. It is
-// the 429-driven path and therefore throttled: rotating per 429 would burn
-// through Cloudflare registration limits during a quota storm.
+// RotateAsync triggers a background rotation without blocking the caller.
+// It is preserved for backwards compatibility and triggers an unblocked Rotate.
 func (m *Manager) RotateAsync(upstreamName string) {
 	if m.closed.Load() {
 		return
@@ -727,16 +775,14 @@ func (m *Manager) RotateAsync(upstreamName string) {
 		return
 	}
 
-	m.asyncRotations.Add(1)
 	go func() {
-		defer m.asyncRotations.Add(-1)
 		defer func() {
 			if r := recover(); r != nil {
 				m.logger.Error("recovered from panic during async warp rotation", "panic", r, "upstream", upstreamName)
 			}
 		}()
 
-		m.logger.Info("triggering background warp rotation due to upstream 429", "upstream", upstreamName)
+		m.logger.Info("triggering background warp rotation", "upstream", upstreamName)
 		if _, err := m.Rotate(m.bgCtx); err != nil {
 			if !m.closed.Load() {
 				m.logger.Warn("async warp rotation failed", "err", err, "upstream", upstreamName)
@@ -822,8 +868,15 @@ func (m *Manager) Status() Status {
 
 	lastRotated := m.lastRotated.Load()
 	var rotatedTime time.Time
+	var nextRotationTime time.Time
 	if lastRotated > 0 {
 		rotatedTime = time.Unix(0, lastRotated)
+		if m.autoRotateInterval > 0 {
+			nextRotationTime = rotatedTime.Add(m.autoRotateInterval)
+		}
+	} else if m.autoRotateInterval > 0 {
+		// Session not established yet; estimate next rotation from now
+		nextRotationTime = time.Now().Add(m.autoRotateInterval)
 	}
 
 	var errMsg string
@@ -831,11 +884,18 @@ func (m *Manager) Status() Status {
 		errMsg = *ptr
 	}
 
+	autoRotateSec := int(m.autoRotateInterval.Seconds())
+	if autoRotateSec < 0 {
+		autoRotateSec = 0
+	}
+
 	st := Status{
-		ActiveConnections: int(m.connTotal.Load()),
-		DrainingSessions:  int(m.draining.Load()),
-		RotatedAt:         rotatedTime,
-		Error:             errMsg,
+		ActiveConnections:         int(m.connTotal.Load()),
+		DrainingSessions:          int(m.draining.Load()),
+		RotatedAt:                 rotatedTime,
+		AutoRotateIntervalSeconds: autoRotateSec,
+		NextRotationAt:            nextRotationTime,
+		Error:                     errMsg,
 	}
 
 	if session == nil {

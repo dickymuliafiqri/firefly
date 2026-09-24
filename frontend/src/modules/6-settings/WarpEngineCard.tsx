@@ -117,6 +117,28 @@ export const WarpEngineCard = React.memo(function WarpEngineCard() {
               : 'Initial session'}
           </span>
         </div>
+
+        <div className="p-2.5 rounded-lg bg-white/[0.01] border border-white/[0.04] space-y-1">
+          <span className="text-[10px] text-neutral-500 uppercase tracking-wider block">
+            Auto-Rotation Interval
+          </span>
+          <span className="text-cyan-300 font-medium text-xs block truncate">
+            {status?.auto_rotate_interval_seconds
+              ? `Every ${Math.round(status.auto_rotate_interval_seconds / 60)}m`
+              : '5m (default)'}
+          </span>
+        </div>
+
+        <div className="p-2.5 rounded-lg bg-white/[0.01] border border-white/[0.04] space-y-1">
+          <span className="text-[10px] text-neutral-500 uppercase tracking-wider block">
+            Next Scheduled Rotation
+          </span>
+          <span className="text-neutral-300 font-medium text-xs block truncate">
+            {status?.next_rotation_at
+              ? new Date(status.next_rotation_at).toLocaleTimeString()
+              : 'In ~5 minutes'}
+          </span>
+        </div>
       </div>
 
       {/* Description Callout */}
@@ -130,7 +152,7 @@ export const WarpEngineCard = React.memo(function WarpEngineCard() {
           Routes traffic cleanly across Cloudflare’s global Anycast edge network to bypass IP-based rate limits.
         </p>
         <p className="text-neutral-500">
-          Upstreams configured with <code className="text-neutral-300">egress_mode: &quot;warp&quot;</code> route all requests through this tunnel. Auto-rotation on 429 automatically refreshes identity and IP without downtime.
+          Upstreams configured with <code className="text-neutral-300">egress_mode: &quot;warp&quot;</code> route all requests through this tunnel. Auto-rotation automatically refreshes identity and outbound IP every 5 minutes in the background without dropping active streams.
         </p>
       </div>
 

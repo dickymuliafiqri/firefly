@@ -81,16 +81,6 @@ func TestPoolNilUpstreamIsSafe(t *testing.T) {
 	}
 }
 
-type mockWarpRotator struct {
-	rotatedUpstream string
-	called          bool
-}
-
-func (m *mockWarpRotator) RotateAsync(upstreamName string) {
-	m.rotatedUpstream = upstreamName
-	m.called = true
-}
-
 func TestPool_EgressTransport_WarpAndProxy(t *testing.T) {
 	t.Parallel()
 
@@ -114,34 +104,6 @@ func TestPool_EgressTransport_WarpAndProxy(t *testing.T) {
 	cProxy := pool.Client(uProxy)
 	if cProxy == nil || cProxy.Transport == nil {
 		t.Fatal("expected valid client for proxy egress")
-	}
-}
-
-func TestProcessAttemptOutcome_WarpAutoRotateOn429(t *testing.T) {
-	mockRot := &mockWarpRotator{}
-	SetGlobalWarpRotator(mockRot)
-	defer SetGlobalWarpRotator(nil)
-
-	u := &domain.Upstream{
-		Name:                "opencode-free",
-		WarpAutoRotateOn429: true,
-	}
-	target := &domain.Target{
-		Upstream: u,
-	}
-
-	outcome := AttemptOutcome{
-		Status: http.StatusTooManyRequests,
-	}
-
-	decision := ProcessAttemptOutcome(u, target, outcome, nil, nil, nil, nil)
-	if !decision.Relay {
-		t.Errorf("expected decision Relay, got %+v", decision)
-	}
-
-	if !mockRot.called || mockRot.rotatedUpstream != "opencode-free" {
-		t.Errorf("expected RotateAsync to be called for opencode-free, got called=%v upstream=%s",
-			mockRot.called, mockRot.rotatedUpstream)
 	}
 }
 

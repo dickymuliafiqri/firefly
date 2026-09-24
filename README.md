@@ -340,6 +340,7 @@ make build
 - `-admin-token` / `FIREFLY_ADMIN_TOKEN`: Bearer token protecting administrative endpoints.
 - `-log-level` / `FIREFLY_LOG_LEVEL`: Structured logging level (`debug`, `info`, `warn`, `error`). Default: `info`.
 - `-health-check-interval`: Frequency of background health probes (duration, e.g. `15s`; `0` disables). Default: `15s`.
+- `-warp-rotate-interval` / `FIREFLY_WARP_ROTATE_INTERVAL`: Frequency of automatic periodic Cloudflare WARP egress IP rotations (duration, e.g. `5m`; `0` disables). Default: `5m`.
 - `-shutdown-grace-seconds` / `FIREFLY_SHUTDOWN_GRACE_SECONDS`: Maximum time allowed for active SSE streams to finish during shutdown. Default: `30`.
 - `-version`: Print version information, commit hash, and build timestamp, then exit.
 

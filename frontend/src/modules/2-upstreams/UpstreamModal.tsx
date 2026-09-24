@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useDeferredValue, useRef } from 'react';
-import type { UpstreamDTO, CredentialKeyDTO, Protocol, ConnectionDTO } from '@/services/schema';
+import type { UpstreamDTO, CredentialKeyDTO, KeyErrorRuleDTO, Protocol, ConnectionDTO } from '@/services/schema';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
 import { useStoreActions, useAppStore, buildSettingsPayload } from '@/core/state/store';
@@ -478,7 +478,6 @@ export const UpstreamModal = React.memo(function UpstreamModal({
   // Egress & WARP tab state
   const [egressMode, setEgressMode] = useState<'direct' | 'warp' | 'proxy'>('direct');
   const [proxyUrl, setProxyUrl] = useState('');
-  const [warpAutoRotateOn429, setWarpAutoRotateOn429] = useState(false);
   const { data: warpStatus } = useWarpStatusQuery();
   const rotateWarpMutation = useRotateWarpMutation();
 
@@ -567,6 +566,7 @@ export const UpstreamModal = React.memo(function UpstreamModal({
   const [keyErrorThreshold, setKeyErrorThreshold] = useState('0');
   const [keyErrorAction, setKeyErrorAction] = useState<'deactivate' | 'delete' | 'cooldown'>('deactivate');
   const [keyCooldownSec, setKeyCooldownSec] = useState('300');
+  const [keyErrorRules, setKeyErrorRules] = useState<KeyErrorRuleDTO[]>([]);
 
   // Network & Timeouts tab state
   const [timeoutSec, setTimeoutSec] = useState('30');
@@ -610,10 +610,15 @@ export const UpstreamModal = React.memo(function UpstreamModal({
         setKeyErrorThreshold(numericDraft(upstreamToEdit.key_error_threshold, 0));
         setKeyErrorAction((upstreamToEdit.key_error_action as 'deactivate' | 'delete' | 'cooldown') || 'deactivate');
         setKeyCooldownSec(numericDraft(upstreamToEdit.key_cooldown_duration_ms != null ? Math.round(upstreamToEdit.key_cooldown_duration_ms / 1000) : null, 300));
+        setKeyErrorRules((upstreamToEdit.key_error_rules || []).map((r) => ({
+          status_code: r.status_code,
+          threshold: r.threshold,
+          action: r.action,
+          cooldown_duration_s: r.cooldown_duration_s,
+        })));
         setProbeModel(upstreamToEdit.probe_model || '');
         setEgressMode((upstreamToEdit.egress_mode as 'direct' | 'warp' | 'proxy') || 'direct');
         setProxyUrl(upstreamToEdit.proxy_url || '');
-        setWarpAutoRotateOn429(Boolean(upstreamToEdit.warp_auto_rotate_on_429));
 
         // Format extra headers
         if (upstreamToEdit.extra_headers) {
@@ -704,11 +709,11 @@ export const UpstreamModal = React.memo(function UpstreamModal({
         setKeyErrorThreshold('0');
         setKeyErrorAction('deactivate');
         setKeyCooldownSec('300');
+        setKeyErrorRules([]);
         setProbeModel('');
         setIsManualProbeInput(false);
         setEgressMode('direct');
         setProxyUrl('');
-        setWarpAutoRotateOn429(false);
         setActiveTab('general');
       }
 
@@ -2141,6 +2146,14 @@ export const UpstreamModal = React.memo(function UpstreamModal({
       key_cooldown_duration_ms: keyErrorAction === 'cooldown' && parsedKeyCooldownSec !== null && parsedKeyCooldownSec > 0
         ? Math.round(parsedKeyCooldownSec * 1000)
         : 300000,
+      key_error_rules: keyErrorRules
+        .filter((r) => r.status_code >= 400 && r.status_code <= 599 && r.threshold >= 1)
+        .map((r) => ({
+          status_code: Math.trunc(r.status_code),
+          threshold: Math.trunc(r.threshold),
+          action: r.action || 'deactivate',
+          cooldown_duration_s: r.action === 'cooldown' ? (r.cooldown_duration_s && r.cooldown_duration_s > 0 ? Math.trunc(r.cooldown_duration_s) : 300) : undefined,
+        })),
       timeout_ms: timeoutMs === null ? null : Math.round(timeoutMs * 1000),
       stream_idle_timeout_ms: streamTimeoutMs === null ? null : Math.round(streamTimeoutMs * 1000),
       idle_timeout_ms: idleTimeoutSec * 1000,
@@ -2151,7 +2164,6 @@ export const UpstreamModal = React.memo(function UpstreamModal({
       probe_model: probeModel.trim() || undefined,
       egress_mode: egressMode,
       proxy_url: egressMode === 'proxy' ? proxyUrl.trim() || undefined : undefined,
-      warp_auto_rotate_on_429: egressMode === 'warp' ? warpAutoRotateOn429 : false,
       enabled: upstreamToEdit?.enabled ?? true,
     };
 
@@ -3635,6 +3647,155 @@ export const UpstreamModal = React.memo(function UpstreamModal({
                   </div>
                 )}
 
+                {/* Granular Per-Status Key Error Rules (Overrides) */}
+                <div className="space-y-3 pt-3 border-t border-white/[0.06]">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div>
+                      <h4 className="text-white font-medium text-xs tracking-tight flex items-center gap-1.5">
+                        <span>Per-Status Code Rules (Overrides)</span>
+                        <span className="px-1.5 py-0.5 rounded text-[9px] bg-white/[0.06] text-neutral-400 font-mono">
+                          {keyErrorRules.length} rules
+                        </span>
+                      </h4>
+                      <p className="text-[10px] text-neutral-500">
+                        Granular overrides by exact HTTP code. Matching rules take precedence over the global policy. Recommended: 429 = cooldown 300s, 403 = delete, 401 = deactivate (all threshold 1).
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => {
+                          setKeyErrorRules([
+                            { status_code: 429, threshold: 1, action: 'cooldown', cooldown_duration_s: 300 },
+                            { status_code: 403, threshold: 1, action: 'delete' },
+                            { status_code: 401, threshold: 1, action: 'deactivate' },
+                          ]);
+                        }}
+                        className="text-[10px] h-7 px-2.5 bg-transparent hover:bg-white/[0.08] text-neutral-300 border border-white/[0.08]"
+                      >
+                        Apply Recommended
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => {
+                          setKeyErrorRules((prev) => [
+                            ...prev,
+                            { status_code: 429, threshold: 1, action: 'cooldown', cooldown_duration_s: 300 },
+                          ]);
+                        }}
+                        className="text-[10px] h-7 px-2.5 bg-white/[0.05] hover:bg-white/[0.1] text-white border border-white/[0.08] flex items-center gap-1"
+                      >
+                        <Plus className="w-3 h-3" />
+                        <span>Add Rule</span>
+                      </Button>
+                    </div>
+                  </div>
+
+                  {keyErrorRules.length === 0 ? (
+                    <div className="p-3 rounded-lg border border-dashed border-white/[0.08] bg-white/[0.01] text-center text-[11px] text-neutral-500">
+                      No rules defined. Key errors fall back to the global threshold above (recommended for most providers).
+                    </div>
+                  ) : (
+                    <div className="space-y-1.5 overflow-x-auto">
+                      <div className="min-w-[560px]">
+                        <div className="grid grid-cols-12 gap-2 px-2 py-1 text-[10px] font-mono text-neutral-500 font-medium border-b border-white/[0.04]">
+                          <span className="col-span-3">HTTP Status</span>
+                          <span className="col-span-2 text-right">Errors</span>
+                          <span className="col-span-3">Action</span>
+                          <span className="col-span-3">Cooldown (s)</span>
+                          <span className="col-span-1 text-center">Del</span>
+                        </div>
+                        <div className="space-y-1 pt-1">
+                          {keyErrorRules.map((rule, idx) => (
+                            <div key={idx} className="grid grid-cols-12 gap-2 items-center p-1.5 rounded-lg border border-white/[0.04] bg-white/[0.01] hover:bg-white/[0.02] text-xs font-mono">
+                              <div className="col-span-3">
+                                <select
+                                  value={rule.status_code}
+                                  onChange={(e) => {
+                                    const code = parseInt(e.target.value, 10);
+                                    setKeyErrorRules((prev) => prev.map((r, i) => (i === idx ? { ...r, status_code: code } : r)));
+                                  }}
+                                  className="w-full px-2 py-1 rounded bg-[#090b10] border border-white/[0.08] text-neutral-200 text-[11px] focus:outline-none"
+                                >
+                                  <option value={429}>429 (Rate Limit)</option>
+                                  <option value={403}>403 (Forbidden)</option>
+                                  <option value={401}>401 (Unauthorized)</option>
+                                  <option value={402}>402 (Payment)</option>
+                                  <option value={400}>400 (Bad Request)</option>
+                                  <option value={500}>500 (Server Error)</option>
+                                  <option value={502}>502 (Bad Gateway)</option>
+                                  <option value={503}>503 (Unavailable)</option>
+                                </select>
+                              </div>
+                              <div className="col-span-2">
+                                <input
+                                  type="number"
+                                  min={1}
+                                  max={50}
+                                  value={rule.threshold}
+                                  onChange={(e) => {
+                                    const val = Math.max(1, parseInt(e.target.value, 10) || 1);
+                                    setKeyErrorRules((prev) => prev.map((r, i) => (i === idx ? { ...r, threshold: val } : r)));
+                                  }}
+                                  className="w-full px-2 py-1 rounded bg-transparent border border-white/[0.08] text-neutral-200 text-[11px] text-right focus:outline-none"
+                                />
+                              </div>
+                              <div className="col-span-3">
+                                <select
+                                  value={rule.action}
+                                  onChange={(e) => {
+                                    const act = e.target.value;
+                                    setKeyErrorRules((prev) =>
+                                      prev.map((r, i) => (i === idx ? { ...r, action: act, cooldown_duration_s: act === 'cooldown' ? (r.cooldown_duration_s || 300) : undefined } : r))
+                                    );
+                                  }}
+                                  className="w-full px-2 py-1 rounded bg-[#090b10] border border-white/[0.08] text-neutral-200 text-[11px] focus:outline-none"
+                                >
+                                  <option value="cooldown">Cooldown</option>
+                                  <option value="deactivate">Deactivate</option>
+                                  <option value="delete">Delete</option>
+                                </select>
+                              </div>
+                              <div className="col-span-3">
+                                {rule.action === 'cooldown' ? (
+                                  <input
+                                    type="number"
+                                    min={10}
+                                    step={10}
+                                    value={rule.cooldown_duration_s ?? 300}
+                                    onChange={(e) => {
+                                      const dur = Math.max(10, parseInt(e.target.value, 10) || 10);
+                                      setKeyErrorRules((prev) => prev.map((r, i) => (i === idx ? { ...r, cooldown_duration_s: dur } : r)));
+                                    }}
+                                    className="w-full px-2 py-1 rounded bg-transparent border border-white/[0.08] text-neutral-200 text-[11px] text-right focus:outline-none"
+                                    placeholder="300"
+                                  />
+                                ) : (
+                                  <span className="text-[10px] text-neutral-600 italic px-2">N/A</span>
+                                )}
+                              </div>
+                              <div className="col-span-1 flex justify-center">
+                                <button
+                                  type="button"
+                                  onClick={() => setKeyErrorRules((prev) => prev.filter((_, i) => i !== idx))}
+                                  className="p-1 rounded text-neutral-500 hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
+                                  title="Delete rule"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
                 {isTursoConfigured ? (
                   <div className="p-2.5 rounded-lg bg-emerald-500/5 border border-emerald-500/20 text-[10px] text-emerald-400/90 flex items-center gap-2">
                     <Database className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
@@ -3830,20 +3991,15 @@ export const UpstreamModal = React.memo(function UpstreamModal({
                       </div>
                     </div>
 
-                    <label className="flex items-start gap-2 pt-1 text-neutral-300 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        checked={warpAutoRotateOn429}
-                        onChange={(e) => setWarpAutoRotateOn429(e.target.checked)}
-                        className="mt-0.5 h-3.5 w-3.5 rounded border-white/20 bg-transparent text-cyan-500 focus:ring-0 cursor-pointer accent-cyan-500"
-                      />
-                      <div className="flex flex-col">
-                        <span className="text-xs text-neutral-200">Auto-rotate IP on HTTP 429 (Too Many Requests)</span>
-                        <span className="text-[10px] text-neutral-500">
-                          Automatically negotiates a new WireGuard session key when upstream rate limits by IP (e.g. OpenCode Free).
-                        </span>
+                    <div className="flex items-center gap-2 pt-1 text-neutral-400 select-none">
+                      <div className="flex items-center gap-1.5 text-[11px] text-cyan-300">
+                        <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
+                        <span>Automated periodic IP rotation:</span>
                       </div>
-                    </label>
+                      <span className="text-[11px] text-neutral-300">
+                        Every {warpStatus?.auto_rotate_interval_seconds ? `${Math.round(warpStatus.auto_rotate_interval_seconds / 60)}m` : '5m'}
+                      </span>
+                    </div>
                   </div>
                 )}
 

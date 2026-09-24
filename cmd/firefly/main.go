@@ -93,6 +93,7 @@ func run() error {
 		tursoLocalPath       = flag.String("turso-local-path", "data/firefly.db", "local embedded replica database path (defaults to $FIREFLY_TURSO_LOCAL_PATH)")
 		tursoSyncInterval    = flag.Duration("turso-sync-interval", turso.DefaultSyncInterval, "interval to pull changes from Turso cloud after an observed change (defaults to $FIREFLY_TURSO_SYNC_INTERVAL)")
 		tursoSyncMaxInterval = flag.Duration("turso-sync-max-interval", turso.DefaultSyncMaxInterval, "upper bound for the idle pull backoff; consecutive change-free pulls double the delay until it reaches this (defaults to $FIREFLY_TURSO_SYNC_MAX_INTERVAL)")
+		warpRotateInterval   = flag.Duration("warp-rotate-interval", warp.DefaultAutoRotateInterval, "interval between automatic periodic Cloudflare WARP IP rotations (0 disables; defaults to $FIREFLY_WARP_ROTATE_INTERVAL or 5m)")
 		openaiDefaultMax     = flag.Int64("openai-default-max-tokens", 0, "default max_tokens injected into OpenAI-protocol requests that omit an output-token limit (0 disables; defaults to $FIREFLY_OPENAI_DEFAULT_MAX_TOKENS)")
 		openaiMinMax         = flag.Int64("openai-min-max-tokens", 0, "minimum max_tokens floor for OpenAI-protocol requests; smaller client values are raised to this (0 disables; defaults to $FIREFLY_OPENAI_MIN_MAX_TOKENS)")
 	)
@@ -161,6 +162,11 @@ func run() error {
 			}
 		} else if tcfg.SyncMaxIntervalSec > 0 {
 			*tursoSyncMaxInterval = time.Duration(tcfg.SyncMaxIntervalSec) * time.Second
+		}
+	}
+	if envWarp := os.Getenv("FIREFLY_WARP_ROTATE_INTERVAL"); envWarp != "" {
+		if d, err := time.ParseDuration(envWarp); err == nil {
+			*warpRotateInterval = d
 		}
 	}
 	if *openaiDefaultMax == 0 {
@@ -331,7 +337,10 @@ func run() error {
 		warpLicense = os.Getenv("WARP_LICENSE_KEY")
 	}
 	warpManager := warp.NewManager(logger, warpLicense, filepath.Join(*configDir, "data", "warp_identity.json"))
-	upstream.SetGlobalWarpRotator(warpManager)
+	if *warpRotateInterval > 0 {
+		warpManager.SetAutoRotateInterval(*warpRotateInterval)
+		warpManager.StartAutoRotation()
+	}
 
 	pool := upstream.NewPool(warpManager)
 	// A rotation gives the tunnel a new egress address, but transports keep their
@@ -360,7 +369,7 @@ func run() error {
 		healthChecker := upstream.NewHealthChecker(upstream.HealthCheckConfig{
 			Interval: *healthInterval,
 			Logger:   logger,
-		}, reg, pool, breakers)
+		}, reg, pool, breakers, usageFlusher)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

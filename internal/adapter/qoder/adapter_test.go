@@ -196,3 +196,41 @@ func mustJSON(v any) string {
 	b, _ := json.Marshal(v)
 	return string(b)
 }
+func TestForward_FreeTierAliasToQFModel(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/algo/api/v2/model/list", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Free-tier catalog serves qfmodel only; the legacy qmodel_latest key is absent.
+		_, _ = io.WriteString(w, `{"chat":[{"key":"qfmodel","display_name":"Qwen3.8-Flash","max_input_tokens":180000,"enable":true,"is_free":true}]}`)
+	})
+	var receivedModelKey string
+	mux.HandleFunc("/algo/api/v2/service/pro/sse/agent_chat_generation", func(w http.ResponseWriter, r *http.Request) {
+		receivedModelKey = r.Header.Get("X-Model-Key")
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, qoderEnvelope(`{"choices":[{"delta":{"content":"ok"}}]}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	a := NewAdapter(stubPool{}, stubBreaker{}, Config{
+		SecretLookup: func(string) (string, bool) { return identityBlob("dt-token"), true },
+	})
+	u := &domain.Upstream{Name: "qoder-test", Protocol: domain.ProtocolQoder, BaseURL: srv.URL, CredentialRef: "k"}
+
+	for _, upstreamModel := range []string{"qmodel_latest", "qoder-latest", "qwen-3.8-flash"} {
+		receivedModelKey = ""
+		target := &domain.Target{Upstream: u, UpstreamModel: upstreamModel}
+		rec := httptest.NewRecorder()
+		body := `{"model":"qoder-latest","messages":[{"role":"user","content":"hi"}]}`
+		if err := a.Forward(context.Background(), target, ports.ForwardRequest{BodyBytes: []byte(body)}, rec); err != nil {
+			t.Fatalf("Forward(%q): %v", upstreamModel, err)
+		}
+		if rec.Code != http.StatusOK {
+			t.Fatalf("Forward(%q): status=%d body=%s", upstreamModel, rec.Code, rec.Body.String())
+		}
+		if receivedModelKey != "qfmodel" {
+			t.Errorf("Forward(%q): X-Model-Key=%q want %q", upstreamModel, receivedModelKey, "qfmodel")
+		}
+	}
+}

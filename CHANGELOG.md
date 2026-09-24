@@ -5,6 +5,24 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.0] - 2026-09-24
+
+### Added
+- **Periodic WARP Auto-Rotation Scheduler (`internal/transport/warp/manager.go`, `warp.go`, `cmd/firefly/main.go`)**: Background ticker (`StartAutoRotation` / `autoRotationLoop`, default 5m via `DefaultAutoRotateInterval`) rotates the Cloudflare WARP WireGuard identity and egress IP on a steady timer without dropping active streams. Configurable via `-warp-rotate-interval` / `FIREFLY_WARP_ROTATE_INTERVAL` (`0` disables). Status surface (`GET /api/warp/status`) now reports `auto_rotate_interval_seconds` and `next_rotation_at`, surfaced in Settings → WARP Engine card.
+- **Per-Status Key Error Rules (`internal/domain/domain.go`, `internal/config/dto.go`, `builder.go`, `internal/transport/upstream/policy.go`, `internal/storage/turso/`)**: `key_error_rules` binds one HTTP status to its own threshold-counted action (`deactivate` / `delete` / `cooldown` + `cooldown_duration_s`), e.g. `429 → cooldown 5m` and `403 → delete` on threshold 1. A status-matched rule takes precedence over the global `key_error_threshold` / `key_error_action`; unmatched statuses fall back to the legacy path. Validated at build time, persisted in the new `upstreams.key_error_rules` column (with migration), carried through settings sanitization, and editable in the Upstream modal.
+- **Health Probe Key-Error Routing (`internal/transport/upstream/health.go`, `cmd/firefly/main.go`)**: Background probe outcomes are routed through the shared `HandleKeyOutcome` policy with a `ports.KeyActionNotifier` sink, so consecutive credential failures (429/401/402/403) advance `ConsecutiveErrors` toward the upstream threshold and persist the action, while success, transport drops, and host 5xx reset the counter per the Layer 1 invariant. Free/public OpenCode slots are never counted.
+- **Qoder Free-Tier Model Aliasing (`internal/adapter/qoder/adapter.go`)**: Legacy and client-side spellings (`qmodel_latest`, `qoder-latest`, `qwen-3.8-flash`, `qwen3.8-flash`, `qwen-flash`, `qwen`) normalize to the live free-tier `qfmodel` key before the catalog lookup.
+- **Upstream Credential Deduplication (`internal/storage/turso/store.go`)**: `LoadSettings` and `LoadCatalogSnapshot` collapse pool entries sharing the same resolved secret, so canonical provider-bound refs (`<provider>-key-<id>`) win over historical duplicates (e.g. `upstream-key-<id>`) and the ring matches the true distinct credential count.
+- **Regression Tests**: `TestManager_AutoRotationPeriodicallyRotates`, `TestHandleKeyOutcome_PerStatusRules_403DeleteImmediately`, `TestHandleKeyOutcome_PerStatusRules_429CustomCooldown`, `TestHandleKeyOutcome_PerStatusRules_FallbackToLegacyWhenUnmatched`, `TestHealthChecker_ThresholdActionOnProbeFailure`, `TestHealthChecker_ProbeSuccessResetsCounter`, `TestForward_FreeTierAliasToQFModel`, and `TestStore_DeduplicateUpstreamCredentialCopies`.
+
+### Changed
+- **429-Triggered WARP Rotation Removed (`internal/transport/upstream/attempt.go`, `internal/domain/domain.go`, `frontend/`)**: The `WarpRotator` global, the per-upstream `warp_auto_rotate_on_429` toggle, and the `RotateAsync` throttle path are gone. Time-based rotation replaces the old 429 trigger, which proved unreliable behind envelopes/proxies where the 429 never reached the rotation path. `WarpAutoRotateOn429` remains as a deprecated, ignored DTO field (and the DB column is left for compat) so old configs still decode.
+- **403 Now Fails Over (`internal/transport/upstream/policy.go`)**: A 403 without a matching rule rotates to the next key in the ring instead of pinning the request to the dead key, mirroring 401/429 behavior.
+
+### Fixed
+- **Qoder Catalog Errors No Longer Masked as 400 (`internal/adapter/qoder/models.go`)**: Non-200 catalog responses return a typed `ErrCatalogHTTP` carrying the status code and a 1 KiB body snippet, so genuine credential errors (401/403/429) flow into Layer 1 failover instead of surfacing as a terminal `400`.
+- **Key Threshold Fields Reach the Dashboard (`internal/server/settings.go`)**: The public settings projection now carries `key_error_threshold`, `key_error_action`, `key_cooldown_duration_ms`, and `key_error_rules` so the Upstream modal edits the values the gateway actually enforces.
+
 ## [1.16.0] - 2026-09-23
 
 ### Added

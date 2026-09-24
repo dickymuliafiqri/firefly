@@ -6,8 +6,9 @@
 - **Data Plane vs Admin Plane**: The client data plane (`0.0.0.0:8080`) handles OpenAI & Anthropic request forwarding, SSE streaming, and the embedded SPA. The admin plane (`:9090` or `/api/*`) exposes Prometheus `/metrics`, `/debug/*`, and atomic hot-swap settings.
 - **SSE Streaming Relay**: Engineered for 1,000+ simultaneous Server-Sent Events streams (`openai.RelaySSE`) with client disconnect abort (`ctx.Done()`) and stream idle watchdog (`StreamWatchdog`).
 - **Resilience Architecture**:
-  - Layer 1 (`KeyRing`): Manages multi-key quota limits on HTTP 429 (`Retry-After`) and revocation on HTTP 401, failover across remaining keys.
+  - Layer 1 (`KeyRing` & `policy`): Manages multi-key quota limits on HTTP 429 (`Retry-After`), revocation on HTTP 401, failover across remaining keys, and granular per-status error rules (`KeyErrorRule`: cooldown, deactivate, delete per HTTP status).
   - Layer 2 (`Breaker`): Upstream host circuit breaker triggered strictly on 5xx and network failures. Client 4xx never trips breakers.
+- **Cloudflare WARP Egress Engine**: Zero-privilege WireGuard userspace egress tunnel with periodic background IP auto-rotation (`-warp-rotate-interval`, default 5m) keeping outbound addresses clean without dropping active streams.
 - **Three-Tier Admission**:
   - Layer 1: Server-wide in-flight semaphore (`httpx.GlobalLimiter`) capped at 1,500 slots.
   - Layer 2: Per-tenant token-bucket rate limiter and concurrency limit (`httpx.AdmissionMiddleware`).
@@ -25,6 +26,7 @@
 
 ## Key CLI Commands
 - `firefly -config-dir=/etc/firefly -addr=0.0.0.0:8080`: Run the gateway.
+- `firefly -warp-rotate-interval=5m`: Run with background periodic WARP auto-rotation (0 to disable).
 - `firefly -version`: Display compiled version, commit SHA, and build date.
 - `loadtest -mock -c 1000 -profile low`: Run 1,000 concurrent requests burst against in-process mock gateway.
 - `make dev`: Run live-reloading development server with Air (auto-excluding runtime analytics/telemetry state files).

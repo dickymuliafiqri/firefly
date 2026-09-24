@@ -297,10 +297,10 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 		       COALESCE(key_error_threshold, 0),
 		       COALESCE(key_error_action, 'deactivate'),
 		       COALESCE(key_cooldown_duration_ms, 300000),
+		       COALESCE(key_error_rules, '[]'),
 		       COALESCE(probe_model, ''),
 		       COALESCE(egress_mode, 'direct'),
 		       COALESCE(proxy_url, ''),
-		       COALESCE(warp_auto_rotate_on_429, 0),
 		       enabled
 		FROM upstreams
 		ORDER BY id ASC
@@ -334,10 +334,9 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 			credRPS                                       sql.NullFloat64
 			credMaxConcur                                 sql.NullInt64
 			keyErrorThreshold, keyCooldownMs              sql.NullInt64
-			keyErrorAction                                sql.NullString
-			probeModel                                    sql.NullString
+			keyErrorAction, probeModel                    sql.NullString
+			keyErrorRulesJSON                             sql.NullString
 			egressMode, proxyURL                          sql.NullString
-			warpAutoRotateOn429Int                        sql.NullInt64
 		)
 
 		err := upRows.Scan(
@@ -345,8 +344,8 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 			&providerID, &credRef, &timeoutMs, &idleTimeoutMs, &streamIdleTimeoutMs,
 			&maxIdleConns, &maxConns, &extraHeadersJSON, &allowInsecure,
 			&credRPS, &credMaxConcur,
-			&keyErrorThreshold, &keyErrorAction, &keyCooldownMs, &probeModel,
-			&egressMode, &proxyURL, &warpAutoRotateOn429Int,
+			&keyErrorThreshold, &keyErrorAction, &keyCooldownMs, &keyErrorRulesJSON, &probeModel,
+			&egressMode, &proxyURL,
 			&enabled,
 		)
 		if err != nil {
@@ -435,6 +434,11 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 			kCoolMs = &v
 		}
 
+		var keyErrRules []config.KeyErrorRuleDTO
+		if keyErrorRulesJSON.Valid && strings.TrimSpace(keyErrorRulesJSON.String) != "" {
+			_ = json.Unmarshal([]byte(keyErrorRulesJSON.String), &keyErrRules)
+		}
+
 		dto := config.UpstreamDTO{
 			Name:                    name,
 			Protocol:                protocol,
@@ -456,16 +460,10 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 			KeyErrorThreshold:       kErrThresh,
 			KeyErrorAction:          kErrAct,
 			KeyCooldownDurationMs:   kCoolMs,
+			KeyErrorRules:           keyErrRules,
 			ProbeModel:              probeModel.String,
 			EgressMode:              egressMode.String,
 			ProxyURL:                proxyURL.String,
-			WarpAutoRotateOn429: func() *bool {
-				if warpAutoRotateOn429Int.Valid {
-					v := warpAutoRotateOn429Int.Int64 != 0
-					return &v
-				}
-				return nil
-			}(),
 		}
 
 		upstreams = append(upstreams, dto)
@@ -482,6 +480,7 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 	for i, meta := range upstreamMetas {
 		var pool []config.CredentialKeyDTO
 		seenRefs := make(map[string]bool)
+		seenSecrets := make(map[string]bool)
 
 		// 2a. Check if attached to harvester provider_id
 		if meta.providerID != nil {
@@ -497,9 +496,13 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 					var kid int64
 					var keySecret string
 					if err := kRows.Scan(&kid, &keySecret); err == nil && keySecret != "" {
+						if seenSecrets[keySecret] {
+							continue
+						}
 						ref := fmt.Sprintf("%s-key-%d", meta.name, kid)
 						if !seenRefs[ref] {
 							seenRefs[ref] = true
+							seenSecrets[keySecret] = true
 							pool = append(pool, config.CredentialKeyDTO{
 								Ref:           ref,
 								Secret:        keySecret,
@@ -549,6 +552,14 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 					if strings.TrimSpace(keySec) == "" && !strings.HasPrefix(ref, "oauth:") {
 						continue
 					}
+					// Deduplicate credentials sharing the same resolved secret.
+					// This collapses duplicate historical rows (e.g. copies saved
+					// under older ref families like "upstream-key-<id>" alongside
+					// provider-bound canonical "<upstream>-key-<id>" entries) so
+					// the loaded pool matches the true distinct credential count.
+					if keySec != "" && seenSecrets[keySec] {
+						continue
+					}
 					if rps.Valid {
 						v := rps.Float64
 						credRPSVal = &v
@@ -566,6 +577,9 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 					}
 					if !seenRefs[ref] {
 						seenRefs[ref] = true
+						if keySec != "" {
+							seenSecrets[keySec] = true
+						}
 						pool = append(pool, config.CredentialKeyDTO{
 							Ref:           ref,
 							Secret:        keySec,
@@ -917,16 +931,18 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 		if u.KeyCooldownDurationMs != nil && *u.KeyCooldownDurationMs > 0 {
 			keyCooldownMsVal = *u.KeyCooldownDurationMs
 		}
+		keyErrorRulesVal := "[]"
+		if len(u.KeyErrorRules) > 0 {
+			if raw, err := json.Marshal(u.KeyErrorRules); err == nil {
+				keyErrorRulesVal = string(raw)
+			}
+		}
 
 		egressModeVal := strings.ToLower(strings.TrimSpace(u.EgressMode))
 		if egressModeVal == "" {
 			egressModeVal = "direct"
 		}
 		proxyURLVal := strings.TrimSpace(u.ProxyURL)
-		warpAutoRotateVal := 0
-		if u.WarpAutoRotateOn429 != nil && *u.WarpAutoRotateOn429 {
-			warpAutoRotateVal = 1
-		}
 
 		existingID, exists := upstreamNameToID[u.Name]
 		if exists {
@@ -938,8 +954,9 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 					max_idle_conns_per_host = ?, max_conns_per_host = ?, extra_headers = ?,
 					allow_insecure = ?, credential_rps = ?, credential_max_concur = ?,
 					key_error_threshold = ?, key_error_action = ?, key_cooldown_duration_ms = ?,
+					key_error_rules = ?,
 					probe_model = ?,
-					egress_mode = ?, proxy_url = ?, warp_auto_rotate_on_429 = ?,
+					egress_mode = ?, proxy_url = ?,
 					enabled = ?, version = version + 1, updated_at = ?
 				WHERE id = ?
 			`, u.Protocol, u.BaseURL, fallbacksJSON, u.KeyStrategy,
@@ -947,8 +964,9 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 				u.MaxIdleConnsPerHost, u.MaxConnsPerHost, headersJSON,
 				allowInsecureInt, u.CredentialRPS, u.CredentialMaxConcurrent,
 				keyErrorThresholdVal, keyErrorActionVal, keyCooldownMsVal,
+				keyErrorRulesVal,
 				u.ProbeModel,
-				egressModeVal, proxyURLVal, warpAutoRotateVal,
+				egressModeVal, proxyURLVal,
 				enabledInt, now, existingID)
 			if err != nil {
 				return fmt.Errorf("update upstream %q: %w", u.Name, err)
@@ -961,7 +979,8 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 					max_idle_conns_per_host, max_conns_per_host, extra_headers,
 					allow_insecure, credential_rps, credential_max_concur,
 					key_error_threshold, key_error_action, key_cooldown_duration_ms,
-					probe_model, egress_mode, proxy_url, warp_auto_rotate_on_429,
+					key_error_rules,
+					probe_model, egress_mode, proxy_url,
 					enabled, version, created_at, updated_at
 				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
 			`, u.Name, u.Protocol, u.BaseURL, fallbacksJSON, u.KeyStrategy,
@@ -969,8 +988,9 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 				u.MaxIdleConnsPerHost, u.MaxConnsPerHost, headersJSON,
 				allowInsecureInt, u.CredentialRPS, u.CredentialMaxConcurrent,
 				keyErrorThresholdVal, keyErrorActionVal, keyCooldownMsVal,
+				keyErrorRulesVal,
 				u.ProbeModel,
-				egressModeVal, proxyURLVal, warpAutoRotateVal,
+				egressModeVal, proxyURLVal,
 				enabledInt, now, now)
 			if err != nil {
 				return fmt.Errorf("insert upstream %q: %w", u.Name, err)

@@ -238,3 +238,84 @@ func TestHandleKeyOutcome_TypedNilNotifierIsSkipped(t *testing.T) {
 		}
 	})
 }
+
+func TestHandleKeyOutcome_PerStatusRules_403DeleteImmediately(t *testing.T) {
+	notifier := &mockKeyNotifier{}
+	slot := &domain.KeySlot{Ref: "bad-qoder-key", APIKeyID: 99}
+	u := &domain.Upstream{
+		Name: "qoder-up",
+		KeyErrorRules: []domain.KeyErrorRule{
+			{StatusCode: http.StatusForbidden, Threshold: 1, Action: "delete"},
+			{StatusCode: http.StatusTooManyRequests, Threshold: 1, Action: "cooldown", CooldownDurationS: 600},
+		},
+		KeyErrorThreshold: 5,
+		KeyErrorAction:    "deactivate",
+	}
+
+	action, failover := HandleKeyOutcome(u, slot, http.StatusForbidden, "", notifier, nil)
+	if !action || !failover {
+		t.Fatalf("expected action=true and failover=true on 403 rule match, got action=%v failover=%v", action, failover)
+	}
+	if !slot.Revoked.Load() {
+		t.Errorf("expected slot to be revoked (deleted)")
+	}
+	notifier.mu.Lock()
+	defer notifier.mu.Unlock()
+	if len(notifier.actions) != 1 || notifier.actions[0] != ports.KeyActionDelete {
+		t.Errorf("expected KeyActionDelete notification, got %v", notifier.actions)
+	}
+}
+
+func TestHandleKeyOutcome_PerStatusRules_429CustomCooldown(t *testing.T) {
+	slot := &domain.KeySlot{Ref: "rate-limited-key", APIKeyID: 101}
+	kr := domain.NewKeyRing(domain.KeyStrategyRoundRobin, []*domain.KeySlot{slot})
+	u := &domain.Upstream{
+		Name:    "up-custom-cooldown",
+		KeyRing: kr,
+		KeyErrorRules: []domain.KeyErrorRule{
+			{StatusCode: http.StatusTooManyRequests, Threshold: 1, Action: "cooldown", CooldownDurationS: 120},
+		},
+	}
+
+	action, failover := HandleKeyOutcome(u, slot, http.StatusTooManyRequests, "", nil, nil)
+	if !action || !failover {
+		t.Fatalf("expected action=true and failover=true, got action=%v failover=%v", action, failover)
+	}
+	if slot.Revoked.Load() {
+		t.Errorf("key should not be revoked on cooldown action")
+	}
+	if !slot.IsInCooldown(time.Now().UnixNano()) {
+		t.Errorf("key should be in cooldown")
+	}
+	// Verify duration is around 120s (allow +/- 5s)
+	until := time.Unix(0, slot.CooldownUntil.Load())
+	remaining := time.Until(until)
+	if remaining < 110*time.Second || remaining > 125*time.Second {
+		t.Errorf("expected cooldown ~120s, got remaining %v", remaining)
+	}
+}
+
+func TestHandleKeyOutcome_PerStatusRules_FallbackToLegacyWhenUnmatched(t *testing.T) {
+	notifier := &mockKeyNotifier{}
+	slot := &domain.KeySlot{Ref: "legacy-fallback-key", APIKeyID: 102}
+	u := &domain.Upstream{
+		Name: "up-fallback",
+		KeyErrorRules: []domain.KeyErrorRule{
+			{StatusCode: http.StatusForbidden, Threshold: 1, Action: "delete"},
+		},
+		KeyErrorThreshold: 1,
+		KeyErrorAction:    "deactivate",
+	}
+
+	// 401 is NOT in KeyErrorRules -> must fall back to KeyErrorThreshold/Action: deactivate
+	action, failover := HandleKeyOutcome(u, slot, http.StatusUnauthorized, "", notifier, nil)
+	if !action || !failover {
+		t.Fatalf("expected action=true and failover=true on fallback, got action=%v failover=%v", action, failover)
+	}
+	notifier.mu.Lock()
+	defer notifier.mu.Unlock()
+	if len(notifier.actions) != 1 || notifier.actions[0] != ports.KeyActionDeactivate {
+		t.Errorf("expected legacy fallback KeyActionDeactivate, got %v", notifier.actions)
+	}
+}
+
