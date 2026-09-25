@@ -8,6 +8,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Search,
+  Link2,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/Badge';
 import { Field } from '@/components/ui/Controls';
@@ -17,6 +18,8 @@ import {
   type UpstreamCheckRequest,
 } from '@/services/api';
 import { useUiStore } from '@/state/store';
+import type { ConnectionDTO } from '@/services/schema';
+import { OAuthConnectDialog, isOAuthProtocol } from './OAuthConnectDialog';
 
 export interface KeyEntry {
   id: string;
@@ -82,6 +85,25 @@ export function KeysTab({
   const [keyChecks, setKeyChecks] = useState<Record<string, KeyCheckState>>({});
   const [checkingAll, setCheckingAll] = useState(false);
   const abortCheckRef = useRef(false);
+
+  // OAuth connect dialog state
+  const [oauthOpen, setOauthOpen] = useState(false);
+
+  function handleOAuthSuccess(conn: ConnectionDTO) {
+    const newEntry: KeyEntry = {
+      id: `oauth-${conn.id}-${Date.now()}`,
+      ref: `oauth:${conn.id}`,
+      secret: `oauth:${conn.id}`,
+      rps: 0,
+      maxConcurrent: 0,
+    };
+    onKeysChange([...keys, newEntry]);
+    pushToast({
+      type: 'success',
+      title: 'Account connected',
+      message: `${conn.email || conn.id} added as oauth:${conn.id}`,
+    });
+  }
 
   const boundProvider = (tursoProviders.data?.providers ?? []).find((p) => p.id === providerId);
 
@@ -296,6 +318,40 @@ export function KeysTab({
           </div>
         </div>
         <div className="card-body">
+          {isOAuthProtocol(protocol) && (
+            <div
+              style={{
+                padding: '12px 14px',
+                borderRadius: 6,
+                border: '1px solid var(--line)',
+                background: 'var(--surface-raised)',
+                marginBottom: 16,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 12,
+              }}
+            >
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <span style={{ color: 'var(--ink)', fontSize: 13, fontWeight: 500 }}>
+                  OAuth Account Connection
+                </span>
+                <span style={{ color: 'var(--faint)', fontSize: 11 }}>
+                  This protocol authenticates via OAuth. Connect an account instead of
+                  pasting API keys manually.
+                </span>
+              </div>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => setOauthOpen(true)}
+                style={{ whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+              >
+                <Link2 style={{ width: 14, height: 14 }} /> Connect Account
+              </button>
+            </div>
+          )}
+
           <div style={{ marginBottom: 16 }}>
             <Field label="Bulk paste API keys (satu key per baris)" htmlFor="u-bulk-keys">
               <textarea
@@ -450,6 +506,14 @@ export function KeysTab({
           ) : null}
         </div>
       </div>
+
+      {/* OAuth Connect Dialog */}
+      <OAuthConnectDialog
+        open={oauthOpen}
+        onClose={() => setOauthOpen(false)}
+        provider={protocol}
+        onSuccess={handleOAuthSuccess}
+      />
     </div>
   );
 }

@@ -5,6 +5,19 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.19.0] - 2026-09-25
+
+### Added
+
+- **Frontend OAuth Connect Dialog (`frontend/src/components/upstream/OAuthConnectDialog.tsx`, `KeysTab.tsx`)**: Integrated the interactive OAuth onboarding UI into Firefly's active React 19 frontend for supported protocols (`antigravity`, `cline`, `codebuddy_cn`, `codebuddy_intl`).
+  - Implements a phase-based state machine (`idle`, `starting`, `waiting`, `success`, `error`) with automatic flow initialization on open.
+  - Automatically pops up the provider authorization window and runs a background polling loop (2-second interval) via `pollOAuthStatus`.
+  - Fast-path completion via `window.addEventListener('message')` listening for `oauth_complete` broadcast from backend's callback page.
+  - Displays connected account metadata (email, Google Cloud companion project ID, and formatted key reference).
+  - Automatically injects the new credential into the Upstream's credential pool as `ref: "oauth:<connection_id>"` and `secret: "oauth:<connection_id>"`, matching Firefly's server-side dynamic OAuth vault lookup.
+  - Adds conditional "Connect Account" banner with `Link2` icon directly above the manual key input on `KeysTab` when an OAuth-capable protocol is selected.
+
+
 ## [1.18.0] - 2026-09-25
 
 ### Fixed
