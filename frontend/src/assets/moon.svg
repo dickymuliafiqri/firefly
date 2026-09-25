@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120">
+  <defs>
+    <radialGradient id="moonhalo" cx="50%" cy="50%" r="50%">
+      <stop offset="35%" stop-color="#c7d5f2" stop-opacity=".22"/>
+      <stop offset="70%" stop-color="#c7d5f2" stop-opacity=".06"/>
+      <stop offset="100%" stop-color="#c7d5f2" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="moonbody" cx="42%" cy="38%" r="70%">
+      <stop offset="0%" stop-color="#f4f7ff"/>
+      <stop offset="80%" stop-color="#d9e2f7"/>
+      <stop offset="100%" stop-color="#bcc9e6"/>
+    </radialGradient>
+  </defs>
+  <circle cx="60" cy="60" r="60" fill="url(#moonhalo)"/>
+  <circle cx="60" cy="60" r="30" fill="url(#moonbody)"/>
+  <circle cx="50" cy="52" r="6"  fill="#c3cfe9" opacity=".55"/>
+  <circle cx="68" cy="66" r="4.5" fill="#c3cfe9" opacity=".45"/>
+  <circle cx="58" cy="74" r="3" fill="#c3cfe9" opacity=".4"/>
+  <circle cx="72" cy="48" r="2.6" fill="#c3cfe9" opacity=".45"/>
+</svg>

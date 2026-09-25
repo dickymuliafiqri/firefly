@@ -21,6 +21,9 @@ loadtest
 frontend/node_modules/
 frontend/dist/
 
+# Archived legacy frontend (reference only, not needed in the build context)
+archive/
+
 # Editor / OS cruft
 .vscode/
 .idea/

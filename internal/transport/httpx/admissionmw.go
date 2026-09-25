@@ -71,11 +71,19 @@ func (g *GlobalLimiter) SetObserver(obs GlobalInflightObserver) {
 func isBypassAdmission(path string) bool {
 	return path == "/healthz" ||
 		path == "/" ||
-		path == "/models" ||
-		path == "/upstreams" ||
-		path == "/playground" ||
+		path == "/overview" ||
 		path == "/telemetry" ||
+		path == "/usage" ||
+		path == "/upstreams" ||
+		path == "/providers" ||
+		path == "/models" ||
+		path == "/tenants" ||
 		path == "/settings" ||
+		path == "/chat" ||
+		path == "/benchmark" ||
+		path == "/quota" ||
+		path == "/console" ||
+		path == "/playground" ||
 		strings.HasPrefix(path, "/api/") ||
 		strings.HasPrefix(path, "/assets/")
 }

@@ -1,259 +1,174 @@
-# DESIGN.md — Frontend Architecture, Design System & Extension Guidelines
+# DESIGN.md — Bahasa Visual & Arsitektur Frontend Firefly
 
-> **Status**: Core System Locked 🔒 • Modules Extensible 🧩  
-> **Tech Stack**: React 18+ • Vite 5+ • TypeScript 5+ • Tailwind CSS 3+ • Zustand • TanStack Query  
+> **Status**: Core Design System Solid & Locked 🔒  
+> **Tech Stack**: React 19 • Vite 5+ • TypeScript 5+ • Tailwind CSS 3+ • Zustand • TanStack Query  
 > **Backend Counterpart**: Firefly (Go 1.22+ High-Concurrency AI Reverse Proxy)  
-> **Version**: 1.0.0 — 2026-09-12
+> **Sumber Identitas**: Landing page `firefly-web`. Sistem desain **solid**: tanpa transparansi, tanpa glow, tanpa efek GPU-heavy.
 
 ---
 
-## 1. Design Philosophy & Core Identity (LOCKED 🔒)
+## 1. Filosofi Desain
 
-Firefly embodies a **Nocturnal Celestial & Real-Time Telemetry** aesthetic. This dashboard is intentionally crafted not as a conventional administrative CRUD interface, but as a serene, elegant, and informative living-network visualization tailored for backend engineers and AI infrastructure operators.
-
-### 1.1. Invariable Aesthetic Rules (Non-Negotiable)
-1. **Nocturnal Dual-Tone Atmosphere**:
-   - The background strictly uses a 2-stop vertical gradient:
-     - Top (0%): `#020617` (Slate 950 - deep pitch black)
-     - Bottom (100%): `#08152a` (Deep Midnight Blue)
-   - The background must never be altered to bright, high-contrast themes without explicit context.
-2. **3-Layer Atmospheric Stack**:
-   - **Layer 0**: Celestial Starfield (deterministic radial-gradient stars across three vertical bands: upper, mid, lower).
-   - **Layer 1**: Aurora Borealis Gradient (`#10b981` emerald, `#3b82f6` blue, `#8b5cf6` purple with subtle opacity `0.015 - 0.03` and a 20s breathing cycle).
-   - **Layer 2**: Subtle Vignette Edge Darkening (`radial-gradient` 80%x70% rgba(2,6,23,0.4)) focusing visual attention onto the central canvas.
-3. **Bioluminescent Living Network (Firefly Swarm)**:
-   - Upstream AI endpoints are visualized as living bioluminescent fireflies on an HTML5 2D canvas.
-   - Connected/healthy state: fluttering wings, luminous tail glow (`#f0ffb4` / `#bef264`), particle emission, and photon halos.
-   - Disconnected/circuit-open state: dormant gray silhouette (`#6b7280`), muted labels, zero tail emission.
-   - Dynamic constellation lines (`drawConstellationLines`) connect adjacent active nodes with proximity-based opacity.
-4. **Procedural Lo-Fi Soundscape (Web Audio API)**:
-   - A lightweight, procedural 64 BPM Lo-Fi synthesizer engine (Rhodes jazz voicings Dm9-G13-Cmaj9-Am9, vinyl brown noise crackle, soft sub-bass, and gentle sparkle chimes).
-   - Strictly conforms to browser autoplay policies (only activated upon explicit user interaction via toggle button).
-5. **Precision Typography & Telemetry**:
-   - Sans-serif: `Inter` (weights 300 to 800) with OpenType features `cv02, cv03, cv04, cv11`.
-   - Monospace: `JetBrains Mono` (weights 300 to 700) for metrics, endpoints, payloads, and logs.
-   - All telemetry and counter numbers must apply `.tabular-nums` to eliminate layout jitter during high-frequency updates.
-   - Counter updates utilize smooth interpolating counting animations (`animateValue`).
+1. **Hutan malam, bukan diskotek.** Gelap yang tenang, satu aksen lime sebagai "cahaya kunang-kunang" — hanya untuk hal yang interaktif/aktif. Lime bukan dekorasi, lime adalah _meaning_.
+2. **Solid > transparan.** Permukaan berwarna solid, batas tegas 1px. Tidak ada kaca, tidak ada blur, tidak ada elemen "melayang tembus pandang".
+3. **Data dulu, hiasan kemudian.** Elemen langit/hutan hanya ada di area non-data (topbar strip, halaman kosong, overview hero). Di dalam tabel/form/chart: nol dekorasi.
+4. **Setiap gerakan punya alasan.** Animasi hanya untuk feedback state (hover, masuk halaman, perubahan status). Tidak ada partikel, tidak ada idle animation di area data.
 
 ---
 
-## 2. Decision Matrix: Locked vs Extensible
+## 2. Design Tokens (Single Source of Truth)
 
-| Frontend Aspect | Status | Policy & Constraints |
-| :--- | :---: | :--- |
-| **Theme & Palette Tokens** | 🔒 LOCKED | Night-sky palette, firefly bioluminescence, and base typography cannot be modified unilaterally. |
-| **Canvas Firefly Core Engine** | 🔒 LOCKED | Particle physics simulation, constellation lines, and `requestAnimationFrame` loop remain central to the visual experience. |
-| **Global Layout Shell** | 🔒 LOCKED | Minimalist translucent header, full-viewport canvas container, and subtle footer telemetry bar. |
-| **Audio Engine Architecture** | 🔒 LOCKED | Pure procedural Web Audio API synthesis without external heavy `.mp3` dependencies. |
-| **Feature Tabs & New Modules** | 🧩 EXTENSIBLE | AI agents and developers are welcome to add new feature modules via the **Module Registry**. |
-| **Telemetry Metric Cards** | 🧩 EXTENSIBLE | New metrics (P99 latency, cache hit rates, token throughput/sec) can be added to the statistics grid. |
-| **Drawer / Modal Inspectors** | 🧩 EXTENSIBLE | Per-upstream detail drawers, circuit breaker diagnostic inspectors, and payload viewers are extensible. |
-| **Transport Layer Provider** | 🧩 EXTENSIBLE | HTTP polling for `/api/settings` and `/api/telemetry` can be augmented with WebSockets or SSE streams. |
+Didefinisikan sebagai CSS variables di `frontend/src/styles/global.css` + `frontend/tailwind.config.ts`. Mockup dan React wajib memakai token yang sama.
 
----
+### 2.1 Warna
 
-## 3. Design Tokens & Styling Guide (LOCKED 🔒)
+```css
+:root {
+  /* Langit (background shell) */
+  --sky-top: #020617; /* app background atas */
+  --sky-mid: #08152a; /* app background bawah */
 
-### 3.1. Color Tokens (Tailwind Semantic Palette)
+  /* Permukaan SOLID (pengganti glass) */
+  --surface-page: #050b18; /* sidebar, topbar, footer */
+  --surface-card: #0b1322; /* kartu, panel */
+  --surface-raised: #101a2c; /* header tabel, hover item, tooltip */
+  --surface-input: #0d1524; /* input, select, textarea */
+  --surface-overlay: #0a1120; /* modal, drawer (full solid) */
 
-```typescript
-// tailwind.config.ts — Semantic Color Mapping
-export const colors = {
-  background: {
-    top: '#020617',       // Slate 950
-    bottom: '#08152a',    // Deep Midnight
-    surface: 'rgba(15, 23, 42, 0.65)',
-    card: 'rgba(30, 41, 59, 0.45)',
-    overlay: 'rgba(2, 6, 23, 0.85)',
-  },
-  biolum: {
-    glow: '#f0ffb4',      // Firefly core bioluminescent
-    aura: '#bef264',      // Lime 300 outer aura
-    dim: 'rgba(190, 242, 100, 0.15)',
-  },
-  accent: {
-    emerald: '#10b981',   // Status OK / Healthy
-    cyan: '#06b6d4',      // Telemetry / Tokens
-    amber: '#f59e0b',     // Warning / Circuit Half-Open / Cooldown
-    rose: '#f43f5e',      // Circuit Breaker Open / Error 5xx
-    violet: '#8b5cf6',    // Model / Routing tags
-  },
-  border: {
-    subtle: 'rgba(255, 255, 255, 0.06)',
-    medium: 'rgba(255, 255, 255, 0.12)',
-    focus: 'rgba(190, 242, 100, 0.40)',
-  },
-  text: {
-    primary: '#f8fafc',   // Slate 50
-    secondary: '#94a3b8', // Slate 400
-    muted: '#475569',     // Slate 600
-    code: '#38bdf8',      // Sky 400
-  }
-};
-```
+  /* Teks */
+  --ink: #e8eef9;
+  --muted: #93a5c4;
+  --faint: #64748b;
 
-### 3.2. Glassmorphism & Depth Specs
-- **Card Background**: `backdrop-blur-md bg-slate-900/40`
-- **Card Border**: `1px solid rgba(255, 255, 255, 0.07)`
-- **Card Shadow**: `0 8px 32px 0 rgba(0, 0, 0, 0.37)`
-- **Inset Highlight**: `box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.08)`
-- **Interactive Hover**: Border transitions to `border-white/20`, translateY `-1px`, and subtle luminous shadow.
+  /* Aksen biolum — hanya untuk interaksi/status */
+  --biolum: #bef264; /* aktif, link, item menu aktif */
+  --biolum-bright: #f0ffb4; /* hover di atas --biolum */
+  --biolum-ink: #0a1220; /* teks di atas tombol lime */
 
-### 3.3. Typography Rules
-- Body text size: `13px` to `14px` with `leading-relaxed` for clean dashboard density.
-- Large metric numbers: `20px` to `28px`, bold, `font-mono`, `tracking-tight`, and `.tabular-nums`.
-- Badges & Tags: `10px` to `11px`, `uppercase tracking-wider font-semibold px-2 py-0.5 rounded-full`.
+  /* Status */
+  --ok: #10b981;
+  --warn: #f59e0b;
+  --danger: #f43f5e;
+  --info: #06b6d4;
 
----
-
-## 4. Frontend Technical Architecture
-
-### 4.1. Directory Structure
-
-```
-frontend/
-├── index.html                   # HTML entrypoint (fonts, metadata)
-├── vite.config.ts               # Vite build configuration with proxy
-├── tsconfig.json                # Strict TypeScript configuration
-├── tailwind.config.ts           # Semantic design tokens
-├── package.json                 # React 18, Vite 5, Zustand, TanStack Query
-├── src/
-│   ├── main.tsx                 # Root React DOM render & QueryClientProvider
-│   ├── App.tsx                  # Global Shell (Header, Canvas Background, Module Outlet)
-│   ├── core/                    # [LOCKED 🔒] Core Infrastructure
-│   │   ├── canvas/              # HTML5 Firefly Engine & Constellations
-│   │   │   ├── FireflyCanvas.tsx
-│   │   │   ├── useFireflyPhysics.ts
-│   │   │   └── types.ts
-│   │   ├── audio/               # Web Audio API Synthesizer Engine
-│   │   │   ├── AudioManager.ts
-│   │   │   └── useAudioState.ts
-│   │   ├── layout/              # Shell, Header, Navigation Tabs, Drawer
-│   │   │   ├── Shell.tsx
-│   │   │   ├── Header.tsx
-│   │   │   └── StatsFooter.tsx
-│   │   └── state/               # Zustand Global State Slices
-│   │       ├── store.ts         # Combined Root Store
-│   │       ├── telemetrySlice.ts# Live Token & Request Counters
-│   │       ├── settingsSlice.ts # Upstream & Model Configurations
-│   │       ├── playgroundSlice.ts
-│   │       ├── toolsSlice.ts    # Active Tool & Telemetry Panel Collapse
-│   │       ├── benchmarkSlice.ts# Benchmark Run State & Per-Request Results
-│   │       └── uiSlice.ts
-│   ├── modules/                 # [EXTENSIBLE 🧩] Pluggable Feature Modules
-│   │   ├── 1-overview/          # Module 1: Live Overview & Quick Telemetry
-│   │   ├── 2-upstreams/         # Module 2: Upstreams & Massive KeyRing Management
-│   │   ├── 3-models/            # Module 3: Models & Routing Target Catalog
-│   │   ├── 4-tenants/           # Module 4: Tenant Credentials & RPS Gates
-│   │   ├── 5-telemetry/         # Module 5: Real-Time Stream Telemetry & Metrics
-│   │   ├── 6-settings/          # Module 6: Settings, Auto-TLS & Turso Configuration
-│   │   └── 7-tools/             # Module 7: Tools (chat/ + benchmark/ sub-tools)
-│   ├── components/ui/           # Reusable UI Elements (GlassCard, Badge, Button, Modal)
-│   ├── services/                # API Client & Adapters
-│   │   ├── api.ts               # Typed fetch / TanStack Query hooks
-│   │   └── schema.ts            # Go backend DTO definitions
-│   └── hooks/                   # Shared utility hooks (useKeyboardShortcuts, useReducedMotion)
-```
-
----
-
-## 5. Module Extension System & AI Agent Guidelines (EXTENSIBLE 🧩)
-
-To keep code clean and decoupled as new features are added by AI agents or developers, Firefly adheres to a **Pluggable Module Architecture**.
-
-### 5.1. Module Interface Contract
-
-New feature views must adhere to standard module patterns:
-```typescript
-export interface ModuleViewProps {
-  // Clean, self-contained view communicating via Zustand and TanStack Query
+  /* Garis */
+  --line: #1d2c47; /* border standar */
+  --line-strong: #2a3a55; /* border hover / divider kuat */
 }
 ```
 
-### 5.2. Step-by-Step Guide for Adding New Feature Views
-1. **Isolate Core Infrastructure:**
-   - **NEVER MODIFY** files in `src/core/` (`canvas/`, `audio/`, `layout/Shell.tsx`) unless specifically instructed by the user.
-   - Create a dedicated folder under `src/modules/<module-name>/`.
-2. **Component Structure:**
-   ```
-   src/modules/<feature-name>/
-   ├── <FeatureName>View.tsx     # Root view component
-   ├── components/              # Memoized subcomponents
-   └── types.ts                 # Local component types
-   ```
-3. **Design Compliance:**
-   - Use `GlassCard` or transparent containers matching the nocturnal theme.
-   - Apply semantic accent colors (`emerald` for healthy, `rose` for circuit open, `amber` for cooldown, `cyan` for telemetry).
-   - Format numeric data with `font-mono` and `.tabular-nums`.
+**Aturan penggunaan aksen:**
+
+- Lime dipakai untuk: item menu aktif (strip kiri 2px + teks), link, tombol primer, indikator "sehat/berjalan", titik data aktif.
+- `--ok/--warn/--danger` hanya untuk status (HTTP code, circuit breaker, kuota), bukan tempelan estetika.
+
+### 2.2 Tipografi
+
+| Peran                           | Font                                            | Catatan                                                 |
+| ------------------------------- | ----------------------------------------------- | ------------------------------------------------------- |
+| Wordmark & judul halaman        | **Fraunces** (medium; wordmark italic-semibold) | Ukuran judul halaman maks 24px — ini app, bukan landing |
+| Body, label, UI                 | **Inter**                                       | 14px default; 13px untuk konten padat                   |
+| Data: angka, kode, ID, terminal | **JetBrains Mono**                              | Wajib `tabular-nums` untuk kolom angka                  |
+
+Skala: `12 / 13 / 14 / 16 / 20 / 24`. Tidak ada ukuran lain tanpa alasan.  
+Huruf kapital kecil + letter-spacing 0.05em hanya untuk label grup/kolom (12px, `--faint`).
+
+### 2.3 Spasi, Radius, Border
+
+- Spasi: kelipatan 4 → `4 8 12 16 20 24 32 48`.
+- Radius: `6` (input, badge), `10` (kartu, panel), `12` (modal, drawer). Tidak ada pill kecuali tombol filter segmented.
+- Border: selalu `1px solid var(--line)`; bukan bayangan.
+- `box-shadow` dibatasi: `0 1px 2px rgba(0,0,0,.4)` untuk overlay/modal saja. **Tidak ada glow, tidak ada spread besar.**
 
 ---
 
-## 6. Frontend Engineering Best Practices
+## 3. Struktur Shell & Navigasi
 
-### 6.1. Canvas Lifecycle & Performance
-1. **Render Loop Decoupled from React Lifecycle:**
-   - The firefly `requestAnimationFrame` loop executes outside of React re-render cycles.
-   - High-frequency telemetry updates must never trigger canvas re-initialization.
-   - Canvas state is isolated in `useFireflyPhysics`.
-2. **High-DPI Scaling:**
-   - Canvas scales to `window.devicePixelRatio` for crisp rendering on Retina displays:
-     ```typescript
-     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-     canvas.width = rect.width * dpr;
-     canvas.height = rect.height * dpr;
-     ctx.scale(dpr, dpr);
-     ```
-3. **Zero Memory Leaks:**
-   - Every `useEffect` binding window listeners, `requestAnimationFrame`, intervals, or `AudioContext` must return a cleanup function.
-4. **Visibility State Throttling:**
-   - When the browser tab is hidden (`document.hidden`), canvas animations and audio loops are paused to conserve system CPU cycles and battery life.
+### 3.1 Topbar
 
-### 6.2. Accessibility & Keyboard Navigation (WCAG 2.1 AA)
-1. **Global Keyboard Shortcuts:**
-   - `1` through `7`: Rapid module switching (1: Overview, 2: Upstreams, 3: Models & Combos, 4: Tenants, 5: Telemetry, 6: Settings, 7: Tools).
-   - `M`: Toggle Lo-Fi audio ambience.
-   - `P`: Trigger test photon pulse broadcast across network.
-   - `Space`: Pause/resume particle physics canvas simulation.
-   - `Escape`: Dismiss open dialogs and modals.
-2. **Focus Rings & Contrast:**
-   - All interactive elements provide visible focus styling (`focus-visible:outline-none focus-visible:border-white/30`).
-   - Accessible `aria-label` tags are present on icon-only buttons.
-3. **Reduced Motion Support:**
-   - Flying particle physics and star animations respect OS `prefers-reduced-motion` preferences.
+- Tinggi 56px, solid `--surface-page`, border-bottom `--line`.
+- Kiri: tombol lipat sidebar (mobile: buka drawer) + wordmark "Firefly" (Fraunces italic) + nama halaman saat ini.
+- Kanan: indikator status backend (dot `--ok` + "healthy"), jam lokal (mono, opsional).
+- **Tanpa blur.** Saat scroll, topbar tetap solid — tidak transparan.
 
-### 6.3. Dashboard Route Authentication & Security Policy
-1. **Public vs Protected Routes**:
-   - **Overview Tab (`1`)**: Always accessible publicly without credentials for instant uptime and live network inspection.
-   - **Configuration & Operational Tabs (`2-7`)**: Intercepted by `LoginModal` requiring the dashboard access password (default: `12345678`).
-2. **State & Persistence**:
-   - Authentication session is tracked in `sessionStorage` (`firefly_session_token_v1` and `firefly_auth_session_v1`) to prevent credential leakage across closed browser tabs.
-   - Master dashboard passwords and credentials are fully secured on the backend (salted SHA-256 in `configs/auth.json`). All credential operations require backend authorization verification (`/api/auth/verify`, `/api/auth/password`).
-   - Header provides instant session locking (`Lock` button) to revoke the active session on the backend immediately.
+### 3.2 Sidebar
+
+- Lebar 240px terbuka / 56px terlipat (ikon saja + tooltip). Mobile: drawer dengan backdrop **solid** `rgba(0,0,0,.6)` (tanpa blur).
+- Solid `--surface-page`, border-right `--line`.
+- Grup menu berlabel: `MONITORING`, `LAYANAN`, `KONFIGURASI`, `ALAT`.
+- Item aktif: teks `--ink` terang + strip lime 2px di tepi kiri + latar `--surface-raised`. Item tidak aktif: teks `--muted`, hover jadi `--ink` + latar `--surface-raised`.
+- Bawah sidebar: versi gateway (mono, faint).
+
+### 3.3 Konten
+
+- Padding konsisten 24px (mobile 16px), lebar konten maks 1200px, rata kiri (bukan center) agar mudah dipindai.
+- Setiap halaman diawali **PageHeader**: judul Fraunces 20-24px + satu kalimat deskripsi `--muted` + tombol aksi utama di kanan. Tidak ada dua baris aksi.
+- Konten tersusun atas grid kartu 12 kolom; kartu tidak boleh menumpuk lebih dari 2 tingkat kecuali pada tab detail.
 
 ---
 
-## 7. Single-Binary Go Distribution (`go:embed`)
+## 4. Komponen Dasar (Kontrak Visual)
 
-Firefly compiles down to a single, standalone binary. The frontend is built into `/frontend/dist/` and embedded into Go:
+| Komponen                 | Aturan kunci                                                                                                                                                                                         |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Button**               | Primer: lime solid, teks `--biolum-ink`, hover `--biolum-bright` (tanpa translate-y). Sekunder: solid `--surface-raised` + border. Ghost: teks saja. Disabled: opacity 0.45 + `cursor: not-allowed`. |
+| **Card**                 | Solid `--surface-card`, radius 10, border `--line`. Header kartu: judul 14px semibold + aksi kanan. Tanpa hover-lift; status hanya lewat border/teks.                                                |
+| **Table**                | Header: `--surface-raised`, label 12px kapital faint. Baris: border-bottom `--line`, hover `--surface-raised`. Angka mono `tabular-nums` rata kanan. Status = badge, bukan warna sel.                |
+| **Badge**                | Pill kecil, latar status dengan alpha 12% di atas `--surface-card`, teks status solid, dot 6px di kiri. Tanpa glow.                                                                                  |
+| **Modal**                | Overlay solid `rgba(0,0,0,.65)`, panel solid `--surface-overlay`, radius 12, shadow standar. Maks tinggi 85vh, body scroll. Escape = tutup.                                                          |
+| **Drawer**               | Panel kanan 420px solid `--surface-overlay`, sama aturannya dengan modal.                                                                                                                            |
+| **Field**                | Label 13px muted di atas; input solid `--surface-input` + border `--line`; focus: border `--biolum` (bukan glow ring). Error: border `--danger` + teks bantu 12px.                                   |
+| **Toast**                | Bawah kanan, solid `--surface-raised` + border kiri 3px status. Auto-tutup 4s.                                                                                                                       |
+| **EmptyState**           | Ilustrasi hutan sederhana (SVG statis) + judul + satu tombol aksi. Satu-satunya tempat dekorasi boleh lebih besar.                                                                                   |
+| **Tabs** (dalam halaman) | Segmented: border 1px, item aktif latar `--surface-raised` + teks ink; bukan garis bawah mengambang.                                                                                                 |
 
-```go
-// frontend/embed.go
-package frontend
+---
 
-import (
-    "embed"
-    "io/fs"
-)
+## 5. Density & Hierarki
 
-//go:embed all:dist
-var DistFS embed.FS
+1. **Satu layar = satu pertanyaan.** Judul halaman menjawab "apa yang saya lihat di sini".
+2. **Ringkasan dulu, detail menyusul.** Setiap halaman: maksimal 1 baris kartu ringkasan (3–4 metrik kunci) → konten utama (tabel/daftar/chart) → detail hanya saat diklik (drawer/modal). Dilarang menampilkan seluruh detail di layar pertama.
+3. **Maksimum 4 metrik ringkasan per halaman.** Sisanya masuk tab atau detail.
+4. **Progressive disclosure:** tabel menampilkan 6–8 kolom terpenting; sisanya ada di baris detail (drawer). Filter dan pencarian selalu di atas tabel, satu baris.
+5. **Whitespace adalah bagian dari desain.** Jarak antar-seksi 32px; jangan menghemat spasi untuk memaksakan "semua terlihat".
 
-func FS() fs.FS {
-    sub, err := fs.Sub(DistFS, "dist")
-    if err != nil {
-        return DistFS
-    }
-    return sub
-}
-```
-Total compressed bundle size (HTML + JS + CSS) is kept **< 250 KB (gzip)** for optimal deployment portability.
+---
+
+## 6. Motion & Parallax (Aturan Murah-GPU)
+
+Efek yang **diizinkan** — semua hanya `transform` + `opacity`, tanpa `filter`, tanpa `blur`, tanpa canvas:
+
+| Efek                   | Aturan                                                                                                                                                                                           |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Parallax langit**    | Hanya elemen Sky (bintang, bulan, horizonlight) — maksimum 3 lapis. Loop rAF tunggal dengan lerp (pola `ParallaxScript.astro`), `translate3d`, `will-change: transform` hanya pada 3 elemen itu. |
+| **Sticky scenery**     | Strip hutan pinus (SVG, `pointer-events: none`) hanya di: bawah halaman Overview dan EmptyState. Di halaman data: tidak ada — menjaga area tabel bersih.                                         |
+| **Bintang berkelip**   | CSS keyframe opacity, maks 20 titik, hanya di lapisan Sky.                                                                                                                                       |
+| **Transisi interaksi** | `150ms ease` untuk warna/border; `200ms ease` untuk panel. Tanpa spring/bounce.                                                                                                                  |
+| **Masuk halaman**      | Konten fade+rise 8px, 250ms, sekali. Tanpa stagger berantai.                                                                                                                                     |
+
+**Wajib:** seluruh efek mati saat `prefers-reduced-motion: reduce`; loop parallax berhenti saat `document.hidden`.  
+**Dilarang total:** kunang-kunang canvas, shooting star, aurora bergerak, `background-attachment: fixed` di app (mahal saat repaint panjang), `backdrop-blur`/`filter: blur()` dalam bentuk apa pun, `box-shadow` glow/neon, animasi `box-shadow`/`width`/`height`/`top`/`left`.
+
+---
+
+## 7. Peta Penggunaan Dekorasi
+
+| Area                      | Sky (fixed, subtle)         | Scenery (pohon) | Parallax |
+| ------------------------- | --------------------------- | --------------- | -------- |
+| Sidebar / Topbar          | – (permukaan solid menutup) | –               | –        |
+| Area konten semua halaman | ✔                           | –               | ✔        |
+| Overview                  | ✔                           | ✔ dasar section | ✔        |
+| EmptyState / onboarding   | ✔                           | ✔               | ✔        |
+| Modal / Drawer            | – (berada di atas overlay)  | –               | –        |
+
+Aturan praktis: **Sky adalah atmosfer latar, bukan konten.** Dirender sebagai satu instance global di level shell (fixed, z rendah, di belakang semua konten, maksimum 3 elemen `[data-depth]`), sehingga identitas terasa di mana-mana tanpa menempel pada konten mana pun. Scenery hanya boleh menempel pada Overview dan EmptyState. Di dalam kartu/tabel/form: tetap nol dekorasi.
+
+---
+
+## 8. Aksesibilitas
+
+- Kontras minimal 4.5:1 untuk teks (uji `--muted` di atas `--surface-card`).
+- Focus selalu terlihat: `outline: 2px solid var(--biolum); outline-offset: 2px`.
+- Semua aksi ikon-only wajib `aria-label`. Sidebar terlipat: item tetap punya nama via `aria-label`/tooltip.
+- Navigasi penuh dengan keyboard: sidebar `Tab`/`Enter`, modal `Escape` + focus trap, tabel bisa dilalui.
+- Status tidak boleh disampaikan hanya lewat warna (badge selalu bertuliskan teks).

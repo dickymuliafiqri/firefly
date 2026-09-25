@@ -56,6 +56,10 @@ frontend/node_modules/
 frontend/dist/*
 !frontend/dist/.gitkeep
 
+# Archived legacy frontend (reference only) — keep build output out of git
+archive/frontend/dist/*
+!archive/frontend/dist/.gitkeep
+
 # Vite cache & build metadata
 .vite/
 frontend/.vite/

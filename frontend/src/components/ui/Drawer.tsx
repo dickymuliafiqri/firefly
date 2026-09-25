@@ -1,101 +1,48 @@
-import React, { useEffect } from 'react';
-import { createPortal } from 'react-dom';
+import { useEffect, useRef, type ReactNode } from 'react';
 import { X } from 'lucide-react';
-import { cn } from '@/lib/utils';
 
 export interface DrawerProps {
-  isOpen: boolean;
+  open: boolean;
   onClose: () => void;
-  title?: React.ReactNode;
-  description?: string;
-  width?: 'md' | 'lg' | 'xl';
-  children: React.ReactNode;
+  title: string;
+  children: ReactNode;
 }
 
-const WIDTH_CLASSES = {
-  md: 'max-w-md',
-  lg: 'max-w-xl',
-  xl: 'max-w-2xl',
-};
+/** Panel kanan 420px solid overlay — Escape + backdrop menutup, focus dipindah ke tombol tutup. */
+export function Drawer({ open, onClose, title, children }: DrawerProps) {
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const lastFocus = useRef<Element | null>(null);
 
-export const Drawer = React.memo(function Drawer({
-  isOpen,
-  onClose,
-  title,
-  description,
-  width = 'lg',
-  children,
-}: DrawerProps) {
   useEffect(() => {
-    if (!isOpen) return;
+    if (!open) return;
 
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose();
-      }
+    lastFocus.current = document.activeElement;
+    closeRef.current?.focus();
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
     };
-
-    const originalOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-
-    window.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('keydown', onKey);
     return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      document.body.style.overflow = originalOverflow;
+      document.removeEventListener('keydown', onKey);
+      if (lastFocus.current instanceof HTMLElement) lastFocus.current.focus();
     };
-  }, [isOpen, onClose]);
+  }, [open, onClose]);
 
-  // Vercel React Best Practice: rendering-conditional-render
-  if (!isOpen || typeof document === 'undefined') {
-    return null;
-  }
+  if (!open) return null;
 
-  return createPortal(
-    <div className="fixed inset-0 z-[100] overflow-hidden">
-      {/* Backdrop */}
-      <div
-        className="fixed inset-0 bg-black/80 backdrop-blur-sm transition-opacity animate-in fade-in duration-200"
-        onClick={onClose}
-        aria-hidden="true"
-      />
-
-      {/* Drawer Slide-in Panel */}
-      <div className="fixed inset-y-0 right-0 flex max-w-full pl-0 sm:pl-10 z-[101]">
-        <div
-          role="dialog"
-          aria-modal="true"
-          className={cn(
-            'w-screen bg-[#090b10] border-l border-white/[0.08] shadow-2xl flex flex-col animate-in slide-in-from-right duration-200',
-            WIDTH_CLASSES[width]
-          )}
-        >
-          {/* Header */}
-          <div className="flex items-center justify-between p-4 sm:p-6 border-b border-white/[0.04]">
-            <div>
-              {title ? (
-                <h3 className="text-sm font-semibold text-white tracking-tight">
-                  {title}
-                </h3>
-              ) : null}
-              {description ? (
-                <p className="text-xs text-neutral-500 mt-0.5">{description}</p>
-              ) : null}
-            </div>
-
-            <button
-              onClick={onClose}
-              className="rounded-lg p-1.5 text-neutral-400 hover:text-white hover:bg-white/[0.05] transition-colors focus-visible:outline-none cursor-pointer"
-              aria-label="Close panel"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-
-          {/* Scrollable Content Body */}
-          <div className="flex-1 overflow-y-auto p-4 sm:p-6">{children}</div>
+  return (
+    <>
+      <div className="drawer-backdrop" onClick={onClose} aria-hidden="true" />
+      <aside className="drawer" role="dialog" aria-modal="true" aria-label={title}>
+        <div className="drawer-header">
+          <h2>{title}</h2>
+          <button className="icon-btn" onClick={onClose} aria-label="Close inspector" ref={closeRef}>
+            <X aria-hidden="true" />
+          </button>
         </div>
-      </div>
-    </div>,
-    document.body
+        <div className="drawer-body">{children}</div>
+      </aside>
+    </>
   );
-});
+}

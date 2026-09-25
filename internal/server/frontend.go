@@ -59,15 +59,21 @@ func (deps RouterDeps) registerFrontendRoutes(mux *http.ServeMux) {
 	// Root route: GET /{$}
 	mux.HandleFunc("GET /{$}", serveIndex)
 
-	// SPA tab routes so direct navigation and browser refresh works on tabs
+	// SPA tab routes so direct navigation and browser refresh works on tabs.
+	// Mirrors PAGE_IDS in frontend/src/registry.tsx (hash router pages).
 	tabs := []string{
 		"overview",
+		"telemetry",
+		"usage",
 		"upstreams",
+		"providers",
 		"models",
 		"tenants",
-		"telemetry",
 		"settings",
-		"playground",
+		"chat",
+		"benchmark",
+		"quota",
+		"console",
 	}
 	for _, tab := range tabs {
 		mux.HandleFunc("GET /"+tab, serveIndex)
