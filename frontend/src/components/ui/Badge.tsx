@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
-import type { Tone } from '@/data/mock';
 import { cn } from '@/lib/utils';
+
+export type Tone = 'ok' | 'warn' | 'danger' | 'info' | 'neutral';
 
 export interface BadgeProps {
   tone?: Tone;
@@ -17,3 +18,4 @@ export function Badge({ tone = 'neutral', children, className, title }: BadgePro
     </span>
   );
 }
+

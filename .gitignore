@@ -169,8 +169,8 @@ scratch/
 # 9. Additional & Database Files
 # ------------------------------------------------------------------------------
 skill*
-configs/
-data/
+/configs/
+/data/
 *.db
 *.db-*
 *.db.turso-sync-metadata

@@ -4,11 +4,11 @@
 .gitignore
 
 # Local runtime state & secrets (never bake into the image)
-configs/
-!configs.example/
-tmp/
-bin/
-data/
+/configs/
+!/configs.example/
+/tmp/
+/bin/
+/data/
 *.log
 build-errors.log
 
