@@ -204,25 +204,67 @@ func (e *ValidationError) Error() string {
 // EnvLookupOrOS is the production environment lookup.
 func EnvLookupOrOS(name string) (string, bool) { return os.LookupEnv(name) }
 
+// normalizeProtocol resolves an upstream's protocol aliases to their canonical
+// domain value, applying the default when it is absent. The catalog builder and
+// the exported PinOAuthManagedEndpoints share it, so an alias can never reach the
+// OAuth endpoint pin as an unrecognized protocol.
+func normalizeProtocol(proto string) string {
+	if proto == "" {
+		return DefaultProtocol
+	}
+	switch proto {
+	case "codebuddy", "codebuddy_cn":
+		// Bare "codebuddy" is the dormant alias the dashboard's protocol picker
+		// used to emit; the adapter's non-international branch, the OAuth
+		// provider id, and the probe surface all spell the region "-cn".
+		return string(domain.ProtocolCodeBuddyCN)
+	case "codebuddy_intl":
+		return string(domain.ProtocolCodeBuddyIntl)
+	case "grok_cli", "grok", "gcli", "grok-build":
+		return string(domain.ProtocolGrokCLI)
+	case "opencode_go", "opencode-go", "ocg", "oc":
+		return string(domain.ProtocolOpenCode)
+	case "qoder", "qodercli", "qoder-cli":
+		return string(domain.ProtocolQoder)
+	case "antigravity-go", "antigravity_go":
+		return string(domain.ProtocolAntigravity)
+	}
+	return proto
+}
+
+// pinOAuthManagedEndpoint replaces base_url and base_urls with the
+// provider-managed endpoint when the protocol authenticates through an OAuth
+// token, dropping any operator-defined fallback host.
+//
+// The value is replaced rather than rejected: an OAuth bearer token is issued for
+// one provider host, so a stale value in an existing file, a database row, or a
+// raw API payload must neither retarget that token nor keep the gateway from
+// starting.
+func pinOAuthManagedEndpoint(d *UpstreamDTO) {
+	endpoint, ok := domain.OAuthManagedBaseURL(domain.Protocol(normalizeProtocol(d.Protocol)))
+	if !ok {
+		return
+	}
+	d.BaseURL = endpoint
+	d.BaseURLs = []string{endpoint}
+}
+
+// PinOAuthManagedEndpoints applies the OAuth endpoint pin to every upstream in
+// the slice. Build applies the same pin while translating, but the settings
+// surface persists the operator payload (to disk and to Turso) before the catalog
+// is rebuilt, so it normalizes the payload first: the file, the stored rows, the
+// rebuilt snapshot, and the value read back by GET /api/settings then agree.
+func PinOAuthManagedEndpoints(upstreams []UpstreamDTO) {
+	for i := range upstreams {
+		pinOAuthManagedEndpoint(&upstreams[i])
+	}
+}
+
 func translateUpstream(i int, d UpstreamDTO, envLookup func(string) (string, bool)) (*domain.Upstream, error) {
 	if !upstreamNameRe.MatchString(d.Name) {
 		return nil, &ValidationError{Field: fmt.Sprintf("upstreams[%d].name", i), Msg: "invalid or empty name"}
 	}
-	proto := d.Protocol
-	if proto == "" {
-		proto = DefaultProtocol
-	}
-	if proto == "codebuddy_cn" {
-		proto = string(domain.ProtocolCodeBuddyCN)
-	} else if proto == "codebuddy_intl" {
-		proto = string(domain.ProtocolCodeBuddyIntl)
-	} else if proto == "grok_cli" || proto == "grok" || proto == "gcli" || proto == "grok-build" {
-		proto = string(domain.ProtocolGrokCLI)
-	} else if proto == "opencode_go" || proto == "opencode-go" || proto == "ocg" || proto == "oc" {
-		proto = string(domain.ProtocolOpenCode)
-	} else if proto == "qoder" || proto == "qodercli" || proto == "qoder-cli" {
-		proto = string(domain.ProtocolQoder)
-	}
+	proto := normalizeProtocol(d.Protocol)
 
 	switch domain.Protocol(proto) {
 	case domain.ProtocolOpenAI, domain.ProtocolAnthropic, domain.ProtocolAntigravity, domain.ProtocolCline, domain.ProtocolCodeBuddyCN, domain.ProtocolCodeBuddyIntl, domain.ProtocolGrokCLI, domain.ProtocolOpenCode, domain.ProtocolQoder:
@@ -257,6 +299,12 @@ func translateUpstream(i int, d UpstreamDTO, envLookup func(string) (string, boo
 			d.BaseURLs = []string{d.BaseURL}
 		}
 	}
+
+	// OAuth-authenticated protocols (antigravity, cline, codebuddy) are pinned to
+	// the endpoint their provider issued the token for. Every write path — a
+	// hand-edited file, a database row, a dashboard payload — funnels through this
+	// builder, so normalizing here is what makes the endpoint immutable.
+	pinOAuthManagedEndpoint(&d)
 
 	if d.BaseURL == "" && len(d.BaseURLs) > 0 {
 		d.BaseURL = d.BaseURLs[0]

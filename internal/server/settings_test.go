@@ -216,6 +216,95 @@ func TestSettingsGetAndPost(t *testing.T) {
 	}
 }
 
+// A protocol that authenticates through a provider OAuth token must not be
+// retargetable. The settings surface normalizes the payload before it is
+// validated and persisted, so neither the live snapshot, nor the file on disk,
+// nor the answer of GET /api/settings can carry another host.
+func TestSettingsPinsOAuthManagedBaseURLs(t *testing.T) {
+	tmpDir := t.TempDir()
+	reg := registry.New()
+	src := config.NewFileConfigSource(tmpDir)
+	if _, err := reg.BuildAndStore(context.Background(), src, os.LookupEnv); err != nil {
+		t.Fatalf("initial build and store failed: %v", err)
+	}
+
+	deps := RouterDeps{
+		Snapshots:   reg,
+		Registry:    reg,
+		ConfigDir:   tmpDir,
+		TenantStore: auth.NewStore(reg),
+		Limiter:     limits.New(),
+	}
+	s := New(Config{Addr: "0.0.0.0:8080"}, deps, context.Background(), nil)
+
+	payload := config.SettingsDTO{
+		Upstreams: []config.UpstreamDTO{
+			{
+				Name:           "cline-oauth",
+				Protocol:       "cline",
+				BaseURL:        "https://evil.example.com/api/v1",
+				BaseURLs:       []string{"https://evil.example.com/api/v1", "https://evil2.example.com/api/v1"},
+				CredentialPool: []config.CredentialKeyDTO{{Ref: "oauth:cline-1"}},
+			},
+			{
+				Name:           "openai-custom",
+				Protocol:       "openai",
+				BaseURL:        "https://gateway.internal/v1",
+				CredentialPool: []config.CredentialKeyDTO{{Ref: "openai-key-1", Secret: "sk-operator-secret"}},
+			},
+		},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	postReq := httptest.NewRequest("POST", "/api/settings", bytes.NewReader(body))
+	postReq.Header.Set("Content-Type", "application/json")
+	postW := httptest.NewRecorder()
+	s.Handler().ServeHTTP(postW, postReq)
+	if postW.Code != http.StatusOK {
+		t.Fatalf("POST /api/settings status = %d, body = %s", postW.Code, postW.Body.String())
+	}
+
+	// The live snapshot carries the provider endpoint and no fallback host...
+	snap := reg.Current()
+	if snap == nil {
+		t.Fatal("registry current snapshot is nil")
+	}
+	clineUp, ok := snap.Upstream("cline-oauth")
+	if !ok || clineUp == nil {
+		t.Fatal("upstream cline-oauth not in snapshot")
+	}
+	if clineUp.BaseURL != "https://api.cline.bot/api/v1" {
+		t.Errorf("cline base_url = %q, want the provider endpoint", clineUp.BaseURL)
+	}
+	if len(clineUp.BaseURLs) != 1 || clineUp.BaseURLs[0] != "https://api.cline.bot/api/v1" {
+		t.Errorf("cline base_urls = %v, want the provider endpoint only", clineUp.BaseURLs)
+	}
+
+	// ...the host of a key-based protocol is still the operator's choice...
+	openaiUp, ok := snap.Upstream("openai-custom")
+	if !ok || openaiUp == nil {
+		t.Fatal("upstream openai-custom not in snapshot")
+	}
+	if openaiUp.BaseURL != "https://gateway.internal/v1" {
+		t.Errorf("openai base_url = %q, want the operator value", openaiUp.BaseURL)
+	}
+
+	// ...and the persisted catalog cannot store the hostile host either.
+	raw, err := os.ReadFile(filepath.Join(tmpDir, config.FileNameUpstreams))
+	if err != nil {
+		t.Fatalf("read upstreams.json: %v", err)
+	}
+	if strings.Contains(string(raw), "evil.example.com") {
+		t.Errorf("upstreams.json kept an OAuth-retargeting host: %s", raw)
+	}
+	if !strings.Contains(string(raw), "https://api.cline.bot/api/v1") {
+		t.Errorf("upstreams.json is missing the pinned endpoint: %s", raw)
+	}
+}
+
 func TestSettingsUpdateOversizedBody(t *testing.T) {
 	tmpDir := t.TempDir()
 	reg := registry.New()

@@ -361,3 +361,43 @@ func TestManager_ResolveConnection(t *testing.T) {
 		t.Fatalf("unexpected connection: %+v", resolved2)
 	}
 }
+
+func TestManager_GetProviderAliases(t *testing.T) {
+	store, _ := NewStore("")
+	mgr := NewManager(store)
+
+	pCN := &mockProvider{name: "codebuddy-cn", flowType: domain.FlowTypeDeviceCode}
+	pIntl := &mockProvider{name: "codebuddy-intl", flowType: domain.FlowTypeDeviceCode}
+	pAg := &mockProvider{name: "antigravity", flowType: domain.FlowTypeStandardAuthCode}
+
+	require.NoError(t, mgr.RegisterProvider(pCN))
+	require.NoError(t, mgr.RegisterProvider(pIntl))
+	require.NoError(t, mgr.RegisterProvider(pAg))
+
+	// Canonical lookups
+	gotCN, ok := mgr.GetProvider("codebuddy-cn")
+	require.True(t, ok)
+	require.Equal(t, "codebuddy-cn", gotCN.Name())
+
+	// Alias lookups
+	gotBare, ok := mgr.GetProvider("codebuddy")
+	require.True(t, ok)
+	require.Equal(t, "codebuddy-cn", gotBare.Name())
+
+	gotUnderscoreCN, ok := mgr.GetProvider("codebuddy_cn")
+	require.True(t, ok)
+	require.Equal(t, "codebuddy-cn", gotUnderscoreCN.Name())
+
+	gotUnderscoreIntl, ok := mgr.GetProvider("codebuddy_intl")
+	require.True(t, ok)
+	require.Equal(t, "codebuddy-intl", gotUnderscoreIntl.Name())
+
+	gotAgGo, ok := mgr.GetProvider("antigravity-go")
+	require.True(t, ok)
+	require.Equal(t, "antigravity", gotAgGo.Name())
+
+	// PrepareAuth with alias
+	sess, err := mgr.PrepareAuth(context.Background(), "codebuddy", "http://localhost/cb")
+	require.NoError(t, err)
+	require.Equal(t, "codebuddy-cn", sess.Provider)
+}

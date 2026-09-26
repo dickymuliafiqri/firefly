@@ -14,12 +14,16 @@ export interface OAuthConnectDialogProps {
 function getProviderTitle(p: string): string {
   switch (p) {
     case 'antigravity':
+    case 'antigravity-go':
       return 'Google Cloud Code';
     case 'cline':
       return 'Cline';
+    case 'codebuddy':
     case 'codebuddy_cn':
+    case 'codebuddy-cn':
       return 'CodeBuddy (CN)';
     case 'codebuddy_intl':
+    case 'codebuddy-intl':
       return 'CodeBuddy (Intl)';
     default:
       return p;
@@ -29,15 +33,33 @@ function getProviderTitle(p: string): string {
 function getProviderHint(p: string): string {
   switch (p) {
     case 'antigravity':
+    case 'antigravity-go':
       return 'Authorize with your Google account to access Cloud Code inference.';
     case 'cline':
       return 'Connect your Cline account for proxy-based inference routing.';
+    case 'codebuddy':
     case 'codebuddy_cn':
+    case 'codebuddy-cn':
       return 'Authorize via Tencent Cloud CodeBuddy (China region).';
     case 'codebuddy_intl':
+    case 'codebuddy-intl':
       return 'Authorize via CodeBuddy International.';
     default:
       return 'Authorize gateway access to bind this account to your upstream pool.';
+  }
+}
+
+export function canonicalOAuthProvider(p: string): string {
+  switch (p) {
+    case 'codebuddy':
+    case 'codebuddy_cn':
+      return 'codebuddy-cn';
+    case 'codebuddy_intl':
+      return 'codebuddy-intl';
+    case 'antigravity-go':
+      return 'antigravity';
+    default:
+      return p;
   }
 }
 
@@ -74,7 +96,7 @@ export function OAuthConnectDialog({
     cancelledRef.current = false;
 
     try {
-      const res = await initiateOAuthAuthorize({ provider });
+      const res = await initiateOAuthAuthorize({ provider: canonicalOAuthProvider(provider) });
       setAuthUrl(res.auth_url);
       setSessionState(res.state);
       setPhase('waiting');
@@ -421,7 +443,11 @@ export function OAuthConnectDialog({
 /** Protocols that authenticate via OAuth connection instead of manual API keys. */
 export const OAUTH_PROTOCOLS = new Set([
   'antigravity',
+  'antigravity-go',
   'cline',
+  'codebuddy',
+  'codebuddy-cn',
+  'codebuddy-intl',
   'codebuddy_cn',
   'codebuddy_intl',
 ]);

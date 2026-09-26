@@ -20,6 +20,7 @@ import {
 import { useUiStore } from '@/state/store';
 import type { ConnectionDTO } from '@/services/schema';
 import { OAuthConnectDialog, isOAuthProtocol } from './OAuthConnectDialog';
+import { resolveBaseUrl } from './GeneralTab';
 
 export interface KeyEntry {
   id: string;
@@ -127,8 +128,12 @@ export function KeysTab({
     pushToast({ type: 'success', title: 'Keys added', message: `${lines.length} key(s) added to pool.` });
   }
 
+  // An OAuth-managed protocol resolves to its provider endpoint; the backend pins
+  // the same value, so a key probe can never be aimed at another host.
+  const effectiveBaseUrl = resolveBaseUrl(protocol, baseUrl);
+
   async function testKey(keyId: string, secret: string, ref?: string) {
-    if (!baseUrl) {
+    if (!effectiveBaseUrl) {
       pushToast({ type: 'error', title: 'Empty Base URL', message: 'Specify a Base URL before testing keys.' });
       return;
     }
@@ -139,7 +144,7 @@ export function KeysTab({
         name: upstreamName || 'probe-test',
         key_ref: ref || (secret ? undefined : keyId),
         protocol,
-        base_url: baseUrl,
+        base_url: effectiveBaseUrl,
         api_key: secret || undefined,
         egress_mode: egressMode,
         proxy_url: proxyUrl || undefined,
@@ -167,7 +172,7 @@ export function KeysTab({
   }
 
   async function testAll() {
-    if (!baseUrl || keys.length === 0) return;
+    if (!effectiveBaseUrl || keys.length === 0) return;
     setCheckingAll(true);
     abortCheckRef.current = false;
 

@@ -125,6 +125,32 @@ func extractUpstreamError(body []byte) string {
 	return ""
 }
 
+// canonicalProbeProtocol maps every protocol spelling a dashboard form, a legacy
+// catalog, or a hand-written caller may send onto the value the probe branches
+// below switch on.
+//
+// It must stay aligned with the catalog's own normalization (config
+// normalizeProtocol): a protocol that saves as "codebuddy-cn" has to probe as
+// "codebuddy-cn", or the connection lookup misses and the probe falls into a
+// generic branch that talks to the wrong endpoint shape. Bare "codebuddy" was
+// exactly that mismatch — the picker emitted it, the catalog normalized it, and
+// the probe treated it as an unknown protocol.
+func canonicalProbeProtocol(protocol string) string {
+	switch protocol {
+	case "codebuddy", "codebuddy_cn":
+		return "codebuddy-cn"
+	case "codebuddy_intl":
+		return "codebuddy-intl"
+	case "antigravity-go", "antigravity_go":
+		return "antigravity"
+	case "grok_cli", "grok", "gcli", "grok-build":
+		return "grok-cli"
+	case "qodercli", "qoder-cli":
+		return "qoder"
+	}
+	return protocol
+}
+
 // handleCheckUpstream actively tests connectivity and authentication against an upstream endpoint.
 func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -152,15 +178,7 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 	baseURL := strings.TrimSpace(req.BaseURL)
 	apiKey := strings.TrimSpace(req.APIKey)
 	protocol := strings.ToLower(strings.TrimSpace(req.Protocol))
-	if protocol == "codebuddy_cn" {
-		protocol = "codebuddy-cn"
-	} else if protocol == "codebuddy_intl" {
-		protocol = "codebuddy-intl"
-	} else if protocol == "grok_cli" || protocol == "grok" || protocol == "gcli" || protocol == "grok-build" {
-		protocol = "grok-cli"
-	} else if protocol == "qodercli" || protocol == "qoder-cli" {
-		protocol = "qoder"
-	}
+	protocol = canonicalProbeProtocol(protocol)
 
 	egressMode := strings.TrimSpace(req.EgressMode)
 	proxyURL := strings.TrimSpace(req.ProxyURL)
@@ -179,7 +197,7 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 					baseURL = existingUp.BaseURL
 				}
 				if protocol == "" {
-					protocol = string(existingUp.Protocol)
+					protocol = canonicalProbeProtocol(string(existingUp.Protocol))
 				}
 				if egressMode == "" && existingUp.EgressMode != "" {
 					egressMode = existingUp.EgressMode
@@ -233,6 +251,11 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 
 	if protocol == "" {
 		protocol = "openai"
+	}
+	if baseURL == "" {
+		if managed, ok := domain.OAuthManagedBaseURL(domain.Protocol(protocol)); ok {
+			baseURL = managed
+		}
 	}
 
 	// Timeout configuration
@@ -1055,15 +1078,7 @@ func (deps RouterDeps) handleFetchUpstreamModels(w http.ResponseWriter, r *http.
 	baseURL := strings.TrimSpace(req.BaseURL)
 	apiKey := strings.TrimSpace(req.APIKey)
 	protocol := strings.ToLower(strings.TrimSpace(req.Protocol))
-	if protocol == "codebuddy_cn" {
-		protocol = "codebuddy-cn"
-	} else if protocol == "codebuddy_intl" {
-		protocol = "codebuddy-intl"
-	} else if protocol == "grok_cli" || protocol == "grok" || protocol == "gcli" || protocol == "grok-build" {
-		protocol = "grok-cli"
-	} else if protocol == "qodercli" || protocol == "qoder-cli" {
-		protocol = "qoder"
-	}
+	protocol = canonicalProbeProtocol(protocol)
 
 	egressMode := strings.TrimSpace(req.EgressMode)
 	proxyURL := strings.TrimSpace(req.ProxyURL)
@@ -1081,7 +1096,7 @@ func (deps RouterDeps) handleFetchUpstreamModels(w http.ResponseWriter, r *http.
 					baseURL = existingUp.BaseURL
 				}
 				if protocol == "" {
-					protocol = string(existingUp.Protocol)
+					protocol = canonicalProbeProtocol(string(existingUp.Protocol))
 				}
 				if egressMode == "" && existingUp.EgressMode != "" {
 					egressMode = existingUp.EgressMode
@@ -1135,6 +1150,11 @@ func (deps RouterDeps) handleFetchUpstreamModels(w http.ResponseWriter, r *http.
 
 	if protocol == "" {
 		protocol = "openai"
+	}
+	if baseURL == "" {
+		if managed, ok := domain.OAuthManagedBaseURL(domain.Protocol(protocol)); ok {
+			baseURL = managed
+		}
 	}
 
 	timeout := 10 * time.Second

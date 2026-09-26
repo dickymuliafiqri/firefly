@@ -84,6 +84,11 @@ func BootstrapFromFiles(ctx context.Context, configDir string, store *Store, log
 		return nil
 	}
 
+	// A bootstrapped catalog must not seed a base_url that an OAuth-token
+	// protocol would be forced to abandon on the next load: normalize it here,
+	// exactly as the settings surface does before persisting a payload.
+	config.PinOAuthManagedEndpoints(settings.Upstreams)
+
 	if err := store.SaveSettings(ctx, settings); err != nil {
 		return fmt.Errorf("bootstrap save settings to turso: %w", err)
 	}

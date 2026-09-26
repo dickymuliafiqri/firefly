@@ -352,6 +352,12 @@ func (deps RouterDeps) handleUpdateSettings(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
+	// Provider-managed OAuth endpoints cannot be edited. Normalize the payload
+	// before it is validated, persisted, and rebuilt so the file on disk, the
+	// Turso rows, the hot-swapped snapshot, and the value read back by
+	// GET /api/settings all carry the same pinned endpoint.
+	config.PinOAuthManagedEndpoints(payload.Upstreams)
+
 	// Prepare file structures for validation
 	upFile := config.UpstreamsFile{Upstreams: payload.Upstreams}
 	modFile := config.ModelsFile{Models: payload.Models}

@@ -654,6 +654,22 @@ func TestBuild_OAuthProtocolsAndDynamicRefs(t *testing.T) {
 				"credential_pool": [
 					{"ref": "oauth:codebuddy-1"}
 				]
+			},
+			{
+				"name": "codebuddy-bare-upstream",
+				"protocol": "codebuddy",
+				"base_url": "https://attacker.example.com",
+				"credential_pool": [
+					{"ref": "oauth:codebuddy-bare"}
+				]
+			},
+			{
+				"name": "codebuddy-intl-upstream",
+				"protocol": "codebuddy_intl",
+				"base_url": "https://attacker.example.com",
+				"credential_pool": [
+					{"ref": "oauth:codebuddy-intl"}
+				]
 			}
 		]
 	}`
@@ -670,8 +686,8 @@ func TestBuild_OAuthProtocolsAndDynamicRefs(t *testing.T) {
 		t.Fatalf("unexpected error building oauth upstreams: %v", err)
 	}
 
-	if len(res.Upstreams) != 3 {
-		t.Fatalf("expected 3 upstreams, got %d", len(res.Upstreams))
+	if len(res.Upstreams) != 5 {
+		t.Fatalf("expected 5 upstreams, got %d", len(res.Upstreams))
 	}
 
 	clineUp := res.Upstreams["cline-upstream"]
@@ -694,6 +710,31 @@ func TestBuild_OAuthProtocolsAndDynamicRefs(t *testing.T) {
 	}
 	if cbUp.Protocol != domain.ProtocolCodeBuddyCN {
 		t.Errorf("expected normalized protocol 'codebuddy-cn', got %s", cbUp.Protocol)
+	}
+	if cbUp.BaseURL != "https://copilot.tencent.com/v2" {
+		t.Errorf("expected pinned BaseURL 'https://copilot.tencent.com/v2', got %s", cbUp.BaseURL)
+	}
+
+	cbBareUp := res.Upstreams["codebuddy-bare-upstream"]
+	if cbBareUp == nil {
+		t.Fatal("expected codebuddy-bare-upstream to exist")
+	}
+	if cbBareUp.Protocol != domain.ProtocolCodeBuddyCN {
+		t.Errorf("expected bare 'codebuddy' to normalize to 'codebuddy-cn', got %s", cbBareUp.Protocol)
+	}
+	if cbBareUp.BaseURL != "https://copilot.tencent.com/v2" {
+		t.Errorf("expected pinned BaseURL 'https://copilot.tencent.com/v2', got %s", cbBareUp.BaseURL)
+	}
+
+	cbIntlUp := res.Upstreams["codebuddy-intl-upstream"]
+	if cbIntlUp == nil {
+		t.Fatal("expected codebuddy-intl-upstream to exist")
+	}
+	if cbIntlUp.Protocol != domain.ProtocolCodeBuddyIntl {
+		t.Errorf("expected 'codebuddy_intl' to normalize to 'codebuddy-intl', got %s", cbIntlUp.Protocol)
+	}
+	if cbIntlUp.BaseURL != "https://www.codebuddy.ai/v2" {
+		t.Errorf("expected pinned BaseURL 'https://www.codebuddy.ai/v2', got %s", cbIntlUp.BaseURL)
 	}
 }
 
@@ -730,6 +771,178 @@ func TestBuild_QoderDefaultBaseURL(t *testing.T) {
 	}
 	if up.BaseURL != "https://api3.qoder.sh" {
 		t.Errorf("expected default base_url 'https://api3.qoder.sh', got %q", up.BaseURL)
+	}
+}
+func TestBuildAntigravityDefaultBaseURLAndAliasing(t *testing.T) {
+	t.Parallel()
+
+	upstreamsJSON := `{
+		"upstreams": [
+			{
+				"name": "antigravity-default",
+				"protocol": "antigravity"
+			},
+			{
+				"name": "antigravity-aliased",
+				"protocol": "antigravity-go"
+			}
+		]
+	}`
+	res, err := Build(FileSet{
+		Upstreams: []byte(upstreamsJSON),
+		Models:    []byte(`{"models": []}`),
+		Tenants:   []byte(`{"tenants": []}`),
+	}, fakeEnv(nil))
+	if err != nil {
+		t.Fatalf("unexpected error building antigravity upstream: %v", err)
+	}
+
+	up1 := res.Upstreams["antigravity-default"]
+	if up1 == nil {
+		t.Fatal("expected antigravity-default to exist")
+	}
+	if up1.Protocol != domain.ProtocolAntigravity {
+		t.Errorf("expected protocol 'antigravity', got %s", up1.Protocol)
+	}
+	if up1.BaseURL != "https://daily-cloudcode-pa.googleapis.com" {
+		t.Errorf("expected default base_url 'https://daily-cloudcode-pa.googleapis.com', got %q", up1.BaseURL)
+	}
+
+	up2 := res.Upstreams["antigravity-aliased"]
+	if up2 == nil {
+		t.Fatal("expected antigravity-aliased to exist")
+	}
+	if up2.Protocol != domain.ProtocolAntigravity {
+		t.Errorf("expected aliased protocol to normalize to 'antigravity', got %s", up2.Protocol)
+	}
+	if up2.BaseURL != "https://daily-cloudcode-pa.googleapis.com" {
+		t.Errorf("expected default base_url for aliased protocol, got %q", up2.BaseURL)
+	}
+}
+
+
+// An OAuth-authenticated upstream must not be retargetable: the adapter forwards
+// the provider's bearer token to base_url, so a hand-edited file, a database row,
+// or a raw API client supplying another host has to be normalized away — fallback
+// hosts included.
+func TestBuild_OAuthManagedEndpointsArePinned(t *testing.T) {
+	t.Parallel()
+
+	upstreamsJSON := `{
+		"upstreams": [
+			{
+				"name": "antigravity-pinned",
+				"protocol": "antigravity-go",
+				"base_url": "https://evil.example.com",
+				"base_urls": ["https://evil.example.com", "https://evil2.example.com"],
+				"credential_pool": [{"ref": "oauth:ag-1"}]
+			},
+			{
+				"name": "cline-pinned",
+				"protocol": "cline",
+				"base_url": "https://evil.example.com/api/v1",
+				"credential_pool": [{"ref": "oauth:cline-1"}]
+			},
+			{
+				"name": "codebuddy-cn-pinned",
+				"protocol": "codebuddy_cn",
+				"base_url": "https://evil.example.com/v2",
+				"base_urls": ["https://evil.example.com/v2"],
+				"credential_pool": [{"ref": "oauth:cb-cn-1"}]
+			},
+			{
+				"name": "codebuddy-intl-pinned",
+				"protocol": "codebuddy-intl",
+				"credential_pool": [{"ref": "oauth:cb-intl-1"}]
+			}
+		]
+	}`
+	res, err := Build(FileSet{
+		Upstreams: []byte(upstreamsJSON),
+		Models:    []byte(`{"models": []}`),
+		Tenants:   []byte(`{"tenants": []}`),
+	}, fakeEnv(nil))
+	if err != nil {
+		t.Fatalf("unexpected error building OAuth upstreams: %v", err)
+	}
+
+	want := map[string]string{
+		"antigravity-pinned":    "https://daily-cloudcode-pa.googleapis.com",
+		"cline-pinned":          "https://api.cline.bot/api/v1",
+		"codebuddy-cn-pinned":   "https://copilot.tencent.com/v2",
+		"codebuddy-intl-pinned": "https://www.codebuddy.ai/v2",
+	}
+	for name, endpoint := range want {
+		up := res.Upstreams[name]
+		if up == nil {
+			t.Fatalf("expected %s to exist", name)
+		}
+		if up.BaseURL != endpoint {
+			t.Errorf("%s base_url = %q, want %q", name, up.BaseURL, endpoint)
+		}
+		if len(up.BaseURLs) != 1 || up.BaseURLs[0] != endpoint {
+			t.Errorf("%s base_urls = %v, want [%s]", name, up.BaseURLs, endpoint)
+		}
+	}
+}
+
+// PinOAuthManagedEndpoints is the same normalization exposed to the settings
+// surface, which persists the operator payload before the catalog is rebuilt.
+func TestPinOAuthManagedEndpoints(t *testing.T) {
+	t.Parallel()
+
+	upstreams := []UpstreamDTO{
+		{
+			Name:     "openai-custom",
+			Protocol: "openai",
+			BaseURL:  "https://gateway.internal/v1",
+			BaseURLs: []string{"https://gateway.internal/v1", "https://backup.internal/v1"},
+		},
+		{Name: "protocol-absent"},
+		{
+			Name:     "cline-pinned",
+			Protocol: "cline",
+			BaseURL:  "https://evil.example.com",
+			BaseURLs: []string{"https://evil.example.com"},
+		},
+		{
+			Name:     "antigravity-alias-pinned",
+			Protocol: "antigravity_go",
+			BaseURL:  "https://evil.example.com",
+		},
+		{
+			Name:     "codebuddy-intl-pinned",
+			Protocol: "codebuddy_intl",
+			BaseURL:  "https://evil.example.com/v2/chat/completions",
+		},
+	}
+
+	PinOAuthManagedEndpoints(upstreams)
+
+	// An operator-chosen host survives untouched...
+	if upstreams[0].BaseURL != "https://gateway.internal/v1" || len(upstreams[0].BaseURLs) != 2 {
+		t.Errorf("openai upstream was rewritten: %+v", upstreams[0])
+	}
+	// ...an absent protocol still gets the default, not an endpoint...
+	if upstreams[1].BaseURL != "" || len(upstreams[1].BaseURLs) != 0 {
+		t.Errorf("protocol-less upstream was rewritten: %+v", upstreams[1])
+	}
+	// ...and every OAuth-managed protocol loses the primary and fallback host.
+	for _, tc := range []struct {
+		idx      int
+		endpoint string
+	}{
+		{2, "https://api.cline.bot/api/v1"},
+		{3, "https://daily-cloudcode-pa.googleapis.com"},
+		{4, "https://www.codebuddy.ai/v2"},
+	} {
+		up := upstreams[tc.idx]
+		if up.BaseURL != tc.endpoint {
+			t.Errorf("%s base_url = %q, want %q", up.Name, up.BaseURL, tc.endpoint)
+		}
+		if len(up.BaseURLs) != 1 || up.BaseURLs[0] != tc.endpoint {
+			t.Errorf("%s base_urls = %v, want [%s]", up.Name, up.BaseURLs, tc.endpoint)
+		}
 	}
 }
 

@@ -6,7 +6,7 @@ import type { UpstreamDTO, CredentialKeyDTO } from '@/services/schema';
 import { useHashRest, navigate } from '@/lib/router';
 import { useUiStore } from '@/state/store';
 
-import { GeneralTab, type GeneralState } from '@/components/upstream/GeneralTab';
+import { GeneralTab, type GeneralState, lockedOAuthBaseUrl, resolveBaseUrl } from '@/components/upstream/GeneralTab';
 import { KeysTab, type KeyEntry } from '@/components/upstream/KeysTab';
 import { ModelsTab } from '@/components/upstream/ModelsTab';
 import { ResilienceTab } from '@/components/upstream/ResilienceTab';
@@ -60,11 +60,17 @@ export function UpstreamEditorPage() {
     const target = settings.data.upstreams.find((u) => u.name === editingName);
     if (!target) return;
 
+    // A provider-managed endpoint is never taken from storage: an older release,
+    // or a hand-edited file, could hold a host the adapter would send an OAuth
+    // token to, so the pinned endpoint — and an empty fallback list — replaces it.
+    const protocol = target.protocol ?? 'openai';
+    const lockedBaseUrl = lockedOAuthBaseUrl(protocol);
+
     setGeneral({
       name: target.name,
-      protocol: target.protocol ?? 'openai',
-      baseUrl: target.base_url ?? '',
-      fallbackUrls: target.base_urls ?? [],
+      protocol,
+      baseUrl: lockedBaseUrl ?? target.base_url ?? '',
+      fallbackUrls: lockedBaseUrl ? [] : target.base_urls ?? [],
       egressMode: (target.egress_mode as GeneralState['egressMode']) ?? 'direct',
       proxyUrl: target.proxy_url ?? '',
       allowInsecure: target.allow_insecure ?? false,
@@ -199,7 +205,12 @@ export function UpstreamEditorPage() {
       pushToast({ type: 'error', title: 'Empty name', message: 'Upstream name is required.' });
       return;
     }
-    if (!general.baseUrl.trim()) {
+    // The backend pins an OAuth endpoint as well, but resolving it here keeps the
+    // form from ever offering another host — and from blocking the save of a
+    // legacy upstream whose stored base_url is empty.
+    const lockedBaseUrl = lockedOAuthBaseUrl(general.protocol);
+    const resolvedBaseUrl = resolveBaseUrl(general.protocol, general.baseUrl);
+    if (!resolvedBaseUrl) {
       pushToast({ type: 'error', title: 'Empty Base URL', message: 'Base URL is required.' });
       return;
     }
@@ -226,8 +237,11 @@ export function UpstreamEditorPage() {
       ...(existingTarget || {}),
       name: general.name.trim(),
       protocol: general.protocol,
-      base_url: general.baseUrl.trim(),
-      base_urls: general.fallbackUrls.length > 0 ? general.fallbackUrls : undefined,
+      base_url: resolvedBaseUrl,
+      base_urls:
+        lockedBaseUrl === undefined && general.fallbackUrls.length > 0
+          ? general.fallbackUrls
+          : undefined,
       provider_id: providerId,
       key_strategy: keyStrategy,
       credential_pool: pool.length > 0 ? pool : undefined,
@@ -439,7 +453,11 @@ export function UpstreamEditorPage() {
           <button
             type="button"
             className="btn btn-primary"
-            disabled={saveSmart.isPending || !general.name.trim() || !general.baseUrl.trim()}
+            disabled={
+              saveSmart.isPending ||
+              !general.name.trim() ||
+              !resolveBaseUrl(general.protocol, general.baseUrl)
+            }
             onClick={handleSave}
           >
             {saveSmart.isPending ? 'Saving…' : 'Save Upstream'}
