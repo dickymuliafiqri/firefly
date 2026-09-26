@@ -20,6 +20,7 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/storage/analytics"
 	"github.com/dickymuliafiqri/firefly/internal/storage/turso"
 	"github.com/dickymuliafiqri/firefly/internal/transport/httpx"
+	"github.com/dickymuliafiqri/firefly/internal/transport/tunnel"
 	"github.com/dickymuliafiqri/firefly/internal/transport/warp"
 )
 
@@ -37,15 +38,16 @@ type RouterDeps struct {
 	Breakers    openai.BreakerLookup
 	Analytics   *analytics.Store
 
-	Usage        ports.UsageRecorder
-	Logger       *slog.Logger
-	Metrics      *metrics.Metrics
-	LiveLogs     *LiveLogHub
-	AutoTLS      *AutoTLS
-	OAuthManager *oauth.Manager
-	TursoStore   *turso.Store
-	TursoManager *TursoManager
-	WarpManager  *warp.Manager
+	Usage         ports.UsageRecorder
+	Logger        *slog.Logger
+	Metrics       *metrics.Metrics
+	LiveLogs      *LiveLogHub
+	AutoTLS       *AutoTLS
+	OAuthManager  *oauth.Manager
+	TursoStore    *turso.Store
+	TursoManager  *TursoManager
+	WarpManager   *warp.Manager
+	TunnelManager *tunnel.Manager
 
 	// GlobalLimiter manages server-wide in-flight concurrency with a bounded wait queue.
 	// If nil and DisableGlobalAdmission is false, a default 1500-slot limiter is used.
@@ -255,6 +257,12 @@ func (s *Server) buildHandler(deps RouterDeps) http.Handler {
 	mux.HandleFunc("GET /api/warp/status", deps.handleGetWarpStatus)
 	mux.HandleFunc("OPTIONS /api/warp/rotate", deps.handleOptionsSettings)
 	mux.HandleFunc("POST /api/warp/rotate", deps.handleRotateWarp)
+
+	// Cloudflare Tunnel Ingress API
+	mux.HandleFunc("OPTIONS /api/tunnel/status", deps.handleOptionsSettings)
+	mux.HandleFunc("GET /api/tunnel/status", deps.handleGetTunnelStatus)
+	mux.HandleFunc("OPTIONS /api/tunnel/toggle", deps.handleOptionsSettings)
+	mux.HandleFunc("POST /api/tunnel/toggle", deps.handleToggleTunnel)
 
 	// /v1/models is auth-protected but needs no upstream.
 	mux.Handle("GET /v1/models", deps.protected(http.HandlerFunc(deps.handleListModels)))

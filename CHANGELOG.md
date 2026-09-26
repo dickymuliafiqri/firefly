@@ -5,6 +5,36 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [1.20.0] - 2026-09-26
+
+### Added
+
+- **Native Cloudflare Tunnel Ingress Engine (`internal/transport/tunnel/`, `cmd/firefly/main.go`, `internal/server/`)**: Built-in support for exposing Firefly remotely through Cloudflare Tunnel without external process managers.
+  - Lifecycle strictly tied to Firefly's root context: child process is spawned in background and gracefully terminated on SIGINT/SIGTERM.
+  - Supports zero-config ephemeral quick tunnels (`-tunnel quick` or `FIREFLY_TUNNEL=quick`) via `trycloudflare.com`.
+  - Supports persistent production named tunnels (`-tunnel named -tunnel-token <TOKEN>` or `FIREFLY_TUNNEL_TOKEN`).
+  - Added `GET /api/tunnel/status` endpoint reporting live state, mode, and auto-extracted public URL.
+  - Added `TunnelCard` component to frontend `SettingsPage` with real-time status badge (`ONLINE`, `STARTING`, `DISABLED`), copyable public ingress URL, and CLI activation instructions.
+  - Integrated into `frontend/src/services/api.ts` with `fetchTunnelStatus` and `useTunnelStatusQuery`.
+  - Dynamic runtime lifecycle orchestration: added `Start(mode, token)` and `Stop()` methods to `tunnel.Manager` with `POST /api/tunnel/toggle` endpoint allowing dynamic on-the-fly tunnel starting and stopping without server restart.
+  - **Automated `cloudflared` Binary Downloader & Path Resolver (`internal/transport/tunnel/binary.go`, `lifecycle.go`)**:
+    - Automatic binary resolution order: checks system `PATH` first, then custom `-tunnel-bin-dir` (or `$FIREFLY_TUNNEL_BIN_DIR`), falling back to user home directory (`~/.firefly/bin/cloudflared`) and local `./data/bin`.
+    - Automated zero-config downloader: if `cloudflared` is absent on the host, automatically downloads official releases directly from Cloudflare's GitHub releases (`https://github.com/cloudflare/cloudflared/releases/latest/download/...`) without hitting GitHub API rate limits.
+    - Full multi-platform support across Windows (`.exe`), Linux (raw ELF executable with `0755` permissions), and macOS Darwin (extracts binary from official `.tgz` archive via standard library `compress/gzip` and `archive/tar`).
+    - Atomically writes to temporary files before replacing, guards against concurrent downloads via single-flight mutex locks, and cleans up on cancellation.
+    - UI feedback in `SettingsPage`: displays live `DOWNLOADING` badge and progress indicator when fetching the binary on the first toggle.
+
+  - **Modular Binary Management & Downloader Engine (`internal/binx/`)**:
+    - Extracted generic binary discovery, path resolution, atomic downloading, and archive extraction into a shared leaf package (`internal/binx`).
+    - Decoupled platform-specific executable naming (`ExecutableName`), fallback directory resolution (`DefaultDir`), multi-stage lookup (`Find`), archive unpacking (`ExtractTarGz`), and atomic staged downloads (`Download`) for reuse across any Firefly module (Cloudflare tunnel, sing-box, harvesters, etc.).
+    - Refactored `internal/transport/tunnel/binary.go` to delegate all binary discovery and download mechanics to `binx`, eliminating DRY violations and maintaining strict separation of concerns.
+
+  - **API Error Parsing & HTTP Status Clarity (`frontend/src/services/api.ts`, `internal/server/tunnel_handlers.go`)**: Fixed string error payload parsing in frontend `request()` function to display informative backend errors in toasts instead of generic `Request failed: Bad Request`. Updated server tunnel start failure status code to `500 Internal Server Error` (server host dependency missing) with an in-card installation guide for `cloudflared`.
+
+
+
 ## [1.19.0] - 2026-09-25
 
 ### Added

@@ -7,6 +7,10 @@ import { navigate } from '@/lib/router';
 import {
   useSettingsQuery,
   useWarpStatusQuery,
+  useTunnelStatusQuery,
+  useToggleTunnelMutation,
+
+
   useSaveSettingsMutation,
   useRotateWarpMutation,
   logoutApi,
@@ -299,6 +303,11 @@ function WarpCard() {
   const pushToast = useUiStore((s) => s.pushToast);
   const d = warp.data;
 
+  const copyIp = (ip: string) => {
+    navigator.clipboard.writeText(ip);
+    pushToast({ type: 'success', title: 'IP Tersalin', message: ip });
+  };
+
   return (
     <div className="card">
       <div className="card-header">
@@ -307,6 +316,26 @@ function WarpCard() {
       </div>
       <div className="card-body">
         <div className="kv-list">
+          <div>
+            <span className="k">Public IP (egress)</span>
+            <span className="v">
+              {d?.public_ip ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontFamily: 'var(--font-mono, monospace)', fontWeight: 500 }}>{d.public_ip}</span>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    style={{ padding: '2px 8px', fontSize: '0.75rem', height: 'auto' }}
+                    onClick={() => copyIp(d.public_ip!)}
+                  >
+                    Copy
+                  </button>
+                </div>
+              ) : (
+                '—'
+              )}
+            </span>
+          </div>
           <div><span className="k">Internal IP (tunnel)</span><span className="v">{d?.internal_ip || '—'}</span></div>
           <div><span className="k">Colo</span><span className="v">{d?.colo || '—'}</span></div>
           <div><span className="k">Latency</span><span className="v">{d?.latency_ms ? `${d.latency_ms.toFixed(1)}ms` : '—'}</span></div>
@@ -331,6 +360,226 @@ function WarpCard() {
             Rotate now
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function TunnelCard() {
+  const tunnel = useTunnelStatusQuery();
+  const toggle = useToggleTunnelMutation();
+  const pushToast = useUiStore((s) => s.pushToast);
+  const d = tunnel.data;
+
+  const [mode, setMode] = useState<'quick' | 'named'>('quick');
+  const [token, setToken] = useState('');
+  const [showConfig, setShowConfig] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (d?.mode === 'named') {
+      setMode('named');
+    }
+  }, [d?.mode]);
+
+  const isOnline = d?.running && !!d?.public_url;
+  const isStarting = d?.running && !d?.public_url;
+  const isDownloading = !!d?.downloading;
+  const statusTone = isOnline ? 'ok' : (isDownloading || isStarting) ? 'warn' : 'neutral';
+  const statusLabel = isOnline
+    ? 'ONLINE'
+    : isDownloading
+    ? 'DOWNLOADING'
+    : isStarting
+    ? 'STARTING'
+    : d?.running
+    ? 'RUNNING'
+    : 'STOPPED';
+
+  const copyUrl = () => {
+    if (!d?.public_url) return;
+    navigator.clipboard.writeText(d.public_url);
+    pushToast({ type: 'success', title: 'URL Tersalin', message: d.public_url });
+  };
+
+  const handleToggle = (enabled: boolean) => {
+    setErrorMessage(null);
+    toggle.mutate(
+      { enabled, mode, token: mode === 'named' ? token : undefined },
+      {
+        onSuccess: (res) => {
+          setErrorMessage(null);
+          if (res.running) {
+            pushToast({
+              type: 'success',
+              title: 'Tunnel Diaktifkan',
+              message: res.mode === 'quick' ? 'Memulai quick tunnel (trycloudflare.com)...' : 'Memulai named tunnel...',
+            });
+          } else {
+            pushToast({
+              type: 'info',
+              title: 'Tunnel Dimatikan',
+              message: 'Tunnel ingress berhasil dinonaktifkan.',
+            });
+          }
+        },
+        onError: (err) => {
+          const msg = err instanceof Error ? err.message : 'Unknown error';
+          setErrorMessage(msg);
+          pushToast({
+            type: 'error',
+            title: 'Gagal Mengubah Status Tunnel',
+            message: msg,
+          });
+        },
+      }
+    );
+  };
+
+  return (
+    <div className="card">
+      <div className="card-header">
+        <div>
+          <h2>Cloudflare Tunnel</h2>
+          <span className="hint">Native Ingress Engine (remote public access)</span>
+        </div>
+        <Badge tone={statusTone}>{statusLabel}</Badge>
+      </div>
+      <div className="card-body">
+        <SwitchRow
+          title="Enable Cloudflare Tunnel"
+          description="Buka akses publik instan via Cloudflare Tunnel untuk remote AI coding agent tanpa port forwarding."
+          checked={d?.running ?? false}
+          onChange={handleToggle}
+          ariaLabel="Toggle Cloudflare Tunnel"
+        />
+
+        <div className="kv-list" style={{ marginTop: 14 }}>
+          <div>
+            <span className="k">Operation mode</span>
+            <span className="v">{d?.mode ? d.mode.toUpperCase() : 'DISABLED'}</span>
+          </div>
+          <div>
+            <span className="k">Process status</span>
+            <span className="v">{d?.downloading ? 'Downloading binary…' : d?.running ? (isStarting ? 'Starting…' : 'Running') : 'Stopped'}</span>
+          </div>
+          <div>
+            <span className="k">Target local URL</span>
+            <span className="v">{d?.local_url || '—'}</span>
+          </div>
+          <div>
+            <span className="k">Public tunnel URL</span>
+            <span className="v">
+              {d?.public_url ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <a
+                    href={d.public_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ color: 'var(--color-primary, #3b82f6)', textDecoration: 'underline', wordBreak: 'break-all' }}
+                  >
+                    {d.public_url}
+                  </a>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    style={{ padding: '2px 8px', fontSize: '0.75rem', height: 'auto' }}
+                    onClick={copyUrl}
+                  >
+                    Copy
+                  </button>
+                </div>
+              ) : isStarting ? (
+                <span style={{ color: 'var(--color-text-muted, #888)' }}>Generating public URL…</span>
+              ) : (
+                '—'
+              )}
+            </span>
+          </div>
+        </div>
+
+        {d?.downloading && (
+          <div
+            style={{
+              marginTop: 12,
+              padding: '10px 14px',
+              borderRadius: 'var(--radius, 6px)',
+              background: 'rgba(59, 130, 246, 0.08)',
+              border: '1px solid rgba(59, 130, 246, 0.25)',
+              color: 'var(--color-primary, #3b82f6)',
+              fontSize: '0.85rem',
+            }}
+          >
+            Mengunduh binary resmi <code>cloudflared</code> secara otomatis ke direktori Firefly... Mohon tunggu beberapa saat.
+          </div>
+        )}
+
+        {/* Configuration drawer / collapse */}
+        <div style={{ marginTop: 14, borderTop: '1px solid var(--border-subtle, rgba(255,255,255,0.06))', paddingTop: 10 }}>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            style={{ fontSize: '0.8rem', padding: '3px 8px', height: 'auto', marginBottom: 6 }}
+            onClick={() => setShowConfig(!showConfig)}
+          >
+            {showConfig ? 'Hide Mode & Token Settings' : 'Configure Mode & Token…'}
+          </button>
+
+          {showConfig && (
+            <div className="form-grid" style={{ marginTop: 8 }}>
+              <Field label="Tunnel Mode" htmlFor="tunnel-mode">
+                <select
+                  id="tunnel-mode"
+                  value={mode}
+                  disabled={d?.running}
+                  onChange={(e) => setMode(e.target.value as 'quick' | 'named')}
+                  style={{ width: '100%' }}
+                >
+                  <option value="quick">Quick Tunnel (Zero config trycloudflare.com)</option>
+                  <option value="named">Named Tunnel (Production Cloudflare Token)</option>
+                </select>
+              </Field>
+
+              {mode === 'named' && (
+                <Field label="Cloudflare Tunnel Token" htmlFor="tunnel-token">
+                  <input
+                    id="tunnel-token"
+                    type="password"
+                    value={token}
+                    placeholder="eyJh..."
+                    disabled={d?.running}
+                    onChange={(e) => setToken(e.target.value)}
+                  />
+                </Field>
+              )}
+            </div>
+          )}
+        </div>
+
+        {errorMessage && (
+          <div
+            style={{
+              marginTop: 12,
+              padding: '10px 14px',
+              borderRadius: 'var(--radius, 6px)',
+              background: 'rgba(239, 68, 68, 0.1)',
+              border: '1px solid rgba(239, 68, 68, 0.3)',
+              color: 'var(--color-error, #ef4444)',
+              fontSize: '0.85rem',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 4,
+            }}
+          >
+            <strong>Error:</strong>
+            <span style={{ wordBreak: 'break-word', fontFamily: 'var(--font-mono, monospace)', fontSize: '0.8rem' }}>{errorMessage}</span>
+            {errorMessage.toLowerCase().includes('cloudflared') && (
+              <span style={{ color: 'var(--color-text-muted, #888)', fontSize: '0.8rem', marginTop: 4 }}>
+                Pastikan binary <code>cloudflared</code> sudah terinstal di server host dan terdaftar di sistem PATH (contoh: unduh dari Cloudflare, atau via <code>winget install Cloudflare.cloudflared</code> / <code>brew install cloudflared</code>).
+              </span>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -679,6 +928,8 @@ export function SettingsPage() {
         <PasswordCard />
         <TokenSaverCard />
         <WarpCard />
+        <TunnelCard />
+
         <TursoCard />
         <AutoTLSCard />
         <GatewayCard />

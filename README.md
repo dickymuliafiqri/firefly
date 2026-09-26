@@ -341,6 +341,10 @@ make build
 - `-log-level` / `FIREFLY_LOG_LEVEL`: Structured logging level (`debug`, `info`, `warn`, `error`). Default: `info`.
 - `-health-check-interval`: Frequency of background health probes (duration, e.g. `15s`; `0` disables). Default: `15s`.
 - `-warp-rotate-interval` / `FIREFLY_WARP_ROTATE_INTERVAL`: Frequency of automatic periodic Cloudflare WARP egress IP rotations (duration, e.g. `5m`; `0` disables). Default: `5m`.
+- `-tunnel` / `FIREFLY_TUNNEL`: Cloudflare Tunnel mode (`disabled`, `quick`, `named`). Default: `disabled`.
+- `-tunnel-token` / `FIREFLY_TUNNEL_TOKEN`: Cloudflare Tunnel secret token for named tunnels.
+- `-tunnel-bin-dir` / `FIREFLY_TUNNEL_BIN_DIR`: Custom directory to locate or download the `cloudflared` binary (defaults to system PATH, `~/.firefly/bin`, or `./data/bin`).
+- `-tunnel-url` / `FIREFLY_TUNNEL_URL`: Target local service address to expose through the tunnel (default: internal HTTP data plane listener).
 - `-shutdown-grace-seconds` / `FIREFLY_SHUTDOWN_GRACE_SECONDS`: Maximum time allowed for active SSE streams to finish during shutdown. Default: `30`.
 - `-version`: Print version information, commit hash, and build timestamp, then exit.
 

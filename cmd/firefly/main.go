@@ -16,6 +16,8 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
+
 	"sync"
 	"syscall"
 	"time"
@@ -46,8 +48,10 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/server"
 	"github.com/dickymuliafiqri/firefly/internal/storage/turso"
 	"github.com/dickymuliafiqri/firefly/internal/transport/httpx"
+	"github.com/dickymuliafiqri/firefly/internal/transport/tunnel"
 	"github.com/dickymuliafiqri/firefly/internal/transport/upstream"
 	"github.com/dickymuliafiqri/firefly/internal/transport/warp"
+
 	"github.com/dickymuliafiqri/firefly/internal/watch"
 )
 
@@ -94,8 +98,12 @@ func run() error {
 		tursoSyncInterval    = flag.Duration("turso-sync-interval", turso.DefaultSyncInterval, "interval to pull changes from Turso cloud after an observed change (defaults to $FIREFLY_TURSO_SYNC_INTERVAL)")
 		tursoSyncMaxInterval = flag.Duration("turso-sync-max-interval", turso.DefaultSyncMaxInterval, "upper bound for the idle pull backoff; consecutive change-free pulls double the delay until it reaches this (defaults to $FIREFLY_TURSO_SYNC_MAX_INTERVAL)")
 		warpRotateInterval   = flag.Duration("warp-rotate-interval", warp.DefaultAutoRotateInterval, "interval between automatic periodic Cloudflare WARP IP rotations (0 disables; defaults to $FIREFLY_WARP_ROTATE_INTERVAL or 5m)")
-		openaiDefaultMax     = flag.Int64("openai-default-max-tokens", 0, "default max_tokens injected into OpenAI-protocol requests that omit an output-token limit (0 disables; defaults to $FIREFLY_OPENAI_DEFAULT_MAX_TOKENS)")
-		openaiMinMax         = flag.Int64("openai-min-max-tokens", 0, "minimum max_tokens floor for OpenAI-protocol requests; smaller client values are raised to this (0 disables; defaults to $FIREFLY_OPENAI_MIN_MAX_TOKENS)")
+		tunnelMode           = flag.String("tunnel", "", "Cloudflare Tunnel mode: quick|named (empty disables; defaults to $FIREFLY_TUNNEL)")
+		tunnelToken          = flag.String("tunnel-token", "", "Cloudflare Tunnel token for named tunnels (defaults to $FIREFLY_TUNNEL_TOKEN)")
+		tunnelBinDir         = flag.String("tunnel-bin-dir", "", "directory to store or find cloudflared binary (defaults to ~/.firefly/bin or $FIREFLY_TUNNEL_BIN_DIR)")
+
+		openaiDefaultMax = flag.Int64("openai-default-max-tokens", 0, "default max_tokens injected into OpenAI-protocol requests that omit an output-token limit (0 disables; defaults to $FIREFLY_OPENAI_DEFAULT_MAX_TOKENS)")
+		openaiMinMax     = flag.Int64("openai-min-max-tokens", 0, "minimum max_tokens floor for OpenAI-protocol requests; smaller client values are raised to this (0 disables; defaults to $FIREFLY_OPENAI_MIN_MAX_TOKENS)")
 	)
 	flag.Parse()
 
@@ -116,6 +124,16 @@ func run() error {
 	if *logLevel == "info" && os.Getenv("FIREFLY_LOG_LEVEL") != "" {
 		*logLevel = os.Getenv("FIREFLY_LOG_LEVEL")
 	}
+	if *tunnelMode == "" {
+		*tunnelMode = os.Getenv("FIREFLY_TUNNEL")
+	}
+	if *tunnelToken == "" {
+		*tunnelToken = os.Getenv("FIREFLY_TUNNEL_TOKEN")
+	}
+	if *tunnelBinDir == "" {
+		*tunnelBinDir = os.Getenv("FIREFLY_TUNNEL_BIN_DIR")
+	}
+
 	if *adminToken == "" {
 		*adminToken = os.Getenv("FIREFLY_ADMIN_TOKEN")
 	}
@@ -554,6 +572,37 @@ func run() error {
 	// middleware chain and the telemetry handler; otherwise telemetry would
 	// report occupancy from a throwaway limiter nobody routes through.
 	globalLimiter := httpx.NewGlobalLimiter(httpx.DefaultGlobalMaxInflight, httpx.DefaultGlobalWaitTimeout)
+	// Cloudflare Tunnel Ingress Engine
+	var tMode tunnel.Mode
+	switch strings.ToLower(*tunnelMode) {
+	case "quick":
+		tMode = tunnel.ModeQuick
+	case "named":
+		tMode = tunnel.ModeNamed
+	default:
+		tMode = tunnel.ModeDisabled
+	}
+
+	tunnelLocalURL := "http://" + *addr
+	if strings.HasPrefix(*addr, "0.0.0.0:") {
+		tunnelLocalURL = "http://127.0.0.1:" + strings.TrimPrefix(*addr, "0.0.0.0:")
+	}
+
+	tunnelManager := tunnel.NewManager(tunnel.Config{
+		AppCtx:   ctx,
+		Mode:     tMode,
+		LocalURL: tunnelLocalURL,
+		Token:    *tunnelToken,
+		BinDir:   *tunnelBinDir,
+		Logger:   logger,
+	})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := tunnelManager.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Error("cloudflare tunnel stopped", "err", err)
+		}
+	}()
 
 	deps := server.RouterDeps{
 		Snapshots:     reg,
@@ -576,7 +625,9 @@ func run() error {
 		TursoManager:  server.NewTursoManager(*configDir, tursoStore, logger),
 		WarpManager:   warpManager,
 		Logger:        logger,
-		Metrics:       mx,
+		TunnelManager: tunnelManager,
+
+		Metrics: mx,
 	}
 	graceDuration := time.Duration(*graceSecs) * time.Second
 	srv := server.New(server.Config{
@@ -642,6 +693,10 @@ func run() error {
 	if warpManager != nil {
 		warpManager.Close()
 	}
+	if tunnelManager != nil {
+		tunnelManager.Close()
+	}
+
 	logger.Info("bye")
 	return nil
 }

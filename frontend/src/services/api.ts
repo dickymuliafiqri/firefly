@@ -104,9 +104,12 @@ async function request<T>(
 
   if (res.status === 401) {
     const body = await res.json().catch(() => ({}));
+    const rawError = (body as { error?: unknown })?.error;
     const message =
-      (body as { error?: { message?: string } })?.error?.message ??
-      'Unauthorized: Valid Admin Token required';
+      typeof rawError === 'string'
+        ? rawError
+        : (rawError as { message?: string })?.message ??
+          'Unauthorized: Valid Admin Token required';
     // 401 dari ganti password = password lama salah, bukan sesi mati.
     const credentialMismatch = /incorrect current password/i.test(message);
     if (!credentialMismatch && !tolerateUnauthorized) handleSessionInvalid();
@@ -114,10 +117,13 @@ async function request<T>(
   }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
+    const rawError = (body as { error?: unknown; message?: string })?.error;
     const message =
-      (body as { error?: { message?: string }; message?: string })?.error?.message ??
-      (body as { message?: string })?.message ??
-      `Request failed: ${res.statusText}`;
+      typeof rawError === 'string'
+        ? rawError
+        : (rawError as { message?: string })?.message ??
+          (body as { message?: string })?.message ??
+          `Request failed: ${res.statusText || res.status}`;
     throw new ApiError(res.status, message);
   }
   return res.json() as Promise<T>;
@@ -199,6 +205,33 @@ export async function fetchWarpStatus(): Promise<WarpStatusDTO> {
 export async function rotateWarp() {
   return request<{ status: string }>('/api/warp/rotate', { method: 'POST' });
 }
+export interface TunnelStatusDTO {
+  enabled: boolean;
+  running: boolean;
+  mode: string;
+  public_url?: string;
+  local_url?: string;
+  downloading?: boolean;
+  message?: string;
+}
+
+export async function fetchTunnelStatus(): Promise<TunnelStatusDTO> {
+  return request<TunnelStatusDTO>('/api/tunnel/status');
+}
+
+export interface ToggleTunnelParams {
+  enabled?: boolean;
+  mode?: 'quick' | 'named';
+  token?: string;
+}
+
+export async function toggleTunnel(params?: ToggleTunnelParams): Promise<TunnelStatusDTO> {
+  return request<TunnelStatusDTO>('/api/tunnel/toggle', {
+    method: 'POST',
+    body: JSON.stringify(params ?? {}),
+  });
+}
+
 
 export async function fetchOAuthProviders(): Promise<ProviderInfoDTO[]> {
   return request<ProviderInfoDTO[]>('/api/oauth/providers');
@@ -454,6 +487,11 @@ export function useWarpStatusQuery() {
   return fallbackQuery(['warp'], fetchWarpStatus, warpMock, 5000);
 }
 
+export function useTunnelStatusQuery() {
+  const { tunnelMock } = mocks();
+  return fallbackQuery(['tunnel'], fetchTunnelStatus, tunnelMock, 5000);
+}
+
 export function useOAuthProvidersQuery() {
   return fallbackQuery(['oauth', 'providers'], fetchOAuthProviders, [], undefined, 60000);
 }
@@ -527,6 +565,16 @@ export function useRotateWarpMutation() {
   return useMutation({
     mutationFn: rotateWarp,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['warp'] }),
+  });
+}
+
+export function useToggleTunnelMutation() {
+  return useMutation({
+    mutationFn: toggleTunnel,
+    onSuccess: (data) => {
+      queryClient.setQueryData(['tunnel'], data);
+      queryClient.invalidateQueries({ queryKey: ['tunnel'] });
+    },
   });
 }
 
@@ -792,6 +840,12 @@ function mocks() {
     next_rotation_at: new Date(now + 22 * 60_000).toISOString(),
   };
 
+  const tunnelMock: TunnelStatusDTO = {
+    enabled: false,
+    running: false,
+    mode: 'disabled',
+  };
+
   const providersMock: ProviderListResponse = {
     count: 4,
     storage: 'turso',
@@ -813,7 +867,7 @@ function mocks() {
     ],
   };
 
-  return { settingsMock, telemetryMock, warpMock, providersMock, keysMock };
+  return { settingsMock, telemetryMock, warpMock, tunnelMock, providersMock, keysMock };
 }
 
 export type { LiveConnectionLog };
