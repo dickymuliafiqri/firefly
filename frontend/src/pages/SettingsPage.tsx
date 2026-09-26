@@ -65,7 +65,7 @@ function AccessCard() {
       })
       .catch((err) => {
         if (!alive) return;
-        // Hanya 401 yang berarti sesi ditolak. Putus jaringan bukan SESSION INVALID.
+        // Only 401 means session rejected. Network drops are not SESSION INVALID.
         if (err instanceof ApiError && err.status === 401) {
           setAuthenticated(false);
           handleSessionInvalid();
@@ -92,10 +92,10 @@ function AccessCard() {
         <div className="form-row form-row-end">
           <span className="hint">
             {authenticated === true
-              ? 'Sesi dashboard aktif di browser ini.'
+              ? 'Dashboard session active in this browser.'
               : authenticated === null && token
-                ? 'Memeriksa sesi dashboard…'
-                : 'Belum ada sesi. Masuk untuk mengelola gateway.'}
+                ? 'Checking dashboard session…'
+                : 'No active session. Log in to manage the gateway.'}
           </span>
           {authenticated ? (
             <button
@@ -106,7 +106,7 @@ function AccessCard() {
                 } finally {
                   clearToken();
                   setAuthenticated(false);
-                  pushToast({ type: 'success', title: 'Logout', message: 'Sesi dashboard dicabut.' });
+                  pushToast({ type: 'success', title: 'Logout', message: 'Dashboard session revoked.' });
                   navigate('login');
                 }
               }}
@@ -139,16 +139,16 @@ function PasswordCard() {
       await updatePasswordApi(currentPass, newPass, token);
       setCurrentPass('');
       setNewPass('');
-      pushToast({ type: 'success', title: 'Password diperbarui', message: 'Password master berhasil diganti.' });
+      pushToast({ type: 'success', title: 'Password updated', message: 'Master password successfully changed.' });
     } catch (err) {
-      // 401 sesi mati sudah ditangani handleSessionInvalid (redirect ke login).
-      // 401 "incorrect current password" tetap ditampilkan di sini.
+      // 401 dead session is handled by handleSessionInvalid (redirects to login).
+      // 401 "incorrect current password" remains displayed here.
       if (err instanceof ApiError && err.status === 401 && !/incorrect current password/i.test(err.message)) {
         return;
       }
       pushToast({
         type: 'error',
-        title: 'Gagal mengubah password',
+        title: 'Failed to change password',
         message: err instanceof Error ? err.message : 'Unknown error',
       });
     } finally {
@@ -160,12 +160,12 @@ function PasswordCard() {
     <div className="card">
       <div className="card-header">
         <h2>Password</h2>
-        <span className="hint">Ubah password master dashboard</span>
+        <span className="hint">Change dashboard master password</span>
       </div>
       <div className="card-body">
         <form onSubmit={handleUpdate} className="stack" style={{ marginTop: 0 }}>
           <div className="form-grid">
-            <Field label="Password saat ini" htmlFor="curr-pass">
+            <Field label="Current password" htmlFor="curr-pass">
               <input
                 id="curr-pass"
                 type="password"
@@ -175,7 +175,7 @@ function PasswordCard() {
                 required
               />
             </Field>
-            <Field label="Password baru" htmlFor="new-pass">
+            <Field label="New password" htmlFor="new-pass">
               <input
                 id="new-pass"
                 type="password"
@@ -187,9 +187,9 @@ function PasswordCard() {
             </Field>
           </div>
           <div className="form-row form-row-end">
-            <span className="hint">Perubahan disimpan langsung ke backend.</span>
+            <span className="hint">Changes are saved directly to the backend.</span>
             <button type="submit" className="btn btn-primary" disabled={!currentPass || !newPass || saving || !token}>
-              {saving ? 'Menyimpan…' : 'Simpan'}
+              {saving ? 'Saving…' : 'Save'}
             </button>
           </div>
         </form>
@@ -213,7 +213,7 @@ function TokenSaverCard() {
       <div className="card-body">
         <SwitchRow
           title="Token Saver — master switch"
-          description="Suite optimasi token: kompresi output tool, jawaban singkat, kode minimal, dan pemangkasan konteks."
+          description="Token optimization suite: tool output compression, concise responses, minimal code, and context pruning."
           checked={ts?.enabled ?? false}
           onChange={(v) =>
             settings.data &&
@@ -221,8 +221,8 @@ function TokenSaverCard() {
               { ...settings.data, token_saver: { ...ts!, enabled: v } },
               {
                 onSuccess: () =>
-                  pushToast({ type: 'success', title: 'Token Saver', message: `Master switch ${v ? 'aktif' : 'nonaktif'}.` }),
-                onError: (e) => pushToast({ type: 'error', title: 'Simpan gagal', message: e instanceof Error ? e.message : 'Unknown' }),
+                  pushToast({ type: 'success', title: 'Token Saver', message: `Master switch ${v ? 'enabled' : 'disabled'}.` }),
+                onError: (e) => pushToast({ type: 'error', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown' }),
               },
             )
           }
@@ -237,8 +237,8 @@ function TokenSaverCard() {
             save.mutate(
               { ...settings.data, token_saver: { ...ts!, compress_tool_output: v } },
               {
-                onSuccess: () => pushToast({ type: 'success', title: 'Token Saver', message: 'RTK disinkronkan.' }),
-                onError: (e) => pushToast({ type: 'error', title: 'Simpan gagal', message: e instanceof Error ? e.message : 'Unknown' }),
+                onSuccess: () => pushToast({ type: 'success', title: 'Token Saver', message: 'RTK synchronized.' }),
+                onError: (e) => pushToast({ type: 'error', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown' }),
               },
             )
           }
@@ -253,8 +253,8 @@ function TokenSaverCard() {
             save.mutate(
               { ...settings.data, token_saver: { ...ts!, terse_output: v } },
               {
-                onSuccess: () => pushToast({ type: 'success', title: 'Token Saver', message: 'Caveman disinkronkan.' }),
-                onError: (e) => pushToast({ type: 'error', title: 'Simpan gagal', message: e instanceof Error ? e.message : 'Unknown' }),
+                onSuccess: () => pushToast({ type: 'success', title: 'Token Saver', message: 'Caveman synchronized.' }),
+                onError: (e) => pushToast({ type: 'error', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown' }),
               },
             )
           }
@@ -269,8 +269,8 @@ function TokenSaverCard() {
             save.mutate(
               { ...settings.data, token_saver: { ...ts!, minimal_code: v } },
               {
-                onSuccess: () => pushToast({ type: 'success', title: 'Token Saver', message: 'Ponytail disinkronkan.' }),
-                onError: (e) => pushToast({ type: 'error', title: 'Simpan gagal', message: e instanceof Error ? e.message : 'Unknown' }),
+                onSuccess: () => pushToast({ type: 'success', title: 'Token Saver', message: 'Ponytail synchronized.' }),
+                onError: (e) => pushToast({ type: 'error', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown' }),
               },
             )
           }
@@ -285,8 +285,8 @@ function TokenSaverCard() {
             save.mutate(
               { ...settings.data, token_saver: { ...ts!, compress_context: v } },
               {
-                onSuccess: () => pushToast({ type: 'success', title: 'Token Saver', message: 'Headroom disinkronkan.' }),
-                onError: (e) => pushToast({ type: 'error', title: 'Simpan gagal', message: e instanceof Error ? e.message : 'Unknown' }),
+                onSuccess: () => pushToast({ type: 'success', title: 'Token Saver', message: 'Headroom synchronized.' }),
+                onError: (e) => pushToast({ type: 'error', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown' }),
               },
             )
           }
@@ -305,7 +305,7 @@ function WarpCard() {
 
   const copyIp = (ip: string) => {
     navigator.clipboard.writeText(ip);
-    pushToast({ type: 'success', title: 'IP Tersalin', message: ip });
+    pushToast({ type: 'success', title: 'IP Copied', message: ip });
   };
 
   return (
@@ -352,8 +352,8 @@ function WarpCard() {
             disabled={rotate.isPending || !d?.enabled}
             onClick={() =>
               rotate.mutate(undefined, {
-                onSuccess: () => pushToast({ type: 'success', title: 'WARP rotate', message: 'Sesi egress baru dibuat; drain sesi lama berjalan.' }),
-                onError: (e) => pushToast({ type: 'error', title: 'Rotate gagal', message: e instanceof Error ? e.message : 'Unknown' }),
+                onSuccess: () => pushToast({ type: 'success', title: 'WARP rotate', message: 'New egress session created; old session is draining.' }),
+                onError: (e) => pushToast({ type: 'error', title: 'Rotate failed', message: e instanceof Error ? e.message : 'Unknown' }),
               })
             }
           >
@@ -399,7 +399,7 @@ function TunnelCard() {
   const copyUrl = () => {
     if (!d?.public_url) return;
     navigator.clipboard.writeText(d.public_url);
-    pushToast({ type: 'success', title: 'URL Tersalin', message: d.public_url });
+    pushToast({ type: 'success', title: 'URL Copied', message: d.public_url });
   };
 
   const handleToggle = (enabled: boolean) => {
@@ -412,14 +412,14 @@ function TunnelCard() {
           if (res.running) {
             pushToast({
               type: 'success',
-              title: 'Tunnel Diaktifkan',
-              message: res.mode === 'quick' ? 'Memulai quick tunnel (trycloudflare.com)...' : 'Memulai named tunnel...',
+              title: 'Tunnel Enabled',
+              message: res.mode === 'quick' ? 'Starting quick tunnel (trycloudflare.com)...' : 'Starting named tunnel...',
             });
           } else {
             pushToast({
               type: 'info',
-              title: 'Tunnel Dimatikan',
-              message: 'Tunnel ingress berhasil dinonaktifkan.',
+              title: 'Tunnel Disabled',
+              message: 'Tunnel ingress successfully disabled.',
             });
           }
         },
@@ -428,7 +428,7 @@ function TunnelCard() {
           setErrorMessage(msg);
           pushToast({
             type: 'error',
-            title: 'Gagal Mengubah Status Tunnel',
+            title: 'Failed to Change Tunnel Status',
             message: msg,
           });
         },
@@ -448,7 +448,7 @@ function TunnelCard() {
       <div className="card-body">
         <SwitchRow
           title="Enable Cloudflare Tunnel"
-          description="Buka akses publik instan via Cloudflare Tunnel untuk remote AI coding agent tanpa port forwarding."
+          description="Enable instant public access via Cloudflare Tunnel for remote AI coding agents without port forwarding."
           checked={d?.running ?? false}
           onChange={handleToggle}
           ariaLabel="Toggle Cloudflare Tunnel"
@@ -510,7 +510,7 @@ function TunnelCard() {
               fontSize: '0.85rem',
             }}
           >
-            Mengunduh binary resmi <code>cloudflared</code> secara otomatis ke direktori Firefly... Mohon tunggu beberapa saat.
+            Automatically downloading official <code>cloudflared</code> binary to the Firefly directory... Please wait a moment.
           </div>
         )}
 
@@ -575,7 +575,7 @@ function TunnelCard() {
             <span style={{ wordBreak: 'break-word', fontFamily: 'var(--font-mono, monospace)', fontSize: '0.8rem' }}>{errorMessage}</span>
             {errorMessage.toLowerCase().includes('cloudflared') && (
               <span style={{ color: 'var(--color-text-muted, #888)', fontSize: '0.8rem', marginTop: 4 }}>
-                Pastikan binary <code>cloudflared</code> sudah terinstal di server host dan terdaftar di sistem PATH (contoh: unduh dari Cloudflare, atau via <code>winget install Cloudflare.cloudflared</code> / <code>brew install cloudflared</code>).
+                Ensure the <code>cloudflared</code> binary is installed on the host server and registered in the system PATH (e.g. download from Cloudflare, or via <code>winget install Cloudflare.cloudflared</code> / <code>brew install cloudflared</code>).
               </span>
             )}
           </div>
@@ -672,17 +672,17 @@ function GatewayCard() {
                   save.mutate(parsed, {
                     onSuccess: () => {
                       setDraft(null);
-                      pushToast({ type: 'success', title: 'Settings tersimpan', message: 'Konfigurasi disinkronkan.' });
+                      pushToast({ type: 'success', title: 'Settings saved', message: 'Configuration synchronized.' });
                     },
                     onError: (e) =>
                       pushToast({
                         type: 'error',
-                        title: e instanceof Error && 'status' in e && (e as { status?: number }).status === 409 ? 'Konflik (409)' : 'Simpan gagal',
+                        title: e instanceof Error && 'status' in e && (e as { status?: number }).status === 409 ? 'Conflict (409)' : 'Save failed',
                         message: e instanceof Error ? e.message : 'Unknown',
                       }),
                   });
                 } catch {
-                  pushToast({ type: 'error', title: 'JSON tidak valid', message: 'Perbaiki sintaks sebelum menyimpan.' });
+                  pushToast({ type: 'error', title: 'Invalid JSON', message: 'Fix syntax errors before saving.' });
                 }
               }}
             >
@@ -758,13 +758,13 @@ function TursoCard() {
       const res = await test.mutateAsync({ database_url: url, auth_token: token });
       pushToast({
         type: res.ok ? 'success' : 'error',
-        title: res.ok ? 'Koneksi berhasil' : 'Koneksi gagal',
-        message: res.message || (res.ok ? 'Turso database dapat diakses.' : 'Gagal terhubung ke Turso.'),
+        title: res.ok ? 'Connection successful' : 'Connection failed',
+        message: res.message || (res.ok ? 'Turso database is accessible.' : 'Failed to connect to Turso.'),
       });
     } catch (err) {
       pushToast({
         type: 'error',
-        title: 'Tes gagal',
+        title: 'Test failed',
         message: err instanceof Error ? err.message : 'Unknown error',
       });
     }
@@ -775,8 +775,8 @@ function TursoCard() {
     save.mutate(
       { ...settings.data, turso: { ...turso, database_url: url, auth_token: token } },
       {
-        onSuccess: () => pushToast({ type: 'success', title: 'Turso tersimpan', message: 'Konfigurasi database diperbarui.' }),
-        onError: (e) => pushToast({ type: 'error', title: 'Simpan gagal', message: e instanceof Error ? e.message : 'Unknown' }),
+        onSuccess: () => pushToast({ type: 'success', title: 'Turso saved', message: 'Database configuration updated.' }),
+        onError: (e) => pushToast({ type: 'error', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown' }),
       },
     );
   }
@@ -810,7 +810,7 @@ function TursoCard() {
           </Field>
         </div>
         <div className="form-row form-row-end" style={{ marginTop: 14 }}>
-          <span className="hint">Tes koneksi sebelum menyimpan.</span>
+          <span className="hint">Test connection before saving.</span>
           <div style={{ display: 'flex', gap: 8 }}>
             <button
               type="button"
@@ -858,8 +858,8 @@ function AutoTLSCard() {
     save.mutate(
       { ...settings.data, auto_tls: { enabled, domain, email } },
       {
-        onSuccess: () => pushToast({ type: 'success', title: 'AutoTLS tersimpan', message: 'Konfigurasi sertifikat diperbarui.' }),
-        onError: (e) => pushToast({ type: 'error', title: 'Simpan gagal', message: e instanceof Error ? e.message : 'Unknown' }),
+        onSuccess: () => pushToast({ type: 'success', title: 'AutoTLS saved', message: 'Certificate configuration updated.' }),
+        onError: (e) => pushToast({ type: 'error', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown' }),
       },
     );
   }
@@ -897,7 +897,7 @@ function AutoTLSCard() {
               checked={enabled}
               onChange={(e) => setEnabled(e.target.checked)}
             />
-            <span>Aktifkan AutoTLS</span>
+            <span>Enable AutoTLS</span>
           </label>
           <button
             type="button"

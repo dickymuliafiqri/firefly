@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
 
 /**
- * Hash router ringan — pola registry.tsx (WORK_PLAN §3).
- * Dashboard embedded single-binary; tidak butuh react-router.
+ * Lightweight hash router — registry.tsx pattern.
+ * Dashboard is an embedded single-binary; does not need react-router.
  *
- * Format hash: `#/<page>` atau `#/<page>/<rest>?key=value`.
- * `page` adalah segmen pertama; `rest` adalah sisa path (mis. `edit/openai-main`).
+ * Hash format: `#/<page>` or `#/<page>/<rest>?key=value`.
+ * `page` is the first segment; `rest` is the remaining path (e.g. `edit/openai-main`).
  */
 export function parseHash(): { path: string; rest: string; query: URLSearchParams } {
   const raw = (window.location.hash || '').replace(/^#\/?/, '');
@@ -14,7 +14,7 @@ export function parseHash(): { path: string; rest: string; query: URLSearchParam
   return { path: first ?? '', rest: tail.join('/'), query: new URLSearchParams(qs ?? '') };
 }
 
-/** Alias hash → pageId (mis. `upstream` → `upstream-editor`). */
+/** Alias hash → pageId (e.g. `upstream` → `upstream-editor`). */
 const PATH_ALIAS: Record<string, string> = { upstream: 'upstream-editor' };
 
 export function parsePage<P extends string>(valid: readonly P[], fallback: P): P {
@@ -35,7 +35,7 @@ export function useHashPage<P extends string>(valid: readonly P[], fallback: P):
   return page;
 }
 
-/** Sisa path setelah segmen halaman, reaktif terhadap hashchange. */
+/** Remaining path after page segment, reactive to hashchange. */
 export function useHashRest(): string {
   const [rest, setRest] = useState(() => parseHash().rest);
   useEffect(() => {

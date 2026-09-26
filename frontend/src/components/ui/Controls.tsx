@@ -12,7 +12,7 @@ export interface SegmentedProps {
   ariaLabel?: string;
 }
 
-/** Segmented control — item aktif latar raised + teks ink (DESIGN_RULES §4). */
+/** Segmented control — active item has raised background + ink text (DESIGN_RULES §4). */
 export function Segmented({ items, value, onChange, ariaLabel }: SegmentedProps) {
   return (
     <div className="segmented" role="tablist" aria-label={ariaLabel}>

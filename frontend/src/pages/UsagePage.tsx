@@ -85,7 +85,7 @@ export function UsagePage() {
                 ))}
                 {filtered.length === 0 ? (
                   <tr>
-                    <td colSpan={4} className="faint">Tidak ada baris usage yang cocok.</td>
+                    <td colSpan={4} className="faint">No usage entries match the filter.</td>
                   </tr>
                 ) : null}
               </tbody>
@@ -93,8 +93,8 @@ export function UsagePage() {
           </div>
         </div>
         <p className="hint" style={{ marginTop: 10, fontSize: 12, color: 'var(--faint)' }}>
-          Ledger token per tenant/model/credential tercatat di usage recorder gateway; agregat
-          token in/out tampil pada kartu ringkasan.
+          Token ledger per tenant/model/credential is recorded in the gateway usage recorder; aggregate
+          tokens in/out are displayed in the summary cards.
         </p>
       </QueryGate>
     </div>

@@ -40,10 +40,10 @@ export function Topbar({ title }: TopbarProps) {
     try {
       if (token) await logoutApi(token);
     } catch {
-      // best-effort — sesi lokal tetap dicabut
+      // best-effort — revoke local session regardless
     } finally {
       clearToken();
-      pushToast({ type: 'success', title: 'Logout', message: 'Sesi dicabut.' });
+      pushToast({ type: 'success', title: 'Logout', message: 'Session revoked.' });
       navigate('login');
     }
   }
@@ -56,7 +56,7 @@ export function Topbar({ title }: TopbarProps) {
         <span
           className="backend-status"
           style={{ color: statusColor }}
-          title={mock ? 'Gateway tidak terjangkau — menampilkan data demo' : undefined}
+          title={mock ? 'Gateway unreachable — displaying demo data' : undefined}
         >
           <span className="dot" style={{ background: statusColor }} />
           {statusLabel}

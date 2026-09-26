@@ -31,8 +31,8 @@ export function ResilienceTab({
         </div>
         <div className="card-body">
           <p className="hint" style={{ marginBottom: 14 }}>
-            Tindakan saat upstream mengembalikan error kredensial (401/429/quota). Circuit breaker tidak pernah
-            dijatuhkan oleh error Layer 1.
+            Action when upstream returns a credential error (401/429/quota). The circuit breaker is never
+            tripped by Layer 1 errors.
           </p>
           <div className="form-grid">
             <Field label="Key error action" htmlFor="u-act">
@@ -41,9 +41,9 @@ export function ResilienceTab({
                 value={keyErrorAction}
                 onChange={(e) => onActionChange(e.target.value as 'cooldown' | 'deactivate' | 'delete')}
               >
-                <option value="cooldown">cooldown (jeda sementara)</option>
-                <option value="deactivate">deactivate (nonaktifkan permanen di memori & DB)</option>
-                <option value="delete">delete (hapus permanen dari memori & DB)</option>
+                <option value="cooldown">cooldown (temporary pause)</option>
+                <option value="deactivate">deactivate (permanent deactivation in memory & DB)</option>
+                <option value="delete">delete (permanent removal from memory & DB)</option>
               </select>
             </Field>
             <Field label="Error threshold" htmlFor="u-thresh">
@@ -82,7 +82,7 @@ export function ResilienceTab({
         </div>
         <div className="card-body">
           {keyErrorRules.length === 0 ? (
-            <span className="faint">Mengikuti aturan default di atas.</span>
+            <span className="faint">Follows default rules above.</span>
           ) : (
             <div className="granular-rules-container">
               <div className="granular-rules-header">
@@ -95,7 +95,7 @@ export function ResilienceTab({
                 <div key={idx} className="granular-rule-row">
                   <input
                     type="number"
-                    placeholder="mis. 429"
+                    placeholder="e.g. 429"
                     value={rule.status_code}
                     onChange={(e) => {
                       const val = Number(e.target.value);
@@ -104,7 +104,7 @@ export function ResilienceTab({
                   />
                   <input
                     type="number"
-                    placeholder="mis. 3"
+                    placeholder="e.g. 3"
                     value={rule.threshold}
                     onChange={(e) => {
                       const val = Number(e.target.value);
@@ -118,14 +118,14 @@ export function ResilienceTab({
                       onRulesChange(keyErrorRules.map((r, i) => (i === idx ? { ...r, action: val } : r)));
                     }}
                   >
-                    <option value="cooldown">cooldown (jeda sementara)</option>
-                    <option value="deactivate">deactivate (nonaktifkan)</option>
-                    <option value="delete">delete (hapus slot)</option>
+                    <option value="cooldown">cooldown (temporary pause)</option>
+                    <option value="deactivate">deactivate (disable)</option>
+                    <option value="delete">delete (remove slot)</option>
                   </select>
                   <button
                     type="button"
                     className="btn btn-ghost p-2 text-danger hover:bg-danger/10"
-                    title="Hapus rule"
+                    title="Delete rule"
                     onClick={() => onRulesChange(keyErrorRules.filter((_, i) => i !== idx))}
                   >
                     <Trash2 style={{ width: 14, height: 14 }} />

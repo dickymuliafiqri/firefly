@@ -35,8 +35,8 @@ export function ChatPage() {
   const [model, setModel] = useState('');
   const activeModel = model || modelOptions[0] || 'gpt-4o';
 
-  // Auto-isi API key dari tenant pertama yang punya plaintext key, hanya bila
-  // pengguna belum pernah mengisi field ini.
+  // Auto-fill API key from the first tenant with a plaintext key, only if
+  // user has not manually filled this field yet.
   useEffect(() => {
     if (apiKey || !settings.data) return;
     const first = settings.data.tenants.find((t) => t.api_key && !t.api_key.includes('•'));
@@ -66,8 +66,8 @@ export function ChatPage() {
     if (!apiKey.trim()) {
       pushToast({
         type: 'error',
-        title: 'API key tenant diperlukan',
-        message: 'Isi field Tenant API Key (sk-gw-…) agar gateway bisa mengautentikasi permintaan.',
+        title: 'Tenant API key required',
+        message: 'Enter the Tenant API Key (sk-gw-…) so the gateway can authenticate the request.',
       });
       return;
     }
@@ -102,11 +102,11 @@ export function ChatPage() {
         if ((e as Error).name !== 'AbortError') {
           pushToast({
             type: 'error',
-            title: 'Chat gagal',
+            title: 'Chat failed',
             message: e instanceof Error ? e.message : 'Unknown error',
           });
         }
-        // Hapus bubble assistant kosong bila tidak ada output
+        // Remove empty assistant bubble if there was no output
         setTurns((prev) => prev.filter((t, i) => !(i === prev.length - 1 && t.role === 'assistant' && !t.content)));
       })
       .finally(() => {
@@ -132,7 +132,7 @@ export function ChatPage() {
               <Field
                 label="Tenant API key"
                 htmlFor="chat-key"
-                hint="sk-gw-… milik tenant (Tenants tab). Disimpan di browser ini saja."
+                hint="Tenant sk-gw-… key (Tenants tab). Saved in this browser only."
               >
                 <input
                   id="chat-key"
@@ -196,7 +196,7 @@ export function ChatPage() {
             <div className="chat-log">
               {turns.length === 0 ? (
                 <span className="faint" style={{ fontSize: 13 }}>
-                  Belum ada percakapan. Kirim pesan untuk menguji gateway.
+                  No conversation yet. Send a message to test the gateway.
                 </span>
               ) : (
                 turns.map((t, i) => (
@@ -216,7 +216,7 @@ export function ChatPage() {
             </div>
             <div className="card-body">
               {lastEvents.length === 0 ? (
-                <span className="faint" style={{ fontSize: 12 }}>Menunggu event SSE…</span>
+                <span className="faint" style={{ fontSize: 12 }}>Waiting for SSE events…</span>
               ) : (
                 <pre>
                   {lastEvents.map((e, i) => (
@@ -237,7 +237,7 @@ export function ChatPage() {
             </div>
             <div className="card-body">
               {waterfall.length === 0 ? (
-                <span className="faint" style={{ fontSize: 12 }}>Belum ada chunk.</span>
+                <span className="faint" style={{ fontSize: 12 }}>No chunks yet.</span>
               ) : (
                 <div className="waterfall" aria-hidden="true">
                   {waterfall.map((c, i) => {

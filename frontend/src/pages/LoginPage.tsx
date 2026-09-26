@@ -23,13 +23,13 @@ export function LoginPage() {
       const res = await loginApi(password.trim());
       setToken(res.token);
 
-      // Cek parameter redirect di URL jika ada
+      // Check redirect parameter in URL if present
       const hash = window.location.hash;
       const redirectMatch = hash.match(/[?&]redirect=([a-zA-Z0-9_-]+)/);
       const target = redirectMatch ? redirectMatch[1] : 'overview';
       navigate(target);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Password salah.');
+      setError(err instanceof Error ? err.message : 'Incorrect password.');
     } finally {
       setLoading(false);
     }
@@ -43,7 +43,7 @@ export function LoginPage() {
             <Lock style={{ width: 20, height: 20 }} />
           </div>
           <h1 className="login-wordmark">Firefly</h1>
-          <p className="login-sub">Masukkan password master untuk mengelola gateway.</p>
+          <p className="login-sub">Enter master password to manage gateway.</p>
         </div>
 
         <div className="login-card-body">
@@ -68,14 +68,14 @@ export function LoginPage() {
                   <button
                     type="button"
                     className="login-eye"
-                    aria-label={showPassword ? 'Sembunyikan password' : 'Tampilkan password'}
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
                     onClick={() => setShowPassword(!showPassword)}
                   >
                     {showPassword ? <EyeOff style={{ width: 16, height: 16 }} /> : <Eye style={{ width: 16, height: 16 }} />}
                   </button>
                 </div>
                 <button type="submit" className="btn btn-primary" disabled={loading || !password.trim()}>
-                  {loading ? 'Memeriksa…' : 'Unlock'}
+                  {loading ? 'Verifying…' : 'Unlock'}
                   {!loading && <ArrowRight style={{ width: 14, height: 14 }} />}
                 </button>
               </div>
@@ -87,7 +87,7 @@ export function LoginPage() {
 
         <div className="login-card-foot">
           <ShieldCheck style={{ width: 14, height: 14 }} />
-          <span>Sesi tersimpan di browser ini saja.</span>
+          <span>Session saved in this browser only.</span>
         </div>
       </div>
     </div>

@@ -10,8 +10,8 @@ const starPositions: readonly [left: string, top: string, d: string][] = [
 ];
 
 /**
- * Sky global — satu instance di level shell (Keputusan B, DESIGN_RULES §7).
- * Maksimum 3 elemen parallax: bintang depth:3, bulan depth:-9.
+ * Global sky — single instance at shell level (Decision B, DESIGN_RULES §7).
+ * Maximum 3 parallax elements: stars depth:3, moon depth:-9.
  */
 export function SkyBackground() {
   const starsRef = useParallax<HTMLDivElement>(3, 'stars');

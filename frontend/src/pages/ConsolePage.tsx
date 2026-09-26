@@ -115,7 +115,7 @@ export function ConsolePage() {
                 ))}
                 {filtered.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="faint">Tidak ada baris log yang cocok.</td>
+                    <td colSpan={9} className="faint">No log entries match the filter.</td>
                   </tr>
                 ) : null}
               </tbody>

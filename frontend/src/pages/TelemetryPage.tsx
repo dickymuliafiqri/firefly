@@ -64,7 +64,7 @@ export function TelemetryPage() {
                   ))}
                   {models.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="faint">Belum ada telemetri model.</td>
+                      <td colSpan={7} className="faint">No model telemetry yet.</td>
                     </tr>
                   ) : null}
                 </tbody>

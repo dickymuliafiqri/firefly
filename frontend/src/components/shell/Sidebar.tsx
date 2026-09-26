@@ -63,7 +63,7 @@ export function Sidebar({ groups, activeId, version }: SidebarProps) {
         </div>
       </aside>
 
-      {/* Backdrop solid untuk drawer sidebar mobile */}
+      {/* Solid backdrop for mobile sidebar drawer */}
       {sidebarOpen ? (
         <div className="nav-backdrop" onClick={closeSidebar} aria-hidden="true" />
       ) : null}
@@ -71,13 +71,13 @@ export function Sidebar({ groups, activeId, version }: SidebarProps) {
   );
 }
 
-/** Tombol-tombol sidebar di topbar (dipisah agar toggle dekat tombol menu). */
+/** Sidebar buttons in topbar (separated so toggle is near the menu button). */
 export function SidebarToggles() {
   const sidebarOpen = useUiStore((s) => s.sidebarOpen);
   const toggleOpen = () => useUiStore.setState({ sidebarOpen: !sidebarOpen });
   const toggleCollapsed = useUiStore((s) => s.toggleCollapsed);
 
-  // Window sempit: collapse desktop tidak berlaku (collapse hanya >=1024px)
+  // Narrow window: desktop collapse does not apply (collapse only for >=1024px)
   const [isNarrow, setIsNarrow] = useState(() => window.innerWidth < 1024);
   useEffect(() => {
     const onResize = () => setIsNarrow(window.innerWidth < 1024);

@@ -39,7 +39,7 @@ export function ModelsTab({
 
   async function handleFetch() {
     if (!baseUrl) {
-      pushToast({ type: 'error', title: 'Base URL kosong', message: 'Isi Base URL untuk mengambil daftar model.' });
+      pushToast({ type: 'error', title: 'Empty Base URL', message: 'Specify a Base URL to fetch model list.' });
       return;
     }
     try {
@@ -55,13 +55,13 @@ export function ModelsTab({
       onDiscover(res.models || [], res.latency_ms);
       pushToast({
         type: 'success',
-        title: 'Model ditemukan',
-        message: `${res.model_count} model tersedia dari host upstream.`,
+        title: 'Models discovered',
+        message: `${res.model_count} models available from upstream host.`,
       });
     } catch (err) {
       pushToast({
         type: 'error',
-        title: 'Gagal mengambil model',
+        title: 'Failed to fetch models',
         message: err instanceof Error ? err.message : 'Unknown error',
       });
     }
@@ -101,7 +101,7 @@ export function ModelsTab({
         </div>
         <div className="card-body">
           <p className="hint" style={{ marginBottom: 14 }}>
-            Ambil daftar model yang didukung upstream ini dan buat rute gateway ke katalog dengan satu klik.
+            Discover models supported by this upstream and create gateway routes in the catalog with one click.
           </p>
 
           {latencyMs !== null && (
@@ -125,7 +125,7 @@ export function ModelsTab({
                 {discoveredModels.length === 0 ? (
                   <tr>
                     <td colSpan={3} className="faint">
-                      Belum ada model ditemukan.
+                      No models discovered yet.
                     </td>
                   </tr>
                 ) : (
@@ -146,7 +146,7 @@ export function ModelsTab({
                         </td>
                         <td>
                           <Badge tone={inCatalog ? 'ok' : 'neutral'}>
-                            {inCatalog ? 'TERDAFTAR' : 'BELUM ADA'}
+                            {inCatalog ? 'REGISTERED' : 'UNMAPPED'}
                           </Badge>
                         </td>
                         <td>

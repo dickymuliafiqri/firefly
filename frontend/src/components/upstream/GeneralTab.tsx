@@ -101,7 +101,7 @@ export function GeneralTab({ state, isEdit, onChange }: GeneralTabProps) {
                 type="text"
                 className="mono"
                 value={state.fallbackUrls.join(", ")}
-                placeholder="https://backup.example.com/v1 (dipisah koma)"
+                placeholder="https://backup.example.com/v1 (comma-separated)"
                 onChange={(e) =>
                   onChange({
                     fallbackUrls: e.target.value
@@ -183,7 +183,7 @@ export function GeneralTab({ state, isEdit, onChange }: GeneralTabProps) {
           <div style={{ marginTop: 14 }}>
             <SwitchRow
               title="Allow HTTP (insecure)"
-              description="Centang jika menggunakan koneksi http:// lokal atau intranet."
+              description="Enable if using local or intranet http:// connections."
               checked={state.allowInsecure}
               onChange={(v) => onChange({ allowInsecure: v })}
               ariaLabel="Allow insecure HTTP"
@@ -208,7 +208,7 @@ export function GeneralTab({ state, isEdit, onChange }: GeneralTabProps) {
         </div>
         <div className="card-body">
           {headers.length === 0 ? (
-            <span className="faint">Belum ada custom header.</span>
+            <span className="faint">No custom headers yet.</span>
           ) : (
             <div className="stack" style={{ gap: 8 }}>
               {headers.map((h, i) => (

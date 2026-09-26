@@ -14,7 +14,7 @@ import { ResilienceTab } from '@/components/upstream/ResilienceTab';
 type Tab = 'general' | 'keys' | 'models' | 'resilience';
 
 export function UpstreamEditorPage() {
-  const rest = useHashRest(); // 'new' atau 'edit/<name>'
+  const rest = useHashRest(); // 'new' or 'edit/<name>'
   const settings = useSettingsQuery();
   const saveSmart = useSaveSettingsSmart();
   const pushToast = useUiStore((s) => s.pushToast);
@@ -54,7 +54,7 @@ export function UpstreamEditorPage() {
   const [keyCooldownDurationMs, setKeyCooldownDurationMs] = useState(30000);
   const [keyErrorRules, setKeyErrorRules] = useState<UpstreamDTO['key_error_rules']>([]);
 
-  // Populate data saat edit
+  // Populate data when editing
   useEffect(() => {
     if (!settings.data || !isEdit || !editingName) return;
     const target = settings.data.upstreams.find((u) => u.name === editingName);
@@ -126,8 +126,8 @@ export function UpstreamEditorPage() {
     saveSmart.mutate(
       { ...settings.data, models: nextModels },
       {
-        onSuccess: () => pushToast({ type: 'success', title: 'Route dibuat', message: `Model ${modelName} didaftarkan.` }),
-        onError: (e) => pushToast({ type: 'error', title: 'Gagal', message: e instanceof Error ? e.message : 'Error' }),
+        onSuccess: () => pushToast({ type: 'success', title: 'Route created', message: `Model ${modelName} registered.` }),
+        onError: (e) => pushToast({ type: 'error', title: 'Failed', message: e instanceof Error ? e.message : 'Error' }),
       },
     );
   }
@@ -149,8 +149,8 @@ export function UpstreamEditorPage() {
     saveSmart.mutate(
       { ...settings.data, models: [...settings.data.models, ...newModels] },
       {
-        onSuccess: () => pushToast({ type: 'success', title: 'Routes dibuat', message: `${newModels.length} model didaftarkan.` }),
-        onError: (e) => pushToast({ type: 'error', title: 'Gagal', message: e instanceof Error ? e.message : 'Error' }),
+        onSuccess: () => pushToast({ type: 'success', title: 'Routes created', message: `${newModels.length} models registered.` }),
+        onError: (e) => pushToast({ type: 'error', title: 'Failed', message: e instanceof Error ? e.message : 'Error' }),
       },
     );
   }
@@ -162,13 +162,13 @@ export function UpstreamEditorPage() {
     if (referencing.length > 0) {
       pushToast({
         type: 'error',
-        title: 'Tidak dapat menghapus',
-        message: `Upstream ini masih dirujuk oleh ${referencing.length} model: ${referencing.map((m) => m.public_name).join(', ')}. Harap ubah atau hapus rute model tersebut terlebih dahulu.`,
+        title: 'Cannot delete',
+        message: `This upstream is still referenced by ${referencing.length} model(s): ${referencing.map((m) => m.public_name).join(', ')}. Please update or remove those model routes first.`,
       });
       return;
     }
 
-    if (!window.confirm(`Yakin ingin menghapus upstream "${editingName}"?`)) return;
+    if (!window.confirm(`Are you sure you want to delete upstream "${editingName}"?`)) return;
 
     const nextUpstreams = (settings.data.upstreams ?? []).filter((u) => u.name !== editingName);
     saveSmart.mutate(
@@ -177,15 +177,15 @@ export function UpstreamEditorPage() {
         onSuccess: () => {
           pushToast({
             type: 'success',
-            title: 'Upstream dihapus',
-            message: `Upstream '${editingName}' berhasil dihapus.`,
+            title: 'Upstream deleted',
+            message: `Upstream '${editingName}' successfully deleted.`,
           });
           navigate('upstreams');
         },
         onError: (e) => {
           pushToast({
             type: 'error',
-            title: 'Gagal menghapus',
+            title: 'Failed to delete',
             message: e instanceof Error ? e.message : 'Unknown error',
           });
         },
@@ -196,11 +196,11 @@ export function UpstreamEditorPage() {
   // Save Upstream
   function handleSave() {
     if (!general.name.trim()) {
-      pushToast({ type: 'error', title: 'Nama kosong', message: 'Nama upstream wajib diisi.' });
+      pushToast({ type: 'error', title: 'Empty name', message: 'Upstream name is required.' });
       return;
     }
     if (!general.baseUrl.trim()) {
-      pushToast({ type: 'error', title: 'Base URL kosong', message: 'Base URL wajib diisi.' });
+      pushToast({ type: 'error', title: 'Empty Base URL', message: 'Base URL is required.' });
       return;
     }
     if (!settings.data) return;
@@ -255,7 +255,7 @@ export function UpstreamEditorPage() {
       nextList = currentList.map((u) => (u.name === editingName ? payload : u));
     } else {
       if (currentList.some((u) => u.name === payload.name)) {
-        pushToast({ type: 'error', title: 'Nama duplikat', message: `Upstream '${payload.name}' sudah ada.` });
+        pushToast({ type: 'error', title: 'Duplicate name', message: `Upstream '${payload.name}' already exists.` });
         return;
       }
       nextList = [...currentList, payload];
@@ -267,15 +267,15 @@ export function UpstreamEditorPage() {
         onSuccess: () => {
           pushToast({
             type: 'success',
-            title: isEdit ? 'Upstream diperbarui' : 'Upstream dibuat',
-            message: `Upstream '${payload.name}' tersimpan.`,
+            title: isEdit ? 'Upstream updated' : 'Upstream created',
+            message: `Upstream '${payload.name}' saved.`,
           });
           navigate('upstreams');
         },
         onError: (e) => {
           pushToast({
             type: 'error',
-            title: 'Simpan gagal',
+            title: 'Save failed',
             message: e instanceof Error ? e.message : 'Unknown error',
           });
         },
@@ -287,7 +287,7 @@ export function UpstreamEditorPage() {
     <div className="page-col" style={{ paddingBottom: '90px' }}>
       <PageHeader
         title={isEdit ? `Edit Upstream: ${editingName}` : 'Add Upstream'}
-        description="Konfigurasi host upstream, pool kredensial, model auto-routing, dan error policy."
+        description="Configure upstream host, credential pool, model auto-routing, and error policy."
         actions={
           <div style={{ display: 'flex', gap: 8 }}>
             {isEdit && (

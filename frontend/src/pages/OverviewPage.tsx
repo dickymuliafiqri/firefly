@@ -53,7 +53,7 @@ export function OverviewPage() {
                 <tbody>
                   {logs.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="faint">Belum ada request pada sesi ini.</td>
+                      <td colSpan={7} className="faint">No requests recorded in this session.</td>
                     </tr>
                   ) : (
                     logs.map((row) => (

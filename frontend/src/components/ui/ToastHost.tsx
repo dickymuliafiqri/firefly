@@ -26,14 +26,14 @@ function ToastRow({ item }: { item: ToastItem }) {
         <div style={{ fontSize: 13, fontWeight: 600 }}>{item.title}</div>
         {item.message ? <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>{item.message}</div> : null}
       </div>
-      <button className="icon-btn" style={{ width: 26, height: 26 }} onClick={() => dismissToast(item.id)} aria-label="Tutup notifikasi">
+      <button className="icon-btn" style={{ width: 26, height: 26 }} onClick={() => dismissToast(item.id)} aria-label="Dismiss notification">
         <X aria-hidden="true" />
       </button>
     </div>
   );
 }
 
-/** Toast bawah kanan — solid raised + border kiri status, auto-tutup 4s (DESIGN_RULES §4). */
+/** Bottom-right toast — solid raised + status left-border, auto-close 4s (DESIGN_RULES §4). */
 export function ToastHost() {
   const toasts = useUiStore((s) => s.toasts);
   if (toasts.length === 0) return null;

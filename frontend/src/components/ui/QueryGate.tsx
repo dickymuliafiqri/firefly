@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { ApiError } from '@/services/api';
 
-export function QueryLoading({ label = 'Memuat data gateway…' }: { label?: string }) {
+export function QueryLoading({ label = 'Loading gateway data…' }: { label?: string }) {
   return (
     <div className="card">
       <div className="card-body">
@@ -16,13 +16,13 @@ export function QueryError({ error }: { error: unknown }) {
   return (
     <div className="card" style={{ borderLeft: '3px solid var(--danger)' }}>
       <div className="card-body">
-        <div style={{ fontSize: 13, fontWeight: 600 }}>Gagal memuat dari gateway</div>
+        <div style={{ fontSize: 13, fontWeight: 600 }}>Failed to load from gateway</div>
         <div className="hint" style={{ marginTop: 4, fontSize: 12, color: 'var(--muted)' }}>
           {error instanceof Error ? error.message : 'Unknown error'}
         </div>
         {isAuth ? (
           <div className="hint" style={{ marginTop: 4, fontSize: 12, color: 'var(--faint)' }}>
-            Buka Settings → Access untuk login dengan dashboard password.
+            Open Settings → Access to log in with the dashboard password.
           </div>
         ) : null}
       </div>

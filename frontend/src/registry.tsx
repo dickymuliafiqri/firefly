@@ -50,31 +50,31 @@ export interface PageDef {
   id: PageId;
   title: string;
   description: string;
-  group: 'MONITORING' | 'LAYANAN' | 'KONFIGURASI' | 'ALAT' | 'AUTH' | 'EDITOR';
+  group: 'MONITORING' | 'SERVICES' | 'CONFIGURATION' | 'TOOLS' | 'AUTH' | 'EDITOR';
   icon: LucideIcon;
   element: () => ReactNode;
 }
 
 export const PAGES: Record<PageId, PageDef> = {
-  overview:   { id: 'overview',   title: 'Overview',   description: 'Gateway health at a glance.',                     group: 'MONITORING', icon: Gauge,    element: () => <OverviewPage /> },
-  telemetry:  { id: 'telemetry',  title: 'Telemetry',  description: 'Historical throughput & latency.',                group: 'MONITORING', icon: Activity, element: () => <TelemetryPage /> },
-  usage:      { id: 'usage',      title: 'Usage',      description: 'Token ledger per tenant, model, and credential.', group: 'MONITORING', icon: Coins,    element: () => <UsagePage /> },
-  upstreams:  { id: 'upstreams',  title: 'Upstreams',  description: 'Provider fleet and circuit breakers.',            group: 'LAYANAN',    icon: Server,   element: () => <UpstreamsPage /> },
-  providers:  { id: 'providers',  title: 'Providers',  description: 'Stored credential pools and key lifecycle.',      group: 'LAYANAN',    icon: Database, element: () => <ProvidersPage /> },
-  models:     { id: 'models',     title: 'Models',     description: 'Direct models and virtual combos.',               group: 'LAYANAN',    icon: Layers,   element: () => <ModelsPage /> },
-  tenants:    { id: 'tenants',    title: 'Tenants',    description: 'Tenant auth, rate limits, and access.',           group: 'LAYANAN',    icon: Users,    element: () => <TenantsPage /> },
-  settings:   { id: 'settings',   title: 'Settings',   description: 'Global gateway configuration.',                   group: 'KONFIGURASI', icon: Sliders, element: () => <SettingsPage /> },
-  chat:       { id: 'chat',       title: 'Chat',       description: 'SSE chat tester with stream inspector.',          group: 'ALAT',       icon: MessageCircle, element: () => <ChatPage /> },
-  benchmark:  { id: 'benchmark',  title: 'Benchmark',  description: 'Gateway throughput benchmarking.',                group: 'ALAT',       icon: Zap,      element: () => <BenchmarkPage /> },
-  quota:      { id: 'quota',      title: 'Quota',      description: 'Tenant quota tracker with top-up.',               group: 'MONITORING', icon: Coins,    element: () => <QuotaPage /> },
-  console:    { id: 'console',    title: 'Console',    description: 'Structured request execution log.',               group: 'MONITORING', icon: Terminal, element: () => <ConsolePage /> },
-  login:      { id: 'login',      title: 'Sign in',    description: 'Dashboard master password.',                      group: 'AUTH',       icon: Lock,     element: () => <LoginPage /> },
+  overview:   { id: 'overview',   title: 'Overview',   description: 'Gateway health at a glance.',                     group: 'MONITORING',    icon: Gauge,         element: () => <OverviewPage /> },
+  telemetry:  { id: 'telemetry',  title: 'Telemetry',  description: 'Historical throughput & latency.',                group: 'MONITORING',    icon: Activity,      element: () => <TelemetryPage /> },
+  usage:      { id: 'usage',      title: 'Usage',      description: 'Token ledger per tenant, model, and credential.', group: 'MONITORING',    icon: Coins,         element: () => <UsagePage /> },
+  upstreams:  { id: 'upstreams',  title: 'Upstreams',  description: 'Provider fleet and circuit breakers.',            group: 'SERVICES',      icon: Server,        element: () => <UpstreamsPage /> },
+  providers:  { id: 'providers',  title: 'Providers',  description: 'Stored credential pools and key lifecycle.',      group: 'SERVICES',      icon: Database,      element: () => <ProvidersPage /> },
+  models:     { id: 'models',     title: 'Models',     description: 'Direct models and virtual combos.',               group: 'SERVICES',      icon: Layers,        element: () => <ModelsPage /> },
+  tenants:    { id: 'tenants',    title: 'Tenants',    description: 'Tenant auth, rate limits, and access.',           group: 'SERVICES',      icon: Users,         element: () => <TenantsPage /> },
+  settings:   { id: 'settings',   title: 'Settings',   description: 'Global gateway configuration.',                   group: 'CONFIGURATION', icon: Sliders,       element: () => <SettingsPage /> },
+  chat:       { id: 'chat',       title: 'Chat',       description: 'SSE chat tester with stream inspector.',          group: 'TOOLS',         icon: MessageCircle, element: () => <ChatPage /> },
+  benchmark:  { id: 'benchmark',  title: 'Benchmark',  description: 'Gateway throughput benchmarking.',                group: 'TOOLS',         icon: Zap,           element: () => <BenchmarkPage /> },
+  quota:      { id: 'quota',      title: 'Quota',      description: 'Tenant quota tracker with top-up.',               group: 'MONITORING',    icon: Coins,         element: () => <QuotaPage /> },
+  console:    { id: 'console',    title: 'Console',    description: 'Structured request execution log.',               group: 'MONITORING',    icon: Terminal,      element: () => <ConsolePage /> },
+  login:      { id: 'login',      title: 'Sign in',    description: 'Dashboard master password.',                      group: 'AUTH',          icon: Lock,          element: () => <LoginPage /> },
   'upstream-editor': { id: 'upstream-editor', title: 'Upstream Editor', description: 'Full-page upstream configuration.', group: 'EDITOR', icon: Server, element: () => <UpstreamEditorPage /> },
 };
 
-export const GROUP_ORDER: Array<PageDef['group']> = ['MONITORING', 'LAYANAN', 'KONFIGURASI', 'ALAT'];
+export const GROUP_ORDER: Array<PageDef['group']> = ['MONITORING', 'SERVICES', 'CONFIGURATION', 'TOOLS'];
 
-/** Sidebar groups — empat grup, semua 12 halaman aktif. */
+/** Sidebar groups — four active groups across all pages. */
 export const SIDEBAR_GROUPS: Array<{ label: PageDef['group']; pages: PageDef[] }> = GROUP_ORDER.map(
   (label) => ({
     label,

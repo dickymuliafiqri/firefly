@@ -51,15 +51,15 @@ function ProviderForm({
           onSuccess: () => {
             pushToast({
               type: "success",
-              title: "Provider diperbarui",
-              message: `${editing.name} tersimpan.`,
+              title: "Provider updated",
+              message: `${editing.name} saved.`,
             });
             onClose();
           },
           onError: (e) =>
             pushToast({
               type: "error",
-              title: "Gagal",
+              title: "Failed",
               message: e instanceof Error ? e.message : "Unknown",
             }),
         },
@@ -76,15 +76,15 @@ function ProviderForm({
           onSuccess: () => {
             pushToast({
               type: "success",
-              title: "Provider dibuat",
-              message: `${name.trim()} tersimpan.`,
+              title: "Provider created",
+              message: `${name.trim()} saved.`,
             });
             onClose();
           },
           onError: (e) =>
             pushToast({
               type: "error",
-              title: "Gagal",
+              title: "Failed",
               message: e instanceof Error ? e.message : "Unknown",
             }),
         },
@@ -179,14 +179,14 @@ function KeysDrawer({
           setBulk("");
           pushToast({
             type: "success",
-            title: "Keys disimpan",
-            message: `${d.created} baru, ${d.updated} diperbarui.`,
+            title: "Keys saved",
+            message: `${d.created} new, ${d.updated} updated.`,
           });
         },
         onError: (e) =>
           pushToast({
             type: "error",
-            title: "Gagal",
+            title: "Failed",
             message: e instanceof Error ? e.message : "Unknown",
           }),
       },
@@ -257,14 +257,14 @@ function KeysDrawer({
                             pushToast({
                               type: "success",
                               title: key.is_active
-                                ? "Key dinonaktifkan"
-                                : "Key diaktifkan",
-                              message: `Key #${key.id} diperbarui.`,
+                                ? "Key disabled"
+                                : "Key enabled",
+                              message: `Key #${key.id} updated.`,
                             }),
                           onError: (e) =>
                             pushToast({
                               type: "error",
-                              title: "Gagal",
+                              title: "Failed",
                               message:
                                 e instanceof Error ? e.message : "Unknown",
                             }),
@@ -282,13 +282,13 @@ function KeysDrawer({
                         onSuccess: () =>
                           pushToast({
                             type: "success",
-                            title: "Key dihapus",
-                            message: `Key #${key.id} dihapus.`,
+                            title: "Key deleted",
+                            message: `Key #${key.id} deleted.`,
                           }),
                         onError: (e) =>
                           pushToast({
                             type: "error",
-                            title: "Gagal",
+                            title: "Failed",
                             message: e instanceof Error ? e.message : "Unknown",
                           }),
                       })
@@ -300,7 +300,7 @@ function KeysDrawer({
               </div>
             ))}
             {(keys.data?.keys ?? []).length === 0 ? (
-              <span className="hint">Belum ada kredensial.</span>
+              <span className="hint">No credentials yet.</span>
             ) : null}
           </div>
         </div>
@@ -347,7 +347,7 @@ export function ProvidersPage() {
                   <th className="num">Active keys</th>
                   <th>Status</th>
                   <th>Storage</th>
-                  <th className="num">Aksi</th>
+                  <th className="num">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -401,13 +401,13 @@ export function ProvidersPage() {
                               onSuccess: () =>
                                 pushToast({
                                   type: "success",
-                                  title: "Provider dihapus",
-                                  message: `${p.name} dihapus.`,
+                                  title: "Provider deleted",
+                                  message: `${p.name} deleted.`,
                                 }),
                               onError: (e) =>
                                 pushToast({
                                   type: "error",
-                                  title: "Gagal",
+                                  title: "Failed",
                                   message:
                                     e instanceof Error ? e.message : "Unknown",
                                 }),
@@ -423,7 +423,7 @@ export function ProvidersPage() {
                 {rows.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="faint">
-                      Belum ada provider tersimpan.
+                      No stored providers yet.
                     </td>
                   </tr>
                 ) : null}
@@ -436,8 +436,8 @@ export function ProvidersPage() {
             className="hint"
             style={{ marginTop: 10, fontSize: 12, color: "var(--faint)" }}
           >
-            Katalog berjalan dalam mode file-config: kredensial dideklarasikan
-            di upstreams.json dan environment.
+            Catalog is running in file-config mode: credentials are declared in
+            upstreams.json and the environment.
           </p>
         ) : null}
       </QueryGate>

@@ -2,13 +2,13 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 
 interface AuthState {
-  /** Session token dari POST /api/auth/login, atau admin token operator. */
+  /** Session token from POST /api/auth/login, or operator admin token. */
   token: string;
   setToken: (t: string) => void;
   clearToken: () => void;
 }
 
-/** Token persist di localStorage — tidak pernah dikirim ke mana pun selain gateway sendiri. */
+/** Token persisted in localStorage — never transmitted anywhere except the gateway itself. */
 export const useAuthStore = create<AuthState>()(
   persist(
     (set) => ({

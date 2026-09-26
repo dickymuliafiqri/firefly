@@ -53,7 +53,7 @@ export function QuotaPage() {
                   <th className="num">Used</th>
                   <th className="num">Remaining</th>
                   <th>Expires</th>
-                  <th className="num">Aksi</th>
+                  <th className="num">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -92,13 +92,13 @@ export function QuotaPage() {
                                 onSuccess: (d) =>
                                   pushToast({
                                     type: 'success',
-                                    title: 'Top-up tenant',
+                                    title: 'Tenant top-up',
                                     message: d.message || `Remaining ${d.remaining_tokens.toLocaleString()} tokens.`,
                                   }),
                                 onError: (e) =>
                                   pushToast({
                                     type: 'error',
-                                    title: 'Top-up gagal',
+                                    title: 'Top-up failed',
                                     message: e instanceof Error ? e.message : 'Unknown error',
                                   }),
                               },
@@ -113,7 +113,7 @@ export function QuotaPage() {
                 })}
                 {tenants.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="faint">Belum ada tenant.</td>
+                    <td colSpan={7} className="faint">No tenants yet.</td>
                   </tr>
                 ) : null}
               </tbody>

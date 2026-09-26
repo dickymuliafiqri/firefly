@@ -74,15 +74,15 @@ function TopupModal({
         onSuccess: (d) => {
           pushToast({
             type: "success",
-            title: "Kuota ditambah",
-            message: d.message || `${tenant.name} diperbarui.`,
+            title: "Quota added",
+            message: d.message || `${tenant.name} updated.`,
           });
           onClose();
         },
         onError: (e) =>
           pushToast({
             type: "error",
-            title: "Gagal",
+            title: "Failed",
             message: e instanceof Error ? e.message : "Unknown",
           }),
       },
@@ -215,15 +215,15 @@ function TenantForm({ editing, onClose }: TenantFormProps) {
       onSuccess: (d) =>
         pushToast({
           type: "success",
-          title: editing ? "Tenant diperbarui" : "Tenant dibuat",
+          title: editing ? "Tenant updated" : "Tenant created",
           message: d.local
-            ? "Demo mode: perubahan hanya lokal di browser."
-            : "Katalog disinkronkan.",
+            ? "Demo mode: changes are local to browser only."
+            : "Catalog synchronized.",
         }),
       onError: (e) =>
         pushToast({
           type: "error",
-          title: "Simpan gagal",
+          title: "Save failed",
           message: e instanceof Error ? e.message : "Unknown",
         }),
     });
@@ -260,7 +260,7 @@ function TenantForm({ editing, onClose }: TenantFormProps) {
       <Field
         label="API key"
         htmlFor="t-key"
-        hint="Dibuat acak di browser. Salin sekarang — dashboard hanya menampilkan bentuk samar setelah ini."
+        hint="Randomly generated in browser. Copy now — dashboard only displays a masked hint after this."
       >
         <div style={{ display: "flex", gap: 8 }}>
           <input
@@ -302,7 +302,7 @@ function TenantForm({ editing, onClose }: TenantFormProps) {
       <Field
         label="Allowed models"
         htmlFor="t-models"
-        hint="Dipisah koma. Kosongkan untuk mengizinkan semua model katalog."
+        hint="Comma-separated. Leave empty to allow all catalog models."
       >
         <input
           id="t-models"
@@ -314,9 +314,9 @@ function TenantForm({ editing, onClose }: TenantFormProps) {
       </Field>
       <div className="form-grid">
         <Field
-          label="Max tokens (opsional)"
+          label="Max tokens (optional)"
           htmlFor="t-mt"
-          hint="Kuota token total; kosong = tanpa batas."
+          hint="Total token quota; empty = unlimited."
         >
           <input
             id="t-mt"
@@ -327,7 +327,7 @@ function TenantForm({ editing, onClose }: TenantFormProps) {
             onChange={(e) => setMaxTokens(e.target.value)}
           />
         </Field>
-        <Field label="Expires (opsional)" htmlFor="t-exp">
+        <Field label="Expires (optional)" htmlFor="t-exp">
           <input
             id="t-exp"
             type="datetime-local"
@@ -372,8 +372,8 @@ export function TenantsPage() {
     if (!t.api_key || t.api_key.includes("•")) {
       pushToast({
         type: "info",
-        title: "Kunci tidak tersedia",
-        message: "Key hanya ditampilkan sekali saat pembuatan.",
+        title: "Key unavailable",
+        message: "Key is only displayed once upon creation.",
       });
       return;
     }
@@ -382,15 +382,15 @@ export function TenantsPage() {
       .then(() =>
         pushToast({
           type: "success",
-          title: "Key disalin",
-          message: `API key ${t.name} disalin.`,
+          title: "Key copied",
+          message: `API key for ${t.name} copied.`,
         }),
       )
       .catch(() =>
         pushToast({
           type: "error",
-          title: "Gagal menyalin",
-          message: "Clipboard tidak tersedia.",
+          title: "Failed to copy",
+          message: "Clipboard is unavailable.",
         }),
       );
   }
@@ -408,13 +408,13 @@ export function TenantsPage() {
         pushToast({
           type: "success",
           title:
-            nextStatus === "active" ? "Tenant diaktifkan" : "Tenant disuspend",
+            nextStatus === "active" ? "Tenant activated" : "Tenant suspended",
           message: `${t.name} → ${nextStatus}.`,
         }),
       onError: (e) =>
         pushToast({
           type: "error",
-          title: "Gagal",
+          title: "Failed",
           message: e instanceof Error ? e.message : "Unknown",
         }),
     });
@@ -429,15 +429,15 @@ export function TenantsPage() {
       onSuccess: (d) =>
         pushToast({
           type: "success",
-          title: "Tenant dihapus",
+          title: "Tenant deleted",
           message: d.local
-            ? "Demo mode: perubahan hanya lokal di browser."
-            : "Katalog disinkronkan.",
+            ? "Demo mode: changes are local to browser only."
+            : "Catalog synchronized.",
         }),
       onError: (e) =>
         pushToast({
           type: "error",
-          title: "Simpan gagal",
+          title: "Save failed",
           message: e instanceof Error ? e.message : "Unknown",
         }),
     });
@@ -491,7 +491,7 @@ export function TenantsPage() {
                   <th className="num">Models</th>
                   <th className="num">Quota</th>
                   <th>Status</th>
-                  <th className="num">Aksi</th>
+                  <th className="num">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -586,7 +586,7 @@ export function TenantsPage() {
                 {tenants.length === 0 ? (
                   <tr>
                     <td colSpan={8} className="faint">
-                      Belum ada tenant terdaftar.
+                      No tenants registered yet.
                     </td>
                   </tr>
                 ) : null}

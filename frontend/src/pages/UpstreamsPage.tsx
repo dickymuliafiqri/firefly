@@ -143,11 +143,11 @@ export function UpstreamsPage() {
       onSuccess: (d) =>
         pushToast({
           type: 'success',
-          title: nextState ? 'Upstream diaktifkan' : 'Upstream dinonaktifkan',
-          message: d.local ? 'Demo mode: perubahan hanya lokal di browser.' : 'Katalog disinkronkan.',
+          title: nextState ? 'Upstream enabled' : 'Upstream disabled',
+          message: d.local ? 'Demo mode: changes are local to browser only.' : 'Catalog synchronized.',
         }),
       onError: (e) =>
-        pushToast({ type: 'error', title: 'Gagal', message: e instanceof Error ? e.message : 'Unknown' }),
+        pushToast({ type: 'error', title: 'Failed', message: e instanceof Error ? e.message : 'Unknown' }),
     });
   }
 
@@ -157,26 +157,26 @@ export function UpstreamsPage() {
     if (referencing.length > 0) {
       pushToast({
         type: 'error',
-        title: 'Tidak dapat menghapus',
-        message: `Upstream ini masih dirujuk oleh ${referencing.length} model: ${referencing.map((m) => m.public_name).join(', ')}. Harap ubah atau hapus rute model tersebut terlebih dahulu.`,
+        title: 'Cannot delete',
+        message: `This upstream is still referenced by ${referencing.length} model(s): ${referencing.map((m) => m.public_name).join(', ')}. Please update or remove those model routes first.`,
       });
       return;
     }
 
-    if (!window.confirm(`Yakin ingin menghapus upstream "${name}"?`)) return;
+    if (!window.confirm(`Are you sure you want to delete upstream "${name}"?`)) return;
 
     const nextUpstreams = (settings.data.upstreams ?? []).filter((u) => u.name !== name);
     save.mutate(withSettings(settings.data, { upstreams: nextUpstreams }), {
       onSuccess: () => {
         pushToast({
           type: 'success',
-          title: 'Upstream dihapus',
-          message: `Upstream '${name}' berhasil dihapus.`,
+          title: 'Upstream deleted',
+          message: `Upstream '${name}' successfully deleted.`,
         });
         setSelected(null);
       },
       onError: (e) =>
-        pushToast({ type: 'error', title: 'Gagal', message: e instanceof Error ? e.message : 'Unknown' }),
+        pushToast({ type: 'error', title: 'Failed', message: e instanceof Error ? e.message : 'Unknown' }),
     });
   }
 
@@ -363,8 +363,8 @@ export function UpstreamsPage() {
             <div className="card-body text-center" style={{ padding: '48px 24px' }}>
               <span className="text-faint text-sm">
                 {search || protocolFilter !== 'all' || statusFilter !== 'all'
-                  ? 'Tidak ada upstream yang cocok dengan filter atau pencarian.'
-                  : 'Belum ada upstream terdaftar.'}
+                  ? 'No upstreams match the filter or search.'
+                  : 'No upstreams registered yet.'}
               </span>
             </div>
           </div>

@@ -10,7 +10,7 @@ export interface BadgeProps {
   title?: string;
 }
 
-/** Status selalu berteks — tidak pernah hanya lewat warna (DESIGN_RULES §8). */
+/** Status always includes text — never communicated by color alone (DESIGN_RULES §8). */
 export function Badge({ tone = 'neutral', children, className, title }: BadgeProps) {
   return (
     <span className={cn('badge', tone, className)} title={title}>

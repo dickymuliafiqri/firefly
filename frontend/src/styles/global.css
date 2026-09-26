@@ -4,30 +4,30 @@
 
 /* ============================================================
    FIREFLY FRONTEND-NEW — GLOBAL STYLES
-   Port 1:1 dari mockup yang disetujui (frontend-new/mockup/styles.css).
-   Sumber token: frontend-new/DESIGN_RULES.md §2 (identik).
-   Audit: 0 backdrop-blur, 0 filter, 0 glow; box-shadow hanya 0 1px 2px.
+   1:1 port from approved mockup (frontend-new/mockup/styles.css).
+   Token source: frontend-new/DESIGN_RULES.md §2 (identical).
+   Audit: 0 backdrop-blur, 0 filter, 0 glow; box-shadow 0 1px 2px only.
    ============================================================ */
 
 /* ---------- Design tokens ---------- */
 :root {
-    /* Langit (background shell) */
+    /* Sky (shell background) */
     --sky-top: #020617;
     --sky-mid: #08152a;
 
-    /* Permukaan SOLID */
+    /* SOLID surfaces */
     --surface-page: #050b18;
     --surface-card: #0b1322;
     --surface-raised: #101a2c;
     --surface-input: #0d1524;
     --surface-overlay: #0a1120;
 
-    /* Teks */
+    /* Text */
     --ink: #e8eef9;
     --muted: #93a5c4;
     --faint: #64748b;
 
-    /* Aksen biolum — hanya untuk interaksi/status */
+    /* Biolum accent — interactions/status only */
     --biolum: #bef264;
     --biolum-bright: #f0ffb4;
     --biolum-ink: #0a1220;
@@ -38,7 +38,7 @@
     --danger: #f43f5e;
     --info: #06b6d4;
 
-    /* Garis */
+    /* Borders */
     --line: #1d2c47;
     --line-strong: #2a3a55;
 
@@ -220,7 +220,7 @@ a:hover {
     flex-shrink: 0;
 }
 
-/* Backdrop solid untuk drawer mobile */
+/* Solid backdrop for mobile drawer */
 .nav-backdrop {
     position: fixed;
     inset: 0;
@@ -314,7 +314,7 @@ a:hover {
     width: 100%;
     padding: 24px;
     position: relative;
-    z-index: 1; /* di atas sky global (fixed, z-0) */
+    z-index: 1; /* above global sky (fixed, z-0) */
 }
 
 .page-col {
@@ -347,7 +347,7 @@ a:hover {
 }
 
 /* ============================================================
-   KOMPONEN DASAR
+   BASE COMPONENTS
    ============================================================ */
 
 /* ---------- Buttons ---------- */
@@ -544,7 +544,7 @@ a:hover {
     cursor: not-allowed;
 }
 
-/* ---------- KPI ringkasan (maks 4 per halaman) ---------- */
+/* ---------- Summary KPI (max 4 per page) ---------- */
 .kpi-grid {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
@@ -629,7 +629,7 @@ td.faint {
     color: var(--faint);
 }
 
-/* ---------- Badge (status selalu berteks) ---------- */
+/* ---------- Badge (status always has text) ---------- */
 .badge {
     display: inline-flex;
     align-items: center;
@@ -971,7 +971,7 @@ input:disabled {
 }
 
 /* ============================================================
-   EFEK: SKY GLOBAL + SCENERY (Keputusan B — DESIGN_RULES §7)
+   EFFECT: GLOBAL SKY + SCENERY (Decision B — DESIGN_RULES §7)
    ============================================================ */
 .sky-global {
     position: fixed;
@@ -1060,7 +1060,7 @@ input:disabled {
     will-change: transform;
 }
 
-/* Layar dengan dekorasi perlu konten di atas scenery */
+/* Decorated screens require content above scenery */
 .has-decor {
     position: relative;
 }
@@ -1070,7 +1070,7 @@ input:disabled {
 }
 
 /* ============================================================
-   LAYAR KHUSUS
+   SPECIAL SCREENS
    ============================================================ */
 
 /* ---------- Overview hero ---------- */
@@ -1095,7 +1095,7 @@ input:disabled {
     max-width: 640px;
 }
 
-/* ---------- Chart statis ---------- */
+/* ---------- Static chart ---------- */
 .chart {
     display: block;
     width: 100%;
@@ -1231,7 +1231,7 @@ input:disabled {
     background: var(--line);
 }
 
-/* ---------- Progress statis ---------- */
+/* ---------- Static progress ---------- */
 .progress {
     height: 10px;
     border-radius: 999px;
@@ -1526,7 +1526,7 @@ input:disabled {
 }
 
 /* ============================================================
-   LOGIN SCREEN (F8) — Solid, terpusat, tanpa blur
+   LOGIN SCREEN (F8) — Solid, centered, blur-free
    ============================================================ */
 .login-screen {
     min-height: 100vh;
@@ -1647,7 +1647,7 @@ input:disabled {
 }
 
 /* ============================================================
-   REDUCED MOTION — semua efek mati
+   REDUCED MOTION — all effects disabled
    ============================================================ */
 @media (prefers-reduced-motion: reduce) {
     *,

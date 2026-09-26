@@ -2,8 +2,8 @@ import { useParallax } from '@/lib/parallax';
 import forestSvg from '@/assets/forest.svg';
 
 /**
- * Scenery strip — hanya di Overview & EmptyState (DESIGN_RULES §7, Keputusan B).
- * Satu lapis img, depth:8, di belakang konten (konten .page-col z-index 1).
+ * Scenery strip — Overview & EmptyState only (DESIGN_RULES §7, Decision B).
+ * Single img layer, depth:8, behind content (.page-col content z-index 1).
  */
 export function SceneryStrip() {
   const layerRef = useParallax<HTMLDivElement>(8);

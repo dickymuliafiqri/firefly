@@ -124,12 +124,12 @@ export function KeysTab({
 
     onKeysChange([...keys, ...newEntries]);
     setBulkInput('');
-    pushToast({ type: 'success', title: 'Keys ditambahkan', message: `${lines.length} key dimasukkan ke pool.` });
+    pushToast({ type: 'success', title: 'Keys added', message: `${lines.length} key(s) added to pool.` });
   }
 
   async function testKey(keyId: string, secret: string, ref?: string) {
     if (!baseUrl) {
-      pushToast({ type: 'error', title: 'Base URL kosong', message: 'Tentukan Base URL sebelum memeriksa key.' });
+      pushToast({ type: 'error', title: 'Empty Base URL', message: 'Specify a Base URL before testing keys.' });
       return;
     }
     setKeyChecks((prev) => ({ ...prev, [keyId]: { status: 'checking' } }));
@@ -196,7 +196,7 @@ export function KeysTab({
       for (const id of failedIds) delete next[id];
       return next;
     });
-    pushToast({ type: 'success', title: 'Keys dibersihkan', message: `${failedIds.size} key gagal dihapus.` });
+    pushToast({ type: 'success', title: 'Keys cleaned', message: `${failedIds.size} failed key(s) removed.` });
   }
 
   const filteredKeys = keys.filter((k) => {
@@ -225,8 +225,8 @@ export function KeysTab({
         </div>
         <div className="card-body">
           <p className="hint" style={{ marginBottom: 12 }}>
-            Hubungkan upstream ini langsung ke pool kredensial Turso. Gateway mengambil key secara otomatis tanpa
-            menyimpan secret di browser.
+            Bind this upstream directly to a Turso credential pool. The gateway retrieves keys automatically without
+            storing secrets in the browser.
           </p>
 
           {boundProvider ? (
@@ -240,9 +240,9 @@ export function KeysTab({
                 fontSize: 12,
               }}
             >
-              <span className="text-ink font-medium">Terkoneksi ke Provider #{boundProvider.id} ({boundProvider.name}): </span>
+              <span className="text-ink font-medium">Connected to Provider #{boundProvider.id} ({boundProvider.name}): </span>
               <span className="text-muted">
-                {boundProvider.active_keys} kunci aktif terdaftar di Turso. Keyring gateway menyinkronkan dan merotasi kunci ini secara otomatis.
+                {boundProvider.active_keys} active keys registered in Turso. The gateway keyring automatically syncs and rotates these keys.
               </span>
             </div>
           ) : null}
@@ -253,7 +253,7 @@ export function KeysTab({
               onChange={(e) => onProviderChange(e.target.value ? Number(e.target.value) : null)}
               style={{ flex: 1 }}
             >
-              <option value="">-- Tanpa Database Binding (Gunakan Manual Keys di bawah) --</option>
+              <option value="">-- No Database Binding (Use Manual Keys below) --</option>
               {(tursoProviders.data?.providers ?? []).map((p) => (
                 <option key={p.id} value={p.id}>
                   #{p.id} {p.name} ({p.active_keys} active keys) — {p.base_url}
@@ -280,8 +280,8 @@ export function KeysTab({
               value={keyStrategy}
               onChange={(e) => onStrategyChange(e.target.value as 'round_robin' | 'least_inflight')}
             >
-              <option value="round_robin">round_robin (distribusi bergilir seimbang)</option>
-              <option value="least_inflight">least_inflight (beban koneksi in-flight terendah)</option>
+              <option value="round_robin">round_robin (balanced alternating distribution)</option>
+              <option value="least_inflight">least_inflight (lowest in-flight connection load)</option>
             </select>
           </Field>
         </div>
@@ -292,7 +292,7 @@ export function KeysTab({
           <div>
             <h2>Manual Credential Pool</h2>
             <span className="text-xs text-faint" style={{ marginTop: 2, display: 'block' }}>
-              {keys.length} {keys.length === 1 ? 'credential' : 'credentials'} terdaftar di pool lokal
+              {keys.length} {keys.length === 1 ? 'credential' : 'credentials'} registered in local pool
             </span>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
@@ -353,7 +353,7 @@ export function KeysTab({
           )}
 
           <div style={{ marginBottom: 16 }}>
-            <Field label="Bulk paste API keys (satu key per baris)" htmlFor="u-bulk-keys">
+            <Field label="Bulk paste API keys (one key per line)" htmlFor="u-bulk-keys">
               <textarea
                 id="u-bulk-keys"
                 rows={3}
@@ -386,7 +386,7 @@ export function KeysTab({
                 />
                 <input
                   type="search"
-                  placeholder="Cari ref atau hint key…"
+                  placeholder="Search ref or key hint…"
                   value={search}
                   onChange={(e) => {
                     setSearch(e.target.value);
@@ -417,7 +417,7 @@ export function KeysTab({
                 {filteredKeys.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="faint">
-                      {keys.length === 0 ? 'Belum ada key manual di pool ini.' : 'Tidak ada key yang cocok dengan filter.'}
+                      {keys.length === 0 ? 'No manual keys in this pool yet.' : 'No keys match the filter.'}
                     </td>
                   </tr>
                 ) : (

@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 340" preserveAspectRatio="xMidYMax slice">
-  <!-- Lapisan back: pinus kecil, warna paling jauh -->
+  <!-- Back layer: small pines, most distant tone -->
   <g fill="#101c38">
     <path d="M70 210 L110 130 L150 210 Z M78 250 L110 185 L142 250 Z M70 260 H150 V340 H70 Z"/>
     <path d="M255 200 L300 110 L345 200 Z M265 245 L300 170 L335 245 Z M255 255 H345 V340 H255 Z"/>
@@ -10,7 +10,7 @@
     <path d="M1250 212 L1290 135 L1330 212 Z M1258 255 L1290 195 L1322 255 Z M1250 265 H1330 V340 H1250 Z"/>
   </g>
 
-  <!-- Lapisan mid: pinus + blob, warna menengah -->
+  <!-- Mid layer: pines + blobs, mid tone -->
   <g fill="#0d1730">
     <path d="M120 190 L180 80 L240 190 Z M135 245 L180 150 L225 245 Z M120 255 H240 V340 H120 Z"/>
     <ellipse cx="310" cy="300" rx="90" ry="55"/>
@@ -24,7 +24,7 @@
     <ellipse cx="1360" cy="302" rx="88" ry="50"/>
   </g>
 
-  <!-- Lapisan front: paling gelap, paling besar -->
+  <!-- Front layer: darkest and largest -->
   <g fill="#0a1226">
     <path d="M60 220 L150 40 L240 220 Z M85 300 L150 160 L215 300 Z M60 310 H240 V340 H60 Z"/>
     <path d="M230 215 L300 90 L370 215 Z M250 295 L300 190 L350 295 Z M230 305 H370 V340 H230 Z"/>
@@ -36,7 +36,7 @@
     <path d="M1290 222 L1370 95 L1450 222 Z M1312 300 L1370 200 L1428 300 Z M1290 310 H1450 V340 H1290 Z"/>
   </g>
 
-  <!-- Rumput: deretan tuft kecil di garis tanah -->
+  <!-- Grass: rows of small tufts along the ground line -->
   <g fill="#0a1226">
     <path d="M0 330 q6 -14 12 0 q6 -10 12 0 q6 -14 12 0 q6 -10 12 0 q6 -14 12 0 v10 h-60 z"/>
     <path d="M120 332 q6 -12 12 0 q6 -10 12 0 q6 -13 12 0 q6 -10 12 0 v10 h-48 z"/>

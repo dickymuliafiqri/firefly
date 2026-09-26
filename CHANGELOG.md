@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.20.1] - 2026-09-26
+
+### Changed
+
+- **Frontend Copy & Comment Standardization to English (`frontend/src/**`)**: Removed all remaining Indonesian (Bahasa Indonesia) text from the React dashboard — user-facing labels, toast notifications, empty states, form placeholders/hints, table headers, dialog copy, keyboard metadata strings, source-code comments, JSDoc blocks, CSS section comments, and inline SVG documentation.
+  - Pages: `App`, `BenchmarkPage`, `ChatPage`, `ConsolePage`, `LoginPage`, `ModelsPage`, `OverviewPage`, `ProvidersPage`, `QuotaPage`, `SettingsPage`, `TelemetryPage`, `TenantsPage`, `UpstreamEditorPage`, `UpstreamsPage`, `UsagePage`.
+  - Shell/UI components: `AppShell`, `Sidebar`, `Topbar`, `SkyBackground`, `SceneryStrip`, `Badge`, `Controls`, `Drawer`, `QueryGate`, `ToastHost`, and the `upstream/*` tabs (`GeneralTab`, `KeysTab`, `ModelsTab`, `ResilienceTab`, `UpstreamDrawer`).
+  - Libraries/services/styles/assets: `lib/router.ts`, `lib/parallax.ts`, `lib/session.ts`, `state/auth.ts`, `registry.tsx`, `services/api.ts`, `styles/global.css`, `vite.config.ts`, `assets/forest.svg`.
+  - Documentation accuracy fix: the `services/api.ts` module header and `useSaveSettingsSmart` JSDoc no longer reference the removed `@/data/mock` module; mocks are described as the `MOCK PAYLOADS` block defined inside `api.ts` itself.
+  - Purely textual change: no behavioral, routing, DTO-contract, or API changes — identifiers, endpoint paths, and payload shapes are untouched (`npx tsc --noEmit` and `vite build` both pass).
+
 ## [1.20.0] - 2026-09-26
 
 ### Added

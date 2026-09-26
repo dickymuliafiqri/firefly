@@ -8,7 +8,7 @@ export interface DrawerProps {
   children: ReactNode;
 }
 
-/** Panel kanan 420px solid overlay — Escape + backdrop menutup, focus dipindah ke tombol tutup. */
+/** 420px solid overlay right panel — Escape + backdrop closes, focus moved to close button. */
 export function Drawer({ open, onClose, title, children }: DrawerProps) {
   const closeRef = useRef<HTMLButtonElement>(null);
   const lastFocus = useRef<Element | null>(null);

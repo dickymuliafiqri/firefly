@@ -6,7 +6,7 @@ import { Topbar } from "@/components/shell/Topbar";
 import { ToastHost } from "@/components/ui/ToastHost";
 import { SIDEBAR_GROUPS } from "@/registry";
 
-const VERSION = "v1.20.0";
+const VERSION = "v1.20.1";
 
 interface AppShellProps {
   page: PageDef;
@@ -19,7 +19,7 @@ export function AppShell({ page, children }: AppShellProps) {
 
   return (
     <div className="app">
-      {/* Sky global — atmosfer di semua halaman (Keputusan B, DESIGN_RULES §7) */}
+      {/* Global sky — atmosphere across all pages (Decision B, DESIGN_RULES §7) */}
       <SkyBackground />
 
       <Sidebar groups={SIDEBAR_GROUPS} activeId={page.id} version={VERSION} />

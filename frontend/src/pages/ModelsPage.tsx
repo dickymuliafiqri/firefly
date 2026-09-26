@@ -55,13 +55,13 @@ function ModelForm({ editing, onClose }: ModelFormProps) {
       setMaxContext('');
       setCaps({ stream: true, tools: false, vision: false, json_mode: false, embeddings: false, audio: false });
     }
-    // Hanya inisialisasi saat target edit berubah. settings.data di-refetch tiap
-    // 5 detik; memasukkannya ke dependency akan menghapus input pengguna.
+    // Only initialize when edit target changes. settings.data is refetched every
+    // 5 seconds; adding it to dependencies would clear user input.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editing]);
 
-  // Isi upstream default hanya bila masih kosong (mis. drawer terbuka sebelum
-  // settings selesai dimuat) — tidak pernah menimpa pilihan user.
+  // Populate default upstream only if still empty (e.g. drawer opened before
+  // settings finished loading) — never overwrites user choice.
   useEffect(() => {
     if (!editing && !upstream && (settings.data?.upstreams.length ?? 0) > 0) {
       setUpstream(settings.data!.upstreams[0].name);
@@ -88,11 +88,11 @@ function ModelForm({ editing, onClose }: ModelFormProps) {
       onSuccess: (d) =>
         pushToast({
           type: 'success',
-          title: editing ? 'Model diperbarui' : 'Model ditambahkan',
-          message: d.local ? 'Demo mode: perubahan hanya lokal di browser.' : 'Katalog disinkronkan.',
+          title: editing ? 'Model updated' : 'Model added',
+          message: d.local ? 'Demo mode: changes are local to browser only.' : 'Catalog synchronized.',
         }),
       onError: (e) =>
-        pushToast({ type: 'error', title: 'Simpan gagal', message: e instanceof Error ? e.message : 'Unknown' }),
+        pushToast({ type: 'error', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown' }),
     });
     onClose();
   }
@@ -111,13 +111,13 @@ function ModelForm({ editing, onClose }: ModelFormProps) {
           </select>
         </Field>
       </div>
-      <Field label="Upstream model" htmlFor="m-um" hint="Nama model privat di sisi provider.">
+      <Field label="Upstream model" htmlFor="m-um" hint="Private model name on provider side.">
         <input id="m-um" value={upstreamModel} className="mono" placeholder="gpt-4o-2024-11-20" onChange={(e) => setUpstreamModel(e.target.value)} />
       </Field>
-      <Field label="Fallback upstreams (opsional)" htmlFor="m-fb" hint="Dipisah koma; dipakai saat breaker upstream utama open.">
+      <Field label="Fallback upstreams (optional)" htmlFor="m-fb" hint="Comma-separated; used when primary upstream breaker is open.">
         <input id="m-fb" value={fallbacks} placeholder="openai-main, antigravity-prod" onChange={(e) => setFallbacks(e.target.value)} />
       </Field>
-      <Field label="Max context tokens (opsional)" htmlFor="m-ctx">
+      <Field label="Max context tokens (optional)" htmlFor="m-ctx">
         <input id="m-ctx" type="number" value={maxContext} placeholder="128000" onChange={(e) => setMaxContext(e.target.value)} />
       </Field>
       <div>
@@ -195,13 +195,13 @@ function ComboForm({ editing, onClose }: { editing: ComboDTO | null; onClose: ()
       onSuccess: (d) => {
         pushToast({
           type: 'success',
-          title: editing ? 'Combo diperbarui' : 'Combo dibuat',
-          message: d.local ? 'Demo mode: perubahan hanya lokal di browser.' : 'Katalog disinkronkan.',
+          title: editing ? 'Combo updated' : 'Combo created',
+          message: d.local ? 'Demo mode: changes are local to browser only.' : 'Catalog synchronized.',
         });
         onClose();
       },
       onError: (e) =>
-        pushToast({ type: 'error', title: 'Simpan gagal', message: e instanceof Error ? e.message : 'Unknown' }),
+        pushToast({ type: 'error', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown' }),
     });
   }
 
@@ -217,7 +217,7 @@ function ComboForm({ editing, onClose }: { editing: ComboDTO | null; onClose: ()
           <option value="failover">failover</option>
         </select>
       </Field>
-      <Field label="Member models" htmlFor="c-members" hint="Nama model publik, dipisah koma, sesuai urutan prioritas.">
+      <Field label="Member models" htmlFor="c-members" hint="Public model names, comma-separated, in priority order.">
         <input id="c-members" value={members} placeholder="gpt-4o, claude-sonnet-4-5" onChange={(e) => setMembers(e.target.value)} />
       </Field>
       <Field label="Enabled" htmlFor="c-en">
@@ -266,10 +266,10 @@ export function ModelsPage() {
         pushToast({
           type: 'success',
           title: okMsg,
-          message: d.local ? 'Demo mode: perubahan hanya lokal di browser.' : 'Katalog disinkronkan.',
+          message: d.local ? 'Demo mode: changes are local to browser only.' : 'Catalog synchronized.',
         }),
       onError: (e) =>
-        pushToast({ type: 'error', title: 'Simpan gagal', message: e instanceof Error ? e.message : 'Unknown' }),
+        pushToast({ type: 'error', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown' }),
     });
   }
 
@@ -334,7 +334,7 @@ export function ModelsPage() {
                     <th>Upstream model</th>
                     <th className="num">Fallbacks</th>
                     <th>Status</th>
-                    <th className="num">Aksi</th>
+                    <th className="num">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -364,13 +364,13 @@ export function ModelsPage() {
                           onClick={() =>
                             mutateModels(
                               (list) => list.map((x) => (x.public_name === m.public_name ? { ...x, enabled: x.enabled === false } : x)),
-                              m.enabled === false ? 'Model diaktifkan' : 'Model dinonaktifkan',
+                              m.enabled === false ? 'Model enabled' : 'Model disabled',
                             )
                           }
                         >
                           {m.enabled === false ? 'Enable' : 'Disable'}
                         </button>{' '}
-                        <button className="btn btn-ghost" onClick={() => mutateModels((list) => list.filter((x) => x.public_name !== m.public_name), 'Model dihapus')}>
+                        <button className="btn btn-ghost" onClick={() => mutateModels((list) => list.filter((x) => x.public_name !== m.public_name), 'Model deleted')}>
                           Delete
                         </button>
                       </td>
@@ -378,7 +378,7 @@ export function ModelsPage() {
                   ))}
                   {models.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="faint">Katalog model kosong.</td>
+                      <td colSpan={6} className="faint">Model catalog is empty.</td>
                     </tr>
                   ) : null}
                 </tbody>
@@ -411,8 +411,8 @@ export function ModelsPage() {
                         if (!settings.data) return;
                         const nextCombos = (settings.data.combos ?? []).filter((c) => c.name !== combo.name);
                         save.mutate(withSettings(settings.data, { combos: nextCombos }), {
-                          onSuccess: () => pushToast({ type: 'success', title: 'Combo dihapus', message: `${combo.name} dihapus.` }),
-                          onError: (e) => pushToast({ type: 'error', title: 'Gagal', message: e instanceof Error ? e.message : 'Unknown' }),
+                          onSuccess: () => pushToast({ type: 'success', title: 'Combo deleted', message: `${combo.name} deleted.` }),
+                          onError: (e) => pushToast({ type: 'error', title: 'Failed', message: e instanceof Error ? e.message : 'Unknown' }),
                         });
                       }}
                     >
@@ -444,7 +444,7 @@ export function ModelsPage() {
             {combos.length === 0 ? (
               <div className="card">
                 <div className="card-body">
-                  <span className="faint" style={{ fontSize: 13 }}>Belum ada combo virtual.</span>
+                  <span className="faint" style={{ fontSize: 13 }}>No virtual combos yet.</span>
                 </div>
               </div>
             ) : null}

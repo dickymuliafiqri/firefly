@@ -261,7 +261,7 @@ export function UpstreamDrawer({
               ))}
               {selected.slots.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="faint">Belum ada slot terdaftar.</td>
+                  <td colSpan={4} className="faint">No slots registered yet.</td>
                 </tr>
               ) : null}
             </tbody>
@@ -302,7 +302,7 @@ export function UpstreamDrawer({
 
         {onDelete ? (
           <div className="pt-4 mt-4 border-t border-[var(--line)] flex justify-between items-center">
-            <span className="text-xs text-faint">Hapus upstream dan konfigurasi terkait</span>
+            <span className="text-xs text-faint">Delete upstream and associated configurations</span>
             <button
               type="button"
               className="btn btn-ghost text-xs"

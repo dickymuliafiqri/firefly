@@ -43,8 +43,8 @@ export function BenchmarkPage() {
     .map((m) => m.public_name);
   const activeModel = model || modelOptions[0] || 'gpt-4o';
 
-  // Auto-isi API key dari tenant pertama yang punya plaintext key, hanya bila
-  // pengguna belum pernah mengisi field ini.
+  // Auto-fill API key from the first tenant with a plaintext key, only if
+  // user has not manually filled this field yet.
   useEffect(() => {
     if (apiKey || !settings.data) return;
     const first = settings.data.tenants.find((t) => t.api_key && !t.api_key.includes('•'));
@@ -80,16 +80,16 @@ export function BenchmarkPage() {
     if (!apiKey.trim()) {
       pushToast({
         type: 'error',
-        title: 'API key tenant diperlukan',
-        message: 'Isi field Tenant API Key (sk-gw-…) agar gateway bisa mengautentikasi permintaan.',
+        title: 'Tenant API key required',
+        message: 'Enter the Tenant API Key (sk-gw-…) so the gateway can authenticate the request.',
       });
       return;
     }
     if (!(await hasGateway())) {
       pushToast({
         type: 'info',
-        title: 'Benchmark butuh backend',
-        message: 'Origin ini tidak menjalankan gateway Firefly — jalankan Go gateway lalu buka dashboard dari sana.',
+        title: 'Benchmark requires backend',
+        message: 'This origin is not running a Firefly gateway — start the Go gateway and access the dashboard from there.',
       });
       return;
     }
@@ -164,7 +164,7 @@ export function BenchmarkPage() {
               <Field
                 label="Tenant API key"
                 htmlFor="bm-key"
-                hint="sk-gw-… milik tenant; disimpan di browser ini saja."
+                hint="Tenant sk-gw-… key; stored in this browser only."
               >
                 <input
                   id="bm-key"
@@ -185,10 +185,10 @@ export function BenchmarkPage() {
                   ))}
                 </select>
               </Field>
-              <Field label="Request count" htmlFor="bm-requests" hint="Total request non-stream, max_tokens 8.">
+              <Field label="Request count" htmlFor="bm-requests" hint="Total non-streaming requests, max_tokens 8.">
                 <input id="bm-requests" value={count} className="mono" onChange={(e) => setCount(e.target.value)} />
               </Field>
-              <Field label="Concurrency" htmlFor="bm-conc" hint="Worker paralel (1–100).">
+              <Field label="Concurrency" htmlFor="bm-conc" hint="Parallel workers (1–100).">
                 <input id="bm-conc" value={conc} className="mono" onChange={(e) => setConc(e.target.value)} />
               </Field>
             </div>
@@ -219,7 +219,7 @@ export function BenchmarkPage() {
         <div className="card">
           <div className="card-header">
             <h2>Results</h2>
-            <span className="mono faint">{result ? `end-to-end · ${fmtMs(result.elapsedMs)} total` : 'menunggu run'}</span>
+            <span className="mono faint">{result ? `end-to-end · ${fmtMs(result.elapsedMs)} total` : 'waiting for run'}</span>
           </div>
           <div className="card-body tight table-wrap">
             <table>

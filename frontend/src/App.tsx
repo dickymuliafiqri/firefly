@@ -17,7 +17,7 @@ export default function App() {
   const token = useAuthStore((s) => s.token);
   const [authChecked, setAuthChecked] = useState(false);
 
-  // 1. Cek sesi saat mount
+  // 1. Check session on mount
   useEffect(() => {
     let canceled = false;
     async function check() {
@@ -31,7 +31,7 @@ export default function App() {
           handleSessionInvalid();
         }
       } catch (err) {
-        // 401 = sesi mati. Putus jaringan bukan sesi invalid — token tetap disimpan.
+        // 401 = session dead. Network drop is not invalid session — keep token stored.
         if (!canceled && err instanceof ApiError && err.status === 401) {
           handleSessionInvalid();
         }
@@ -45,7 +45,7 @@ export default function App() {
     };
   }, [token]);
 
-  // 2. Auth Guard: Jika belum login dan bukan di halaman login, redirect ke login
+  // 2. Auth Guard: If not logged in and not on login page, redirect to login
   useEffect(() => {
     if (!authChecked) return;
     if (!token && pageId !== 'login') {
@@ -53,14 +53,14 @@ export default function App() {
     }
   }, [authChecked, token, pageId]);
 
-  // 3. Masuk halaman: judul dokumen + scroll ke atas + tutup nav mobile
+  // 3. Page mount: document title + scroll to top + close mobile sidebar
   useEffect(() => {
     document.title = 'Firefly — ' + def.title;
     window.scrollTo(0, 0);
     closeSidebar();
   }, [def.title, closeSidebar]);
 
-  // Halaman login mandiri: render tanpa shell/sidebar
+  // Standalone login page: render without shell/sidebar
   if (pageId === 'login') {
     return (
       <>
@@ -70,12 +70,12 @@ export default function App() {
     );
   }
 
-  // Tanpa sesi / sesi sedang diverifikasi: tampilkan papan tunggu singkat
-  // (shell tidak boleh berkedip sebelum guard redirect ke #login).
+  // Without session / verifying session: show brief loading state
+  // (shell should not flicker before guard redirects to #login).
   if (!token || !authChecked) {
     return (
       <div className="login-screen" aria-busy="true">
-        <span className="faint">Memeriksa sesi…</span>
+        <span className="faint">Checking session…</span>
         <ToastHost />
       </div>
     );

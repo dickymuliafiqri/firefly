@@ -1,11 +1,11 @@
 /**
- * api.ts — Port kontrak dari frontend/src/services/api.ts (app lama).
- * Kebenaran tipe: ./schema.ts (salinan verbatim dari app lama) + DTO Go backend.
+ * api.ts — Contract port from legacy frontend.
+ * Type source of truth: ./schema.ts (verbatim copy from legacy app) + Go backend DTOs.
  *
- * Prinsip F4: kontrak backend TIDAK diubah. Base URL '' (same-origin, dev via proxy).
- * Saat gateway tidak terjangkau (dev standalone), query hooks jatuh ke typed mock
- * dari @/data/mock agar UI tetap dapat ditinjau; ApiError asli (401/409/5xx) tetap
- * dilempar ke UI.
+ * Principle F4: Backend contracts are NOT altered. Base URL '' (same-origin, dev via proxy).
+ * When gateway is unreachable (standalone dev), query hooks fall back to the typed
+ * MOCK PAYLOADS defined at the bottom of this module so the UI can still be reviewed;
+ * real ApiErrors (401/409/5xx) are still forwarded to the UI.
  */
 import { QueryClient, useQuery, useMutation } from '@tanstack/react-query';
 import type {
@@ -63,15 +63,15 @@ export class ApiError extends Error {
   }
 }
 
-/** True hanya untuk kegagalan transport (gateway tidak ada) — bukan HTTP error. */
+/** True only for transport failures (gateway unreachable) — not HTTP errors. */
 export function isNetworkError(err: unknown): boolean {
   return err instanceof TypeError;
 }
 
 /**
- * Probe origin sekali: apakah ada Firefly gateway di belakang origin ini?
- * Gateway selalu menjawab /healthz dengan 200 ("ok") atau 503 (draining).
- * 404/HTML = origin tanpa gateway (mis. static host demo) → hooks pakai mock.
+ * Probe origin once: is there a Firefly gateway behind this origin?
+ * Gateway always answers /healthz with 200 ("ok") or 503 (draining).
+ * 404/HTML = origin without gateway (e.g. demo static host) → hooks use mock.
  */
 let gatewayProbe: Promise<boolean> | null = null;
 
@@ -90,7 +90,7 @@ async function request<T>(
   init?: RequestInit & { token?: string; tolerateUnauthorized?: boolean },
 ): Promise<T> {
   if (!(await hasGateway())) {
-    throw new ApiError(503, 'Demo mode: gateway Firefly tidak terjangkau dari origin ini.');
+    throw new ApiError(503, 'Demo mode: Firefly gateway is unreachable from this origin.');
   }
   const { token = getAdminToken(), tolerateUnauthorized = false, ...rest } = init ?? {};
   const headers: Record<string, string> = {
@@ -110,7 +110,7 @@ async function request<T>(
         ? rawError
         : (rawError as { message?: string })?.message ??
           'Unauthorized: Valid Admin Token required';
-    // 401 dari ganti password = password lama salah, bukan sesi mati.
+    // 401 from a password change = wrong current password, not a dead session.
     const credentialMismatch = /incorrect current password/i.test(message);
     if (!credentialMismatch && !tolerateUnauthorized) handleSessionInvalid();
     throw new ApiError(401, credentialMismatch ? message : 'Unauthorized: Valid Admin Token required');
@@ -129,7 +129,7 @@ async function request<T>(
   return res.json() as Promise<T>;
 }
 
-// ================= RAW ENDPOINTS (kontrak identik app lama) =================
+// ================= RAW ENDPOINTS (contracts identical to the legacy app) =================
 
 export async function fetchSettings(): Promise<SettingsDTO> {
   return request<SettingsDTO>('/api/settings');
@@ -344,7 +344,7 @@ export async function fetchUpstreamModels(
   return request('/api/upstreams/models', { method: 'POST', body: JSON.stringify(req), signal });
 }
 
-// ---- Turso reads (hint-only, secret tidak pernah ke browser) ----
+// ---- Turso reads (hint-only, secrets never reach the browser) ----
 
 export async function fetchTursoProviders(): Promise<TursoProvidersResponse> {
   return request<TursoProvidersResponse>('/api/turso/providers');
@@ -359,11 +359,11 @@ export async function testTursoConnection(payload: TursoDTO): Promise<{ ok: bool
   return request('/api/turso/test', { method: 'POST', body: JSON.stringify(payload) });
 }
 
-// ---- Chat SSE tester (data plane, bukan admin) ----
+// ---- Chat SSE tester (data plane, not admin) ----
 
 export interface ChatChunk {
   text: string;
-  /** Inter-arrival time in ms — untuk waterfall. */
+  /** Inter-arrival time in ms — for waterfall view. */
   deltaMs: number;
 }
 
@@ -438,11 +438,11 @@ export async function streamChat(
   }
 }
 
-// ================= QUERY HOOKS (dengan mock fallback transport) =================
+// ================= QUERY HOOKS (with mock fallback transport) =================
 
 /**
- * Bungkus fetcher dengan fallback mock saat gateway tidak terjangkau.
- * ApiError (HTTP nyata) TIDAK difallback — tampil sebagai error state.
+ * Wraps fetcher with fallback mock when gateway is unreachable.
+ * ApiError (real HTTP error) is NOT fallen back — rendered as error state.
  */
 function fallbackQuery<T extends object>(
   queryKey: unknown[],
@@ -525,10 +525,10 @@ export function useSaveSettingsMutation() {
 }
 
 /**
- * Save settings dengan perilaku jujur di dua mode:
- * - Real mode: PUT /api/settings asli + invalidate.
- * - Demo mode (origin tanpa gateway): apply ke cache lokal SAJA, dilabeli
- *   `local: true` agar UI menampilkan toast "perubahan hanya lokal".
+ * Save settings with honest behavior across two modes:
+ * - Real mode: real PUT /api/settings + invalidate.
+ * - Demo mode (origin without gateway): applies to the local cache ONLY, labeled
+ *   `local: true` so the UI can show a "local changes only" toast.
  */
 export function useSaveSettingsSmart() {
   return useMutation({
@@ -546,7 +546,7 @@ export function useSaveSettingsSmart() {
   });
 }
 
-/** Helper untuk pages: bangun SettingsDTO berikutnya dari list yang diubah. */
+/** Helper for pages: builds next SettingsDTO from modified list. */
 export function withSettings(
   current: SettingsDTO,
   patch: Partial<SettingsDTO>,
@@ -660,7 +660,7 @@ export function useTestTursoMutation() {
 }
 
 
-// ================= MOCK PAYLOADS (bentuk DTO asli) =================
+// ================= MOCK PAYLOADS (real DTO shapes) =================
 
 function mocks() {
   const now = Date.now();
