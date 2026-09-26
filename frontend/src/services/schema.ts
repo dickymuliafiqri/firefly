@@ -17,6 +17,30 @@ export type Protocol =
   | 'opencode'
   | 'opencode-go'
   | 'qoder';
+
+/**
+ * Maps protocol aliases and legacy identifiers to their canonical values.
+ */
+export function canonicalProtocol(proto: string | undefined | null): string {
+  if (!proto) return 'openai';
+  const p = proto.trim().toLowerCase();
+  switch (p) {
+    case 'codebuddy':
+    case 'codebuddy_cn':
+      return 'codebuddy-cn';
+    case 'codebuddy_intl':
+      return 'codebuddy-intl';
+    case 'antigravity-go':
+    case 'antigravity_go':
+      return 'antigravity';
+    case 'opencode-go':
+    case 'opencode_go':
+      return 'opencode';
+    default:
+      return p;
+  }
+}
+
 export type KeyStrategy = 'round_robin' | 'least_inflight';
 export type BreakerState = 'CLOSED' | 'OPEN' | 'HALF-OPEN';
 export type TenantStatus = 'active' | 'suspended' | 'revoked' | 'exhausted' | 'expired';

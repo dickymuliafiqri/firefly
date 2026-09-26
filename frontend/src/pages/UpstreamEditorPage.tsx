@@ -7,6 +7,7 @@ import { useHashRest, navigate } from '@/lib/router';
 import { useUiStore } from '@/state/store';
 
 import { GeneralTab, type GeneralState, lockedOAuthBaseUrl, resolveBaseUrl } from '@/components/upstream/GeneralTab';
+import { canonicalProtocol } from '@/services/schema';
 import { KeysTab, type KeyEntry } from '@/components/upstream/KeysTab';
 import { ModelsTab } from '@/components/upstream/ModelsTab';
 import { ResilienceTab } from '@/components/upstream/ResilienceTab';
@@ -63,7 +64,7 @@ export function UpstreamEditorPage() {
     // A provider-managed endpoint is never taken from storage: an older release,
     // or a hand-edited file, could hold a host the adapter would send an OAuth
     // token to, so the pinned endpoint — and an empty fallback list — replaces it.
-    const protocol = target.protocol ?? 'openai';
+    const protocol = canonicalProtocol(target.protocol);
     const lockedBaseUrl = lockedOAuthBaseUrl(protocol);
 
     setGeneral({
@@ -236,7 +237,7 @@ export function UpstreamEditorPage() {
     const payload: UpstreamDTO = {
       ...(existingTarget || {}),
       name: general.name.trim(),
-      protocol: general.protocol,
+      protocol: canonicalProtocol(general.protocol),
       base_url: resolvedBaseUrl,
       base_urls:
         lockedBaseUrl === undefined && general.fallbackUrls.length > 0

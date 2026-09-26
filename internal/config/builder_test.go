@@ -929,14 +929,18 @@ func TestPinOAuthManagedEndpoints(t *testing.T) {
 	}
 	// ...and every OAuth-managed protocol loses the primary and fallback host.
 	for _, tc := range []struct {
-		idx      int
-		endpoint string
+		idx          int
+		endpoint     string
+		wantProtocol string
 	}{
-		{2, "https://api.cline.bot/api/v1"},
-		{3, "https://daily-cloudcode-pa.googleapis.com"},
-		{4, "https://www.codebuddy.ai/v2"},
+		{2, "https://api.cline.bot/api/v1", "cline"},
+		{3, "https://daily-cloudcode-pa.googleapis.com", "antigravity"},
+		{4, "https://www.codebuddy.ai/v2", "codebuddy-intl"},
 	} {
 		up := upstreams[tc.idx]
+		if up.Protocol != tc.wantProtocol {
+			t.Errorf("%s protocol = %q, want %q", up.Name, up.Protocol, tc.wantProtocol)
+		}
 		if up.BaseURL != tc.endpoint {
 			t.Errorf("%s base_url = %q, want %q", up.Name, up.BaseURL, tc.endpoint)
 		}

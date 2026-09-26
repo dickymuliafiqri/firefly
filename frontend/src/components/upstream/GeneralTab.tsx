@@ -1,5 +1,7 @@
+import { useEffect } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { Field, SwitchRow } from "@/components/ui/Controls";
+import { canonicalProtocol } from "@/services/schema";
 
 export interface GeneralState {
   name: string;
@@ -20,17 +22,13 @@ export interface GeneralState {
  * token instead of an operator-supplied API key. The adapter forwards that token
  * to this host, so the value is not editable: the backend pins it while building
  * the catalog (see domain.OAuthManagedBaseURL), and the form renders it
- * read-only. `antigravity-go` is the legacy alias of `antigravity`.
+ * read-only.
  */
 export const OAUTH_LOCKED_BASE_URLS: Record<string, string> = {
   antigravity: "https://daily-cloudcode-pa.googleapis.com",
-  "antigravity-go": "https://daily-cloudcode-pa.googleapis.com",
   cline: "https://api.cline.bot/api/v1",
-  codebuddy: "https://copilot.tencent.com/v2",
   "codebuddy-cn": "https://copilot.tencent.com/v2",
-  codebuddy_cn: "https://copilot.tencent.com/v2",
   "codebuddy-intl": "https://www.codebuddy.ai/v2",
-  codebuddy_intl: "https://www.codebuddy.ai/v2",
 };
 
 /**
@@ -39,7 +37,7 @@ export const OAUTH_LOCKED_BASE_URLS: Record<string, string> = {
  * grok-cli, opencode, qoder).
  */
 export function lockedOAuthBaseUrl(protocol: string): string | undefined {
-  return OAUTH_LOCKED_BASE_URLS[protocol.trim().toLowerCase()];
+  return OAUTH_LOCKED_BASE_URLS[canonicalProtocol(protocol)];
 }
 
 /**
@@ -60,11 +58,18 @@ interface GeneralTabProps {
 
 export function GeneralTab({ state, isEdit, onChange }: GeneralTabProps) {
   const headers = state.extraHeaders;
+  const activeProtocol = canonicalProtocol(state.protocol);
   // OAuth-managed protocols carry a provider endpoint nobody may edit, and an
   // existing upstream of one is frozen at that protocol: its credentials are
   // only meaningful for the provider that issued them.
-  const lockedBaseUrl = lockedOAuthBaseUrl(state.protocol);
+  const lockedBaseUrl = lockedOAuthBaseUrl(activeProtocol);
   const protocolLocked = isEdit && lockedBaseUrl !== undefined;
+
+  useEffect(() => {
+    if (state.protocol && state.protocol !== activeProtocol) {
+      onChange({ protocol: activeProtocol });
+    }
+  }, [state.protocol, activeProtocol, onChange]);
 
   return (
     <div className="stack" style={{ marginTop: 0 }}>
@@ -96,10 +101,10 @@ export function GeneralTab({ state, isEdit, onChange }: GeneralTabProps) {
             >
               <select
                 id="u-proto"
-                value={state.protocol}
+                value={activeProtocol}
                 disabled={protocolLocked}
                 onChange={(e) => {
-                  const next = e.target.value;
+                  const next = canonicalProtocol(e.target.value);
                   const patch: Partial<GeneralState> = { protocol: next };
                   const nextLocked = lockedOAuthBaseUrl(next);
                   // OAuth protocols read their endpoint from the provider:
@@ -124,7 +129,7 @@ export function GeneralTab({ state, isEdit, onChange }: GeneralTabProps) {
                 <option value="grok-cli">grok-cli</option>
                 <option value="opencode">opencode</option>
                 <option value="qoder">qoder</option>
-                {/* Fallback if current protocol is non-standard or legacy alias */}
+                {/* Fallback if current protocol is non-standard */}
                 {![
                   "openai",
                   "anthropic",
@@ -135,8 +140,8 @@ export function GeneralTab({ state, isEdit, onChange }: GeneralTabProps) {
                   "grok-cli",
                   "opencode",
                   "qoder",
-                ].includes(state.protocol) && (
-                  <option value={state.protocol}>{state.protocol}</option>
+                ].includes(activeProtocol) && (
+                  <option value={activeProtocol}>{activeProtocol}</option>
                 )}
               </select>
             </Field>

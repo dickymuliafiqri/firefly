@@ -12,6 +12,7 @@ import {
   withSettings,
 } from '@/services/api';
 import type { UpstreamTelemetryDTO } from '@/services/schema';
+import { canonicalProtocol } from '@/services/schema';
 import { navigate } from '@/lib/router';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 
@@ -79,7 +80,7 @@ export function UpstreamsPage() {
   const protocols = useMemo(() => {
     const set = new Set<string>();
     for (const u of ups) {
-      if (u.protocol) set.add(u.protocol);
+      if (u.protocol) set.add(canonicalProtocol(u.protocol));
     }
     return Array.from(set).sort();
   }, [ups]);
@@ -88,7 +89,7 @@ export function UpstreamsPage() {
     const q = search.trim().toLowerCase();
     return ups.filter((u) => {
       // Protocol filter
-      if (protocolFilter !== 'all' && u.protocol.toLowerCase() !== protocolFilter.toLowerCase()) {
+      if (protocolFilter !== 'all' && canonicalProtocol(u.protocol).toLowerCase() !== protocolFilter.toLowerCase()) {
         return false;
       }
 

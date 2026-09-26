@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.20.3] - 2026-09-26
+
+### Fixed & Security
+
+- **Canonicalize OAuth Protocols & Lock Provider-Managed Endpoints (`internal/domain/protocol_endpoint.go`, `internal/config/builder.go`, `internal/server/settings.go`, `internal/server/upstream_check.go`, `frontend/src/components/upstream/GeneralTab.tsx`, `frontend/src/services/schema.ts`)**:
+  - Added `domain.OAuthManagedBaseURL` as the single source of truth for OAuth provider endpoints (`antigravity`, `cline`, `codebuddy-cn`, `codebuddy-intl`).
+  - Strict protocol canonicalization: mapped legacy aliases (`codebuddy`, `codebuddy_cn`, `codebuddy_intl`, `antigravity-go`, `opencode-go`) to canonical protocol identifiers across the config builder, Turso storage migrator, probe/discovery handlers, and frontend schema.
+  - Immutable OAuth endpoints: pinned OAuth-managed base URLs across settings persistence, catalog building, and Turso bootstrap so hand-edited files, Turso rows, or API payloads cannot supply unpinned or custom endpoints for OAuth-authenticated upstreams, eliminating credential exfiltration paths.
+  - Exported `config.NormalizeProtocol` and applied `config.PinOAuthManagedEndpoints` across both authenticated and public `GET /api/settings` responses so legacy stored values on disk or in the database are transparently served as canonical protocols and pinned endpoints.
+  - Eliminated duplicate `codebuddy` protocol options in the Upstream Editor dropdown and Upstreams Page filter lists by binding the `<select>` to `activeProtocol`, normalizing `onChange`, migrating legacy form state on load, and preventing legacy protocol aliases from rendering duplicate fallback `<option>` elements.
+  - Upstream Editor enhancements: added per-model connectivity checks with provider-aware endpoint resolution and improved model discovery error surfacing in `ModelsTab`.
+
 ## [1.20.2] - 2026-09-26
 
 ### Fixed

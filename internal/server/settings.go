@@ -51,7 +51,7 @@ func sanitizePublicSettings(src config.SettingsDTO) config.SettingsDTO {
 	for _, u := range src.Upstreams {
 		publicUpstreams = append(publicUpstreams, config.UpstreamDTO{
 			Name:                u.Name,
-			Protocol:            u.Protocol,
+			Protocol:            config.NormalizeProtocol(u.Protocol),
 			BaseURL:             u.BaseURL,
 			BaseURLs:            u.BaseURLs,
 			TimeoutMs:           u.TimeoutMs,
@@ -160,6 +160,11 @@ func (deps RouterDeps) handleGetSettings(w http.ResponseWriter, r *http.Request)
 	if !loadedFromDisk && snap != nil {
 		settings = settingsDTOFromSnapshot(snap)
 	}
+
+	// Canonicalize and pin OAuth-managed protocols and endpoints on every payload
+	// served to settings callers so hand-edited files, Turso rows, and the API can
+	// never surface unpinned endpoints or legacy aliases.
+	config.PinOAuthManagedEndpoints(settings.Upstreams)
 
 	if !isAdmin {
 		publicSettings := sanitizePublicSettings(settings)

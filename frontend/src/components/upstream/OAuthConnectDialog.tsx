@@ -2,27 +2,24 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { ExternalLink, Loader2, Check, AlertCircle, X } from 'lucide-react';
 import { Badge } from '@/components/ui/Badge';
 import type { ConnectionDTO } from '@/services/schema';
+import { canonicalProtocol } from '@/services/schema';
 import { initiateOAuthAuthorize, pollOAuthStatus } from '@/services/api';
 
 export interface OAuthConnectDialogProps {
   open: boolean;
   onClose: () => void;
-  provider: string; // 'antigravity' | 'cline' | 'codebuddy_cn' | 'codebuddy_intl'
+  provider: string; // 'antigravity' | 'cline' | 'codebuddy-cn' | 'codebuddy-intl'
   onSuccess: (connection: ConnectionDTO) => void;
 }
 
 function getProviderTitle(p: string): string {
-  switch (p) {
+  switch (canonicalProtocol(p)) {
     case 'antigravity':
-    case 'antigravity-go':
       return 'Google Cloud Code';
     case 'cline':
       return 'Cline';
-    case 'codebuddy':
-    case 'codebuddy_cn':
     case 'codebuddy-cn':
       return 'CodeBuddy (CN)';
-    case 'codebuddy_intl':
     case 'codebuddy-intl':
       return 'CodeBuddy (Intl)';
     default:
@@ -31,17 +28,13 @@ function getProviderTitle(p: string): string {
 }
 
 function getProviderHint(p: string): string {
-  switch (p) {
+  switch (canonicalProtocol(p)) {
     case 'antigravity':
-    case 'antigravity-go':
       return 'Authorize with your Google account to access Cloud Code inference.';
     case 'cline':
       return 'Connect your Cline account for proxy-based inference routing.';
-    case 'codebuddy':
-    case 'codebuddy_cn':
     case 'codebuddy-cn':
       return 'Authorize via Tencent Cloud CodeBuddy (China region).';
-    case 'codebuddy_intl':
     case 'codebuddy-intl':
       return 'Authorize via CodeBuddy International.';
     default:
@@ -49,19 +42,7 @@ function getProviderHint(p: string): string {
   }
 }
 
-export function canonicalOAuthProvider(p: string): string {
-  switch (p) {
-    case 'codebuddy':
-    case 'codebuddy_cn':
-      return 'codebuddy-cn';
-    case 'codebuddy_intl':
-      return 'codebuddy-intl';
-    case 'antigravity-go':
-      return 'antigravity';
-    default:
-      return p;
-  }
-}
+export const canonicalOAuthProvider = canonicalProtocol;
 
 type Phase = 'idle' | 'starting' | 'waiting' | 'success' | 'error';
 
@@ -453,5 +434,5 @@ export const OAUTH_PROTOCOLS = new Set([
 ]);
 
 export function isOAuthProtocol(protocol: string): boolean {
-  return OAUTH_PROTOCOLS.has(protocol);
+  return OAUTH_PROTOCOLS.has(protocol) || OAUTH_PROTOCOLS.has(canonicalProtocol(protocol));
 }

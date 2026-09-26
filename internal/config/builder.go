@@ -204,11 +204,11 @@ func (e *ValidationError) Error() string {
 // EnvLookupOrOS is the production environment lookup.
 func EnvLookupOrOS(name string) (string, bool) { return os.LookupEnv(name) }
 
-// normalizeProtocol resolves an upstream's protocol aliases to their canonical
+// NormalizeProtocol resolves an upstream's protocol aliases to their canonical
 // domain value, applying the default when it is absent. The catalog builder and
 // the exported PinOAuthManagedEndpoints share it, so an alias can never reach the
 // OAuth endpoint pin as an unrecognized protocol.
-func normalizeProtocol(proto string) string {
+func NormalizeProtocol(proto string) string {
 	if proto == "" {
 		return DefaultProtocol
 	}
@@ -232,6 +232,10 @@ func normalizeProtocol(proto string) string {
 	return proto
 }
 
+func normalizeProtocol(proto string) string {
+	return NormalizeProtocol(proto)
+}
+
 // pinOAuthManagedEndpoint replaces base_url and base_urls with the
 // provider-managed endpoint when the protocol authenticates through an OAuth
 // token, dropping any operator-defined fallback host.
@@ -241,10 +245,12 @@ func normalizeProtocol(proto string) string {
 // raw API payload must neither retarget that token nor keep the gateway from
 // starting.
 func pinOAuthManagedEndpoint(d *UpstreamDTO) {
-	endpoint, ok := domain.OAuthManagedBaseURL(domain.Protocol(normalizeProtocol(d.Protocol)))
+	norm := normalizeProtocol(d.Protocol)
+	endpoint, ok := domain.OAuthManagedBaseURL(domain.Protocol(norm))
 	if !ok {
 		return
 	}
+	d.Protocol = norm
 	d.BaseURL = endpoint
 	d.BaseURLs = []string{endpoint}
 }
@@ -256,6 +262,9 @@ func pinOAuthManagedEndpoint(d *UpstreamDTO) {
 // rebuilt snapshot, and the value read back by GET /api/settings then agree.
 func PinOAuthManagedEndpoints(upstreams []UpstreamDTO) {
 	for i := range upstreams {
+		if upstreams[i].Protocol != "" {
+			upstreams[i].Protocol = normalizeProtocol(upstreams[i].Protocol)
+		}
 		pinOAuthManagedEndpoint(&upstreams[i])
 	}
 }
