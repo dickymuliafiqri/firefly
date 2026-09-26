@@ -122,12 +122,81 @@ func TestTranslateOpenAIToGrokCLI_Errors(t *testing.T) {
 
 func TestSupportedModels(t *testing.T) {
 	t.Parallel()
+	models := SupportedModels()
+	assert.Contains(t, models, "grok-build")
+	assert.Contains(t, models, "grok-4.5")
+	assert.Contains(t, models, "grok-4.6")
+	assert.Contains(t, models, "grok-4.7")
+	assert.Contains(t, models, "grok-4.7-high")
+	assert.Contains(t, models, "grok-4.7-medium")
+	assert.Contains(t, models, "grok-4.7-low")
+	// xhigh is accepted on the wire but not advertised in discovery.
+	assert.NotContains(t, models, "grok-4.7-xhigh")
+	// grok-build is not an effort family: no synthesized variants.
+	assert.NotContains(t, models, "grok-build-high")
 
-	assert.Contains(t, SupportedModels(), "grok-build")
-	assert.Contains(t, SupportedModels(), "grok-4.5")
 	assert.True(t, SupportsModel("grok-build"))
 	assert.True(t, SupportsModel("grok-4.5-high"))
+	assert.True(t, SupportsModel("grok-4.7-medium"))
+	assert.False(t, SupportsModel("grok-4.7-xhigh"))
 	assert.False(t, SupportsModel("some-random-model"))
+
+	// The discovery list must be a copy: a mutating caller cannot corrupt it.
+	models[0] = "mutated"
+	assert.Equal(t, "grok-build", SupportedModels()[0])
+}
+
+func TestResolveModel_EffortFamilies(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		model    string
+		upstream string
+		effort   string
+		supports bool
+	}{
+		{name: "build has no effort", model: "grok-build", upstream: "grok-build"},
+		{name: "4.5 base", model: "grok-4.5", upstream: "grok-4.5", supports: true},
+		{name: "4.5 suffix", model: "grok-4.5-low", upstream: "grok-4.5", effort: "low", supports: true},
+		{name: "4.6 base", model: "grok-4.6", upstream: "grok-4.6", supports: true},
+		{name: "4.7 base", model: "grok-4.7", upstream: "grok-4.7", supports: true},
+		{name: "4.7 suffix", model: "grok-4.7-high", upstream: "grok-4.7", effort: "high", supports: true},
+		{name: "4.7 xhigh", model: "grok-4.7-xhigh", upstream: "grok-4.7", effort: "xhigh", supports: true},
+		// A suffix on a non-effort family is not stripped: the id is verbatim.
+		{name: "build suffix is verbatim", model: "grok-build-high", upstream: "grok-build-high"},
+		// Unknown families stay verbatim and effort-free.
+		{name: "unknown verbatim", model: "grok-5-preview", upstream: "grok-5-preview"},
+		{name: "unknown with suffix verbatim", model: "custom-model-low", upstream: "custom-model-low"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			plan := resolveModel(tc.model)
+			assert.Equal(t, tc.upstream, plan.UpstreamModel)
+			assert.Equal(t, tc.effort, plan.Effort)
+			assert.Equal(t, tc.supports, plan.SupportsEffort)
+		})
+	}
+}
+
+func TestTranslateOpenAIToGrokCLI_Grok47Effort(t *testing.T) {
+	t.Parallel()
+	// A curated effort family defaults to high effort and requests encrypted
+	// reasoning continuity, exactly like grok-4.5.
+	out, plan, err := TranslateOpenAIToGrokCLI([]byte(`{"model":"grok-4.7","messages":[{"role":"user","content":"hi"}]}`), "grok-4.7")
+	require.NoError(t, err)
+	assert.Equal(t, "grok-4.7", plan.UpstreamModel)
+	assert.True(t, plan.SupportsEffort)
+	assert.Equal(t, "grok-4.7", gjson.GetBytes(out, "model").String())
+	assert.Equal(t, "high", gjson.GetBytes(out, "reasoning.effort").String())
+	assert.Equal(t, "reasoning.encrypted_content", gjson.GetBytes(out, "include.0").String())
+
+	// An unknown family must not gain an effort field.
+	out2, plan2, err := TranslateOpenAIToGrokCLI([]byte(`{"model":"grok-5-preview","messages":[{"role":"user","content":"hi"}]}`), "grok-5-preview")
+	require.NoError(t, err)
+	assert.False(t, plan2.SupportsEffort)
+	assert.Equal(t, "grok-5-preview", gjson.GetBytes(out2, "model").String())
+	assert.False(t, gjson.GetBytes(out2, "reasoning.effort").Exists())
+	assert.False(t, gjson.GetBytes(out2, "include").Exists())
 }
 
 func TestParseResponsesEvent(t *testing.T) {

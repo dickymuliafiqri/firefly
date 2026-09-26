@@ -18,6 +18,13 @@ type AuthSession struct {
 	AuthURL       string                  `json:"auth_url"`
 	CompletedConn *domain.OAuthConnection `json:"completed_conn,omitempty"`
 	CreatedAt     time.Time               `json:"created_at"`
+
+	// Device-code flow (RFC 8628) parameters, retained between PrepareAuth and
+	// PollToken. DeviceCode is the secret poll handle; UserCode and
+	// VerificationURI are the human-facing approval material.
+	DeviceCode      string `json:"device_code,omitempty"`
+	UserCode        string `json:"user_code,omitempty"`
+	VerificationURI string `json:"verification_uri,omitempty"`
 }
 
 // OAuthProvider represents the contract implemented by each external AI OAuth provider.

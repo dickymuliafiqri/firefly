@@ -21,6 +21,8 @@ var (
 // Source of truth: 9router open-sse grok-cli executor + registry.
 const (
 	// GrokCLIBaseURL is the Grok CLI inference API base (OpenAI Responses API).
+	// Mirrors domain.OAuthManagedBaseURL(domain.ProtocolGrokCLI), which pins the
+	// production endpoint — keep both in sync.
 	GrokCLIBaseURL = "https://cli-chat-proxy.grok.com/v1"
 	// GrokCLIResponsesPath is the Responses API endpoint path.
 	GrokCLIResponsesPath = "/responses"
@@ -36,36 +38,77 @@ const (
 	grokCLIDefaultModel = "grok-build"
 )
 
-// SupportedModels returns the public model ids this adapter routes, in a stable
-// order. It is the single source of truth for model discovery (the dashboard
-// "Add Route" probe), since the model set is curated/static.
-func SupportedModels() []string {
-	return []string{
-		"grok-build",
-		"grok-4.5",
-		"grok-4.5-high",
-		"grok-4.5-medium",
-		"grok-4.5-low",
-	}
+// curatedModel describes a recognized Grok CLI model family: its public id and
+// whether the family accepts reasoning.effort on the wire. Every family id maps
+// to itself upstream (public == upstream); only one row per family is needed.
+type curatedModel struct {
+	id             string
+	supportsEffort bool
 }
 
-// modelUpstreamID maps a public model id to the upstream (grok) model id.
-// Effort-suffixed variants collapse onto the base grok-4.5 model.
-var modelUpstreamID = map[string]string{
-	"grok-build":      "grok-build",
-	"grok-4.5":        "grok-4.5",
-	"grok-4.5-high":   "grok-4.5",
-	"grok-4.5-medium": "grok-4.5",
-	"grok-4.5-low":    "grok-4.5",
+// curatedModels is the recognized model set. It is the discovery fallback when
+// no credential is available to query the live /models endpoint (see
+// grok.FetchModels), and the capability table behind resolveModel. A new Grok
+// release (e.g. grok-4.8) is onboarded by appending one row — no other code
+// changes.
+var curatedModels = []curatedModel{
+	{id: "grok-build"},
+	{id: "grok-4.5", supportsEffort: true},
+	{id: "grok-4.6", supportsEffort: true},
+	{id: "grok-4.7", supportsEffort: true},
+}
+
+// effortVariants are the client-synthesized reasoning-effort suffixes offered
+// per effort-capable family: the upstream only ever sees the base id (see
+// resolveModelPlan). xhigh is accepted as a suffix and as reasoning_effort,
+// but it is not advertised in discovery.
+var effortVariants = []string{"low", "medium", "high"}
+
+// curatedModelIDs is the discovery list: each base id followed by its
+// effort variants, in stable order.
+var curatedModelIDs = buildCuratedModelIDs()
+
+func buildCuratedModelIDs() []string {
+	ids := make([]string, 0, len(curatedModels)*(len(effortVariants)+1))
+	for _, m := range curatedModels {
+		ids = append(ids, m.id)
+		if !m.supportsEffort {
+			continue
+		}
+		for _, v := range effortVariants {
+			ids = append(ids, m.id+"-"+v)
+		}
+	}
+	return ids
+}
+
+// curatedModelSet is the membership index behind SupportsModel.
+var curatedModelSet = func() map[string]struct{} {
+	m := make(map[string]struct{}, len(curatedModelIDs))
+	for _, id := range curatedModelIDs {
+		m[id] = struct{}{}
+	}
+	return m
+}()
+
+// SupportedModels returns the public model ids this adapter recognizes, in a
+// stable order. It is the discovery fallback when no credential is available
+// for a live /models query; routing itself accepts unknown ids verbatim.
+func SupportedModels() []string {
+	out := make([]string, len(curatedModelIDs))
+	copy(out, curatedModelIDs)
+	return out
 }
 
 // SupportsModel reports whether m is a recognized public model id.
 func SupportsModel(m string) bool {
-	_, ok := modelUpstreamID[m]
+	_, ok := curatedModelSet[strings.TrimSpace(m)]
 	return ok
 }
 
-// effortLevels are the reasoning-effort suffixes recognized on grok-4.5 models.
+// effortLevels are the reasoning-effort suffixes recognized on model ids.
+// A suffix only takes effect when the stripped base is a family in
+// curatedModels with supportsEffort (see resolveModel).
 var effortLevels = []string{"low", "medium", "high", "xhigh"}
 
 // resolveModelPlan describes how a requested public model maps to the grok wire
@@ -76,9 +119,13 @@ type resolveModelPlan struct {
 	SupportsEffort bool   // whether grok accepts a reasoning.effort for this model
 }
 
-// resolveModel maps a public model id (or an explicit UpstreamModel override) to a
-// wire plan. Unknown ids are passed through verbatim so custom/future grok models
-// still route.
+// resolveModel maps a public model id to a wire plan. An effort suffix
+// (e.g. grok-4.7-high) only takes effect when the stripped base is a curated
+// family with supportsEffort; a suffix on anything else (e.g. grok-build-high,
+// custom models) is left untouched and the id is passed through verbatim.
+// Unknown ids are passed through verbatim so custom/future grok models still
+// route, without reasoning.effort (conservative: an unknown family may reject
+// the field, so nothing is sent until it is curated).
 func resolveModel(publicModel string) resolveModelPlan {
 	model := strings.TrimSpace(publicModel)
 	if model == "" {
@@ -89,31 +136,30 @@ func resolveModel(publicModel string) resolveModelPlan {
 	effort := ""
 	base := model
 	for _, lvl := range effortLevels {
-		if strings.HasSuffix(model, "-"+lvl) {
+		if strings.HasSuffix(model, "-"+lvl) && familySupportsEffort(strings.TrimSuffix(model, "-"+lvl)) {
 			effort = lvl
 			base = strings.TrimSuffix(model, "-"+lvl)
 			break
 		}
 	}
-
-	upstream := base
-	if mapped, ok := modelUpstreamID[model]; ok {
-		upstream = mapped
-	} else if mapped, ok := modelUpstreamID[base]; ok {
-		upstream = mapped
-	}
-
 	return resolveModelPlan{
-		UpstreamModel:  upstream,
+		UpstreamModel:  base,
 		Effort:         effort,
-		SupportsEffort: supportsReasoningEffort(upstream),
+		SupportsEffort: familySupportsEffort(base),
 	}
 }
 
-// supportsReasoningEffort reports whether the model accepts a reasoning.effort
-// field (grok-4.5 family). Mirrors 9router supportsGrokCliReasoningEffort.
-func supportsReasoningEffort(model string) bool {
-	return strings.HasPrefix(model, "grok-4.5")
+// familySupportsEffort reports whether a base model id belongs to a curated
+// family that accepts reasoning.effort on the wire. Unknown families return
+// false: mirroring 9router's "unknown models omit effort until live metadata
+// reaches dispatch", we never send a field a family may reject.
+func familySupportsEffort(base string) bool {
+	for _, m := range curatedModels {
+		if m.id == base {
+			return m.supportsEffort
+		}
+	}
+	return false
 }
 
 // normalizeEffort clamps an effort value to a recognized level, defaulting high.

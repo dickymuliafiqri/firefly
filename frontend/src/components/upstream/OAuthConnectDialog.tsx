@@ -8,10 +8,9 @@ import { initiateOAuthAuthorize, pollOAuthStatus } from '@/services/api';
 export interface OAuthConnectDialogProps {
   open: boolean;
   onClose: () => void;
-  provider: string; // 'antigravity' | 'cline' | 'codebuddy-cn' | 'codebuddy-intl'
+  provider: string; // OAuth provider id (e.g. 'antigravity' | 'cline' | 'codebuddy-cn' | 'grok-cli')
   onSuccess: (connection: ConnectionDTO) => void;
 }
-
 function getProviderTitle(p: string): string {
   switch (canonicalProtocol(p)) {
     case 'antigravity':
@@ -22,11 +21,12 @@ function getProviderTitle(p: string): string {
       return 'CodeBuddy (CN)';
     case 'codebuddy-intl':
       return 'CodeBuddy (Intl)';
+    case 'grok-cli':
+      return 'Grok CLI (Grok Build)';
     default:
       return p;
   }
 }
-
 function getProviderHint(p: string): string {
   switch (canonicalProtocol(p)) {
     case 'antigravity':
@@ -37,6 +37,8 @@ function getProviderHint(p: string): string {
       return 'Authorize via Tencent Cloud CodeBuddy (China region).';
     case 'codebuddy-intl':
       return 'Authorize via CodeBuddy International.';
+    case 'grok-cli':
+      return 'Sign in with your xAI / Grok account via device code. Uses Grok Build subscription credits.';
     default:
       return 'Authorize gateway access to bind this account to your upstream pool.';
   }
@@ -431,6 +433,13 @@ export const OAUTH_PROTOCOLS = new Set([
   'codebuddy-intl',
   'codebuddy_cn',
   'codebuddy_intl',
+  // grok-cli supports both OAuth connections and harvested key pools; the
+  // banner only offers OAuth as an additional connection path.
+  'grok-cli',
+  'grok_cli',
+  'grok',
+  'gcli',
+  'grok-build',
 ]);
 
 export function isOAuthProtocol(protocol: string): boolean {

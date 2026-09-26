@@ -19,12 +19,16 @@ var oauthManagedBaseURLs = map[Protocol]string{
 	ProtocolCline:         "https://api.cline.bot/api/v1",
 	ProtocolCodeBuddyCN:   "https://copilot.tencent.com/v2",
 	ProtocolCodeBuddyIntl: "https://www.codebuddy.ai/v2",
+	// grok-cli authenticates with an xAI OAuth bearer token minted at auth.x.ai
+	// for cli-chat-proxy.grok.com. The adapter appends /responses, so the pin is
+	// the base, never the full inference URL.
+	ProtocolGrokCLI: "https://cli-chat-proxy.grok.com/v1",
 }
 
 // OAuthManagedBaseURL returns the provider-managed endpoint of an
 // OAuth-authenticated protocol and reports whether the protocol has one. ok is
 // false for protocols whose host the operator chooses (openai, anthropic,
-// grok-cli, opencode, qoder).
+// opencode, qoder).
 func OAuthManagedBaseURL(p Protocol) (string, bool) {
 	endpoint, ok := oauthManagedBaseURLs[p]
 	return endpoint, ok

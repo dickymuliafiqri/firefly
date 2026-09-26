@@ -14,7 +14,7 @@
   - Layer 2: Per-tenant token-bucket rate limiter and concurrency limit (`httpx.AdmissionMiddleware`).
   - Layer 3: Per-credential atomic CAS concurrency ticket gate (`Limiter.AcquireKeySlot`).
 - **Virtual Combos**: Model-level load balancing grouping multiple upstream models into a single public model route using `least_inflight`, `round_robin`, or `failover` chain strategies.
-- **Third-Party AI OAuth & Multi-Account Keyrings**: Native OAuth 2.0 and device code integrations for Google Antigravity Cloud Code, Cline, and Codebuddy (CN & Intl) with encrypted credential storage in `configs/oauth.json` and multi-account keyring rotation.
+- **Third-Party AI OAuth & Multi-Account Keyrings**: Native OAuth 2.0 and device code integrations for Google Antigravity Cloud Code, Cline, Codebuddy (CN & Intl), and Grok CLI / Grok Build (xAI device-code flow with proactive refresh-token rotation) with encrypted credential storage in `configs/oauth.json` and multi-account keyring rotation.
 - **Native Auto-TLS (Let's Encrypt)**: Built-in ACME HTTP-01 challenge support for zero-config HTTPS deployment, persisted in `configs/tls.json` with dedicated certificate caching.
 - **Model Route Connectivity Verification**: Active probe endpoint (`POST /api/upstreams/check` with `model` parameter) performing minimal inference pings (`max_tokens: 1`) to test and verify AI model connectivity, quotas, and permission before routing traffic.
 - **Optional Turso/libSQL Backing Store**: Centralized multi-node persistence of the routing catalog and settings (`internal/storage/turso`). Deletes are gated by authoritative `manage_*` flags so a partial or stale save never wipes the catalog; the store also harvests provider keys and persists automated key lifecycle actions.

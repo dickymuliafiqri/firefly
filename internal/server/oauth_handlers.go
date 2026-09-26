@@ -25,10 +25,16 @@ type AuthorizeRequestDTO struct {
 }
 
 // AuthorizeResponseDTO contains the generated authorization URL and session ID.
+// For device-code flow (RFC 8628) sessions it also carries the human approval
+// material: the operator enters UserCode at VerificationURI while the dashboard
+// polls with State. The device_code itself stays server-side in the session —
+// it is the secret poll handle, never returned to a client.
 type AuthorizeResponseDTO struct {
-	SessionID string `json:"session_id"`
-	AuthURL   string `json:"auth_url"`
-	State     string `json:"state"`
+	SessionID       string `json:"session_id"`
+	AuthURL         string `json:"auth_url"`
+	State           string `json:"state"`
+	UserCode        string `json:"user_code,omitempty"`
+	VerificationURI string `json:"verification_uri,omitempty"`
 }
 
 // CallbackRequestDTO allows exchanging an OAuth code via POST JSON.
@@ -141,9 +147,11 @@ func (deps RouterDeps) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reque
 	}
 
 	_ = json.NewEncoder(w).Encode(AuthorizeResponseDTO{
-		SessionID: sess.ID,
-		AuthURL:   sess.AuthURL,
-		State:     sess.State,
+		SessionID:       sess.ID,
+		AuthURL:         sess.AuthURL,
+		State:           sess.State,
+		UserCode:        sess.UserCode,
+		VerificationURI: sess.VerificationURI,
 	})
 }
 

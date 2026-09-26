@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [1.21.0] - 2026-09-26
+### Added
+- **Grok CLI OAuth device-code provider with automatic token refresh (`internal/security/oauth/providers/grokcli`, `cmd/firefly/main.go`, `internal/server/oauth_handlers.go`)**:
+  - New `grok-cli` OAuth provider implementing the xAI RFC 8628 device authorization flow (`auth.x.ai/oauth2/device/code`, public client, `referrer=grok-build`, full `offline_access` scope) and `grant_type=refresh_token` refresh against `auth.x.ai/oauth2/token`.
+  - Rotating refresh tokens are honored: each refresh stores xAI's newly issued refresh token and preserves the previous one when the endpoint omits it, so a refresh response can never wipe the credential.
+  - Registration in `main` plugs the provider into the existing refresh lifecycle with no adapter changes: proactive refresh in `TokenSource` (5-minute lead), the background `Refresher` sweep, singleflight-deduplicated concurrent refresh, and fail-closed fallbacks.
+  - Onboarding surfaces the RFC 8628 approval material: `POST /api/oauth/authorize` returns `user_code` + `verification_uri` (the device-code secret stays server-side in the session), and `POST /api/oauth/poll` completes the login; provider aliases `gcli`/`grok-build`/`grok_cli` resolve.
+  - The dashboard offers the OAuth connect banner for `grok-cli` upstreams (`OAuthConnectDialog`) alongside the manual key pool, so OAuth-managed and harvester-pooled credentials coexist per upstream.
+- **Grok CLI model families 4.6/4.7 with table-driven effort support (`internal/adapter/grok/translate.go`)**:
+  - Replaced the hardcoded `grok-4.5` model list/map with a `curatedModels` capability table; a new Grok release is onboarded by appending one row. Discovery (`SupportedModels`) now offers `grok-4.6`/`grok-4.7` plus synthesized `-low`/`-medium`/`-high` variants, still used only when no credential is available for a live `/models` query.
+  - Effort suffixes take effect only on curated effort-capable families; unknown/custom ids (e.g. `grok-5-preview`) stay verbatim and effort-free, so no unsupported `reasoning.effort` field is ever sent.
+### Changed
+- **Locked the grok-cli upstream endpoint (`internal/domain/protocol_endpoint.go`, `frontend/src/components/upstream/GeneralTab.tsx`)**: added `https://cli-chat-proxy.grok.com/v1` (the adapter appends `/responses`) to `domain.OAuthManagedBaseURL`, so `config.Build`/`PinOAuthManagedEndpoints`, the upstream probe default, and the dashboard read-only field pin it like the other OAuth-managed providers. Adapters still honor `Upstream.BaseURL`, so mock hosts in tests are unaffected.
+### Fixed
+- **Fail-closed `oauth:` credential resolution in the grok adapter (`internal/adapter/grok/adapter.go`)**: an `oauth:<connection-id>` ref that cannot be resolved (missing/revoked connection) previously fell through to forwarding the literal ref string as a bearer token; `resolveToken` now rejects `oauth:`-prefixed material in both the key-slot and ref fallbacks.
 
 ## [1.20.3] - 2026-09-26
 

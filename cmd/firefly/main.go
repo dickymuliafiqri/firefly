@@ -31,6 +31,7 @@ import (
 	antigravityProvider "github.com/dickymuliafiqri/firefly/internal/security/oauth/providers/antigravity"
 	clineProvider "github.com/dickymuliafiqri/firefly/internal/security/oauth/providers/cline"
 	codebuddyProvider "github.com/dickymuliafiqri/firefly/internal/security/oauth/providers/codebuddy"
+	grokcliProvider "github.com/dickymuliafiqri/firefly/internal/security/oauth/providers/grokcli"
 	"github.com/dickymuliafiqri/firefly/internal/storage/analytics"
 
 	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
@@ -467,6 +468,9 @@ func run() error {
 	}
 	if err := oauthMgr.RegisterProvider(codebuddyProvider.NewIntl()); err != nil {
 		logger.Warn("could not register codebuddy-intl oauth provider", "err", err)
+	}
+	if err := oauthMgr.RegisterProvider(grokcliProvider.New()); err != nil {
+		logger.Warn("could not register grok-cli oauth provider", "err", err)
 	}
 
 	// 3c. Background proactive token refresher

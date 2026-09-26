@@ -162,6 +162,51 @@ func TestAdapter_TokenFromKeySlotSecret(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Bearer eyJ0eXAiOiJhdCtqd3QixxxAccessTokenValue", gotAuth)
 }
+func TestAdapter_ResolveTokenRejectsOAuthLiteral(t *testing.T) {
+	t.Parallel()
+	// An "oauth:<connection-id>" ref is an identifier, never a secret. When the
+	// dynamic resolver cannot resolve it, resolveToken must fail closed rather
+	// than forwarding the literal ref (or the KeySlot secret holding it) as a
+	// bearer token.
+	for _, kr := range []string{
+		"oauth:grok-cli-user@example.com",
+		"oauth:grok-cli-a-very-long-connection-identifier-that-exceeds-forty-chars",
+	} {
+		slot := &domain.KeySlot{Ref: kr, Secret: kr}
+		u := &domain.Upstream{Name: "grok-oauth", Protocol: domain.ProtocolGrokCLI, KeyRing: domain.NewKeyRing(domain.KeyStrategyRoundRobin, []*domain.KeySlot{slot})}
+		target := &domain.Target{Upstream: u, UpstreamModel: "grok-build", CredentialRef: kr, KeySlot: slot}
+		// No resolver configured at all.
+		a := NewAdapter(nil, nil, Config{})
+		_, ok := a.resolveToken(context.Background(), u, target)
+		assert.False(t, ok, "ref %q must not resolve without a TokenResolver", kr)
+		// Resolver present but failing (unknown/revoked connection).
+		a = NewAdapter(nil, nil, Config{
+			TokenResolver: func(ctx context.Context, ref string) (string, error) {
+				return "", fmt.Errorf("connection %q not found", ref)
+			},
+			SecretLookup: func(ref string) (string, bool) { return "", false },
+		})
+		_, ok = a.resolveToken(context.Background(), u, target)
+		assert.False(t, ok, "ref %q must fail closed when resolution fails", kr)
+	}
+}
+func TestAdapter_ResolveTokenOAuthViaResolver(t *testing.T) {
+	t.Parallel()
+	slot := &domain.KeySlot{Ref: "oauth:grok-cli-user@example.com", Secret: "oauth:grok-cli-user@example.com"}
+	u := &domain.Upstream{Name: "grok-oauth", Protocol: domain.ProtocolGrokCLI, KeyRing: domain.NewKeyRing(domain.KeyStrategyRoundRobin, []*domain.KeySlot{slot})}
+	target := &domain.Target{Upstream: u, UpstreamModel: "grok-build", CredentialRef: slot.Ref, KeySlot: slot}
+	a := NewAdapter(nil, nil, Config{
+		TokenResolver: func(ctx context.Context, ref string) (string, error) {
+			if ref == slot.Ref {
+				return "fresh-oauth-access", nil
+			}
+			return "", fmt.Errorf("unknown ref")
+		},
+	})
+	tok, ok := a.resolveToken(context.Background(), u, target)
+	require.True(t, ok)
+	assert.Equal(t, "fresh-oauth-access", tok)
+}
 
 func TestAdapter_5xxTripsBreaker(t *testing.T) {
 	t.Parallel()

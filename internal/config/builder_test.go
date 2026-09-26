@@ -820,7 +820,6 @@ func TestBuildAntigravityDefaultBaseURLAndAliasing(t *testing.T) {
 	}
 }
 
-
 // An OAuth-authenticated upstream must not be retargetable: the adapter forwards
 // the provider's bearer token to base_url, so a hand-edited file, a database row,
 // or a raw API client supplying another host has to be normalized away — fallback
@@ -915,6 +914,12 @@ func TestPinOAuthManagedEndpoints(t *testing.T) {
 			Protocol: "codebuddy_intl",
 			BaseURL:  "https://evil.example.com/v2/chat/completions",
 		},
+		{
+			Name:     "grok-cli-pinned",
+			Protocol: "grok-build",
+			BaseURL:  "https://evil.example.com/v1",
+			BaseURLs: []string{"https://evil.example.com/v1"},
+		},
 	}
 
 	PinOAuthManagedEndpoints(upstreams)
@@ -936,6 +941,7 @@ func TestPinOAuthManagedEndpoints(t *testing.T) {
 		{2, "https://api.cline.bot/api/v1", "cline"},
 		{3, "https://daily-cloudcode-pa.googleapis.com", "antigravity"},
 		{4, "https://www.codebuddy.ai/v2", "codebuddy-intl"},
+		{5, "https://cli-chat-proxy.grok.com/v1", "grok-cli"},
 	} {
 		up := upstreams[tc.idx]
 		if up.Protocol != tc.wantProtocol {

@@ -29,12 +29,12 @@ export const OAUTH_LOCKED_BASE_URLS: Record<string, string> = {
   cline: "https://api.cline.bot/api/v1",
   "codebuddy-cn": "https://copilot.tencent.com/v2",
   "codebuddy-intl": "https://www.codebuddy.ai/v2",
+  "grok-cli": "https://cli-chat-proxy.grok.com/v1",
 };
-
 /**
  * Returns the provider-managed endpoint of an OAuth-authenticated protocol, or
  * undefined for protocols whose host the operator chooses (openai, anthropic,
- * grok-cli, opencode, qoder).
+ * opencode, qoder).
  */
 export function lockedOAuthBaseUrl(protocol: string): string | undefined {
   return OAUTH_LOCKED_BASE_URLS[canonicalProtocol(protocol)];

@@ -214,12 +214,19 @@ func (a *Adapter) resolveToken(ctx context.Context, u *domain.Upstream, t *domai
 	// 3. The credential value stored directly on the key slot. This is the harvester
 	//    path: the xAI OAuth access token is stored in KeySlot.Secret, while the ref
 	//    is only an identifier (e.g. "grok-key-1156").
-	if t != nil && t.KeySlot != nil && t.KeySlot.Secret != "" {
+	//
+	//    An "oauth:<connection-id>" ref resolves exclusively through the dynamic
+	//    OAuth resolver above. If resolution failed (no connection, revoked token)
+	//    KeySlot.Secret holds the same literal ref string (see config builder), so
+	//    it must never be forwarded as a bearer token.
+	if t != nil && t.KeySlot != nil && t.KeySlot.Secret != "" &&
+		!strings.HasPrefix(t.KeySlot.Secret, "oauth:") {
 		return t.KeySlot.Secret, true
 	}
 
 	// 4. Fallback: the ref is itself a bearer token (JWTs start with "ey").
-	if strings.HasPrefix(ref, "ey") || len(ref) > 40 {
+	//    OAuth refs are excluded here too — they are identifiers, never secrets.
+	if !strings.HasPrefix(ref, "oauth:") && (strings.HasPrefix(ref, "ey") || len(ref) > 40) {
 		return ref, true
 	}
 

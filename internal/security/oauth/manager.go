@@ -96,6 +96,8 @@ func (m *Manager) GetProvider(name string) (ports.OAuthProvider, bool) {
 			p, ok = m.providers["codebuddy-intl"]
 		case "antigravity-go", "antigravity_go":
 			p, ok = m.providers["antigravity"]
+		case "gcli", "grok-build", "grok_cli":
+			p, ok = m.providers["grok-cli"]
 		}
 	}
 	return p, ok
