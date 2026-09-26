@@ -8,6 +8,8 @@
 // Source of truth: 9router open-sse shared/qoder + executors/qoder.js, ported to Go.
 package qoder
 
+import "strings"
+
 // Endpoint bases.
 const (
 	// QoderOpenAPIBase serves device flow + userinfo + quota usage.
@@ -71,4 +73,21 @@ func qoderInferenceBase(token string) string {
 		return QoderChatBaseAlt
 	}
 	return QoderChatBase
+}
+
+// ResolveBaseURL returns the inference host to dial for a credential.
+//
+// The managed hosts (and an empty configured value) resolve per token, because a
+// single host cannot serve both token families: api3 rejects jt- with 403 and
+// api2 serves only jt-. A configured host that is not one of the managed hosts is
+// honored verbatim, which is what keeps mock servers and self-hosted deployments
+// working. Call this instead of reading Upstream.BaseURL directly: an operator
+// pinned `base_url` (the catalog pins https://api3.qoder.sh) must not be able to
+// send a job token to the wrong host.
+func ResolveBaseURL(configured, token string) string {
+	base := strings.TrimRight(configured, "/")
+	if base == "" || base == QoderChatBase || base == QoderChatBaseAlt {
+		return qoderInferenceBase(token)
+	}
+	return base
 }

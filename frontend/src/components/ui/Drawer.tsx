@@ -36,7 +36,9 @@ export function Drawer({ open, onClose, title, children }: DrawerProps) {
       <div className="drawer-backdrop" onClick={onClose} aria-hidden="true" />
       <aside className="drawer" role="dialog" aria-modal="true" aria-label={title}>
         <div className="drawer-header">
-          <h2>{title}</h2>
+          <h2 className="min-w-0 truncate" title={title}>
+            {title}
+          </h2>
           <button className="icon-btn" onClick={onClose} aria-label="Close inspector" ref={closeRef}>
             <X aria-hidden="true" />
           </button>

@@ -112,12 +112,8 @@ func (a *Adapter) ListModels(ctx context.Context, u *domain.Upstream, t *domain.
 	if !ok {
 		return nil, errors.New("qoder adapter: could not resolve signing identity")
 	}
-	base := strings.TrimRight(u.BaseURL, "/")
-	if base == "" {
-		base = qoderInferenceBase(id.Token)
-	}
 	creds := cosyCreds{UserID: id.UserID, AuthToken: id.Token, MachineID: id.MachineID, Email: id.Email, Name: id.Name}
-	return a.models.listModels(ctx, a.pool.Client(u), base, creds)
+	return a.models.listModels(ctx, a.pool.Client(u), ResolveBaseURL(u.BaseURL, id.Token), creds)
 }
 
 type attemptResult struct {
@@ -330,12 +326,11 @@ func (a *Adapter) attempt(ctx context.Context, u *domain.Upstream, req ports.For
 
 	creds := cosyCreds{UserID: id.UserID, AuthToken: id.Token, MachineID: id.MachineID, Email: id.Email, Name: id.Name}
 
-	// Base host: prefer an explicit upstream BaseURL (also enables tests + custom
-	// deployments), else the token-derived host (api3 for dt-, api2 for jt-).
-	base := strings.TrimRight(u.BaseURL, "/")
-	if base == "" {
-		base = qoderInferenceBase(id.Token)
-	}
+	// Base host: honor a custom host (tests + self-hosted deployments), but dial
+	// the token-derived host whenever the configured value is a managed qoder
+	// host (api3/api2) or empty, so a pinned base_url can never route a token to
+	// the wrong host. See ResolveBaseURL.
+	base := ResolveBaseURL(u.BaseURL, id.Token)
 
 	// Resolve the public model to the qoder key + live model_config.
 	qoderKey := strings.TrimPrefix(t.UpstreamModel, "qoder/")

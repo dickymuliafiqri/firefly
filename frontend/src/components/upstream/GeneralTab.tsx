@@ -18,11 +18,14 @@ export interface GeneralState {
 }
 
 /**
- * Provider-managed endpoints of the protocols that authenticate with an OAuth
- * token instead of an operator-supplied API key. The adapter forwards that token
- * to this host, so the value is not editable: the backend pins it while building
- * the catalog (see domain.OAuthManagedBaseURL), and the form renders it
- * read-only.
+ * Provider-managed endpoints of the protocols whose host is fixed by the
+ * provider rather than chosen by the operator: OAuth-token protocols and
+ * provider-hosted gateways (opencode, qoder). The adapter forwards the
+ * credential to this host, so the value is not editable: the backend pins it
+ * while building the catalog (see domain.OAuthManagedBaseURL), and the form
+ * renders it read-only. Only `openai` and `anthropic` keep an operator-chosen
+ * host. For qoder the pin is the device-token host (api3); the adapter
+ * reroutes job tokens to api2 at request time (qoder.ResolveBaseURL).
  */
 export const OAUTH_LOCKED_BASE_URLS: Record<string, string> = {
   antigravity: "https://daily-cloudcode-pa.googleapis.com",
@@ -30,11 +33,13 @@ export const OAUTH_LOCKED_BASE_URLS: Record<string, string> = {
   "codebuddy-cn": "https://copilot.tencent.com/v2",
   "codebuddy-intl": "https://www.codebuddy.ai/v2",
   "grok-cli": "https://cli-chat-proxy.grok.com/v1",
+  opencode: "https://opencode.ai/zen/v1",
+  qoder: "https://api3.qoder.sh",
 };
 /**
- * Returns the provider-managed endpoint of an OAuth-authenticated protocol, or
- * undefined for protocols whose host the operator chooses (openai, anthropic,
- * opencode, qoder).
+ * Returns the provider-managed endpoint of a protocol whose host the operator
+ * may not choose, or undefined for the two protocols with an operator-chosen
+ * host (openai, anthropic).
  */
 export function lockedOAuthBaseUrl(protocol: string): string | undefined {
   return OAUTH_LOCKED_BASE_URLS[canonicalProtocol(protocol)];
@@ -153,7 +158,7 @@ export function GeneralTab({ state, isEdit, onChange }: GeneralTabProps) {
               htmlFor="u-base-url"
               hint={
                 lockedBaseUrl
-                  ? `Fixed by the ${state.protocol} OAuth provider: the adapter sends its token to ${lockedBaseUrl} only.`
+                  ? `Fixed for ${state.protocol}: the adapter sends its credential to ${lockedBaseUrl} only.`
                   : undefined
               }
             >
@@ -176,7 +181,7 @@ export function GeneralTab({ state, isEdit, onChange }: GeneralTabProps) {
               htmlFor="u-fallback"
               hint={
                 lockedBaseUrl
-                  ? "Not available: an OAuth-managed endpoint has no operator-defined fallback host."
+                  ? "Not available: a provider-managed endpoint has no operator-defined fallback host."
                   : undefined
               }
             >

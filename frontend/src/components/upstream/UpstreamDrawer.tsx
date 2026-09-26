@@ -11,6 +11,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Activity,
+  Loader2,
   Trash2,
 } from 'lucide-react';
 
@@ -98,50 +99,43 @@ export function UpstreamDrawer({
     <Drawer open={Boolean(selected)} onClose={onClose} title={selected.name}>
       {/* Top Provider Profile Banner */}
       <div className="p-4 rounded-xl bg-[var(--surface-raised)] border border-[var(--line)]">
-        <div className="flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3.5 min-w-0">
-            <div className="w-11 h-11 rounded-xl flex items-center justify-center bg-[var(--surface-card)] border border-[var(--line)] shadow-sm shrink-0">
-              <ProviderIcon protocol={selected.protocol} name={selected.name} size={26} />
-            </div>
-            <div className="min-w-0">
-              <div className="font-semibold text-ink text-base truncate" title={selected.name}>
-                {selected.name}
-              </div>
-              <div className="flex items-center gap-2 mt-1">
-                <span className="inline-flex items-center gap-2 px-2 py-0.5 rounded text-xs font-mono font-medium bg-[var(--surface-input)] text-muted border border-[var(--line)]">
-                  <ProviderIcon protocol={selected.protocol} name={selected.name} size={13} />
-                  <span className="capitalize">{selected.protocol}</span>
-                </span>
-                {isEnabled ? (
-                  <Badge tone="ok" className="text-[10px] px-2 py-0.5">
-                    ENABLED
-                  </Badge>
-                ) : (
-                  <Badge tone="neutral" className="text-[10px] px-2 py-0.5">
-                    DISABLED
-                  </Badge>
-                )}
-              </div>
-            </div>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <span className="inline-flex items-center gap-2 px-2 py-0.5 rounded text-xs font-mono font-medium bg-[var(--surface-input)] text-muted border border-[var(--line)] whitespace-nowrap">
+              <ProviderIcon protocol={selected.protocol} name={selected.name} size={13} />
+              <span className="capitalize">{selected.protocol}</span>
+            </span>
+            {isEnabled ? (
+              <Badge tone="ok" className="text-[10px] px-2 py-0.5 whitespace-nowrap">
+                ENABLED
+              </Badge>
+            ) : (
+              <Badge tone="neutral" className="text-[10px] px-2 py-0.5 whitespace-nowrap">
+                DISABLED
+              </Badge>
+            )}
           </div>
-
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              className="btn btn-secondary text-xs"
+              className="btn btn-secondary text-xs whitespace-nowrap"
               disabled={isPinging}
               onClick={() => void handlePing()}
               title="Ping upstream host"
             >
-              <Activity
-                className={`w-3.5 h-3.5 ${isPinging ? 'animate-spin' : ''}`}
-                style={{ color: 'var(--biolum)' }}
-              />
+              {isPinging ? (
+                <Loader2
+                  className="w-3.5 h-3.5 animate-spin"
+                  style={{ color: 'var(--biolum)' }}
+                />
+              ) : (
+                <Activity className="w-3.5 h-3.5" style={{ color: 'var(--biolum)' }} />
+              )}
               {isPinging ? 'Pinging…' : 'Ping'}
             </button>
             <button
               type="button"
-              className="btn btn-secondary text-xs"
+              className="btn btn-secondary text-xs whitespace-nowrap"
               onClick={() => {
                 onClose();
                 navigate('upstream/edit/' + encodeURIComponent(selected.name));
@@ -153,7 +147,7 @@ export function UpstreamDrawer({
             {entry && onToggleEnabled ? (
               <button
                 type="button"
-                className="btn btn-ghost text-xs"
+                className="btn btn-ghost text-xs whitespace-nowrap"
                 disabled={isToggling}
                 onClick={() => onToggleEnabled(selected.name)}
               >

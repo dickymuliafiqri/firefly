@@ -34,11 +34,7 @@ func FetchModels(ctx context.Context, client *http.Client, baseURL, token string
 		return nil, err
 	}
 
-	base := strings.TrimRight(baseURL, "/")
-	if base == "" {
-		base = qoderInferenceBase(creds.AuthToken)
-	}
-
+	base := ResolveBaseURL(baseURL, creds.AuthToken)
 	cat, err := fetchQoderCatalog(ctx, client, base, creds)
 	if err != nil {
 		return nil, err

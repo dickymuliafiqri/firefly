@@ -71,9 +71,12 @@ export function UpstreamsPage() {
   );
   const totalIssues = totalCooldown + totalRevoked;
   const issueUnit = useMemo(() => {
+    // The KPI renders `value` (the total) followed by `unit`, so the unit must
+    // never repeat the number it qualifies. Only the mixed case carries a
+    // breakdown, which explains the sum rather than duplicating it.
     if (totalCooldown > 0 && totalRevoked > 0) return `${totalCooldown} cd · ${totalRevoked} rev`;
-    if (totalCooldown > 0) return `${totalCooldown} cooldown`;
-    if (totalRevoked > 0) return `${totalRevoked} revoked`;
+    if (totalCooldown > 0) return 'cooldown';
+    if (totalRevoked > 0) return 'revoked';
     return undefined;
   }, [totalCooldown, totalRevoked]);
 

@@ -237,13 +237,14 @@ func normalizeProtocol(proto string) string {
 }
 
 // pinOAuthManagedEndpoint replaces base_url and base_urls with the
-// provider-managed endpoint when the protocol authenticates through an OAuth
-// token, dropping any operator-defined fallback host.
+// provider-managed endpoint for protocols whose host is fixed by the provider
+// (OAuth-token protocols and provider-hosted gateways such as opencode and
+// qoder), dropping any operator-defined fallback host.
 //
-// The value is replaced rather than rejected: an OAuth bearer token is issued for
-// one provider host, so a stale value in an existing file, a database row, or a
-// raw API payload must neither retarget that token nor keep the gateway from
-// starting.
+// The value is replaced rather than rejected: the credential is only valid at
+// the managed host, so a stale value in an existing file, a database row, or a
+// raw API payload must neither retarget that credential nor keep the gateway
+// from starting. Only openai and anthropic keep an operator-chosen host.
 func pinOAuthManagedEndpoint(d *UpstreamDTO) {
 	norm := normalizeProtocol(d.Protocol)
 	endpoint, ok := domain.OAuthManagedBaseURL(domain.Protocol(norm))
@@ -309,10 +310,12 @@ func translateUpstream(i int, d UpstreamDTO, envLookup func(string) (string, boo
 		}
 	}
 
-	// OAuth-authenticated protocols (antigravity, cline, codebuddy) are pinned to
-	// the endpoint their provider issued the token for. Every write path — a
+	// Provider-hosted protocols (opencode, qoder) and OAuth-authenticated
+	// protocols (antigravity, cline, codebuddy, grok-cli) are pinned to the
+	// endpoint their provider issued the credential for. Every write path — a
 	// hand-edited file, a database row, a dashboard payload — funnels through this
-	// builder, so normalizing here is what makes the endpoint immutable.
+	// builder, so normalizing here is what makes the endpoint immutable. Only
+	// openai and anthropic keep an operator-chosen host.
 	pinOAuthManagedEndpoint(&d)
 
 	if d.BaseURL == "" && len(d.BaseURLs) > 0 {

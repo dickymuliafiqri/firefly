@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Changed
+- **Locked every non-OpenAI/Anthropic `base_url` to its provider default (`internal/domain/protocol_endpoint.go`, `internal/config/builder.go`, `internal/adapter/qoder`, dashboard)**:
+  - Extended the managed-endpoint pin (`antigravity`, `cline`, `codebuddy-cn`/`-intl`, `grok-cli`) with `opencode` → `https://opencode.ai/zen/v1`, `opencode-go` → `https://opencode.ai/zen/go/v1`, and `qoder` → `https://api3.qoder.sh`, so only `openai` and `anthropic` keep an operator-chosen host. `config.Build` and `config.PinOAuthManagedEndpoints` overwrite whatever a file, database row, or API payload supplies.
+  - Qoder's per-token host split is preserved despite the single pinned value: new `qoder.ResolveBaseURL` treats a configured api3/api2 (or empty) value as "derive from the token" — job tokens (`jt-`) still route to api2 even when the stored base says api3 — while custom/mock hosts keep working verbatim. Applied in the adapter, `ListModels`, and `FetchModels` so probes agree with forwarding.
+  - The dashboard renders Base URL read-only with the managed value for every locked protocol (was: OAuth protocols only) and keeps refusing fallback hosts.
+### Fixed
+- **Upstream drawer header and Key-issues KPI (`frontend/src/components/upstream/UpstreamDrawer.tsx`, `frontend/src/components/ui/Drawer.tsx`, `frontend/src/pages/UpstreamsPage.tsx`)**:
+  - The Key-issues KPI card no longer repeats its value inside the unit ("3 3 cooldown" → "3 cooldown"); a single-issue metric shows a bare label, while the mixed case keeps its cooldown/revoked breakdown.
+  - The drawer's provider banner no longer duplicates the upstream name already rendered in the drawer header, and both the row and its action group wrap, so the Ping/Edit/Disable buttons no longer overflow a narrow sidebar. Long names truncate instead of pushing the close button out.
+  - The Ping button no longer spins the non-circular `Activity` icon: it swaps to a circular `Loader2` spinner while a probe is in flight.
 ## [1.21.0] - 2026-09-26
 ### Added
 - **Grok CLI OAuth device-code provider with automatic token refresh (`internal/security/oauth/providers/grokcli`, `cmd/firefly/main.go`, `internal/server/oauth_handlers.go`)**:

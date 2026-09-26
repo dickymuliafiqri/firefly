@@ -920,6 +920,19 @@ func TestPinOAuthManagedEndpoints(t *testing.T) {
 			BaseURL:  "https://evil.example.com/v1",
 			BaseURLs: []string{"https://evil.example.com/v1"},
 		},
+		{
+			Name:           "opencode-pinned",
+			Protocol:       "opencode",
+			BaseURL:        "https://evil.example.com/zen/v1",
+			BaseURLs:       []string{"https://evil.example.com/zen/v1"},
+			CredentialPool: []CredentialKeyDTO{{Ref: "oc-key-1", Secret: "public"}},
+		},
+		{
+			Name:           "qoder-pinned",
+			Protocol:       "qodercli",
+			BaseURL:        "https://evil.example.com",
+			CredentialPool: []CredentialKeyDTO{{Ref: "qoder-key-1", Secret: "dt-token"}},
+		},
 	}
 
 	PinOAuthManagedEndpoints(upstreams)
@@ -942,6 +955,8 @@ func TestPinOAuthManagedEndpoints(t *testing.T) {
 		{3, "https://daily-cloudcode-pa.googleapis.com", "antigravity"},
 		{4, "https://www.codebuddy.ai/v2", "codebuddy-intl"},
 		{5, "https://cli-chat-proxy.grok.com/v1", "grok-cli"},
+		{6, "https://opencode.ai/zen/v1", "opencode"},
+		{7, "https://api3.qoder.sh", "qoder"},
 	} {
 		up := upstreams[tc.idx]
 		if up.Protocol != tc.wantProtocol {
