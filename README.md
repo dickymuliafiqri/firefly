@@ -340,7 +340,7 @@ make build
 - `-admin-token` / `FIREFLY_ADMIN_TOKEN`: Bearer token protecting administrative endpoints.
 - `-log-level` / `FIREFLY_LOG_LEVEL`: Structured logging level (`debug`, `info`, `warn`, `error`). Default: `info`.
 - `-health-check-interval`: Frequency of background health probes (duration, e.g. `15s`; `0` disables). Default: `15s`.
-- `-warp-rotate-interval` / `FIREFLY_WARP_ROTATE_INTERVAL`: Frequency of automatic periodic Cloudflare WARP egress IP rotations (duration, e.g. `5m`; `0` disables). Default: `5m`.
+- `-warp-rotate-interval` / `FIREFLY_WARP_ROTATE_INTERVAL`: Frequency of automatic periodic Cloudflare WARP egress IP rotations (duration, e.g. `5m`; `0` disables). The tunnel is established eagerly at startup so status reporting is accurate from boot. Default: `5m`.
 - `-tunnel` / `FIREFLY_TUNNEL`: Cloudflare Tunnel mode (`disabled`, `quick`, `named`). Default: `disabled`.
 - `-tunnel-token` / `FIREFLY_TUNNEL_TOKEN`: Cloudflare Tunnel secret token for named tunnels.
 - `-tunnel-bin-dir` / `FIREFLY_TUNNEL_BIN_DIR`: Custom directory to locate or download the `cloudflared` binary (defaults to system PATH, `~/.firefly/bin`, or `./data/bin`).

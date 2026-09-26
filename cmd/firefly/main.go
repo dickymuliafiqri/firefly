@@ -355,8 +355,12 @@ func run() error {
 		warpLicense = os.Getenv("WARP_LICENSE_KEY")
 	}
 	warpManager := warp.NewManager(logger, warpLicense, filepath.Join(*configDir, "data", "warp_identity.json"))
+	// The interval is applied even when it is zero: Status() mirrors the schedule,
+	// so leaving the constructor default in place made the dashboard advertise a
+	// rotation that would never happen. `0` means no autonomous WARP work at all
+	// — neither the scheduler nor the cold-start warm-up below runs.
+	warpManager.SetAutoRotateInterval(*warpRotateInterval)
 	if *warpRotateInterval > 0 {
-		warpManager.SetAutoRotateInterval(*warpRotateInterval)
 		warpManager.StartAutoRotation()
 	}
 
@@ -375,6 +379,21 @@ func run() error {
 	warpManager.SetAutoRotationObserver(func(upstreamName string) {
 		upstream.ReleaseUpstreamKeyPenalties(reg, upstreamName, logger)
 	})
+
+	// A cold start has no live tunnel: the session is dialled lazily by the first
+	// WARP-egress request, or by the first rotation tick a full interval away
+	// (5m by default). Until then /api/warp/status answers enabled:false, the
+	// dashboard shows a healthy engine as DISABLED, and the operator cannot even
+	// force it from the UI. Establish the tunnel eagerly instead, after both
+	// rotation observers above are registered. Skipped when automatic rotation is
+	// off: `-warp-rotate-interval=0` requests no autonomous WARP work at all.
+	if *warpRotateInterval > 0 {
+		go func() {
+			if err := warpManager.WarmUp(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				logger.Warn("warp cold-start warm-up failed; the tunnel stays lazy", "err", err)
+			}
+		}()
+	}
 	breakers := upstream.NewBreakerRegistry(upstream.BreakerConfig{
 		FailureThreshold: 5,
 		SuccessThreshold: 2,

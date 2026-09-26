@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.20.2] - 2026-09-26
+
+### Fixed
+
+- **WARP Engine Reported as `DISABLED` on a Cold Start (`cmd/firefly/main.go`, `internal/transport/warp/manager.go`, `frontend/src/pages/SettingsPage.tsx`)**: The tunnel was only dialled lazily — by the first request through a WARP-egress upstream, or by the first auto-rotation tick a full `-warp-rotate-interval` (5m by default) after boot. A fresh deployment (e.g. a new container with an empty `/etc/firefly` volume) therefore answered `enabled: false` to `GET /api/warp/status` for minutes, the Settings → WARP Engine card showed a perfectly healthy engine as `DISABLED`, and the "Rotate now" button was disabled while `enabled == false`, so the operator could not even force the first session from the UI.
+  - `warp.Manager.WarmUp(ctx)` establishes (or restores from `warp_identity.json`) the tunnel during startup under the existing singleflight, so the session is published before the first request instead of on it. `cmd/firefly/main.go` calls it from a background goroutine **after** both rotation observers are registered: it never blocks startup, and it is skipped when automatic rotation is off (`-warp-rotate-interval=0`, no autonomous WARP work).
+  - A warm-up failure is never fatal: the tunnel stays lazy, the next request or rotation retries, and the reason is recorded so `Status().Error` explains the badge. Shutdown racing the warm-up is a no-op rather than an error.
+  - Frontend: the WARP card now surfaces `error` from the status payload (badge `UNAVAILABLE` with the reason in the title instead of a neutral `DISABLED`, plus a monospace error panel mirroring the Tunnel card), and the action button reads `Start tunnel` / `Rotate now` and stays clickable while no session exists — the endpoint establishes one.
+  - `-warp-rotate-interval` is now applied to the manager even when it is `0`. Previously the flag was only forwarded inside the `> 0` branch, so the constructor default (5m) survived and `GET /api/warp/status` kept advertising `auto_rotate_interval_seconds: 300` with a future `next_rotation_at` while no scheduler was running — the dashboard showed a live 5-minute schedule for a rotation that would never happen.
+  - Tests (`internal/transport/warp/manager_test.go`): `TestManager_WarmUpEstablishesTunnelOnColdStart` (publishes exactly one session, idempotent on a second call), `TestManager_WarmUpReportsFailureWithoutPublishing`, `TestManager_WarmUpIsNoopAfterClose`, and `TestManager_StatusReportsDisabledScheduleWhenIntervalIsZero`.
+
 ## [1.20.1] - 2026-09-26
 
 ### Changed

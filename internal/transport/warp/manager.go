@@ -534,6 +534,46 @@ func (m *Manager) DialContext(ctx context.Context, network, address string) (net
 	}, nil
 }
 
+// WarmUp establishes the tunnel on a cold start so status surfaces report the
+// engine as live from process start. Without it the session is dialled lazily —
+// by the first request through a WARP-egress upstream, or by the first rotation
+// tick a full auto-rotate interval (5m by default) after boot — so a fresh
+// deployment (a new container with an empty config volume, for instance)
+// answered enabled:false to GET /api/warp/status for minutes and the dashboard
+// showed a perfectly healthy engine as DISABLED.
+//
+// A failure is never fatal and never stops the caller: the tunnel simply stays
+// lazy, the next request or rotation retries, and the reason is recorded so
+// Status().Error can explain the badge. A nil return therefore means "nothing to
+// report": either a session is live, or shutdown raced the warm-up.
+func (m *Manager) WarmUp(ctx context.Context) error {
+	if m == nil {
+		return nil
+	}
+	if s := m.current.Load(); s != nil {
+		return nil
+	}
+	if m.closed.Load() {
+		return nil
+	}
+
+	session, err := m.ensureSession(ctx)
+	if err != nil {
+		if errors.Is(err, errClosed) {
+			// Close cancelled the flight; there is no tunnel state to report.
+			return nil
+		}
+		return err
+	}
+
+	m.logger.Info("cloudflare warp tunnel established on cold start",
+		"public_ip", session.PublicIP,
+		"internal_ip", session.InternalIPv4,
+		"colo", session.Colo,
+		"latency_ms", session.LatencyMs)
+	return nil
+}
+
 // ensureSession returns the active session, establishing one on cold start. All
 // callers share one in-flight cold start, so a burst of first requests cannot
 // register and start several tunnels at once.

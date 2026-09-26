@@ -302,6 +302,13 @@ function WarpCard() {
   const rotate = useRotateWarpMutation();
   const pushToast = useUiStore((s) => s.pushToast);
   const d = warp.data;
+  const live = Boolean(d?.enabled);
+
+  // Three states, not two: a warm-up that could not reach Cloudflare is neither a
+  // live tunnel nor a healthy idle engine, so it is reported as UNAVAILABLE with
+  // the recorded reason instead of the neutral DISABLED badge.
+  const badgeTone = live ? 'ok' : d?.error ? 'warn' : 'neutral';
+  const badgeText = live ? 'ROTATING' : d?.error ? 'UNAVAILABLE' : 'DISABLED';
 
   const copyIp = (ip: string) => {
     navigator.clipboard.writeText(ip);
@@ -312,7 +319,7 @@ function WarpCard() {
     <div className="card">
       <div className="card-header">
         <h2>Warp Engine</h2>
-        <Badge tone={d?.enabled ? 'ok' : 'neutral'}>{d?.enabled ? 'ROTATING' : 'DISABLED'}</Badge>
+        <Badge tone={badgeTone} title={d?.error || undefined}>{badgeText}</Badge>
       </div>
       <div className="card-body">
         <div className="kv-list">
@@ -349,17 +356,44 @@ function WarpCard() {
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14 }}>
           <button
             className="btn btn-secondary"
-            disabled={rotate.isPending || !d?.enabled}
+            disabled={rotate.isPending}
             onClick={() =>
               rotate.mutate(undefined, {
-                onSuccess: () => pushToast({ type: 'success', title: 'WARP rotate', message: 'New egress session created; old session is draining.' }),
+                onSuccess: () =>
+                  pushToast({
+                    type: 'success',
+                    title: 'WARP rotate',
+                    message: live
+                      ? 'New egress session created; old session is draining.'
+                      : 'WARP tunnel established on the first available egress.',
+                  }),
                 onError: (e) => pushToast({ type: 'error', title: 'Rotate failed', message: e instanceof Error ? e.message : 'Unknown' }),
               })
             }
           >
-            Rotate now
+            {live ? 'Rotate now' : 'Start tunnel'}
           </button>
         </div>
+
+        {d?.error && (
+          <div
+            style={{
+              marginTop: 12,
+              padding: '10px 14px',
+              borderRadius: 'var(--radius, 6px)',
+              background: 'rgba(239, 68, 68, 0.1)',
+              border: '1px solid rgba(239, 68, 68, 0.3)',
+              color: 'var(--color-error, #ef4444)',
+              fontSize: '0.85rem',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 4,
+            }}
+          >
+            <strong>WARP error:</strong>
+            <span style={{ wordBreak: 'break-word', fontFamily: 'var(--font-mono, monospace)', fontSize: '0.8rem' }}>{d.error}</span>
+          </div>
+        )}
       </div>
     </div>
   );

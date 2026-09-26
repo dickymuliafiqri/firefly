@@ -268,6 +268,90 @@ func TestManager_ColdStartWithSavedIdentityBuildsOneTunnel(t *testing.T) {
 	}
 }
 
+// A cold start used to look like a dead engine: no session exists until the first
+// rotation tick or the first WARP-egress request, so a fresh container answered
+// enabled:false to /api/warp/status for minutes and the dashboard showed it as
+// DISABLED. The warm-up publishes the tunnel during startup instead.
+func TestManager_WarmUpEstablishesTunnelOnColdStart(t *testing.T) {
+	h := newHarness(t)
+
+	if h.mgr.Status().Enabled {
+		t.Fatal("expected no live tunnel before the warm-up")
+	}
+
+	if err := h.mgr.WarmUp(t.Context()); err != nil {
+		t.Fatalf("WarmUp on a cold start: %v", err)
+	}
+
+	st := h.mgr.Status()
+	if !st.Enabled {
+		t.Fatal("expected the warm-up to publish a live session")
+	}
+	if st.PublicIP != testPublicIP {
+		t.Errorf("expected the probed egress ip %q, got %q", testPublicIP, st.PublicIP)
+	}
+	if got := h.regCalls.Load(); got != 1 {
+		t.Errorf("expected exactly 1 device registration, got %d", got)
+	}
+
+	// Idempotent: a second warm-up must reuse the live tunnel, never rotate it.
+	if err := h.mgr.WarmUp(t.Context()); err != nil {
+		t.Fatalf("second WarmUp: %v", err)
+	}
+	if got := h.regCalls.Load(); got != 1 {
+		t.Errorf("a live tunnel must not be re-registered, got %d registrations", got)
+	}
+}
+
+// A blocked container egress must neither crash startup nor hide behind the
+// neutral DISABLED badge: the failure is reported, recorded for status
+// consumers, and the tunnel stays lazy so a later request can retry.
+func TestManager_WarmUpReportsFailureWithoutPublishing(t *testing.T) {
+	h := newHarness(t)
+	h.server.Close() // registration endpoint unreachable
+
+	err := h.mgr.WarmUp(t.Context())
+	if err == nil {
+		t.Fatal("expected the unreachable registrator to be reported")
+	}
+
+	st := h.mgr.Status()
+	if st.Enabled {
+		t.Fatal("a failed warm-up must not publish a session")
+	}
+	if st.Error == "" {
+		t.Error("expected the failure reason to be recorded for status consumers")
+	}
+}
+
+// Shutdown racing the warm-up is not a tunnel failure.
+func TestManager_WarmUpIsNoopAfterClose(t *testing.T) {
+	h := newHarness(t)
+	h.mgr.Close()
+
+	if err := h.mgr.WarmUp(t.Context()); err != nil {
+		t.Fatalf("expected a closed manager to be a no-op, got %v", err)
+	}
+}
+
+// The dashboard must not advertise a rotation schedule that is switched off: the
+// constructor default (5m) has to be overwritten by an explicit 0, which is what
+// `-warp-rotate-interval=0` does.
+func TestManager_StatusReportsDisabledScheduleWhenIntervalIsZero(t *testing.T) {
+	mgr := NewManager(quietLogger(), "")
+	defer mgr.Close()
+
+	mgr.SetAutoRotateInterval(0)
+
+	st := mgr.Status()
+	if st.AutoRotateIntervalSeconds != 0 {
+		t.Errorf("expected a disabled schedule, got %d seconds", st.AutoRotateIntervalSeconds)
+	}
+	if !st.NextRotationAt.IsZero() {
+		t.Errorf("expected no next rotation once the schedule is off, got %v", st.NextRotationAt)
+	}
+}
+
 // A caller that walks away must not kill the shared flight: the tunnel it was
 // waiting for is what every other request needs.
 func TestManager_CancelledCallerLeavesFlightRunning(t *testing.T) {
