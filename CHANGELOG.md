@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [1.22.0] - 2026-09-26
 ### Changed
 - **Locked every non-OpenAI/Anthropic `base_url` to its provider default (`internal/domain/protocol_endpoint.go`, `internal/config/builder.go`, `internal/adapter/qoder`, dashboard)**:
   - Extended the managed-endpoint pin (`antigravity`, `cline`, `codebuddy-cn`/`-intl`, `grok-cli`) with `opencode` → `https://opencode.ai/zen/v1`, `opencode-go` → `https://opencode.ai/zen/go/v1`, and `qoder` → `https://api3.qoder.sh`, so only `openai` and `anthropic` keep an operator-chosen host. `config.Build` and `config.PinOAuthManagedEndpoints` overwrite whatever a file, database row, or API payload supplies.
