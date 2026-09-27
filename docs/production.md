@@ -112,6 +112,7 @@ Firefly exposes an isolated Prometheus registry accessible via the `/metrics` en
 - **Automated Logging Redaction**: All sensitive authentication headers (`Authorization: Bearer ...`, `X-Api-Key`, `X-Admin-Token`, cookies) are automatically redacted by `logging.RedactHandler` into `"[REDACTED]"`.
 - **Domain `KeySlot` Masking**: Key data structures implement `fmt.Formatter`, `fmt.Stringer`, and `json.Marshaler` ensuring `%v`, `%+v`, `%#v` verbs and JSON serialization never expose plain-text secrets.
 - **Admin Plane Isolation**: Diagnostic endpoints (`/debug/*`, pprof) require constant-time bearer token validation (`-admin-token` or `FIREFLY_ADMIN_TOKEN`). If no token is configured, debug routes are automatically disabled (fail-closed).
+- **Stateless Dashboard Sessions**: Dashboard sessions are HMAC-signed tokens (`ff_sess_<payload>.<signature>`) that any instance can verify without shared state, so a session survives restarts and instance churn (Railway replicas, serverless cold starts). The signing secret comes from `FIREFLY_SESSION_SECRET`, falling back to `session_secret` in `configs/auth.json`. Signing out — or changing the password — advances the persisted `password_epoch`, retiring every earlier token; rotate `FIREFLY_SESSION_SECRET` to revoke every session fleet-wide at once. The 24-hour TTL is the hard bound.
 
 ---
 

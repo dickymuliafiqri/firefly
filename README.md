@@ -201,6 +201,7 @@ All settings can be updated live from the web dashboard with **zero server resta
 | `-admin-addr` | `FIREFLY_ADMIN_ADDR` | `""` | Address for admin plane (`/metrics`, `/api/*`); disabled if empty |
 | `-config-dir` | `FIREFLY_CONFIG_DIR` | `configs` | Directory for JSON configuration files |
 | `-admin-token` | `FIREFLY_ADMIN_TOKEN` | `""` | Secret token protecting administrative endpoints |
+| — | `FIREFLY_SESSION_SECRET` | auto | HMAC key for stateless dashboard sessions; set it on serverless/multi-instance hosts so sessions survive restarts |
 | `-log-level` | `FIREFLY_LOG_LEVEL` | `info` | Log detail level (`debug`, `info`, `warn`, `error`) |
 | `-health-check-interval` | — | `15s` | Background health probe interval (`0` to disable) |
 | `-tunnel` | `FIREFLY_TUNNEL` | `disabled` | Cloudflare Tunnel mode (`disabled`, `quick`, `named`) |

@@ -236,6 +236,10 @@ FIREFLY_SHUTDOWN_GRACE_SECONDS=30
 
 # Optional: Bearer token to protect admin endpoints (/metrics, /debug/*)
 # FIREFLY_ADMIN_TOKEN=sk-admin-secret-token
+
+# Recommended on serverless / multi-instance hosts: HMAC key for dashboard
+# sessions. Keep it identical across instances so logins survive restarts.
+# FIREFLY_SESSION_SECRET=change-me-to-a-long-random-string
 EOF
     success "Created initial environment file: ${env_file}"
   fi
