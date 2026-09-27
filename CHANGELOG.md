@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.25.0] - 2026-09-27
+
+### Added
+
+- **Persistent Cross-View Model Cache (`frontend/src/services/modelCache.ts`, `frontend/src/components/upstream/ModelsTab.tsx`, `frontend/src/pages/ModelsPage.tsx`)**:
+  - New Zustand `persist` store (`firefly-model-cache` in `localStorage`) mapping upstream name to its discovered model list, so a model discovery performed once in the Upstream Editor is reused by the Models page (and every later editor session) instead of re-hitting the upstream.
+  - `ModelsTab` writes fetched models into the cache and restores them when the editor switches upstream with an empty list (latency shown only for live fetches, not cache restores).
+  - Exported helpers `getCachedModels` / `setCachedModels` / `getAllCachedModels` plus `pickOptimalProbeModel`, which reuses the archived picker heuristics (`free` -> `flash` -> `mini`/`haiku`/`chat` -> first non-embedding model) and is applied automatically when models are discovered with no probe model selected yet.
+  - `ModelForm` on the Models page reads the same cache for its upstream-model dropdown and can refresh it in place via a **Fetch list** button (`POST /api/upstreams/models` against the selected upstream, first credential as fallback key).
+- **Bounded-Concurrency Model Health Checks (`frontend/src/components/upstream/ModelsTab.tsx`)**:
+  - `Check all health` now runs a worker pool instead of probing models strictly in sequence. Concurrency is operator-configurable from a new **Health Check & Probe Configuration** card (default 5, clamped to 1-20) and surfaced on the button (`Check all health (5x)`).
+  - A live progress line reports `completed / total (healthy, failed)` while the pool runs; the existing generation counter still invalidates in-flight workers on Stop or upstream switch.
+
+### Changed
+
+- **Probe Model Moved to a Dropdown in the Models Tab (`frontend/src/components/upstream/GeneralTab.tsx`, `frontend/src/components/upstream/ModelsTab.tsx`, `frontend/src/pages/UpstreamEditorPage.tsx`)**:
+  - The free-text `Probe model` field is gone from **General & Network**; `probeModel` is now dedicated editor state loaded from `target.probe_model` and edited through a `<select>` in the Models tab, populated from discovered (or cached) models.
+  - The dropdown stays disabled with an explanatory placeholder until models are fetched or restored from cache, so the probe model can no longer reference a model this upstream does not serve; the active probe row is badged `PROBE` in the discovery table.
+  - `KeysTab` keeps receiving the same value for per-key inference probes — request behavior is unchanged, only the input surface moved.
+- **Resilience Error Threshold Defaults to Disabled (`frontend/src/components/upstream/ResilienceTab.tsx`, `frontend/src/pages/UpstreamEditorPage.tsx`)**:
+  - `keyErrorThreshold` now defaults to `0` (new upstreams and stored upstreams without the field), matching the backend's `threshold > 0` guard in `upstream.HandleKeyOutcome`, so no consecutive-error action fires unless the operator opts in. The input is `min="0"` with hint text and sanitizes negative/NaN input to `0`; granular rule thresholds are clamped to `min 1`.
+- **Models Page Form Inputs (`frontend/src/pages/ModelsPage.tsx`)**:
+  - `ModelForm`: the upstream-model field becomes a select of cached models with a **Custom input** / **Select from list** toggle (and the **Fetch list** refresh), falling back to plain text while no cache exists.
+  - `ComboForm`: the comma-delimited member string is replaced by an ordered chip list — numbered rows with move up/down, remove, and the resolved upstream — plus clickable catalog-model chips for adding; the submit guard requires at least one selected member instead of a non-empty string.
+
 ## [1.24.1] - 2026-09-27
 
 ### Fixed

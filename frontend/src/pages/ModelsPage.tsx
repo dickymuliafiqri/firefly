@@ -1,12 +1,21 @@
 import { useEffect, useState } from 'react';
+import { ArrowUp, ArrowDown, Trash2, Plus, RefreshCw } from 'lucide-react';
 import { Badge } from '@/components/ui/Badge';
 import { Segmented } from '@/components/ui/Controls';
 import { Drawer } from '@/components/ui/Drawer';
 import { PageHeader } from '@/components/ui/PageHeader';
 import { QueryGate } from '@/components/ui/QueryGate';
-import { useSettingsQuery, useSaveSettingsSmart, withSettings } from '@/services/api';
+import {
+  useSettingsQuery,
+  useSaveSettingsSmart,
+  withSettings,
+  useUpstreamModelsMutation,
+  type UpstreamModelsRequest,
+} from '@/services/api';
 import type { ModelDTO, ComboDTO } from '@/services/schema';
 import { useUiStore } from '@/state/store';
+import { useModelCacheStore } from '@/services/modelCache';
+import { resolveBaseUrl } from '@/components/upstream/GeneralTab';
 
 interface ModelFormProps {
   editing: ModelDTO | null;
@@ -17,10 +26,14 @@ function ModelForm({ editing, onClose }: ModelFormProps) {
   const settings = useSettingsQuery();
   const save = useSaveSettingsSmart();
   const pushToast = useUiStore((s) => s.pushToast);
+  const modelsMutation = useUpstreamModelsMutation();
+  const cache = useModelCacheStore((s) => s.cache);
+  const setCachedModels = useModelCacheStore((s) => s.setModels);
 
   const [name, setName] = useState('');
   const [upstream, setUpstream] = useState('');
   const [upstreamModel, setUpstreamModel] = useState('');
+  const [isManualModel, setIsManualModel] = useState(false);
   const [fallbacks, setFallbacks] = useState('');
   const [maxContext, setMaxContext] = useState('');
   const [caps, setCaps] = useState({
@@ -31,6 +44,10 @@ function ModelForm({ editing, onClose }: ModelFormProps) {
     embeddings: false,
     audio: false,
   });
+
+  // Cached discovered models for the selected upstream (populated by the
+  // Upstream Editor's Models tab or the Fetch list button below).
+  const availableCachedModels = upstream ? cache[upstream] ?? [] : [];
 
   useEffect(() => {
     if (editing) {
@@ -47,6 +64,7 @@ function ModelForm({ editing, onClose }: ModelFormProps) {
         embeddings: editing.capabilities?.embeddings ?? false,
         audio: editing.capabilities?.audio ?? false,
       });
+      setIsManualModel(false);
     } else {
       setName('');
       setUpstream(settings.data?.upstreams[0]?.name ?? '');
@@ -54,6 +72,7 @@ function ModelForm({ editing, onClose }: ModelFormProps) {
       setFallbacks('');
       setMaxContext('');
       setCaps({ stream: true, tools: false, vision: false, json_mode: false, embeddings: false, audio: false });
+      setIsManualModel(false);
     }
     // Only initialize when edit target changes. settings.data is refetched every
     // 5 seconds; adding it to dependencies would clear user input.
@@ -68,6 +87,57 @@ function ModelForm({ editing, onClose }: ModelFormProps) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editing, upstream, settings.data?.upstreams]);
+
+  // Discovers the selected upstream's model list directly from this drawer and
+  // persists it into the shared model cache for every view to reuse.
+  async function handleFetchUpstreamModels() {
+    if (!upstream || !settings.data) return;
+    const target = settings.data.upstreams.find((u) => u.name === upstream);
+    if (!target) return;
+    const targetProtocol = target.protocol ?? 'openai';
+    const effectiveBaseUrl = resolveBaseUrl(targetProtocol, target.base_url ?? '');
+    if (!effectiveBaseUrl) {
+      pushToast({ type: 'error', title: 'Empty Base URL', message: 'This upstream has no Base URL configured.' });
+      return;
+    }
+    const firstKey =
+      target.credential_pool?.[0]?.secret ||
+      target.credential_pool?.[0]?.api_key ||
+      target.api_keys?.[0] ||
+      target.api_key;
+    try {
+      const payload: UpstreamModelsRequest = {
+        name: upstream,
+        protocol: targetProtocol,
+        base_url: effectiveBaseUrl,
+        api_key: firstKey || undefined,
+        egress_mode: target.egress_mode,
+        proxy_url: target.proxy_url || undefined,
+      };
+      const res = await modelsMutation.mutateAsync(payload);
+      const fetched = res.models || [];
+      if (fetched.length > 0) {
+        setCachedModels(upstream, fetched);
+        if (!upstreamModel) {
+          setUpstreamModel(fetched[0]);
+          if (!name.trim()) setName(fetched[0]);
+        }
+        pushToast({
+          type: 'success',
+          title: 'Models fetched',
+          message: `${fetched.length} model(s) cached for ${upstream}.`,
+        });
+      } else {
+        pushToast({ type: 'info', title: 'No models', message: 'The upstream returned an empty model list.' });
+      }
+    } catch (err) {
+      pushToast({
+        type: 'error',
+        title: 'Fetch failed',
+        message: err instanceof Error ? err.message : 'Unknown error',
+      });
+    }
+  }
 
   function submit() {
     if (!settings.data || !name.trim() || !upstream.trim() || !upstreamModel.trim()) return;
@@ -104,16 +174,87 @@ function ModelForm({ editing, onClose }: ModelFormProps) {
           <input id="m-name" value={name} placeholder="gpt-4o" onChange={(e) => setName(e.target.value)} />
         </Field>
         <Field label="Upstream" htmlFor="m-upstream">
-          <select id="m-upstream" value={upstream} onChange={(e) => setUpstream(e.target.value)}>
+          <select
+            id="m-upstream"
+            value={upstream}
+            onChange={(e) => {
+              setUpstream(e.target.value);
+              setIsManualModel(false);
+            }}
+          >
             {(settings.data?.upstreams ?? []).map((u) => (
               <option key={u.name}>{u.name}</option>
             ))}
           </select>
         </Field>
       </div>
-      <Field label="Upstream model" htmlFor="m-um" hint="Private model name on provider side.">
-        <input id="m-um" value={upstreamModel} className="mono" placeholder="gpt-4o-2024-11-20" onChange={(e) => setUpstreamModel(e.target.value)} />
-      </Field>
+      <div className="field">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+          <label htmlFor="m-um">Upstream model</label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {availableCachedModels.length > 0 && (
+              <button
+                type="button"
+                className="btn btn-ghost"
+                style={{ fontSize: 11, padding: '2px 6px', textDecoration: 'underline' }}
+                onClick={() => setIsManualModel((prev) => !prev)}
+              >
+                {isManualModel ? 'Select from list' : 'Custom input'}
+              </button>
+            )}
+            <button
+              type="button"
+              className="btn btn-ghost"
+              style={{ fontSize: 11, padding: '2px 6px' }}
+              disabled={modelsMutation.isPending || !upstream}
+              onClick={() => void handleFetchUpstreamModels()}
+              title="Fetch model list from this upstream and cache it"
+            >
+              <RefreshCw
+                style={{
+                  width: 11,
+                  height: 11,
+                  animation: modelsMutation.isPending ? 'spin 1s linear infinite' : 'none',
+                }}
+              />
+              {modelsMutation.isPending ? 'Fetching…' : 'Fetch list'}
+            </button>
+          </div>
+        </div>
+        {!isManualModel && availableCachedModels.length > 0 ? (
+          <select
+            id="m-um"
+            value={upstreamModel}
+            className="mono"
+            onChange={(e) => {
+              const val = e.target.value;
+              if (val === '__manual__') {
+                setIsManualModel(true);
+                return;
+              }
+              setUpstreamModel(val);
+              if (!name.trim()) setName(val);
+            }}
+          >
+            <option value="">-- Select upstream model ({availableCachedModels.length} available) --</option>
+            {availableCachedModels.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+            <option value="__manual__">Custom / Enter manually…</option>
+          </select>
+        ) : (
+          <input
+            id="m-um"
+            value={upstreamModel}
+            className="mono"
+            placeholder={availableCachedModels.length > 0 ? 'e.g. gpt-4o-2024-11-20' : 'gpt-4o-2024-11-20'}
+            onChange={(e) => setUpstreamModel(e.target.value)}
+          />
+        )}
+        <span className="hint">Private model name on provider side.</span>
+      </div>
       <Field label="Fallback upstreams (optional)" htmlFor="m-fb" hint="Comma-separated; used when primary upstream breaker is open.">
         <input id="m-fb" value={fallbacks} placeholder="openai-main, antigravity-prod" onChange={(e) => setFallbacks(e.target.value)} />
       </Field>
@@ -178,15 +319,34 @@ function ComboForm({ editing, onClose }: { editing: ComboDTO | null; onClose: ()
 
   const [name, setName] = useState(editing?.name ?? '');
   const [strategy, setStrategy] = useState(editing?.strategy ?? 'round_robin');
-  const [members, setMembers] = useState((editing?.models ?? []).join(', '));
+  const [selectedModels, setSelectedModels] = useState<string[]>((editing?.models ?? []).slice());
   const [enabled, setEnabled] = useState(editing?.enabled !== false);
 
+  const allCatalogModels = settings.data?.models ?? [];
+  const availableToPick = allCatalogModels.filter((m) => !selectedModels.includes(m.public_name));
+
+  function toggleModel(publicName: string) {
+    setSelectedModels((prev) =>
+      prev.includes(publicName) ? prev.filter((m) => m !== publicName) : [...prev, publicName],
+    );
+  }
+
+  function moveModel(idx: number, dir: 'up' | 'down') {
+    setSelectedModels((prev) => {
+      const next = prev.slice();
+      const target = dir === 'up' ? idx - 1 : idx + 1;
+      if (target < 0 || target >= next.length) return prev;
+      [next[idx], next[target]] = [next[target], next[idx]];
+      return next;
+    });
+  }
+
   function submit() {
-    if (!settings.data || !name.trim() || !members.trim()) return;
+    if (!settings.data || !name.trim() || selectedModels.length === 0) return;
     const entry: ComboDTO = {
       name: name.trim(),
       strategy,
-      models: members.split(',').map((m) => m.trim()).filter(Boolean),
+      models: selectedModels,
       enabled,
     };
     const others = (settings.data.combos ?? []).filter((c) => c.name !== entry.name);
@@ -217,9 +377,127 @@ function ComboForm({ editing, onClose }: { editing: ComboDTO | null; onClose: ()
           <option value="failover">failover</option>
         </select>
       </Field>
-      <Field label="Member models" htmlFor="c-members" hint="Public model names, comma-separated, in priority order.">
-        <input id="c-members" value={members} placeholder="gpt-4o, claude-sonnet-4-5" onChange={(e) => setMembers(e.target.value)} />
-      </Field>
+      <div className="field">
+        <label>
+          Member models ({selectedModels.length} selected)
+          {strategy === 'failover' ? ' — first model is primary' : ''}
+        </label>
+
+        {/* Selected ordered chips */}
+        {selectedModels.length > 0 ? (
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 6,
+              padding: 8,
+              border: '1px solid var(--line)',
+              borderRadius: 8,
+              marginBottom: 8,
+            }}
+          >
+            {selectedModels.map((m, idx) => {
+              const target = allCatalogModels.find((cm) => cm.public_name === m);
+              return (
+                <div
+                  key={m}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 8,
+                    padding: '6px 8px',
+                    border: '1px solid var(--line)',
+                    borderRadius: 6,
+                    background: 'var(--surface-raised)',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                    <span className="num" style={{ width: 18, textAlign: 'center', fontSize: 11 }}>
+                      {idx + 1}.
+                    </span>
+                    <span className="mono truncate">{m}</span>
+                    <span className="faint" style={{ fontSize: 11 }}>
+                      → {target?.upstream || 'unknown'}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
+                    <button
+                      type="button"
+                      className="btn btn-ghost p-1"
+                      title="Move up"
+                      disabled={idx === 0}
+                      onClick={() => moveModel(idx, 'up')}
+                    >
+                      <ArrowUp style={{ width: 13, height: 13 }} />
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-ghost p-1"
+                      title="Move down"
+                      disabled={idx === selectedModels.length - 1}
+                      onClick={() => moveModel(idx, 'down')}
+                    >
+                      <ArrowDown style={{ width: 13, height: 13 }} />
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-ghost p-1"
+                      title="Remove from combo"
+                      style={{ color: 'var(--danger)' }}
+                      onClick={() => toggleModel(m)}
+                    >
+                      <Trash2 style={{ width: 13, height: 13 }} />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div
+            style={{
+              padding: 12,
+              textAlign: 'center',
+              border: '1px dashed var(--line)',
+              borderRadius: 8,
+              marginBottom: 8,
+              fontSize: 12,
+            }}
+            className="faint"
+          >
+            No member models selected. Pick from the catalog below.
+          </div>
+        )}
+        {/* Available catalog models as toggle chips */}
+        {availableToPick.length > 0 ? (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {availableToPick.map((m) => (
+              <button
+                key={m.public_name}
+                type="button"
+                className="btn btn-secondary"
+                style={{ fontSize: 11, padding: '3px 8px' }}
+                title={`Add ${m.public_name} (${m.upstream})`}
+                onClick={() => toggleModel(m.public_name)}
+              >
+                <Plus style={{ width: 11, height: 11 }} />
+                {m.public_name}
+                <span className="faint" style={{ fontSize: 10 }}>
+                  ({m.upstream})
+                </span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <span className="faint" style={{ fontSize: 11 }}>
+            {allCatalogModels.length === 0
+              ? 'No catalog models exist yet — create models first.'
+              : 'All catalog models are already in this combo.'}
+          </span>
+        )}
+        <span className="hint">Click catalog models to add them; order defines priority.</span>
+      </div>
       <Field label="Enabled" htmlFor="c-en">
         <select id="c-en" value={enabled ? 'yes' : 'no'} onChange={(e) => setEnabled(e.target.value === 'yes')}>
           <option value="yes">Yes</option>
@@ -228,7 +506,11 @@ function ComboForm({ editing, onClose }: { editing: ComboDTO | null; onClose: ()
       </Field>
       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="btn btn-primary" disabled={!name.trim() || !members.trim() || save.isPending} onClick={submit}>
+        <button
+          className="btn btn-primary"
+          disabled={!name.trim() || selectedModels.length === 0 || save.isPending}
+          onClick={submit}
+        >
           {editing ? 'Save changes' : 'Add combo'}
         </button>
       </div>

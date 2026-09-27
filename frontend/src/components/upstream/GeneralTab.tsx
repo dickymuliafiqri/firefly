@@ -13,7 +13,6 @@ export interface GeneralState {
   allowInsecure: boolean;
   timeoutMs: number;
   idleTimeoutMs: number;
-  probeModel: string;
   extraHeaders: Array<{ key: string; value: string }>;
 }
 
@@ -235,16 +234,6 @@ export function GeneralTab({ state, isEdit, onChange }: GeneralTabProps) {
           </div>
 
           <div className="form-grid" style={{ marginTop: 14 }}>
-            <Field label="Probe model" htmlFor="u-probe">
-              <input
-                id="u-probe"
-                type="text"
-                className="mono"
-                value={state.probeModel}
-                placeholder="gpt-4o-mini"
-                onChange={(e) => onChange({ probeModel: e.target.value })}
-              />
-            </Field>
             <Field label="Timeout (ms)" htmlFor="u-timeout">
               <input
                 id="u-timeout"
@@ -255,9 +244,6 @@ export function GeneralTab({ state, isEdit, onChange }: GeneralTabProps) {
                 }
               />
             </Field>
-          </div>
-
-          <div className="form-grid" style={{ marginTop: 14 }}>
             <Field label="Idle timeout (ms)" htmlFor="u-idle">
               <input
                 id="u-idle"

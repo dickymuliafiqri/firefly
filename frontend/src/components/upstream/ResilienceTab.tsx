@@ -46,12 +46,16 @@ export function ResilienceTab({
                 <option value="delete">delete (permanent removal from memory & DB)</option>
               </select>
             </Field>
-            <Field label="Error threshold" htmlFor="u-thresh">
+            <Field label="Error threshold" htmlFor="u-thresh" hint="Consecutive error count before action (0 = disabled).">
               <input
                 id="u-thresh"
                 type="number"
+                min="0"
                 value={keyErrorThreshold}
-                onChange={(e) => onThresholdChange(Number(e.target.value))}
+                onChange={(e) => {
+                  const val = Number(e.target.value);
+                  onThresholdChange(Number.isNaN(val) || val < 0 ? 0 : val);
+                }}
               />
             </Field>
           </div>
@@ -104,11 +108,13 @@ export function ResilienceTab({
                   />
                   <input
                     type="number"
+                    min="1"
                     placeholder="e.g. 3"
                     value={rule.threshold}
                     onChange={(e) => {
                       const val = Number(e.target.value);
-                      onRulesChange(keyErrorRules.map((r, i) => (i === idx ? { ...r, threshold: val } : r)));
+                      const safeVal = Number.isNaN(val) || val < 1 ? 1 : val;
+                      onRulesChange(keyErrorRules.map((r, i) => (i === idx ? { ...r, threshold: safeVal } : r)));
                     }}
                   />
                   <select

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Activity, RefreshCw, Square } from 'lucide-react';
 import { Badge } from '@/components/ui/Badge';
+import { Field } from '@/components/ui/Controls';
 import {
   useCheckUpstreamMutation,
   useSettingsQuery,
@@ -10,6 +11,7 @@ import {
   type UpstreamModelsRequest,
 } from '@/services/api';
 import { useUiStore } from '@/state/store';
+import { useModelCacheStore, pickOptimalProbeModel } from '@/services/modelCache';
 import { resolveBaseUrl } from './GeneralTab';
 
 interface ModelsTabProps {
@@ -19,10 +21,12 @@ interface ModelsTabProps {
   egressMode: string;
   proxyUrl?: string;
   firstKey?: string;
+  probeModel: string;
   discoveredModels: string[];
   latencyMs: number | null;
   catalogNames?: string[];
   catalogModels?: Array<{ public_name: string; upstream: string; upstream_model?: string }>;
+  onProbeModelChange: (model: string) => void;
   onDiscover: (models: string[], latencyMs: number) => void;
   onCreateRoute: (modelName: string) => void;
   onCreateAll: (models: string[]) => void;
@@ -43,10 +47,12 @@ export function ModelsTab({
   egressMode,
   proxyUrl,
   firstKey,
+  probeModel,
   discoveredModels,
   latencyMs,
   catalogNames = [],
   catalogModels = [],
+  onProbeModelChange,
   onDiscover,
   onCreateRoute,
   onCreateAll,
@@ -56,17 +62,42 @@ export function ModelsTab({
   const checkMutation = useCheckUpstreamMutation();
   const settings = useSettingsQuery();
 
+  const cache = useModelCacheStore((s) => s.cache);
+  const setCachedModels = useModelCacheStore((s) => s.setModels);
+
   const [modelChecks, setModelChecks] = useState<Record<string, ModelCheckState>>({});
   const [checkingAll, setCheckingAll] = useState(false);
+  const [concurrency, setConcurrency] = useState(5);
+  const [checkProgress, setCheckProgress] = useState<{
+    completed: number;
+    total: number;
+    healthy: number;
+    failed: number;
+  } | null>(null);
+
   // Bulk-run generation counter: bumping it invalidates any in-flight bulk loop
   // (stop, restart, or switching upstreams), so an old loop can never keep
   // probing in the background after a Stop/restart.
   const bulkGenRef = useRef(0);
 
+  // Restore discovered models from cache when upstream changes or if empty
+  useEffect(() => {
+    if (!upstreamName) return;
+    const cached = cache[upstreamName];
+    if (cached && cached.length > 0 && discoveredModels.length === 0) {
+      onDiscover(cached, 0);
+      if (!probeModel) {
+        const optimal = pickOptimalProbeModel(cached);
+        if (optimal) onProbeModelChange(optimal);
+      }
+    }
+  }, [upstreamName, cache, discoveredModels.length, probeModel, onDiscover, onProbeModelChange]);
+
   // Reset stale per-model health results when the editor switches upstream.
   useEffect(() => {
     bulkGenRef.current += 1;
     setCheckingAll(false);
+    setCheckProgress(null);
     setModelChecks({});
   }, [upstreamName]);
 
@@ -95,7 +126,15 @@ export function ModelsTab({
         proxy_url: proxyUrl || undefined,
       };
       const res = await modelsMutation.mutateAsync(payload);
-      onDiscover(res.models || [], res.latency_ms);
+      const fetched = res.models || [];
+      onDiscover(fetched, res.latency_ms);
+      if (upstreamName && fetched.length > 0) {
+        setCachedModels(upstreamName, fetched);
+      }
+      if (!probeModel && fetched.length > 0) {
+        const optimal = pickOptimalProbeModel(fetched);
+        if (optimal) onProbeModelChange(optimal);
+      }
       setModelChecks({});
       pushToast({
         type: 'success',
@@ -157,22 +196,50 @@ export function ModelsTab({
     bulkGenRef.current = gen;
     setCheckingAll(true);
 
+    const poolSize = Math.max(1, Math.min(20, concurrency));
     let healthy = 0;
     let failed = 0;
-    for (const model of discoveredModels) {
-      if (bulkGenRef.current !== gen) break;
-      const res = await checkModel(model);
-      if (bulkGenRef.current !== gen) break;
-      if (res?.healthy) healthy += 1;
-      else failed += 1;
-    }
+    let completed = 0;
+    let nextIdx = 0;
+
+    setCheckProgress({
+      completed: 0,
+      total: discoveredModels.length,
+      healthy: 0,
+      failed: 0,
+    });
+
+    const worker = async () => {
+      while (nextIdx < discoveredModels.length) {
+        if (bulkGenRef.current !== gen) break;
+        const currentModel = discoveredModels[nextIdx++];
+        if (!currentModel) continue;
+
+        const res = await checkModel(currentModel);
+        if (bulkGenRef.current !== gen) break;
+
+        completed++;
+        if (res?.healthy) healthy++;
+        else failed++;
+
+        setCheckProgress({
+          completed,
+          total: discoveredModels.length,
+          healthy,
+          failed,
+        });
+      }
+    };
+
+    const workers = Array.from({ length: Math.min(poolSize, discoveredModels.length) }, () => worker());
+    await Promise.all(workers);
 
     if (bulkGenRef.current === gen) {
       setCheckingAll(false);
       pushToast({
         type: failed > 0 ? 'error' : 'success',
         title: 'Model health check finished',
-        message: `${healthy} healthy · ${failed} failed (credentials picked per load-balancing strategy).`,
+        message: `${healthy} healthy · ${failed} failed (pool concurrency: ${poolSize}).`,
       });
     }
   }
@@ -184,10 +251,79 @@ export function ModelsTab({
 
   return (
     <div className="stack" style={{ marginTop: 0 }}>
+      {/* Probe Model & Concurrency Card */}
+      <div className="card">
+        <div className="card-header">
+          <h2>Health Check & Probe Configuration</h2>
+        </div>
+        <div className="card-body">
+          <p className="hint" style={{ marginBottom: 14 }}>
+            Select the designated probe model used for active inference testing and background health probes.
+            Must be populated from discovered models.
+          </p>
+
+          <div className="form-grid">
+            <Field
+              label="Probe model"
+              htmlFor="u-probe-select"
+              hint={
+                discoveredModels.length === 0
+                  ? 'Fetch models below to enable probe model selection.'
+                  : 'Designated model for health checks and account balance verification.'
+              }
+            >
+              {discoveredModels.length > 0 ? (
+                <select
+                  id="u-probe-select"
+                  value={probeModel}
+                  onChange={(e) => onProbeModelChange(e.target.value)}
+                  className="mono"
+                >
+                  <option value="">-- Select Probe Model ({discoveredModels.length} available) --</option>
+                  {discoveredModels.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  id="u-probe-select"
+                  type="text"
+                  className="mono"
+                  disabled
+                  placeholder="-- Fetch models first to select probe model --"
+                  value=""
+                />
+              )}
+            </Field>
+
+            <Field
+              label="Check concurrency (1-20)"
+              htmlFor="u-check-concurrency"
+              hint="Bounded worker pool concurrency for checking all models simultaneously."
+            >
+              <input
+                id="u-check-concurrency"
+                type="number"
+                min="1"
+                max="20"
+                value={concurrency}
+                disabled={checkingAll}
+                onChange={(e) => {
+                  const val = Number(e.target.value);
+                  setConcurrency(Number.isNaN(val) ? 5 : Math.max(1, Math.min(20, val)));
+                }}
+              />
+            </Field>
+          </div>
+        </div>
+      </div>
+
       <div className="card">
         <div className="card-header">
           <h2>Upstream Model Discovery</h2>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
             <button
               type="button"
               className="btn btn-primary"
@@ -213,11 +349,11 @@ export function ModelsTab({
                 type="button"
                 className="btn btn-secondary"
                 disabled={discoveredModels.length === 0 || !effectiveBaseUrl}
-                title="Probe every discovered model using a key picked by the upstream's load-balancing strategy"
+                title="Probe every discovered model concurrently using the configured worker pool"
                 onClick={() => void handleCheckAll()}
               >
                 <Activity style={{ width: 14, height: 14 }} />
-                Check all health
+                Check all health ({concurrency}x)
               </button>
             )}
             {discoveredModels.length > 0 && (
@@ -238,13 +374,20 @@ export function ModelsTab({
             KeyRing&apos;s load-balancing strategy (the key used is reported with the result).
           </p>
 
-          {latencyMs !== null && (
-            <div style={{ marginBottom: 12 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 16, marginBottom: 12 }}>
+            {latencyMs !== null && latencyMs > 0 && (
               <span className="mono" style={{ fontSize: 12, color: 'var(--ok)' }}>
                 Response time: {latencyMs}ms
               </span>
-            </div>
-          )}
+            )}
+
+            {checkProgress && (
+              <span className="mono" style={{ fontSize: 12, color: 'var(--muted)' }}>
+                Progress: {checkProgress.completed} / {checkProgress.total} ({checkProgress.healthy} healthy,{' '}
+                {checkProgress.failed} failed)
+              </span>
+            )}
+          </div>
 
           <div className="table-wrap">
             <table>
@@ -260,7 +403,7 @@ export function ModelsTab({
                 {discoveredModels.length === 0 ? (
                   <tr>
                     <td colSpan={4} className="faint">
-                      No models discovered yet.
+                      No models discovered yet. Click &quot;Fetch Models&quot; to populate.
                     </td>
                   </tr>
                 ) : (
@@ -270,10 +413,18 @@ export function ModelsTab({
                     );
                     const inCatalog = Boolean(existingMapping) || catalogNames.includes(m);
                     const check = modelChecks[m];
+                    const isProbe = probeModel === m;
                     return (
                       <tr key={m}>
                         <td>
-                          <div className="mono font-medium text-ink">{m}</div>
+                          <div className="flex items-center gap-2">
+                            <span className="mono font-medium text-ink">{m}</span>
+                            {isProbe && (
+                              <Badge tone="info" className="text-[10px] py-0 px-1.5">
+                                PROBE
+                              </Badge>
+                            )}
+                          </div>
                           {existingMapping && existingMapping.public_name !== m ? (
                             <div className="text-[11px] text-muted font-mono mt-0.5">
                               Mapped as: {existingMapping.public_name}

@@ -36,7 +36,6 @@ export function UpstreamEditorPage() {
     allowInsecure: false,
     timeoutMs: 30000,
     idleTimeoutMs: 60000,
-    probeModel: '',
     extraHeaders: [],
   });
 
@@ -45,13 +44,14 @@ export function UpstreamEditorPage() {
   const [keyStrategy, setKeyStrategy] = useState<'round_robin' | 'least_inflight'>('round_robin');
   const [keys, setKeys] = useState<KeyEntry[]>([]);
 
-  // Tab 3 state
+  // Tab 3 state (Models & Probe)
+  const [probeModel, setProbeModel] = useState('');
   const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
   const [modelsLatency, setModelsLatency] = useState<number | null>(null);
 
   // Tab 4 state
   const [keyErrorAction, setKeyErrorAction] = useState<'cooldown' | 'deactivate' | 'delete'>('cooldown');
-  const [keyErrorThreshold, setKeyErrorThreshold] = useState(3);
+  const [keyErrorThreshold, setKeyErrorThreshold] = useState(0);
   const [keyCooldownDurationMs, setKeyCooldownDurationMs] = useState(30000);
   const [keyErrorRules, setKeyErrorRules] = useState<UpstreamDTO['key_error_rules']>([]);
 
@@ -77,16 +77,16 @@ export function UpstreamEditorPage() {
       allowInsecure: target.allow_insecure ?? false,
       timeoutMs: target.timeout_ms ?? 30000,
       idleTimeoutMs: target.idle_timeout_ms ?? 60000,
-      probeModel: target.probe_model ?? '',
       extraHeaders: target.extra_headers
         ? Object.entries(target.extra_headers).map(([k, v]) => ({ key: k, value: v }))
         : [],
     });
 
+    setProbeModel(target.probe_model ?? '');
     setProviderId(target.provider_id ?? null);
     setKeyStrategy((target.key_strategy as 'round_robin' | 'least_inflight') ?? 'round_robin');
     setKeyErrorAction((target.key_error_action as 'cooldown' | 'deactivate' | 'delete') ?? 'cooldown');
-    setKeyErrorThreshold(target.key_error_threshold ?? 3);
+    setKeyErrorThreshold(target.key_error_threshold ?? 0);
     setKeyCooldownDurationMs(target.key_cooldown_duration_ms ?? 30000);
     setKeyErrorRules(target.key_error_rules ?? []);
 
@@ -254,7 +254,7 @@ export function UpstreamEditorPage() {
       stream_idle_timeout_ms: existingTarget?.stream_idle_timeout_ms,
       max_idle_conns_per_host: existingTarget?.max_idle_conns_per_host,
       max_conns_per_host: existingTarget?.max_conns_per_host,
-      probe_model: general.probeModel.trim() || undefined,
+      probe_model: probeModel.trim() || undefined,
       extra_headers: Object.keys(extraHeadersObj).length > 0 ? extraHeadersObj : undefined,
       key_error_action: keyErrorAction,
       key_error_threshold: keyErrorThreshold,
@@ -378,7 +378,7 @@ export function UpstreamEditorPage() {
           baseUrl={general.baseUrl}
           egressMode={general.egressMode}
           proxyUrl={general.proxyUrl}
-          probeModel={general.probeModel}
+          probeModel={probeModel}
           onProviderChange={setProviderId}
           onStrategyChange={setKeyStrategy}
           onKeysChange={setKeys}
@@ -393,10 +393,12 @@ export function UpstreamEditorPage() {
           egressMode={general.egressMode}
           proxyUrl={general.proxyUrl}
           firstKey={keys[0]?.secret}
+          probeModel={probeModel}
           discoveredModels={discoveredModels}
           latencyMs={modelsLatency}
           catalogNames={catalogModelNames}
           catalogModels={settings.data?.models ?? []}
+          onProbeModelChange={setProbeModel}
           onDiscover={(mods, lat) => {
             setDiscoveredModels(mods);
             setModelsLatency(lat);
