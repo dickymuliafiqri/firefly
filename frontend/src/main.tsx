@@ -13,12 +13,16 @@ import '@fontsource/jetbrains-mono/latin-500.css';
 
 import '@/styles/global.css';
 import App from '@/App';
+import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
 import { queryClient } from '@/services/api';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <App />
+      {/* Root boundary: last resort if App itself (auth check, shell) throws. */}
+      <ErrorBoundary title="Firefly">
+        <App />
+      </ErrorBoundary>
     </QueryClientProvider>
   </StrictMode>,
 );

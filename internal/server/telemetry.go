@@ -23,6 +23,42 @@ type TelemetryDTO struct {
 	RecentLogs      []LiveLog              `json:"recent_logs"`
 }
 
+// wire arrays, never null. A Go nil slice marshals to JSON null, and every
+// consumer of this DTO (the dashboard) treats these fields as arrays: a single
+// empty upstream — e.g. one just created with a name and base_url but no
+// credentials yet, so its KeyRing holds zero slots — used to serialize as
+// "slots": null and crash the Upstreams page render
+// (TypeError: can't access property "filter", slots is null). Returning [] is
+// the wire contract for "no rows", so the collection is normalized at the
+// boundary that renders it.
+func nonNilSlots(slots []KeySlotTelemetryDTO) []KeySlotTelemetryDTO {
+	if slots == nil {
+		return []KeySlotTelemetryDTO{}
+	}
+	return slots
+}
+
+func nonNilModels(models []ModelTelemetryDTO) []ModelTelemetryDTO {
+	if models == nil {
+		return []ModelTelemetryDTO{}
+	}
+	return models
+}
+
+func nonNilUpstreams(ups []UpstreamTelemetryDTO) []UpstreamTelemetryDTO {
+	if ups == nil {
+		return []UpstreamTelemetryDTO{}
+	}
+	return ups
+}
+
+func nonNilTenantUsage(usage []TenantUsageDTO) []TenantUsageDTO {
+	if usage == nil {
+		return []TenantUsageDTO{}
+	}
+	return usage
+}
+
 type GlobalAdmissionDTO struct {
 	Inflight   int `json:"inflight"`
 	Capacity   int `json:"capacity"`
@@ -263,7 +299,7 @@ func (deps RouterDeps) handleGetTelemetry(w http.ResponseWriter, r *http.Request
 					BaseURL:       u.BaseURL,
 					BreakerState:  breakerState,
 					TotalRequests: upstreamTotalReqs,
-					Slots:         slotsDTO,
+					Slots:         nonNilSlots(slotsDTO),
 				})
 			}
 		}
@@ -321,9 +357,9 @@ func (deps RouterDeps) handleGetTelemetry(w http.ResponseWriter, r *http.Request
 		Timestamp:       time.Now().UnixMilli(),
 		GlobalAdmission: adm,
 		Summary:         summary,
-		Models:          modelsDTO,
-		Upstreams:       upstreamsDTO,
-		TenantsUsage:    usageDTO,
+		Models:          nonNilModels(modelsDTO),
+		Upstreams:       nonNilUpstreams(upstreamsDTO),
+		TenantsUsage:    nonNilTenantUsage(usageDTO),
 		Generation:      gen,
 		RecentLogs:      recentLogs,
 	}

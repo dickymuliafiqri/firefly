@@ -276,6 +276,63 @@ func TestTelemetry_PerSlotCounters(t *testing.T) {
 	}
 }
 
+// TestTelemetry_UpstreamWithoutSlots verifies that an upstream with no credentials
+// (created with just a name and base_url, so its KeyRing holds zero slots) marshals
+// `slots` as [] instead of null. A null used to reach the dashboard, where
+// UpstreamsPage renders u.slots.filter(...) and threw
+// "TypeError: can't access property \"filter\", slots is null", unmounting the app.
+func TestTelemetry_UpstreamWithoutSlots(t *testing.T) {
+	upNoRing := &domain.Upstream{
+		Name:     "empty-up",
+		Protocol: domain.ProtocolOpenAI,
+		BaseURL:  "https://empty.test/v1",
+	}
+	upEmptyRing := &domain.Upstream{
+		Name:     "empty-ring",
+		Protocol: domain.ProtocolOpenAI,
+		BaseURL:  "https://empty-ring.test/v1",
+		KeyRing:  domain.NewKeyRing(domain.KeyStrategyRoundRobin, nil),
+	}
+	snap := domain.NewCatalogSnapshot(
+		1,
+		map[string]*domain.Upstream{
+			"empty-up":   upNoRing,
+			"empty-ring": upEmptyRing,
+		},
+		[]string{"empty-up", "empty-ring"},
+		map[string]*domain.ModelEntry{},
+		nil,
+		map[string]*domain.Tenant{},
+		nil,
+	)
+
+	deps := RouterDeps{Snapshots: fakeProvider{snap}}
+	s := New(Config{Addr: "0.0.0.0:8080"}, deps, context.Background(), nil)
+
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/telemetry", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("telemetry status = %d, want 200", w.Code)
+	}
+
+	if body := w.Body.String(); strings.Contains(body, `"slots":null`) {
+		t.Fatalf("telemetry JSON carries a null slots array:\n%s", body)
+	}
+
+	var res TelemetryDTO
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(res.Upstreams) != 2 {
+		t.Fatalf("upstreams = %d, want 2", len(res.Upstreams))
+	}
+	for _, u := range res.Upstreams {
+		if u.Slots == nil {
+			t.Errorf("upstream %q slots is nil, want []", u.Name)
+		}
+	}
+}
+
 // TestTelemetry_PerSlotCountersEndToEnd drives a real chat request through the
 // full handler (routing → key selection → forward → recordLog/ObserveKeyRequest)
 // against a fake adapter, then reads /api/telemetry and asserts the selected

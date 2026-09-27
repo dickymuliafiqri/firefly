@@ -85,15 +85,20 @@ export function UpstreamDrawer({
   if (!selected) return null;
 
   const isEnabled = entry?.enabled !== false;
-  const activeCount = selected.slots.filter((s) => !s.is_cooldown && !s.is_revoked).length;
-  const cooldownCount = selected.slots.filter((s) => s.is_cooldown).length;
-  const revokedCount = selected.slots.filter((s) => s.is_revoked).length;
+  // A keyless upstream (created with just a name and base_url) reports zero
+  // slots, and an unnormalized backend sends that as `slots: null`. Normalizing
+  // here keeps the drawer rendering an empty key table instead of throwing on
+  // .filter/.slice/.length and blanking the page.
+  const slots = selected.slots ?? [];
+  const activeCount = slots.filter((s) => !s.is_cooldown && !s.is_revoked).length;
+  const cooldownCount = slots.filter((s) => s.is_cooldown).length;
+  const revokedCount = slots.filter((s) => s.is_revoked).length;
 
-  const totalKeyPages = Math.max(1, Math.ceil(selected.slots.length / keyPageSize));
+  const totalKeyPages = Math.max(1, Math.ceil(slots.length / keyPageSize));
   const safeKeyPage = Math.min(keyPage, totalKeyPages);
-  const pagedSlots = selected.slots.slice((safeKeyPage - 1) * keyPageSize, safeKeyPage * keyPageSize);
-  const keyStartIdx = selected.slots.length === 0 ? 0 : (safeKeyPage - 1) * keyPageSize + 1;
-  const keyEndIdx = Math.min(safeKeyPage * keyPageSize, selected.slots.length);
+  const pagedSlots = slots.slice((safeKeyPage - 1) * keyPageSize, safeKeyPage * keyPageSize);
+  const keyStartIdx = slots.length === 0 ? 0 : (safeKeyPage - 1) * keyPageSize + 1;
+  const keyEndIdx = Math.min(safeKeyPage * keyPageSize, slots.length);
 
   return (
     <Drawer open={Boolean(selected)} onClose={onClose} title={selected.name}>
@@ -253,7 +258,7 @@ export function UpstreamDrawer({
                   </td>
                 </tr>
               ))}
-              {selected.slots.length === 0 ? (
+              {slots.length === 0 ? (
                 <tr>
                   <td colSpan={4} className="faint">No slots registered yet.</td>
                 </tr>
@@ -262,11 +267,11 @@ export function UpstreamDrawer({
           </table>
         </div>
 
-        {selected.slots.length > keyPageSize ? (
+        {slots.length > keyPageSize ? (
           <div className="flex items-center justify-between pt-3 border-t border-[var(--line)] text-xs text-faint mt-2">
             <span className="tabular-nums">
               Showing <span className="text-ink font-medium">{keyStartIdx}–{keyEndIdx}</span> of{' '}
-              <span className="text-ink font-medium">{selected.slots.length}</span> keys
+              <span className="text-ink font-medium">{slots.length}</span> keys
             </span>
             <div className="flex items-center gap-1.5">
               <button

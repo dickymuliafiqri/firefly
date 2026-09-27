@@ -8,6 +8,7 @@ import { verifyAuthApi, ApiError } from '@/services/api';
 import { handleSessionInvalid } from '@/lib/session';
 import { LoginPage } from '@/pages/LoginPage';
 import { ToastHost } from '@/components/ui/ToastHost';
+import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
 
 export default function App() {
   const pageId = useHashPage(PAGE_IDS, 'overview');
@@ -83,7 +84,12 @@ export default function App() {
 
   return (
     <AppShell page={def}>
-      {def.element()}
+      {/* Page-level boundary: a crashing page keeps the shell (sidebar, navbar,
+          toasts) alive instead of unmounting the entire app. Keyed by page id so
+          navigating away clears the caught error and remounts fresh. */}
+      <ErrorBoundary key={pageId} title={def.title}>
+        {def.element()}
+      </ErrorBoundary>
     </AppShell>
   );
 }

@@ -516,7 +516,14 @@ export interface UpstreamTelemetryDTO {
   base_url: string;
   breaker_state: BreakerState | string;
   total_requests: number;
-  slots: KeySlotTelemetryDTO[];
+  /**
+   * Key slots of the upstream's KeyRing. An upstream created without any
+   * credentials (name + base_url only) has zero slots, and the gateway used to
+   * serialize that as `null` instead of `[]` — which crashed the Upstreams page
+   * ("can't access property \"filter\", slots is null"). The type stays nullable
+   * so every consumer is forced to normalize with `?? []` before iterating.
+   */
+  slots: KeySlotTelemetryDTO[] | null;
 }
 
 export interface TenantUsageDTO {

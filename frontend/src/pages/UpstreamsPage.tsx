@@ -44,10 +44,16 @@ export function UpstreamsPage() {
   const keyStats = useMemo(() => {
     const map = new Map<string, { active: number; cooldown: number; revoked: number }>();
     for (const u of ups) {
+      // An upstream created without credentials (name + base_url only) has no
+      // key slots, and an unnormalized backend serializes that as `slots: null`
+      // rather than `[]`. Iterating the raw value crashed the whole page with
+      // "can't access property \"filter\", slots is null", so the array is
+      // normalized here too — the UI must degrade to "0 keys", never blank out.
+      const slots = u.slots ?? [];
       map.set(u.name, {
-        active: u.slots.filter((s) => !s.is_cooldown && !s.is_revoked).length,
-        cooldown: u.slots.filter((s) => s.is_cooldown).length,
-        revoked: u.slots.filter((s) => s.is_revoked).length,
+        active: slots.filter((s) => !s.is_cooldown && !s.is_revoked).length,
+        cooldown: slots.filter((s) => s.is_cooldown).length,
+        revoked: slots.filter((s) => s.is_revoked).length,
       });
     }
     return map;
