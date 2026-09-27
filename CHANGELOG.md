@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.23.1] - 2026-09-27
+
+### Security
+
+- **Upgraded `vite` 5.4.21 → 6.4.3 in `frontend/` and `archive/frontend/`**, closing every open Dependabot alert (6 total: 2 high, 4 moderate):
+  - GHSA-fx2h-pf6j-xcff (high): `server.fs.deny` bypass on Windows alternate paths.
+  - GHSA-4w7w-66w2-5vf9 (moderate): path traversal in optimized deps `.map` handling.
+  - GHSA-v6wh-96g9-6wx3 (moderate): launch-editor NTLMv2 hash disclosure via UNC path handling on Windows.
+  - GHSA-67mh-4wv8-2f99 (moderate): esbuild dev-server request smuggling (`esbuild` moved from 0.21.5 to the `^0.25.0` line bundled by vite 6.4.3).
+  - `@vitejs/plugin-react@4.7.0` already declares vite 6 in its peer range, so only vite itself was bumped. `bun audit` is now clean for both manifests, `bun run build` (typecheck + vite build) passes, and `frontend/dist/index.html` is intact for `//go:embed all:dist`.
+
 ## [1.23.0] - 2026-09-27
 
 ### Added
