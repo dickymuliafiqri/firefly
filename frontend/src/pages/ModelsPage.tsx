@@ -13,6 +13,12 @@ import {
   type UpstreamModelsRequest,
 } from '@/services/api';
 import type { ModelDTO, ComboDTO } from '@/services/schema';
+import {
+  isValidModelName,
+  sanitizeModelName,
+  findInvalidCatalogName,
+  MODEL_NAME_HINT,
+} from '@/services/schema';
 import { useUiStore } from '@/state/store';
 import { useModelCacheStore } from '@/services/modelCache';
 import { resolveBaseUrl } from '@/components/upstream/GeneralTab';
@@ -120,7 +126,13 @@ function ModelForm({ editing, onClose }: ModelFormProps) {
         setCachedModels(upstream, fetched);
         if (!upstreamModel) {
           setUpstreamModel(fetched[0]);
-          if (!name.trim()) setName(fetched[0]);
+          // The upstream model id commonly carries characters the gateway
+          // rejects in public names (`vendor/model`, `name:tag`), so the
+          // auto-fill is sanitized to a valid default the user can still edit.
+          if (!name.trim()) {
+            const auto = sanitizeModelName(fetched[0]);
+            if (auto) setName(auto);
+          }
         }
         pushToast({
           type: 'success',
@@ -140,9 +152,21 @@ function ModelForm({ editing, onClose }: ModelFormProps) {
   }
 
   function submit() {
-    if (!settings.data || !name.trim() || !upstream.trim() || !upstreamModel.trim()) return;
+    const publicName = name.trim();
+    if (!settings.data || !publicName || !upstream.trim() || !upstreamModel.trim()) return;
+    // Mirror the backend's public_name rule here with a named message: sending
+    // an invalid value would fail the whole save with a cryptic
+    // `models[i].public_name: invalid or empty name` 400 aimed at an index.
+    if (!isValidModelName(publicName)) {
+      pushToast({
+        type: 'error',
+        title: 'Invalid model name',
+        message: `"${publicName}" is not allowed. ${MODEL_NAME_HINT}`,
+      });
+      return;
+    }
     const entry: ModelDTO = {
-      public_name: name.trim(),
+      public_name: publicName,
       upstream: upstream.trim(),
       upstream_model: upstreamModel.trim(),
       enabled: editing?.enabled ?? true,
@@ -153,7 +177,19 @@ function ModelForm({ editing, onClose }: ModelFormProps) {
         : {}),
     };
     const others = settings.data.models.filter((m) => m.public_name !== entry.public_name);
-    const next = withSettings(settings.data, { models: [...others, entry] });
+    const nextModels = [...others, entry];
+    // Pre-existing catalog entries were all validated when they were saved, but
+    // name the offender explicitly instead of surfacing `models[i]` anyway.
+    const bad = nextModels.find((m) => !isValidModelName(m.public_name));
+    if (bad) {
+      pushToast({
+        type: 'error',
+        title: 'Catalog has an invalid model name',
+        message: `Model "${bad.public_name}" breaks the gateway name rule (${MODEL_NAME_HINT}). Edit or delete it, then save again.`,
+      });
+      return;
+    }
+    const next = withSettings(settings.data, { models: nextModels });
     save.mutate(next, {
       onSuccess: (d) =>
         pushToast({
@@ -170,7 +206,7 @@ function ModelForm({ editing, onClose }: ModelFormProps) {
   return (
     <Drawer open onClose={onClose} title={editing ? `Edit model: ${editing.public_name}` : 'Add model'}>
       <div className="form-grid">
-        <Field label="Public name" htmlFor="m-name">
+        <Field label="Public name" htmlFor="m-name" hint={MODEL_NAME_HINT}>
           <input id="m-name" value={name} placeholder="gpt-4o" onChange={(e) => setName(e.target.value)} />
         </Field>
         <Field label="Upstream" htmlFor="m-upstream">
@@ -233,7 +269,12 @@ function ModelForm({ editing, onClose }: ModelFormProps) {
                 return;
               }
               setUpstreamModel(val);
-              if (!name.trim()) setName(val);
+              // Upstream ids (`vendor/model`, `name:tag`) are invalid as public
+              // names, so the auto-fill below is sanitized to a valid default.
+              if (!name.trim()) {
+                const auto = sanitizeModelName(val);
+                if (auto) setName(auto);
+              }
             }}
           >
             <option value="">-- Select upstream model ({availableCachedModels.length} available) --</option>
@@ -342,15 +383,40 @@ function ComboForm({ editing, onClose }: { editing: ComboDTO | null; onClose: ()
   }
 
   function submit() {
-    if (!settings.data || !name.trim() || selectedModels.length === 0) return;
+    const comboName = name.trim();
+    if (!settings.data || !comboName || selectedModels.length === 0) return;
+    // Combos share the backend's public-name rule (`combos[i].name`), and an
+    // invalid combo name fails the save the same way an invalid model name
+    // does — reject it here with the actual name quoted.
+    if (!isValidModelName(comboName)) {
+      pushToast({
+        type: 'error',
+        title: 'Invalid combo name',
+        message: `"${comboName}" is not allowed. ${MODEL_NAME_HINT}`,
+      });
+      return;
+    }
     const entry: ComboDTO = {
-      name: name.trim(),
+      name: comboName,
       strategy,
       models: selectedModels,
       enabled,
     };
     const others = (settings.data.combos ?? []).filter((c) => c.name !== entry.name);
-    const next = withSettings(settings.data, { combos: [...others, entry] });
+    const nextModels = settings.data.models ?? [];
+    const nextCombos = [...others, entry];
+    // The payload also carries the untouched models and combos, so name the
+    // real offender when something already in the catalog is invalid.
+    const bad = findInvalidCatalogName(nextModels, nextCombos);
+    if (bad) {
+      pushToast({
+        type: 'error',
+        title: 'Catalog has an invalid name',
+        message: `${bad.kind === 'model' ? 'Model' : 'Combo'} "${bad.name}" breaks the gateway name rule (${MODEL_NAME_HINT}). Edit or delete it, then save again.`,
+      });
+      return;
+    }
+    const next = withSettings(settings.data, { combos: nextCombos });
     save.mutate(next, {
       onSuccess: (d) => {
         pushToast({
@@ -367,7 +433,7 @@ function ComboForm({ editing, onClose }: { editing: ComboDTO | null; onClose: ()
 
   return (
     <Drawer open onClose={onClose} title={editing ? `Edit combo: ${editing.name}` : 'Add combo'}>
-      <Field label="Combo name" htmlFor="c-name">
+      <Field label="Combo name" htmlFor="c-name" hint={MODEL_NAME_HINT}>
         <input id="c-name" value={name} placeholder="smart-combo" onChange={(e) => setName(e.target.value)} />
       </Field>
       <Field label="Strategy" htmlFor="c-strat">

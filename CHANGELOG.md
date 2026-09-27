@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.25.1] - 2026-09-27
+
+### Fixed
+
+- **Model & Combo Name Validation Before Save (`frontend/src/services/schema.ts`, `frontend/src/pages/ModelsPage.tsx`, `frontend/src/pages/UpstreamEditorPage.tsx`, `frontend/package.json`)**:
+  - Saving a model could fail with the raw gateway error `validation error: models[0].public_name: invalid or empty name` — the backend's `modelNameRe` (`^[A-Za-z0-9][A-Za-z0-9._\-]{0,127}$`, `internal/config/builder.go`) rejects names containing spaces, slashes, colons, or a non-alphanumeric first character, but the dashboard only checked that the field was non-empty, so operators got an index-based 400 with no usable guidance. Confirmed with a direct `config.Build` probe: `"vendor/model"` and `"gpt 4o"` both reproduce `models[0].public_name: invalid or empty name`.
+  - Two dashboard paths fed such names in directly: the v1.25.0 model-cache auto-fill copied the raw upstream model id (commonly `vendor/model` or `model:tag`) into the public name, and **Add route** / **Add all routes** registered discovered ids verbatim. Both now slugify through the new `sanitizeModelName` helper (invalid runs collapse to `-`, leading non-alphanumerics stripped, 128-char cap — idempotent for already-valid names), keeping the raw id only in `upstream_model` where the provider needs it. **Add route** refuses empty derivations and duplicate public names with named toasts; **Add all routes** skips those plus in-batch collisions, either of which would make the backend reject the whole save.
+  - Verified the reported check on combos: the backend gates `combos[i].name` with the exact same pattern (probe shows `"smart combo"` and `"my/combo"` both reproduce `combos[0].name: invalid or empty name`), so `ComboForm` validates the combo name with the same rule and message shape, and shows the pattern as a field hint.
+  - `ModelForm` and `ComboForm` rejects now quote the offending value (`"smart combo" is not allowed`) and explain the rule; both also pre-scan the full save payload and name the first offending existing model/combo instead of letting the backend report an index like `models[0]`.
+  - `frontend/package.json` bumped to `1.25.1` to track the release.
+
 ## [1.25.0] - 2026-09-27
 
 ### Added

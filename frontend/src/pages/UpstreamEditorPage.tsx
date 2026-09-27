@@ -3,6 +3,7 @@ import { ArrowLeft, Server, KeyRound, Layers, Shield, Trash2 } from 'lucide-reac
 import { PageHeader } from '@/components/ui/PageHeader';
 import { useSettingsQuery, useSaveSettingsSmart } from '@/services/api';
 import type { UpstreamDTO, CredentialKeyDTO } from '@/services/schema';
+import { sanitizeModelName } from '@/services/schema';
 import { useHashRest, navigate } from '@/lib/router';
 import { useUiStore } from '@/state/store';
 
@@ -121,10 +122,30 @@ export function UpstreamEditorPage() {
 
   function handleCreateRoute(modelName: string) {
     if (!settings.data) return;
+    // Discovered upstream ids routinely contain characters the gateway forbids
+    // in public names (`vendor/model`, `name:tag`), so register under the
+    // sanitized name while keeping the raw id as the provider-side mapping.
+    const publicName = sanitizeModelName(modelName);
+    if (!publicName) {
+      pushToast({
+        type: 'error',
+        title: 'Invalid model name',
+        message: `Cannot derive a valid public name from "${modelName}". Add a route from the Models page instead.`,
+      });
+      return;
+    }
+    if (catalogModelNames.includes(publicName)) {
+      pushToast({
+        type: 'info',
+        title: 'Already registered',
+        message: `Model ${publicName} already exists in the catalog.`,
+      });
+      return;
+    }
     const nextModels = [
       ...settings.data.models,
       {
-        public_name: modelName,
+        public_name: publicName,
         upstream: general.name,
         upstream_model: modelName,
         enabled: true,
@@ -133,7 +154,7 @@ export function UpstreamEditorPage() {
     saveSmart.mutate(
       { ...settings.data, models: nextModels },
       {
-        onSuccess: () => pushToast({ type: 'success', title: 'Route created', message: `Model ${modelName} registered.` }),
+        onSuccess: () => pushToast({ type: 'success', title: 'Route created', message: `Model ${publicName} registered.` }),
         onError: (e) => pushToast({ type: 'error', title: 'Failed', message: e instanceof Error ? e.message : 'Error' }),
       },
     );
@@ -142,14 +163,22 @@ export function UpstreamEditorPage() {
   function handleCreateAllRoutes(modelsToAdd: string[]) {
     if (!settings.data) return;
     const currentSet = new Set(catalogModelNames);
-    const newModels = modelsToAdd
-      .filter((m) => !currentSet.has(m))
-      .map((m) => ({
-        public_name: m,
+    const seen = new Set<string>();
+    const newModels = [];
+    for (const raw of modelsToAdd) {
+      const publicName = sanitizeModelName(raw);
+      // Skip empty derivations (nothing registerable) and anything that would
+      // collide with the catalog or with an earlier entry of this same batch —
+      // either would make the backend reject the whole save.
+      if (!publicName || currentSet.has(publicName) || seen.has(publicName)) continue;
+      seen.add(publicName);
+      newModels.push({
+        public_name: publicName,
         upstream: general.name,
-        upstream_model: m,
+        upstream_model: raw,
         enabled: true,
-      }));
+      });
+    }
 
     if (newModels.length === 0) return;
 

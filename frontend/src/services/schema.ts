@@ -41,6 +41,55 @@ export function canonicalProtocol(proto: string | undefined | null): string {
   }
 }
 
+/**
+ * Mirrors the backend's `modelNameRe` (`internal/config/builder.go`) that gates
+ * both `models[].public_name` and `combos[].name`: 1-128 characters, starting
+ * with a letter or digit, then only letters, digits, `.`, `_`, or `-`.
+ * The settings API rejects anything else with
+ * `validation error: ...: invalid or empty name`, so the dashboard validates
+ * before saving instead of surfacing the raw index-based gateway error.
+ */
+export const MODEL_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+export const MODEL_NAME_HINT =
+  'Letters, digits, dots, underscores and hyphens only; must start with a letter or digit (max 128 characters).';
+
+export function isValidModelName(name: string): boolean {
+  return MODEL_NAME_RE.test(name);
+}
+
+/**
+ * Derives a backend-valid public name from an arbitrary upstream model id
+ * (e.g. `anthropic/claude-3-5-sonnet`, `llama-3.3-70b:free`): invalid character
+ * runs collapse to `-`, leading non-alphanumerics are stripped, and the result
+ * is capped at 128 characters. Idempotent for already-valid names; returns ''
+ * when nothing usable remains.
+ */
+export function sanitizeModelName(raw: string): string {
+  return raw
+    .trim()
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/^[^A-Za-z0-9]+/, '')
+    .slice(0, 128);
+}
+
+/**
+ * Scans a save payload for the first catalog entry the backend's name rules
+ * would reject. Gives the dashboard a precise, named complaint instead of the
+ * backend's index-based `models[0]` / `combos[0]` messages — even when the
+ * offender is an untouched pre-existing entry rather than the one being edited.
+ */
+export function findInvalidCatalogName(
+  models: Array<{ public_name: string }> = [],
+  combos: Array<{ name: string }> = [],
+): { kind: 'model' | 'combo'; name: string } | undefined {
+  const badModel = models.find((m) => !isValidModelName(m.public_name));
+  if (badModel) return { kind: 'model', name: badModel.public_name };
+  const badCombo = combos.find((c) => !isValidModelName(c.name));
+  if (badCombo) return { kind: 'combo', name: badCombo.name };
+  return undefined;
+}
+
 export type KeyStrategy = 'round_robin' | 'least_inflight';
 export type BreakerState = 'CLOSED' | 'OPEN' | 'HALF-OPEN';
 export type TenantStatus = 'active' | 'suspended' | 'revoked' | 'exhausted' | 'expired';
