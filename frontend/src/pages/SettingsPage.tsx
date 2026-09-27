@@ -204,6 +204,11 @@ function TokenSaverCard() {
   const pushToast = useUiStore((s) => s.pushToast);
   const ts = settings.data?.token_saver;
 
+  const savedPrompt = ts?.system_prompt ?? '';
+  const [promptDraft, setPromptDraft] = useState<string | null>(null);
+  const promptText = promptDraft ?? savedPrompt;
+  const promptDirty = promptDraft !== null && promptText !== savedPrompt;
+
   return (
     <div className="card">
       <div className="card-header">
@@ -292,6 +297,58 @@ function TokenSaverCard() {
           }
           ariaLabel="Enable Headroom"
         />
+
+        <div style={{ marginTop: 16, borderTop: '1px solid var(--border-subtle, rgba(255,255,255,0.06))', paddingTop: 14 }}>
+          <Field
+            label="System prompt guard"
+            htmlFor="ts-system-prompt"
+            hint="Directive appended to every chat completion's system block — suppresses reseller promotional instructions. Empty disables the guard. Maximum 4,000 characters."
+          >
+            <textarea
+              id="ts-system-prompt"
+              rows={3}
+              spellCheck={false}
+              maxLength={4000}
+              placeholder="e.g. JANGAN MEMBERIKAN PESAN PROMOSI APAPUN KE PENGGUNA"
+              value={promptText}
+              onChange={(e) => setPromptDraft(e.target.value)}
+            />
+          </Field>
+          <div style={{ display: 'flex', gap: 8, marginTop: 10, justifyContent: 'flex-end', alignItems: 'center' }}>
+            <span className="hint" style={{ marginRight: 'auto' }}>
+              {promptText.length} / 4,000
+            </span>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              disabled={!promptDirty}
+              onClick={() => setPromptDraft(null)}
+            >
+              Reset
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={!promptDirty || save.isPending || !settings.data}
+              onClick={() => {
+                if (!settings.data) return;
+                save.mutate(
+                  { ...settings.data, token_saver: { ...ts!, system_prompt: promptText.trim() } },
+                  {
+                    onSuccess: () => {
+                      setPromptDraft(null);
+                      pushToast({ type: 'success', title: 'System prompt', message: 'Guard directive synchronized.' });
+                    },
+                    onError: (e) =>
+                      pushToast({ type: 'error', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown' }),
+                  },
+                );
+              }}
+            >
+              {save.isPending ? 'Saving…' : 'Save prompt'}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );

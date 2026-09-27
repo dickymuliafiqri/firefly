@@ -50,12 +50,12 @@ func sanitizePublicSettings(src config.SettingsDTO) config.SettingsDTO {
 	publicUpstreams := make([]config.UpstreamDTO, 0, len(src.Upstreams))
 	for _, u := range src.Upstreams {
 		publicUpstreams = append(publicUpstreams, config.UpstreamDTO{
-			Name:                u.Name,
-			Protocol:            config.NormalizeProtocol(u.Protocol),
-			BaseURL:             u.BaseURL,
-			BaseURLs:            u.BaseURLs,
-			TimeoutMs:           u.TimeoutMs,
-			IdleTimeoutMs:       u.IdleTimeoutMs,
+			Name:                  u.Name,
+			Protocol:              config.NormalizeProtocol(u.Protocol),
+			BaseURL:               u.BaseURL,
+			BaseURLs:              u.BaseURLs,
+			TimeoutMs:             u.TimeoutMs,
+			IdleTimeoutMs:         u.IdleTimeoutMs,
 			StreamIdleTimeoutMs:   u.StreamIdleTimeoutMs,
 			KeyStrategy:           u.KeyStrategy,
 			KeyErrorThreshold:     u.KeyErrorThreshold,
@@ -63,8 +63,8 @@ func sanitizePublicSettings(src config.SettingsDTO) config.SettingsDTO {
 			KeyCooldownDurationMs: u.KeyCooldownDurationMs,
 			KeyErrorRules:         u.KeyErrorRules,
 			Enabled:               u.Enabled,
-			EgressMode:          u.EgressMode,
-			ProxyURL:            u.ProxyURL,
+			EgressMode:            u.EgressMode,
+			ProxyURL:              u.ProxyURL,
 		})
 	}
 
@@ -227,6 +227,7 @@ func (deps RouterDeps) handleGetSettings(w http.ResponseWriter, r *http.Request)
 				TerseOutput:        ts.TerseOutput,
 				MinimalCode:        ts.MinimalCode,
 				CompressContext:    ts.CompressContext,
+				SystemPrompt:       ts.SystemPrompt,
 				MaxToolOutputChars: &maxTool,
 				ContextThreshold:   &ctxThresh,
 			}
@@ -240,6 +241,7 @@ func (deps RouterDeps) handleGetSettings(w http.ResponseWriter, r *http.Request)
 				TerseOutput:        defTS.TerseOutput,
 				MinimalCode:        defTS.MinimalCode,
 				CompressContext:    defTS.CompressContext,
+				SystemPrompt:       defTS.SystemPrompt,
 				MaxToolOutputChars: &maxTool,
 				ContextThreshold:   &ctxThresh,
 			}
@@ -362,6 +364,16 @@ func (deps RouterDeps) handleUpdateSettings(w http.ResponseWriter, r *http.Reque
 	// Turso rows, the hot-swapped snapshot, and the value read back by
 	// GET /api/settings all carry the same pinned endpoint.
 	config.PinOAuthManagedEndpoints(payload.Upstreams)
+	// The operator system prompt is injected into every chat request, so cap
+	// its size: a runaway value would inflate the input tokens of all traffic
+	// and the persisted config files.
+	if payload.TokenSaver != nil {
+		if prompt := payload.TokenSaver.SystemPrompt; prompt != "" && len(prompt) > domain.MaxSystemPromptChars {
+			openai.WriteError(w, http.StatusBadRequest, openai.TypeInvalidRequest,
+				fmt.Sprintf("token_saver.system_prompt exceeds %d characters", domain.MaxSystemPromptChars))
+			return
+		}
+	}
 
 	// Prepare file structures for validation
 	upFile := config.UpstreamsFile{Upstreams: payload.Upstreams}

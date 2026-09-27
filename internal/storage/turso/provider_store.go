@@ -265,8 +265,7 @@ func nullableText(s string) any {
 	return s
 }
 
-// Shape limits taken from the adopted column definitions (Lampiran A.1 of
-// docs/harvester-ownership-plan.md). SQLite does not enforce VARCHAR(n), so a
+// SQLite does not enforce VARCHAR(n), so a
 // writer that ignores them stores rows that every validating read path then
 // refuses to touch; these are the schema's own widths, not invented limits.
 const (

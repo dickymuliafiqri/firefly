@@ -546,12 +546,22 @@ export function useSaveSettingsSmart() {
   });
 }
 
-/** Helper for pages: builds next SettingsDTO from modified list. */
+/** Helper for pages: builds next SettingsDTO from modified list.
+ * Automatically marks patched collections as authoritative (manage_* = true)
+ * so the backend store (Turso/libSQL) knows deletions — including deleting
+ * the last remaining entry of a collection — are intentional rather than
+ * partial/stale payloads.
+ */
 export function withSettings(
   current: SettingsDTO,
   patch: Partial<SettingsDTO>,
 ): SettingsDTO {
-  return { ...current, ...patch };
+  const next: SettingsDTO = { ...current, ...patch };
+  if (patch.models !== undefined) next.manage_models = true;
+  if (patch.combos !== undefined) next.manage_combos = true;
+  if (patch.tenants !== undefined) next.manage_tenants = true;
+  if (patch.upstreams !== undefined) next.manage_upstreams = true;
+  return next;
 }
 
 export function useTopupTenantMutation() {
@@ -745,6 +755,7 @@ function mocks() {
       terse_output: false,
       minimal_code: false,
       compress_context: true,
+      system_prompt: '',
     },
   };
 

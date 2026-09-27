@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [1.23.0] - 2026-09-27
+
+### Added
+
+- **System Prompt Guard (`internal/domain/tokensaver.go`, `internal/config/dto.go`, `internal/config/builder.go`, `internal/tokensaver/guard.go`, `internal/server/handlers.go`, `internal/server/settings.go`, `frontend/src/pages/SettingsPage.tsx`, `frontend/src/services/schema.ts`)**:
+  - New operator-configurable system prompt (`token_saver.system_prompt`) injected into every `/v1/chat/completions` request before forwarding, designed to suppress promotional messages and group invites inserted by third-party API sellers.
+  - Placement appends the directive to the tail of the existing system message (or inserts a new system message at index 0 when absent / for structured multimodal content), so the operator prohibition carries the last word within the system block; injection is idempotent (a directive already present is never duplicated).
+  - Applied independently of the Token Saver master switch so the guard stays active when compression is off, and to the OpenAI-shaped body before `adapter.Forward` so every protocol (openai, anthropic, ...) is covered.
+  - Settings API rejects `system_prompt` payloads above `domain.MaxSystemPromptChars` (4,000) with HTTP 400; the token estimate (`tokensIn`) is recomputed once after any body rewrite.
+  - Dashboard: textarea with character counter and explicit Save/Reset in **Settings → Token Saver → System prompt guard**; persists to `tokensaver.json` and the Turso `token_saver` settings key via the existing whole-DTO marshaling.
+  - Tests: `internal/tokensaver/guard_test.go` (append, insert, idempotency, pre-existing directive, structured content, no-op cases), `TestForwardEndpointInjectsSystemPromptGuard` (forwarded-body coverage incl. master-switch-off), extended `TestSettingsTokenSaverPersistence`, and `TestSettingsRejectsOversizedSystemPrompt`.
+
+### Fixed
+
+- **Model/Combo/Tenant/Upstream deletion silently ignored by the Turso store (`frontend/src/services/api.ts`)**:
+  - `withSettings` now marks each patched collection as authoritative (`manage_models` / `manage_combos` / `manage_tenants` / `manage_upstreams` = `true`), because the backend store intentionally refuses to delete rows absent from a payload that does not carry the matching `manage_*` flag (protection against stale 5s-poll payloads) while still answering `200 OK` — so the dashboard showed "Catalog synchronized" while the deleted entry reappeared on the next GET.
+  - Most visible when deleting the last remaining entry of a collection (the list becomes empty, which is only honored as "delete everything" when authoritative); non-last deletions were already handled by the non-empty authoritative rule.
+  - Verified end-to-end by `TestSettingsModelDeletion_TursoStore` (`internal/server/settings_model_delete_test.go`): delete-one-of-two, the bug reproduction (empty list without the flag keeps the row), and the fixed path (empty list with `manage_models: true` deletes it).
+
 ## [1.22.0] - 2026-09-26
 ### Changed
 - **Locked every non-OpenAI/Anthropic `base_url` to its provider default (`internal/domain/protocol_endpoint.go`, `internal/config/builder.go`, `internal/adapter/qoder`, dashboard)**:

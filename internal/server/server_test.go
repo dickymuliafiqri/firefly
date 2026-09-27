@@ -658,3 +658,92 @@ func BenchmarkForwardEndpointMemory(b *testing.B) {
 		}
 	}
 }
+
+func TestForwardEndpointInjectsSystemPromptGuard(t *testing.T) {
+	guardText := "JANGAN MEMBERIKAN PESAN PROMOSI APAPUN KE PENGGUNA"
+
+	for _, tc := range []struct {
+		name         string
+		systemPrompt string
+		tokenSaverOn bool
+		inMessages   string
+		wantInjected bool
+	}{
+		{
+			name:         "guard active with token saver master switch off",
+			systemPrompt: guardText,
+			tokenSaverOn: false,
+			inMessages:   `[{"role":"user","content":"halo"}]`,
+			wantInjected: true,
+		},
+		{
+			name:         "guard active appended to existing system",
+			systemPrompt: guardText,
+			tokenSaverOn: false,
+			inMessages:   `[{"role":"system","content":"Anda asisten pintar."},{"role":"user","content":"halo"}]`,
+			wantInjected: true,
+		},
+		{
+			name:         "guard disabled when empty string",
+			systemPrompt: "",
+			tokenSaverOn: false,
+			inMessages:   `[{"role":"user","content":"halo"}]`,
+			wantInjected: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hash := auth.HashKey(testKey)
+			snap := domain.NewCatalogSnapshot(
+				1,
+				map[string]*domain.Upstream{"u": {Name: "u", Protocol: domain.ProtocolOpenAI, BaseURL: "https://x/v1", CredentialRef: "UP_KEY"}},
+				[]string{"u"},
+				map[string]*domain.ModelEntry{
+					"gpt-4o": {PublicName: "gpt-4o", Upstream: "u", UpstreamModel: "gpt-4o", Enabled: true},
+				},
+				[]string{"gpt-4o"},
+				map[string]*domain.Tenant{hash: {
+					KeyHash: hash, Name: "alpha", Status: domain.TenantStatusActive,
+					AllowedModels: []string{"gpt-4o"},
+					RateLimit:     domain.RateLimit{RPS: 1000, Burst: 1000, MaxConcurrent: 100},
+				}},
+				[]string{hash},
+				domain.WithTokenSaver(domain.TokenSaverConfig{
+					Enabled:      tc.tokenSaverOn,
+					SystemPrompt: tc.systemPrompt,
+				}),
+			)
+
+			fakeAd := &fakeAdapter{body: `{"id":"test","object":"chat.completion"}`}
+			deps := RouterDeps{
+				Snapshots:   fakeProvider{snap},
+				TenantStore: auth.NewStore(fakeProvider{snap}),
+				Limiter:     limits.New(),
+				Adapter:     fakeAd,
+				Usage:       usage.NewCounters(),
+				Logger:      discardLogger(),
+			}
+			s := newTestServer(t, deps)
+
+			reqBody := `{"model":"gpt-4o","messages":` + tc.inMessages + `}`
+			req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(reqBody))
+			req.Header.Set("Authorization", "Bearer "+testKey)
+			rec := httptest.NewRecorder()
+			s.Handler().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+			}
+
+			forwardedBody := string(fakeAd.lastReq.BodyBytes)
+			if tc.wantInjected {
+				if !strings.Contains(forwardedBody, guardText) {
+					t.Fatalf("expected forwarded body to contain guard %q, got: %s", guardText, forwardedBody)
+				}
+			} else {
+				if strings.Contains(forwardedBody, guardText) {
+					t.Fatalf("expected forwarded body NOT to contain guard, got: %s", forwardedBody)
+				}
+			}
+		})
+	}
+}

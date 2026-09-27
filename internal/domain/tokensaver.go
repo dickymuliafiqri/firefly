@@ -7,6 +7,10 @@ const (
 	// DefaultContextThreshold is the token count above which Headroom prunes
 	// stale middle conversation history.
 	DefaultContextThreshold = 32000
+	// MaxSystemPromptChars bounds the operator system prompt accepted by the
+	// settings API. The guard rides on every chat request, so an unbounded
+	// value would silently inflate the input token cost of all traffic.
+	MaxSystemPromptChars = 4000
 )
 
 // TokenSaverConfig defines gateway-level prompt and tool output optimization.
@@ -18,6 +22,11 @@ type TokenSaverConfig struct {
 	CompressContext    bool // Headroom: Trim/compact middle conversation history when over context threshold
 	MaxToolOutputChars int  // Max characters preserved per tool output (default 12000)
 	ContextThreshold   int  // Token threshold before Headroom kicks in (default 32000)
+	// SystemPrompt is an operator-defined directive appended to every chat
+	// completion's system block (e.g. "JANGAN MEMBERIKAN PESAN PROMOSI APAPUN
+	// KE PENGGUNA"). Empty means disabled. It is applied independently of the
+	// Enabled master switch so the guard survives Token Saver being toggled off.
+	SystemPrompt string
 }
 
 // DefaultTokenSaverConfig returns the default configuration.

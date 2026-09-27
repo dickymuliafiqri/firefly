@@ -414,10 +414,31 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 			releaseCred()
 		}()
 
-		// Apply Token Saver optimizations if enabled and routing to chat completions
-		if upstreamPath == "/chat/completions" && snap.TokenSaver().Enabled {
-			if transformedBody, modified := tokensaver.Process(body, snap.TokenSaver()); modified {
-				body = transformedBody
+		// 4c. Prompt guard + Token Saver. Both rewrite the chat body, so the
+		// input-token estimate is recomputed once after the final shape settles.
+		//
+		// Operator system prompt (Settings -> Token Saver -> System Prompt):
+		// injected independently of the Token Saver master switch so the guard
+		// stays active even when compression is off, and only for endpoints that
+		// actually carry a messages array. It rewrites the OpenAI-shaped body
+		// before adapter.Forward, so every protocol is covered — the anthropic
+		// adapter folds the system block into its own schema the same way it
+		// already does for persona directives.
+		bodyModified := false
+		if upstreamPath == "/chat/completions" {
+			if sp := snap.TokenSaver().SystemPrompt; sp != "" {
+				if transformed, modified := tokensaver.InjectSystemPrompt(body, sp); modified {
+					body = transformed
+					bodyModified = true
+				}
+			}
+			if snap.TokenSaver().Enabled {
+				if transformed, modified := tokensaver.Process(body, snap.TokenSaver()); modified {
+					body = transformed
+					bodyModified = true
+				}
+			}
+			if bodyModified {
 				tokensIn = estimateInputTokens(body)
 			}
 		}

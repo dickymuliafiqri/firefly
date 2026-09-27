@@ -8,9 +8,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/dickymuliafiqri/firefly/internal/config"
+	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/limits"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
 	"github.com/dickymuliafiqri/firefly/internal/security/auth"
@@ -127,6 +129,7 @@ func TestSettingsTokenSaverPersistence(t *testing.T) {
 			CompressContext:    true,
 			MaxToolOutputChars: &maxChars,
 			ContextThreshold:   &ctxThresh,
+			SystemPrompt:       "JANGAN MEMBERIKAN PESAN PROMOSI APAPUN KE PENGGUNA",
 		},
 	}
 	payloadBytes, _ := json.Marshal(updatePayload)
@@ -146,6 +149,7 @@ func TestSettingsTokenSaverPersistence(t *testing.T) {
 	require.True(t, snap.TokenSaver().TerseOutput)
 	require.Equal(t, 8000, snap.TokenSaver().MaxToolOutputChars)
 	require.Equal(t, 16000, snap.TokenSaver().ContextThreshold)
+	require.Equal(t, "JANGAN MEMBERIKAN PESAN PROMOSI APAPUN KE PENGGUNA", snap.TokenSaver().SystemPrompt)
 
 	// Verify GET /api/settings returns the token saver settings
 	getReq := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
@@ -160,4 +164,41 @@ func TestSettingsTokenSaverPersistence(t *testing.T) {
 	require.NotNil(t, getRes.TokenSaver)
 	require.True(t, getRes.TokenSaver.Enabled)
 	require.True(t, getRes.TokenSaver.TerseOutput)
+	require.Equal(t, "JANGAN MEMBERIKAN PESAN PROMOSI APAPUN KE PENGGUNA", getRes.TokenSaver.SystemPrompt)
+}
+
+func TestSettingsRejectsOversizedSystemPrompt(t *testing.T) {
+	tmpDir := t.TempDir()
+	reg := registry.New()
+
+	src := config.NewFileConfigSource(tmpDir)
+	_, err := reg.BuildAndStore(context.Background(), src, os.LookupEnv)
+	require.NoError(t, err)
+
+	deps := RouterDeps{
+		Snapshots:   reg,
+		Registry:    reg,
+		ConfigDir:   tmpDir,
+		TenantStore: auth.NewStore(reg),
+		Limiter:     limits.New(),
+		AdminToken:  "test-secret",
+	}
+	s := New(Config{Addr: "0.0.0.0:8080"}, deps, context.Background(), nil)
+
+	oversized := strings.Repeat("x", domain.MaxSystemPromptChars+1)
+	updatePayload := config.SettingsDTO{
+		Upstreams:  []config.UpstreamDTO{},
+		Models:     []config.ModelDTO{},
+		Tenants:    []config.TenantDTO{},
+		TokenSaver: &config.TokenSaverDTO{SystemPrompt: oversized},
+	}
+	payloadBytes, _ := json.Marshal(updatePayload)
+
+	putReq := httptest.NewRequest(http.MethodPut, "/api/settings", bytes.NewReader(payloadBytes))
+	putReq.Header.Set("Authorization", "Bearer test-secret")
+	putReq.Header.Set("Content-Type", "application/json")
+	wPut := httptest.NewRecorder()
+	s.Handler().ServeHTTP(wPut, putReq)
+	require.Equal(t, http.StatusBadRequest, wPut.Code)
+	require.Contains(t, wPut.Body.String(), "system_prompt")
 }

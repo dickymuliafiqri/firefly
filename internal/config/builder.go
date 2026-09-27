@@ -100,6 +100,8 @@ func Build(fs FileSet, envLookup func(string) (string, bool)) (*BuildResult, err
 			if tsFile.ContextThreshold != nil && *tsFile.ContextThreshold > 0 {
 				tokenSaverCfg.ContextThreshold = *tsFile.ContextThreshold
 			}
+			tokenSaverCfg.SystemPrompt = strings.TrimSpace(tsFile.SystemPrompt)
+			tokenSaverCfg.SystemPrompt = strings.TrimSpace(tsFile.SystemPrompt)
 		}
 	}
 

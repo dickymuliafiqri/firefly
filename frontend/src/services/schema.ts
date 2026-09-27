@@ -414,6 +414,8 @@ export interface TokenSaverDTO {
   compress_context: boolean;
   max_tool_output_chars?: number | null;
   context_threshold?: number | null;
+  /** Operator directive injected into every chat completion's system block. Empty = disabled. */
+  system_prompt?: string | null;
 }
 
 export interface SettingsDTO {

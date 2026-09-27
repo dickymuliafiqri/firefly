@@ -180,6 +180,9 @@ type TokenSaverDTO struct {
 	CompressContext    bool `json:"compress_context"`
 	MaxToolOutputChars *int `json:"max_tool_output_chars,omitempty"`
 	ContextThreshold   *int `json:"context_threshold,omitempty"`
+	// SystemPrompt is an operator-authored directive injected into every chat
+	// completion's system block. Empty string disables the guard.
+	SystemPrompt string `json:"system_prompt,omitempty"`
 }
 
 // RateLimitDTO mirrors the rate_limit object.
