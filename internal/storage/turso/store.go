@@ -1231,9 +1231,6 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 			continue
 		}
 		activeTenants[key] = true
-		if t.KeyHash != "" {
-			activeTenants[t.KeyHash] = true
-		}
 
 		allowedJSON := "[]"
 		if len(t.AllowedModels) > 0 {
@@ -1276,6 +1273,18 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 		if keyHash == "" && strings.HasPrefix(key, "sk-gw-") {
 			sum := sha256.Sum256([]byte(key))
 			keyHash = "sha256:" + hex.EncodeToString(sum[:])
+		}
+
+		// Register every identity this row is indexed under in existingTenants —
+		// including a hash derived from the plaintext key. Skipping the derived
+		// value let the "delete tenants absent from an authoritative payload"
+		// sweep below match the row's key_hash entry, which was never marked
+		// active: editing a tenant from the dashboard (whose payload carries
+		// api_key but not key_hash, because the form rebuilds the entry from its
+		// own fields) updated the row and then deleted it in the same
+		// transaction, so the tenant vanished from the list.
+		if keyHash != "" {
+			activeTenants[keyHash] = true
 		}
 
 		existingID, ok := existingTenants[key]

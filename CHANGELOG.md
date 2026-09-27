@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.24.1] - 2026-09-27
+
+### Fixed
+
+- **Editing a Tenant Deleted It (`internal/storage/turso/store.go`, `internal/storage/turso/store_tenant_roundtrip_test.go`)**:
+  - Saving any change to a tenant from the dashboard (Tenants → edit → Save changes) removed that tenant from the list instead of updating it, on Turso-backed deployments.
+  - Root cause: `Store.SaveSettings` indexes every stored row under **two** identities in `existingTenants` (`api_key` and `key_hash`), but only the payload's own identity was registered in `activeTenants` — and only when the payload supplied `key_hash`. The hash the store derives from a plaintext `sk-gw-…` key (line-matched against `existingTenants` a few lines later) was never registered. The dashboard's edit form rebuilds the tenant entry from its own fields, so the payload carries `api_key` but no `key_hash`: the row was updated and then immediately removed by the "delete tenants absent from an authoritative payload" sweep, which matched the row's `key_hash` entry that had never been marked active. Creating a tenant was unaffected because `handleCreateTenant` fills `KeyHash` in before persisting.
+  - The derived hash is now registered in `activeTenants` alongside the payload key, so every identity a row is indexed under counts as present before the sweep runs. Deployments without Turso were never affected: the file writer persists the whole tenant list and never deletes by omitting.
+  - The authoritative delete itself is unchanged: `TestSaveSettings_TenantRemovalStillHonored` asserts that a payload genuinely omitting a tenant still removes it, and `TestSaveSettings_TenantEditKeepsSiblings` asserts that editing one tenant leaves the others (and their credentials) untouched. `TestSaveSettings_TenantEditRoundTrip` reproduces the dashboard round trip (load → edit → re-save with `manage_tenants: true`) and reported `tenants now: []` before the fix.
+
 ## [1.24.0] - 2026-09-27
 
 ### Fixed
