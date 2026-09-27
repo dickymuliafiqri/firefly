@@ -5,7 +5,20 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.26.0] - 2026-09-28
+
+
+### Added
+
+- **Admin Routing Visualizer (`frontend/src/pages/VisualizerPage.tsx`, `frontend/src/components/visualizer/**`, `internal/observability/trace/**`, `internal/server/visualizer.go`)**:
+  - New private `#visualizer` page (Monitoring group) that renders each request's routing work as pluggable diagrams — **Line** (latency along the pipeline with a node per phase), **Tree** (model → winning upstream → credential, with skipped combo members), **Office** (one desk per upstream, lit while it serves the selected request), and **Radar** (credentials as spokes, blip radius by first-byte latency, blip size by stream volume). Views live behind a small registry (`views/index.ts`), so adding one is a single entry.
+  - New leaf package `internal/observability/trace` provides the in-memory recorder: a bounded ring (default 200 traces) plus a live frame fan-out to SSE subscribers. **Capture only runs while a subscriber is attached** (`Recorder.Start` returns `nil` when nobody watches), every `Capture` method is nil-safe, publishes are non-blocking (slow subscribers drop frames, counted in `stats.dropped`), and the ring holds no persistence.
+  - Hooks stay off the hot path: `forwardEndpoint` records `received → resolve → route → key → attempt → done` plus routing candidates and terminal status, the capture rides the request context (`trace.WithCapture`) into the adapter, and `openai.RelaySSE` reports per-line activity (`answer`/`reasoning`/`tool`/`usage`, byte and delta accounting, throttled live snapshots at 100 ms). Unwatched requests pay nothing.
+  - Admin-gated API mirroring the provider/key CRUD gate: `GET /api/visualizer/traces` (ring + stats), `GET /api/visualizer/events` (SSE, 15 s stats heartbeat), `POST /api/visualizer/capture` (pause/resume), `POST /api/visualizer/clear`. Anonymous callers get `401`, including on the stream endpoint.
+  - Recorder bounds are configuration, not code: `configs/visualizer.json` (`enabled`, `retention`, `keep_events`) is loaded by `internal/config` into `domain.VisualizerConfig` (defaults: enabled, 500 traces / 24 stage entries, capped at 4096 / 256) and reaches the recorder through the catalog snapshot, so a bad value fails the reload loudly instead of pinning memory. Recording still only starts while a dashboard subscriber is attached, so an unwatched gateway pays nothing; the dashboard toggle turns capture off entirely, and at most `trace.MaxSubscribers` streams are served concurrently (the rest get `429`).
+  - Credential references are masked at capture time (`trace.MaskRef` → `sk-l***1234`), so raw upstream keys never reach the browser, the ring, or the JSON API.
+  - Verified: `go test -count=1 ./internal/observability/trace/` (recorder, classification, masking, retention, slow-subscriber drop, nil-capture inertness, context round-trip) and `go test -count=1 -run Visualizer ./internal/server/` (401 gate, snapshot, capture toggle, clear, bad body, live SSE frame + subscriber release on disconnect) both pass; frontend `tsc --noEmit` and `vite build` are clean.
+
 
 ## [1.25.1] - 2026-09-27
 

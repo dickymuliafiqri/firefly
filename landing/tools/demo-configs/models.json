@@ -1,0 +1,39 @@
+{
+  "models": [
+    {
+      "public_name": "gpt-4o-mini",
+      "upstream": "openai-primary",
+      "upstream_model": "gpt-4o-mini",
+      "capabilities": { "stream": true, "tools": true, "vision": true, "json_mode": true },
+      "enabled": true
+    },
+    {
+      "public_name": "gpt-4.1-mini",
+      "upstream": "openai-primary",
+      "upstream_model": "gpt-4.1-mini",
+      "capabilities": { "stream": true, "tools": true },
+      "enabled": true
+    },
+    {
+      "public_name": "deepseek-chat",
+      "upstream": "vllm-workhorse",
+      "upstream_model": "deepseek-chat",
+      "capabilities": { "stream": true, "tools": true, "json_mode": true },
+      "enabled": true
+    },
+    {
+      "public_name": "llama-3.3-70b-instruct",
+      "upstream": "vllm-workhorse",
+      "upstream_model": "llama-3.3-70b-instruct",
+      "capabilities": { "stream": true },
+      "enabled": true
+    },
+    {
+      "public_name": "claude-sonnet-4-6",
+      "upstream": "anthropic-lab",
+      "upstream_model": "claude-sonnet-4-6",
+      "capabilities": { "stream": true, "tools": true, "vision": true },
+      "enabled": true
+    }
+  ]
+}

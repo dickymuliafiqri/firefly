@@ -1120,3 +1120,48 @@ func TestBuild_OpenCode_AutoProvisionsPublicKeySlot(t *testing.T) {
 		t.Errorf("expected upstream CredentialRef 'opencode-free-public', got %s", u.CredentialRef)
 	}
 }
+
+// TestBuildVisualizerConfig covers the private visualizer block: defaults when
+// the file is absent, an explicit override, and the bounds that keep a typo from
+// pinning unbounded memory in the trace ring.
+func TestBuildVisualizerConfig(t *testing.T) {
+	env := fakeEnv(map[string]string{"OPENAI_KEY": "sk-test"})
+	base := func(viz []byte) FileSet {
+		return FileSet{
+			Upstreams:  []byte(validUpstreams),
+			Models:     []byte(validModels),
+			Tenants:    []byte(validTenants),
+			Visualizer: viz,
+		}
+	}
+
+	res, err := Build(base(nil), env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !res.Visualizer.Enabled || res.Visualizer.Retention != domain.DefaultVisualizerRetention || res.Visualizer.KeepEvents != domain.DefaultVisualizerKeepEvents {
+		t.Fatalf("defaults not applied: %+v", res.Visualizer)
+	}
+
+	res, err = Build(base([]byte(`{"enabled":false,"retention":50,"keep_events":12}`)), env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Visualizer.Enabled || res.Visualizer.Retention != 50 || res.Visualizer.KeepEvents != 12 {
+		t.Fatalf("visualizer = %+v, want disabled 50/12", res.Visualizer)
+	}
+
+	for _, bad := range []string{
+		`{"retention":0}`,
+		`{"retention":100000}`,
+		`{"keep_events":0}`,
+		`{"keep_events":9999}`,
+		`{"retention":"lots"}`,
+		`{"enabled":`,
+	} {
+		if _, err := Build(base([]byte(bad)), env); err == nil {
+			t.Errorf("Build accepted visualizer.json %s", bad)
+		}
+	}
+}
+

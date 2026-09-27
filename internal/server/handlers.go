@@ -7,12 +7,16 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
+
 	"sync"
 	"time"
 
 	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/limits"
+	"github.com/dickymuliafiqri/firefly/internal/observability/trace"
+
 	"github.com/dickymuliafiqri/firefly/internal/observability/metrics"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
 	"github.com/dickymuliafiqri/firefly/internal/storage/turso"
@@ -300,6 +304,17 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 		stream := gjson.GetBytes(body, "stream").Bool()
 		tokensIn := estimateInputTokens(body)
 
+		capture := deps.Traces.Start(trace.Meta{
+			ID:     httpx.RequestIDFrom(r.Context()),
+			Method: r.Method,
+			Path:   r.URL.Path,
+			Model:  model,
+			Tenant: tenant.Name,
+			Stream: stream,
+		})
+		capture.Stage(trace.StageReceived, strconv.Itoa(len(body))+" bytes")
+		defer capture.Finish(0, nil)
+
 		// 3. Resolve the routing target (model -> upstream + credential).
 		var canUseUpstream func(string) bool
 		if deps.Breakers != nil {
@@ -345,6 +360,14 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 			writeResolveError(w, err)
 			return
 		}
+		capture.Stage(trace.StageResolve, model)
+		if target.Upstream != nil {
+			note := "primary"
+			if fallbackUsed {
+				note = "breaker fallback"
+			}
+			capture.Candidate(target.Upstream.Name, "", trace.CandidateChosen, note)
+		}
 		if target.Upstream != nil {
 			target.Upstream.Inflight.Add(1)
 			defer target.Upstream.Inflight.Add(-1)
@@ -363,6 +386,20 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 				"model", model,
 			)
 		}
+		if target.Upstream != nil {
+			capture.Stage(trace.StageRoute, target.Upstream.Name)
+		}
+		if combo, isCombo := snap.Combo(model); isCombo {
+			for _, member := range combo.Models {
+				me, ok := snap.Model(member)
+				if !ok || me.Upstream == "" {
+					continue
+				}
+				if target.Upstream == nil || me.Upstream != target.Upstream.Name {
+					capture.Candidate(me.Upstream, "", trace.CandidateSkipped, "combo member "+member)
+				}
+			}
+		}
 
 		// 4. Per-credential aggregate limit. AdmissionMiddleware already took
 		//    the tenant slot; here we bound the shared upstream key. This runs
@@ -379,6 +416,9 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 				target.Upstream.CredentialMaxConcurrent,
 			)
 		}
+		capture.SetTarget(target.Upstream.Name, string(target.Upstream.Protocol), keyRef)
+		capture.Stage(trace.StageKey, trace.MaskRef(keyRef))
+
 		if err != nil {
 			if errors.Is(err, limits.ErrRateLimited) {
 				deps.Metrics.ObserveKeyCooldown(target.Upstream.Name, keyRef)
@@ -400,11 +440,14 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 					EstimatedCost: float64(tokensIn) * 0.0000025,
 					Error:         "upstream credential capacity exhausted",
 				})
+				capture.Fail(http.StatusTooManyRequests, nil)
 				w.Header().Set("Retry-After", "1")
 				openai.WriteError(w, http.StatusTooManyRequests, openai.TypeRateLimit,
 					"upstream credential capacity exhausted; retry shortly")
 				return
 			}
+			capture.Fail(http.StatusInternalServerError, nil)
+
 			openai.WriteError(w, http.StatusInternalServerError, openai.TypeAPI, "admission control error")
 			return
 		}
@@ -456,9 +499,11 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 		adapter, err := deps.adapterFor(target.Upstream.Protocol)
 		if err != nil {
 			openai.WriteError(w, http.StatusNotImplemented, openai.TypeAPI, err.Error())
+			capture.Fail(http.StatusNotImplemented, err)
+
 			return
 		}
-
+		capture.Stage(trace.StageAttempt, string(target.Upstream.Protocol))
 		start := time.Now()
 		reqID := httpx.RequestIDFrom(r.Context())
 		upstreamName := ""
@@ -484,7 +529,7 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 		})
 
 		tracker := &responseTracker{ResponseWriter: w}
-		fwdErr := adapter.Forward(r.Context(), target, fwdReq, tracker)
+		fwdErr := adapter.Forward(trace.WithCapture(r.Context(), capture), target, fwdReq, tracker)
 		elapsed := time.Since(start)
 
 		// 6. Record usage regardless of outcome (a failed call still consumed
@@ -566,6 +611,9 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 			EstimatedCost: totCost,
 			Error:         errStr,
 		})
+
+		capture.SetUsage(tokensIn, tokensOut)
+		capture.Finish(keyStatus, fwdErr)
 
 		if fwdErr != nil {
 			deps.logForwardFailure(r.Context(), target, fwdErr, elapsed)

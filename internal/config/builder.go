@@ -46,6 +46,7 @@ type BuildResult struct {
 	Combos          map[string]*domain.Combo
 	ComboOrder      []string
 	TokenSaver      domain.TokenSaverConfig
+	Visualizer      domain.VisualizerConfig
 	Warnings        []string
 }
 
@@ -105,12 +106,34 @@ func Build(fs FileSet, envLookup func(string) (string, bool)) (*BuildResult, err
 		}
 	}
 
+	visualizerCfg := domain.DefaultVisualizerConfig()
+	if len(fs.Visualizer) > 0 {
+		var vFile VisualizerDTO
+		if err := decodeStrict("visualizer", fs.Visualizer, &vFile); err != nil {
+			return nil, err
+		}
+		visualizerCfg.Enabled = vFile.Enabled
+		if vFile.Retention != nil {
+			if *vFile.Retention < 1 || *vFile.Retention > domain.MaxVisualizerRetention {
+				return nil, &ValidationError{Field: "visualizer.retention", Msg: fmt.Sprintf("must be between 1 and %d", domain.MaxVisualizerRetention)}
+			}
+			visualizerCfg.Retention = *vFile.Retention
+		}
+		if vFile.KeepEvents != nil {
+			if *vFile.KeepEvents < 1 || *vFile.KeepEvents > domain.MaxVisualizerKeepEvents {
+				return nil, &ValidationError{Field: "visualizer.keep_events", Msg: fmt.Sprintf("must be between 1 and %d", domain.MaxVisualizerKeepEvents)}
+			}
+			visualizerCfg.KeepEvents = *vFile.KeepEvents
+		}
+	}
+
 	res := &BuildResult{
 		Upstreams:     make(map[string]*domain.Upstream, len(upFile.Upstreams)),
 		Models:        make(map[string]*domain.ModelEntry, len(modelFile.Models)),
 		TenantsByHash: make(map[string]*domain.Tenant, len(tenantFile.Tenants)),
 		Combos:        make(map[string]*domain.Combo, len(comboFile.Combos)),
 		TokenSaver:    tokenSaverCfg,
+		Visualizer:    visualizerCfg,
 	}
 
 	for i, d := range upFile.Upstreams {

@@ -1,0 +1,46 @@
+{
+  "upstreams": [
+    {
+      "name": "openai-primary",
+      "protocol": "openai",
+      "base_url": "http://127.0.0.1:9091/v1",
+      "allow_insecure": true,
+      "key_strategy": "least_inflight",
+      "credential_pool": [
+        { "ref": "openai-key-1", "api_key": "sk-demo-openai-4f21a", "max_concurrent": 12 },
+        { "ref": "openai-key-2", "api_key": "sk-demo-openai-9c07e", "max_concurrent": 12 },
+        { "ref": "openai-key-3", "api_key": "sk-demo-openai-b558d", "max_concurrent": 12 }
+      ],
+      "enabled": true
+    },
+    {
+      "name": "vllm-workhorse",
+      "protocol": "openai",
+      "base_url": "http://127.0.0.1:9091/v1",
+      "allow_insecure": true,
+      "key_strategy": "round_robin",
+      "credential_pool": [
+        { "ref": "vllm-key-1", "api_key": "sk-demo-vllm-1d2c3", "max_concurrent": 16 },
+        { "ref": "vllm-key-2", "api_key": "sk-demo-vllm-7e8f9", "max_concurrent": 16 }
+      ],
+      "enabled": true
+    },
+    {
+      "name": "anthropic-lab",
+      "protocol": "anthropic",
+      "base_url": "https://api.anthropic.com/v1",
+      "key_strategy": "least_inflight",
+      "credential_pool": [
+        { "ref": "anthropic-key-1", "api_key": "sk-ant-demo-03", "max_concurrent": 8 }
+      ],
+      "enabled": true
+    },
+    {
+      "name": "opencode-zen",
+      "protocol": "opencode",
+      "base_url": "https://opencode.ai/zen/v1",
+      "key_strategy": "round_robin",
+      "enabled": true
+    }
+  ]
+}

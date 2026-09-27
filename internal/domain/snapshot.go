@@ -27,6 +27,7 @@ type CatalogSnapshot struct {
 	comboOrder []string
 
 	tokenSaver TokenSaverConfig
+	visualizer VisualizerConfig
 }
 
 // SnapshotOption configures optional fields on a CatalogSnapshot.
@@ -52,6 +53,18 @@ func WithTokenSaver(cfg TokenSaverConfig) SnapshotOption {
 // TokenSaver returns the token saver configuration for this snapshot.
 func (s *CatalogSnapshot) TokenSaver() TokenSaverConfig {
 	return s.tokenSaver
+}
+
+// WithVisualizer attaches visualizer recorder bounds to the snapshot.
+func WithVisualizer(cfg VisualizerConfig) SnapshotOption {
+	return func(s *CatalogSnapshot) {
+		s.visualizer = cfg
+	}
+}
+
+// Visualizer returns the request visualizer configuration for this snapshot.
+func (s *CatalogSnapshot) Visualizer() VisualizerConfig {
+	return s.visualizer
 }
 
 // NewCatalogSnapshot constructs a snapshot from already-validated parts. It

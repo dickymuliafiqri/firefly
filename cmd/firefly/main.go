@@ -42,7 +42,9 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/limits"
 	"github.com/dickymuliafiqri/firefly/internal/observability/logging"
 	"github.com/dickymuliafiqri/firefly/internal/observability/metrics"
+	"github.com/dickymuliafiqri/firefly/internal/observability/trace"
 	"github.com/dickymuliafiqri/firefly/internal/observability/usage"
+
 	"github.com/dickymuliafiqri/firefly/internal/ports"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
 	"github.com/dickymuliafiqri/firefly/internal/security/auth"
@@ -588,6 +590,16 @@ func run() error {
 
 	liveLogs := server.NewLiveLogHub()
 	liveLogs.AttachStore(analyticsStore)
+
+	// Visualizer trace recorder: in-memory only, capture runs while a dashboard
+	// subscriber is attached to /api/visualizer/events. Bounds come from
+	// visualizer.json; a reload only takes effect on restart.
+	vizCfg := domain.DefaultVisualizerConfig()
+	if snap := reg.Current(); snap != nil {
+		vizCfg = snap.Visualizer()
+	}
+	traces := trace.New(trace.Config{Retention: vizCfg.Retention, KeepEvents: vizCfg.KeepEvents})
+	traces.SetEnabled(vizCfg.Enabled)
 	autoTLS := server.NewAutoTLS(filepath.Join(*configDir, "certificates"), logger)
 
 	// Global admission gate (layer 1 of the limiter stack). It is constructed
@@ -642,6 +654,7 @@ func run() error {
 		Breakers:      breakers,
 		Analytics:     analyticsStore,
 		LiveLogs:      liveLogs,
+		Traces:        traces,
 		AutoTLS:       autoTLS,
 		OAuthManager:  oauthMgr,
 		TursoStore:    tursoStore,

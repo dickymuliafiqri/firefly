@@ -10,6 +10,7 @@ type FileSet struct {
 	Tenants    []byte
 	Combos     []byte
 	TokenSaver []byte
+	Visualizer []byte
 }
 
 // --- DTOs mirroring the JSON schema. All fields are pointers or have explicit
@@ -183,6 +184,14 @@ type TokenSaverDTO struct {
 	// SystemPrompt is an operator-authored directive injected into every chat
 	// completion's system block. Empty string disables the guard.
 	SystemPrompt string `json:"system_prompt,omitempty"`
+}
+
+// VisualizerDTO mirrors visualizer.json, the private request visualizer.
+// Absent file => disabled with default bounds.
+type VisualizerDTO struct {
+	Enabled    bool `json:"enabled"`
+	Retention  *int `json:"retention,omitempty"`
+	KeepEvents *int `json:"keep_events,omitempty"`
 }
 
 // RateLimitDTO mirrors the rate_limit object.

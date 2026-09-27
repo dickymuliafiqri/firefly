@@ -1,0 +1,1677 @@
+/* ============================================================
+   Firefly — landing page
+   Night-forest theme: deep ink greens, bioluminescent fireflies.
+   Type: Fraunces (display) · Inter (body) · JetBrains Mono (wire)
+   ============================================================ */
+
+:root {
+  --bg-0: #04080c;
+  --bg-1: #061012;
+  --bg-2: #081712;
+  --ink: #eef4ec;
+  --ink-2: #a8b8ac;
+  --ink-3: #6d7f72;
+  --lime: #bef264;
+  --glow: #f0ffb4;
+  --emerald: #34d399;
+  --line: rgba(255, 255, 255, 0.08);
+  --line-soft: rgba(255, 255, 255, 0.05);
+  --lime-dim: rgba(190, 242, 100, 0.55);
+  --lime-wash: rgba(190, 242, 100, 0.05);
+  --font-display: "Fraunces", Georgia, serif;
+  --font-body: "Inter", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html {
+  scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: linear-gradient(180deg, var(--bg-0) 0%, var(--bg-1) 46%, var(--bg-2) 100%);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 16.5px;
+  line-height: 1.65;
+  overflow-x: hidden;
+}
+
+/* deterministic starfield, densest near the top */
+.stars {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    radial-gradient(1px 1px at 22px 34px, rgba(240, 255, 200, 0.50), transparent 100%),
+    radial-gradient(1px 1px at 187px 121px, rgba(240, 255, 200, 0.28), transparent 100%),
+    radial-gradient(1.5px 1.5px at 311px 58px, rgba(240, 255, 200, 0.38), transparent 100%),
+    radial-gradient(1px 1px at 452px 156px, rgba(240, 255, 200, 0.22), transparent 100%),
+    radial-gradient(1px 1px at 533px 88px, rgba(240, 255, 200, 0.34), transparent 100%),
+    radial-gradient(1.5px 1.5px at 684px 171px, rgba(240, 255, 200, 0.20), transparent 100%),
+    radial-gradient(1px 1px at 749px 26px, rgba(240, 255, 200, 0.40), transparent 100%),
+    radial-gradient(1px 1px at 858px 132px, rgba(240, 255, 200, 0.24), transparent 100%),
+    radial-gradient(1.5px 1.5px at 977px 47px, rgba(240, 255, 200, 0.30), transparent 100%),
+    radial-gradient(1px 1px at 1064px 118px, rgba(240, 255, 200, 0.22), transparent 100%),
+    radial-gradient(1px 1px at 1181px 71px, rgba(240, 255, 200, 0.36), transparent 100%),
+    radial-gradient(1px 1px at 1293px 149px, rgba(240, 255, 200, 0.20), transparent 100%),
+    radial-gradient(1.5px 1.5px at 1361px 31px, rgba(240, 255, 200, 0.34), transparent 100%);
+  background-size: 480px 240px;
+  -webkit-mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.9) 0%, rgba(0, 0, 0, 0.5) 40%, transparent 78%);
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.9) 0%, rgba(0, 0, 0, 0.5) 40%, transparent 78%);
+}
+
+#fireflies {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.wrap {
+  max-width: 1140px;
+  margin-inline: auto;
+  padding-inline: clamp(20px, 5vw, 48px);
+  position: relative;
+  z-index: 2;
+}
+
+.mono { font-family: var(--font-mono); }
+
+::selection { background: rgba(190, 242, 100, 0.25); }
+
+:focus-visible {
+  outline: 2px solid rgba(190, 242, 100, 0.65);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+/* ---------- nav ---------- */
+
+.nav {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  background: rgba(5, 11, 12, 0.62);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.nav-inner {
+  max-width: 1140px;
+  margin-inline: auto;
+  padding: 14px clamp(20px, 5vw, 48px);
+  display: flex;
+  align-items: center;
+  gap: 32px;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  text-decoration: none;
+  color: var(--ink);
+}
+
+.brand-mark { width: 22px; height: 22px; }
+.brand-name { font-weight: 600; font-size: 17px; letter-spacing: -0.01em; }
+
+.nav-links {
+  display: flex;
+  gap: 26px;
+  margin-inline: auto;
+}
+
+.nav-links a {
+  color: var(--ink-2);
+  text-decoration: none;
+  font-size: 14px;
+  transition: color 0.2s ease;
+}
+
+.nav-links a:hover { color: var(--ink); }
+
+.nav-cta { display: flex; gap: 10px; margin-left: auto; }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 18px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 13.5px;
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
+}
+
+.btn:hover { border-color: rgba(255, 255, 255, 0.22); transform: translateY(-1px); }
+
+.btn-lime {
+  background: var(--lime);
+  border-color: var(--lime);
+  color: #17250a;
+  font-weight: 600;
+}
+
+.btn-lime:hover { background: var(--glow); border-color: var(--glow); }
+
+.btn-ghost:hover { background: rgba(255, 255, 255, 0.04); }
+
+/* ---------- hero ---------- */
+
+/* No bottom padding: the treeline band sits in the flow right after the copy,
+ * so the forest is already on screen before the first scroll. */
+.hero {
+  position: relative;
+  padding: clamp(56px, 8vh, 100px) 0 0;
+}
+
+/* Growth must not widen the page. Scaling a full-width layer 1.35x blooms 336px past each
+ * side, and Blink counts that in the document's scrollable overflow: measured 2026-09-23,
+ * the document reaches scrollWidth 2256 against a 1920 viewport and a programmatic scroll
+ * moves 336px sideways. `overflow-x: clip` on the x axis alone removes it and leaves the
+ * y axis visible, so nothing the reader can see is cut and the pinned scene is not clipped
+ * by the hero's box the way `overflow: hidden` would clip it (the hero box scrolls away
+ * while the scene is pinned). With the rule: scrollWidth 1920, pan attempt 0px, pin still
+ * holds at s_release, nav still sticky. Safari < 16 ignores `clip`; there the bloom returns
+ * but stays invisible behind `body { overflow-x: hidden }`. */
+.hero { overflow-x: clip; }
+
+.kicker {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--lime-dim);
+  margin: 0 0 22px;
+}
+
+.hero h1 {
+  font-family: var(--font-display);
+  font-weight: 380;
+  font-size: clamp(2.7rem, 6.4vw, 4.8rem);
+  line-height: 1.04;
+  letter-spacing: -0.015em;
+  margin: 0 0 28px;
+  max-width: 15ch;
+}
+
+.hero h1 em,
+.footer-line em {
+  font-style: italic;
+  color: var(--lime);
+}
+
+.hero-sub {
+  max-width: 58ch;
+  color: var(--ink-2);
+  margin: 0 0 36px;
+}
+
+.hero-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: clamp(48px, 6vh, 76px);
+}
+
+.install-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 16px;
+  padding: 11px 18px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: rgba(8, 20, 18, 0.72);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--ink);
+  cursor: pointer;
+  transition: border-color 0.2s ease;
+  max-width: 100%;
+}
+
+.install-chip:hover { border-color: rgba(190, 242, 100, 0.4); }
+
+.install-chip--lg { font-size: 13.5px; }
+
+.install-cmd {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* the full command does not fit a phone — swap in the shortened form rather
+ * than let the ellipsis bite into "install.sh" */
+.cmd-short { display: none; }
+
+.install-hint {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--lime-dim);
+  border-left: 1px solid var(--line);
+  padding-left: 14px;
+  transition: color 0.2s ease;
+}
+
+.install-chip.copied .install-hint { color: var(--emerald); }
+
+.hero-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 28px;
+  margin: clamp(38px, 5vh, 60px) 0 0;
+}
+
+.hero-stats dt {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 30px;
+  color: var(--glow);
+  letter-spacing: -0.01em;
+}
+
+.hero-stats dd {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  font-family: var(--font-mono);
+  color: var(--ink-3);
+  letter-spacing: 0.02em;
+}
+
+/* ---------- night-forest ornaments ---------- */
+
+.orn,
+.trail,
+.ff-orns,
+.forest { pointer-events: none; }
+
+[data-parallax],
+[data-scene],
+[data-scene-grow] { will-change: transform; }
+
+/* Layered treeline band. Every layer is the same canvas (2560x512) with the
+ * ground on its bottom edge, so all of them are cropped and scaled identically
+ * by object-fit and the trees can never drift off the grass. It sits in the
+ * flow, which is what puts the forest on screen before the first scroll.
+ *
+ * The height is deliberately width-driven and nothing else. Any band under 20vw
+ * tall is scaled by cover on the width axis, so every 1vw of band shows
+ * 2560/100 = 25.6 canvas px; the tallest silhouette in the art (the near pines,
+ * 344px) therefore needs 13.44vw of band to clear its tips. A viewport-height
+ * term here — the previous min(20vw, 24vh) — squeezed the band to 259px at
+ * 1920x1080, which is only 346 of the 512 canvas px and shears the treeline off
+ * flat. Above 20vw the scale flips to the height axis and the sides crop
+ * instead, so 17vw sits in the safe middle. The 700px cap only engages past
+ * ~4100px of viewport width; on a short ultrawide the ground line then falls
+ * below the fold, which is the price of never cutting a tree. */
+/* The band itself must NOT create a stacking context (no z-index here), or its
+ * children could never rise above .wrap. */
+.forest {
+  position: relative;
+  height: clamp(140px, 17vw, 700px);
+}
+
+.forest-paint { position: absolute; inset: 0; }
+.forest-paint--night,
+.forest-paint--soil { z-index: 1; }
+.forest-paint--front-night,
+.forest-paint--front-soil { z-index: 3; }
+
+.forest-paint--soil,
+.forest-paint--front-soil { opacity: 0; }
+
+/* Growth anchors: the ground line is the fixed point for everything rooted in it;
+ * the moon grows away from its own top-right corner and the boughs hang from theirs. */
+[data-scene-grow] { transform-origin: bottom center; }
+.orn-moon[data-scene-grow] { transform-origin: 100% 0; }
+.orn-canopy[data-scene-grow] { transform-origin: top center; }
+
+.forest--footer { margin-top: clamp(72px, 10vh, 110px); }
+
+.fl {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  object-position: bottom center;
+}
+
+.fl-mist { opacity: 0.8; }
+
+.clearing-glow {
+  position: absolute;
+  left: 4vw;
+  bottom: 0;
+  width: 92vw;
+  height: 190px;
+  background: radial-gradient(50% 100% at 50% 100%, rgba(190, 242, 100, 0.07), transparent 62%);
+  filter: blur(18px);
+}
+
+.orn { position: absolute; z-index: 1; }
+
+/* moon: a wide halo and the disc, each on its own slow breath */
+.orn-moon {
+  right: 9%;
+  top: 8%;
+  width: clamp(180px, 21vw, 330px);
+  aspect-ratio: 1;
+}
+
+.orn-moon::before {
+  content: "";
+  position: absolute;
+  inset: -14%;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 50%, rgba(214, 230, 178, 0.16) 0%, rgba(190, 242, 100, 0.06) 38%, transparent 66%);
+  animation: moon-breathe 27s ease-in-out infinite alternate;
+}
+
+.orn-moon::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 42%;
+  aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 63% 58%, rgba(120, 141, 102, 0.5) 0 6%, transparent 7%),
+    radial-gradient(circle at 40% 70%, rgba(120, 141, 102, 0.35) 0 4%, transparent 5%),
+    radial-gradient(circle at 38% 30%, #e9f2d2 0%, #cfe0ae 56%, #8fa377 88%, rgba(143, 163, 119, 0) 100%);
+  opacity: 0.55;
+  animation: moon-drift 21s ease-in-out infinite alternate;
+}
+
+@keyframes moon-breathe {
+  from { transform: scale(1); opacity: 0.7; }
+  to   { transform: scale(1.13); opacity: 1; }
+}
+
+@keyframes moon-drift {
+  from { transform: translate(-50%, -50%) translateY(1.8%); opacity: 0.5; }
+  to   { transform: translate(-50%, -50%) translateY(-1.8%); opacity: 0.64; }
+}
+
+/* boughs hanging over the hero sky, swaying on a long breath */
+.orn-canopy { top: -8px; width: clamp(230px, 26vw, 400px); }
+.orn-canopy--l { left: -16px; }
+.orn-canopy--r { right: -16px; }
+
+.orn-canopy img {
+  display: block;
+  width: 100%;
+  height: auto;
+  transform-origin: top center;
+  animation: bough-sway 13s ease-in-out infinite alternate;
+}
+
+.orn-canopy--r img { animation-duration: 17s; animation-delay: -6s; }
+
+@keyframes bough-sway {
+  from { transform: rotate(-0.7deg); }
+  to   { transform: rotate(0.9deg); }
+}
+
+/* grove and undergrowth grow out of the band's ground line.
+ * height:auto matters — the height attribute is a presentational hint and would
+ * otherwise stretch the box, letterboxing the art away from the ground. */
+.forest .orn-grove {
+  position: absolute;
+  right: -26px;
+  bottom: 0;
+  width: clamp(250px, 27vw, 430px);
+  height: auto;
+}
+
+.forest .orn-fern {
+  position: absolute;
+  left: -22px;
+  bottom: 0;
+  width: clamp(210px, 22vw, 340px);
+  height: auto;
+}
+
+/* firefly flight paths — the dotted line is drawn, the swarm is animated */
+.trail {
+  position: absolute;
+  z-index: 1;
+  overflow: visible;
+}
+
+.trail path {
+  fill: none;
+  stroke: rgba(190, 242, 100, 0.2);
+  stroke-width: 1.1;
+  stroke-linecap: round;
+  stroke-dasharray: 1 9;
+  animation: trail-march 4.5s linear infinite;
+}
+
+@keyframes trail-march {
+  to { stroke-dashoffset: -10; }
+}
+
+.trail--hero   { right: 8%; top: 20%; width: clamp(250px, 30vw, 440px); }
+.trail--perf   { right: 3%; top: 36px; width: clamp(230px, 26vw, 380px); }
+.trail--footer { right: 6%; top: 18px; width: clamp(250px, 28vw, 430px); }
+
+/* larger, foreground fireflies that drift and flicker */
+.ff-orns { position: absolute; inset: 0; z-index: 1; }
+
+.ff-orns i {
+  position: absolute;
+  left: var(--x);
+  top: var(--y);
+  width: var(--s);
+  height: var(--s);
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 50%, #f0ffb4 0 30%, rgba(190, 242, 100, 0.5) 46%, rgba(190, 242, 100, 0) 74%);
+  box-shadow: 0 0 18px 5px rgba(190, 242, 100, 0.16);
+  animation:
+    ff-drift calc(var(--d) * 1.7) ease-in-out var(--dl) infinite alternate,
+    ff-flicker calc(var(--d) * 0.8) ease-in-out var(--dl) infinite alternate;
+}
+
+@keyframes ff-drift {
+  from { transform: translate3d(0, 0, 0); }
+  to   { transform: translate3d(var(--dx, 12px), var(--dy, -10px), 0); }
+}
+
+@keyframes ff-flicker {
+  from { opacity: 0.3; }
+  to   { opacity: 1; }
+}
+
+/* ---------- compatibility strip ---------- */
+
+.compat {
+  position: relative;
+  z-index: 2;
+  padding-top: clamp(46px, 7vh, 78px);
+}
+
+.compat-inner {
+  display: flex;
+  align-items: center;
+  gap: clamp(22px, 4vw, 54px);
+  flex-wrap: wrap;
+}
+
+.compat-label {
+  margin: 0;
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.compat-logos {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: clamp(20px, 3.4vw, 42px);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.compat-logos img {
+  display: block;
+  width: 22px;
+  height: 22px;
+  opacity: 0.4;
+  transition: opacity 0.25s ease;
+}
+
+.compat-logos img:hover { opacity: 0.85; }
+
+/* ---------- sections ---------- */
+
+.section {
+  position: relative;
+  z-index: 2;
+  padding: clamp(84px, 11vh, 140px) 0 0;
+}
+
+.section--tight { padding-top: clamp(64px, 9vh, 110px); }
+
+.section h2 {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: clamp(1.9rem, 3.6vw, 2.75rem);
+  line-height: 1.14;
+  letter-spacing: -0.012em;
+  margin: 0 0 18px;
+}
+
+.section-sub {
+  max-width: 62ch;
+  color: var(--ink-2);
+  margin: 0 0 56px;
+}
+
+/* ---------- providers ---------- */
+
+/* ---------- tabs ---------- */
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 34px;
+}
+
+.tabs button {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--ink-2);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 8px 17px;
+  cursor: pointer;
+  transition: color 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+}
+
+.tabs button:hover { color: var(--ink); border-color: rgba(255, 255, 255, 0.2); }
+
+.tabs button[aria-selected="true"] {
+  color: var(--lime);
+  border-color: rgba(190, 242, 100, 0.45);
+  background: var(--lime-wash);
+}
+
+.tab-hint { color: var(--lime-dim); }
+
+.provider-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  gap: clamp(32px, 5vw, 72px);
+  align-items: start;
+  min-height: 330px;
+  transition: opacity 0.25s ease;
+}
+
+.provider-copy,
+.provider-wire { min-width: 0; }
+
+.provider-panel.is-swapping { opacity: 0; }
+
+.provider-copy h3 {
+  font-family: var(--font-display);
+  font-weight: 420;
+  font-size: 1.65rem;
+  margin: 0 0 14px;
+}
+
+.provider-copy p { color: var(--ink-2); margin: 0 0 26px; overflow-wrap: anywhere; }
+
+.provider-facts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--line-soft);
+}
+
+.provider-facts li {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--ink-2);
+  padding: 10px 0 10px 22px;
+  border-bottom: 1px solid var(--line-soft);
+  position: relative;
+  overflow-wrap: anywhere;
+}
+
+.provider-facts li::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 50%;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  transform: translateY(-50%);
+  background: var(--lime);
+  box-shadow: 0 0 8px 1px rgba(190, 242, 100, 0.55);
+}
+
+.provider-wire {
+  border: 1px solid var(--line-soft);
+  border-radius: 16px;
+  background: rgba(6, 14, 13, 0.55);
+  padding: clamp(22px, 3vw, 34px);
+}
+
+.wire {
+  --wire-gap: 14px; /* a hop also spans the two gaps it sits between */
+  --hop: 36px;      /* painted hop length, before it absorbs those gaps */
+  display: flex;
+  align-items: center;
+  gap: var(--wire-gap);
+  margin-bottom: 26px;
+}
+
+.wire-node {
+  flex: 1;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 10px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--ink);
+  min-width: 0;
+}
+
+.wire-node span {
+  display: block;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-top: 3px;
+}
+
+.wire-node--ff {
+  border-color: rgba(190, 242, 100, 0.4);
+  background: var(--lime-wash);
+  color: var(--glow);
+  box-shadow: 0 0 24px -6px rgba(190, 242, 100, 0.25);
+}
+
+.wire-node--ff svg { width: 13px; height: 13px; vertical-align: -2px; margin-right: 4px; }
+
+.wire-node--ff span { color: rgba(190, 242, 100, 0.6); }
+
+/* The connector carries one bright packet per cycle, in each direction of the hop.
+ * It paints box-to-box: the box is grown by the two gaps it sits between, then
+ * pulled back over them with negative margins, so it consumes exactly the space it
+ * did before while its hairline — and its packet — reach both node borders instead
+ * of stopping a gap short of them. The line holds a visible alpha right to the
+ * ends (it used to fade to fully transparent, which read as a break), brightening
+ * only towards the middle. */
+.wire-link {
+  --hop-travel: calc(var(--hop) + var(--wire-gap) * 2);
+  position: relative;
+  flex: 0 0 var(--hop-travel);
+  margin: 0 calc(var(--wire-gap) * -1);
+  height: 12px;
+  overflow: hidden;
+  background-image: linear-gradient(90deg, rgba(190, 242, 100, 0.22), rgba(190, 242, 100, 0.45) 50%, rgba(190, 242, 100, 0.22));
+  background-size: 100% 1px;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+.wire-link::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 16px;
+  height: 2px;
+  margin-top: -1px;
+  border-radius: 999px;
+  background: radial-gradient(closest-side, var(--glow), rgba(190, 242, 100, 0));
+  box-shadow: 0 0 10px 1px rgba(190, 242, 100, 0.45);
+  animation: wire-flow 2.6s linear infinite;
+}
+
+/* second hop leaves half a cycle later, so the packet reads as passing through */
+.wire-link:nth-child(4)::after { animation-delay: 1.3s; }
+
+/* travel is the box's own length, so the packet always leaves by the far border
+ * no matter how long the hop is */
+@keyframes wire-flow {
+  from { transform: translateX(-18px); }
+  to   { transform: translateX(var(--hop-travel, 38px)); }
+}
+
+@keyframes wire-flow-y {
+  from { transform: translateY(-18px); }
+  to   { transform: translateY(var(--hop-travel, 38px)); }
+}
+
+.wire-table {
+  margin: 0;
+  font-size: 12px;
+  line-height: 2.05;
+  color: var(--ink-2);
+  overflow-x: auto;
+}
+
+.wire-table .w-in { color: var(--ink-3); }
+.wire-table .w-arrow { color: var(--lime-dim); padding: 0 10px; }
+.wire-table .w-out { color: var(--ink); }
+
+/* ---------- oauth note ---------- */
+
+.oauth-note {
+  margin-top: 40px;
+  border-left: 2px solid rgba(190, 242, 100, 0.35);
+  background: var(--lime-wash);
+  border-radius: 0 12px 12px 0;
+  padding: 18px 26px;
+}
+
+.oauth-note p { margin: 0; color: var(--ink-2); max-width: 76ch; }
+.oauth-note strong { color: var(--ink); font-weight: 600; }
+
+/* ---------- features (one panel per tab) ---------- */
+
+.feature-panel {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  gap: clamp(32px, 4vw, 64px);
+  align-items: center;
+  padding-top: clamp(30px, 4vh, 46px);
+  border-top: 1px solid var(--line-soft);
+}
+
+/* a grid display would otherwise beat the UA rule for [hidden] */
+.feature-panel[hidden] { display: none; }
+
+.fp-text,
+.diagram { min-width: 0; }
+
+.fp-text h3 {
+  font-family: var(--font-display);
+  font-weight: 420;
+  font-size: clamp(1.5rem, 2.4vw, 1.9rem);
+  line-height: 1.2;
+  margin: 0 0 14px;
+}
+
+.fp-text > p { color: var(--ink-2); margin: 0 0 22px; max-width: 52ch; }
+
+.fp-text em { font-style: normal; color: var(--ink); }
+
+.fp-meta {
+  font-size: 11.5px;
+  color: var(--ink-3);
+  letter-spacing: 0.06em;
+  margin: 0;
+}
+
+.code {
+  background: rgba(4, 12, 10, 0.8);
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  padding: 18px 22px;
+  font-size: 12.5px;
+  line-height: 1.9;
+  color: var(--ink-2);
+  overflow-x: auto;
+  margin: 0;
+}
+
+.code .ck { color: var(--ink-3); }
+.code .cs { color: var(--glow); }
+
+/* keyring layers */
+
+.layers {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.layer {
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  padding: 16px 18px;
+  background: rgba(6, 14, 13, 0.5);
+}
+
+.layer-name {
+  margin: 0 0 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--lime-dim);
+}
+
+.layer-body {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--ink-2);
+}
+
+.layer .mono { font-size: 12px; color: var(--ink); }
+
+/* token saver */
+
+.saver-list {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 28px;
+}
+
+.saver { display: flex; gap: 16px; align-items: baseline; }
+
+.saver-name {
+  flex: 0 0 84px;
+  font-size: 12px;
+  color: var(--lime);
+}
+
+.saver p { margin: 0; font-size: 13.5px; color: var(--ink-2); }
+
+.bars { display: grid; gap: 8px; max-width: 420px; }
+
+.bar-row {
+  display: grid;
+  grid-template-columns: 108px 1fr 56px;
+  align-items: center;
+  gap: 12px;
+}
+
+.bar-label { font-size: 11.5px; color: var(--ink-3); }
+
+.bar {
+  height: 18px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.09);
+  position: relative;
+  overflow: hidden;
+}
+
+.bar--raw { width: 100%; }
+
+.bar--cut {
+  width: 15%;
+  background: linear-gradient(90deg, rgba(190, 242, 100, 0.85), rgba(240, 255, 180, 0.95));
+  box-shadow: 0 0 12px -2px rgba(190, 242, 100, 0.5);
+}
+
+.bar-val { font-size: 11px; color: var(--ink-2); text-align: right; }
+
+.bar-note { font-size: 10.5px; color: var(--lime-dim); letter-spacing: 0.08em; }
+
+/* ---------- feature diagrams ---------- */
+
+/* Each feature is drawn, not photographed: the dashboard's type is unreadable
+ * once it is scaled into this column, and a diagram can make one point at a
+ * glance where a screenshot makes twelve. The drawings reuse the providers
+ * vocabulary above — .wire-node boxes, hairline links, one lime packet per
+ * cycle — so everything on the page reads as the same hand.
+ *
+ * --dg-step is one rotation step (main.js reads it back for the load balancer),
+ * --dg-cycle one full loop of a self-running diagram. */
+
+.diagram {
+  --dg-line: rgba(190, 242, 100, 0.22);
+  --dg-gap: 14px; /* the plate's grid gap: a hop also spans the two gaps it sits between */
+  --dg-hop: 30px; /* painted hop length, before it absorbs those gaps */
+  --dg-step: 1.9s;
+  --dg-cycle: calc(var(--dg-step) * 3);
+  position: relative;
+  display: grid;
+  gap: var(--dg-gap);
+  min-width: 0;
+  padding: clamp(18px, 2.4vw, 26px) clamp(18px, 2.6vw, 30px);
+  border: 1px solid var(--line-soft);
+  border-radius: 16px;
+  background: rgba(6, 14, 13, 0.55);
+}
+
+.dg-flow { display: flex; align-items: center; gap: 12px; min-width: 0; }
+
+/* the vertical reading of .wire-link, which is horizontal by default. The 16px
+ * inset centres the 12px box on x=22, which is where .dg-tree draws its rail —
+ * so a hop and the fork below it read as one continuous line. Grown by the gaps
+ * it sits between and pulled back over them, exactly like .wire-link, so the
+ * hairline meets the plate above and the rail below. */
+.dg-link-v {
+  --hop-travel: calc(var(--dg-hop) + var(--dg-gap) * 2);
+  justify-self: start;
+  margin: calc(var(--dg-gap) * -1) 0 calc(var(--dg-gap) * -1) 16px;
+  width: 12px;
+  height: var(--hop-travel);
+  background-image: linear-gradient(180deg, rgba(190, 242, 100, 0.22), rgba(190, 242, 100, 0.45) 50%, rgba(190, 242, 100, 0.22));
+  background-size: 1px 100%;
+}
+
+.dg-link-v::after {
+  left: 50%;
+  top: 0;
+  width: 2px;
+  height: 14px;
+  margin: 0 0 0 -1px;
+  animation-name: wire-flow-y;
+}
+
+/* the centred reading, for a stack whose members are centred on each other */
+.dg-link-v--mid { justify-self: center; margin-left: 0; }
+
+/* a fork: every .dg-row hangs off one hairline rail, which starts at the node
+ * above and stops at the centre of the last row */
+.dg-tree {
+  position: relative;
+  display: grid;
+  gap: 10px;
+  margin-left: 22px;
+  padding-left: 22px;
+}
+
+.dg-tree::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: -14px; /* up to the bottom of the element above, across the grid gap */
+  bottom: 21px;
+  width: 1px;
+  background: var(--dg-line);
+}
+
+/* a hop directly above already spans that gap, so the rail starts at the tree's
+ * own top edge: the two segments meet end to end, at one alpha, instead of
+ * double-drawing the same 14px and brightening the joint */
+.dg-link-v + .dg-tree::before { top: 0; }
+
+.dg-tree > .dg-row::before {
+  content: "";
+  position: absolute;
+  left: -22px;
+  top: 50%;
+  width: 22px;
+  height: 1px;
+  background: var(--dg-line);
+}
+
+.dg-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 42px;
+  min-width: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: rgba(4, 12, 10, 0.5);
+}
+
+.dg-row--key { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+
+.dg-key-name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink-2);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dg-key-id { color: var(--ink); font-weight: 500; margin-right: 8px; }
+
+.dg-inflight { font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); white-space: nowrap; }
+
+/* the row currently serving: lit edge, lit stub, one packet flying in per step */
+.dg-row[data-active] {
+  border-color: rgba(190, 242, 100, 0.4);
+  background: var(--lime-wash);
+}
+
+.dg-row[data-active]::before { background: linear-gradient(90deg, rgba(190, 242, 100, 0.12), rgba(190, 242, 100, 0.6)); }
+
+.dg-row[data-active]::after {
+  content: "";
+  position: absolute;
+  left: -22px;
+  top: 50%;
+  width: 2px;
+  height: 2px;
+  margin-top: -1px;
+  border-radius: 50%;
+  background: var(--glow);
+  box-shadow: 0 0 8px 1px rgba(190, 242, 100, 0.6);
+  animation: dg-pkt-in var(--dg-step) linear infinite;
+}
+
+.dg-row[data-active] .dg-inflight { color: var(--glow); }
+
+@keyframes dg-pkt-in {
+  from { transform: translateX(-22px); opacity: 0; }
+  22%  { opacity: 1; }
+  to   { transform: translateX(0); opacity: 1; }
+}
+
+/* status chips: solid lime = this is the path, dashed = this one was skipped */
+.dg-chip {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+  border: 1px dashed var(--line);
+  border-radius: 999px;
+  padding: 3px 9px;
+  white-space: nowrap;
+}
+
+.dg-chip--ok {
+  color: var(--glow);
+  border: 1px solid rgba(190, 242, 100, 0.35);
+  background: var(--lime-wash);
+}
+
+/* in the flex rows the chip takes the right edge, the way the grid keys do */
+.dg-row .dg-chip { margin-left: auto; }
+
+.dg-tag {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.dg-note {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+}
+
+/* resilience: attempt 1 spends a 429, attempt 2 serves; the packet hops down the
+ * rail between them and the breaker row never lights */
+.dg-attempt--reject { animation: dg-reject var(--dg-cycle) linear infinite; }
+.dg-attempt--accept { animation: dg-accept var(--dg-cycle) linear infinite; }
+.dg-attempts::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 21px;
+  width: 3px;
+  height: 3px;
+  margin-left: -1px;
+  border-radius: 50%;
+  background: var(--glow);
+  box-shadow: 0 0 8px 1px rgba(190, 242, 100, 0.55);
+  animation: dg-hop var(--dg-cycle) linear infinite;
+}
+
+@keyframes dg-reject {
+  0%, 6%    { border-color: var(--line-soft); background: rgba(4, 12, 10, 0.5); }
+  14%, 34%  { border-color: rgba(190, 242, 100, 0.32); background: var(--lime-wash); }
+  44%, 100% { border-color: var(--line-soft); background: rgba(4, 12, 10, 0.5); }
+}
+
+@keyframes dg-accept {
+  0%, 42%   { border-color: var(--line-soft); background: rgba(4, 12, 10, 0.5); }
+  52%, 90%  { border-color: rgba(190, 242, 100, 0.4); background: var(--lime-wash); }
+  100%      { border-color: var(--line-soft); background: rgba(4, 12, 10, 0.5); }
+}
+
+@keyframes dg-hop {
+  0%, 10%  { transform: translateY(0); opacity: 0; }
+  18%      { transform: translateY(0); opacity: 1; }
+  38%      { transform: translateY(0); opacity: 1; }
+  48%, 92% { transform: translateY(52px); opacity: 1; }
+  100%     { transform: translateY(52px); opacity: 0; }
+}
+
+.dg-breaker { display: flex; align-items: center; gap: 12px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
+
+/* token saver: the same bytes travelling past the four valves — the tick pitch
+ * is the only thing that changes, so the drift stays one continuous stream that
+ * leaves thinner than it arrived */
+/* the stack sits tighter than the plate, and its hops read the tighter gap */
+.dg-saver { --dg-gap: 12px; display: grid; gap: var(--dg-gap); }
+
+.dg-saver-row {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.dg-saver-label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+}
+
+.dg-valves { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+
+.dg-ticks {
+  flex: 1 1 auto;
+  min-width: 30px;
+  height: 26px;
+  border-radius: 4px;
+  background-repeat: repeat;
+  animation: dg-drift linear infinite;
+}
+
+.dg-ticks--in {
+  --dg-pitch: 11px;
+  background-image: repeating-linear-gradient(90deg, rgba(190, 242, 100, 0.55) 0 2px, transparent 2px 11px);
+  animation-duration: 2.4s;
+}
+
+.dg-ticks--out {
+  --dg-pitch: 34px;
+  background-image: repeating-linear-gradient(90deg, rgba(190, 242, 100, 0.3) 0 2px, transparent 2px 34px);
+  animation-duration: 7.4s;
+}
+
+@keyframes dg-drift { to { background-position-x: var(--dg-pitch); } }
+
+.dg-valve {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: rgba(4, 12, 10, 0.65);
+  white-space: nowrap;
+}
+
+/* tenants */
+.dg-tenant {
+  display: grid;
+  gap: 11px;
+  padding: 13px 15px;
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  background: rgba(4, 12, 10, 0.5);
+  min-width: 0;
+}
+
+.dg-tenant-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; }
+
+.dg-meter { height: 6px; border-radius: 999px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
+
+.dg-meter i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(190, 242, 100, 0.65), rgba(240, 255, 180, 0.95));
+}
+
+.dg-tenant-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-3);
+}
+
+.dg-gates { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.dg-gate {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-2);
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  padding: 4px 10px;
+  white-space: nowrap;
+}
+
+/* the admission gates light in the order the request meets them */
+.dg-gate i {
+  display: inline-block;
+  width: 4px;
+  height: 4px;
+  margin-right: 6px;
+  border-radius: 50%;
+  vertical-align: 1px;
+  background: var(--lime);
+  box-shadow: 0 0 6px rgba(190, 242, 100, 0.6);
+  animation: dg-gate-pip var(--dg-cycle) linear infinite;
+  animation-delay: calc(var(--i, 0) * 0.16s);
+}
+
+@keyframes dg-gate-pip {
+  0%, 6%    { opacity: 0.22; }
+  16%, 40%  { opacity: 1; }
+  58%, 100% { opacity: 0.22; }
+}
+
+/* tools: a token stream with its time-to-first-token gap, and four concurrent
+ * benchmark requests finishing at their own pace */
+.dg-lane {
+  display: grid;
+  grid-template-columns: 62px minmax(0, 1fr) 96px;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.dg-lane-name {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.dg-stat { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-2); text-align: right; white-space: nowrap; }
+
+.dg-water { position: relative; display: flex; align-items: center; gap: 4px; height: 30px; padding-left: 26%; }
+
+.dg-water::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 4px;
+  bottom: 4px;
+  width: 26%;
+  border-right: 1px dashed rgba(190, 242, 100, 0.3);
+}
+
+.dg-tick {
+  flex: 1 1 0;
+  height: 15px;
+  border-radius: 1px;
+  background: var(--lime-dim);
+  animation: dg-tick 2.6s ease-in-out infinite;
+  animation-delay: calc(var(--i, 0) * 95ms);
+}
+
+@keyframes dg-tick {
+  0%, 8%    { opacity: 0.18; transform: scaleY(0.55); }
+  18%, 62%  { opacity: 1; transform: none; }
+  82%, 100% { opacity: 0.18; transform: scaleY(0.55); }
+}
+
+.dg-bars { display: grid; gap: 5px; }
+
+.dg-bars i {
+  position: relative;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.dg-bars i::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--w, 60%);
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(190, 242, 100, 0.5), rgba(240, 255, 180, 0.9));
+  animation: dg-grow 2.6s ease-in-out infinite;
+  animation-delay: calc(var(--i, 0) * 140ms);
+}
+
+@keyframes dg-grow {
+  0%, 6%    { width: 3%; }
+  62%, 92%  { width: var(--w, 60%); }
+  100%      { width: 3%; }
+}
+
+/* dashboard: upstreams drifting as fireflies, one route lit */
+.dg-topo { position: relative; }
+
+.dg-topo svg { display: block; width: 100%; height: auto; }
+
+.dg-route { fill: none; stroke: var(--dg-line); stroke-width: 1; }
+
+.dg-route--live {
+  stroke: rgba(190, 242, 100, 0.5);
+  stroke-dasharray: 3 11;
+  animation: dg-route 1.5s linear infinite;
+}
+
+@keyframes dg-route { to { stroke-dashoffset: -14; } }
+
+.dg-host {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  background: rgba(4, 12, 10, 0.9);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.dg-host i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--lime);
+  box-shadow: 0 0 7px rgba(190, 242, 100, 0.7);
+}
+
+.dg-host--ff { border-color: rgba(190, 242, 100, 0.35); color: var(--glow); }
+.dg-host--ff i { width: 6px; height: 6px; background: var(--glow); box-shadow: 0 0 10px 1px rgba(240, 255, 180, 0.75); }
+
+.dg-fly {
+  position: absolute;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--glow);
+  box-shadow: 0 0 8px 1px rgba(190, 242, 100, 0.5);
+  animation: dg-fly var(--d, 8s) ease-in-out infinite;
+  animation-delay: var(--dl, 0s);
+}
+
+@keyframes dg-fly {
+  0%, 100% { transform: translate3d(0, 0, 0); opacity: 0.25; }
+  50%      { transform: translate3d(var(--dx, 14px), var(--dy, -12px), 0); opacity: 1; }
+}
+
+/* observability */
+.dg-metrics { display: grid; gap: 7px; }
+
+.dg-metric {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+.dg-metric b { font-weight: 500; color: var(--glow); }
+
+.dg-health {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-2);
+}
+
+.dg-health span { display: inline-flex; align-items: center; gap: 7px; }
+
+/* the endpoint label is not a fourth probe — park it on the far edge */
+.dg-health .dg-note { margin-left: auto; }
+
+.dg-pip {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--emerald);
+  box-shadow: 0 0 7px rgba(52, 211, 153, 0.65);
+  animation: dg-pip 3.6s ease-in-out infinite;
+  animation-delay: calc(var(--i, 0) * 0.4s);
+}
+
+@keyframes dg-pip {
+  0%, 100% { opacity: 0.35; }
+  42%, 62% { opacity: 1; }
+}
+
+.dg-log {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.75;
+  color: var(--ink-3);
+  border-top: 1px solid var(--line-soft);
+  padding-top: 12px;
+  overflow-wrap: anywhere;
+}
+
+.dg-log b { font-weight: 500; color: var(--ink); }
+
+/* the mask is the point of the line, so it gets its own hairline under it */
+.dg-red { color: var(--ink-2); border-bottom: 1px dashed var(--line); }
+
+/* ---------- performance ---------- */
+
+.perf-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 28px;
+  margin: 56px 0 0;
+  padding-top: 34px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.perf dt {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: clamp(2rem, 3.4vw, 2.7rem);
+  color: var(--glow);
+  letter-spacing: -0.02em;
+}
+
+.perf dd {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--ink-3);
+  max-width: 24ch;
+}
+
+/* ---------- open source ---------- */
+
+.oss-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 22px;
+}
+
+.oss-links { display: flex; flex-wrap: wrap; gap: 12px; }
+
+/* ---------- footer ---------- */
+
+.footer {
+  position: relative;
+  z-index: 2;
+  margin-top: clamp(72px, 10vh, 120px);
+  border-top: 1px solid rgba(120, 84, 55, 0.22);
+  background: linear-gradient(180deg, rgba(18, 11, 7, 0.55), #1a0f06);
+}
+
+.footer-line {
+  font-family: var(--font-display);
+  font-weight: 380;
+  font-size: clamp(2.1rem, 5vw, 3.5rem);
+  line-height: 1.1;
+  letter-spacing: -0.014em;
+  margin: clamp(48px, 8vh, 88px) 0 30px;
+}
+
+.footer-actions { display: flex; gap: 12px; }
+
+.footer-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 32px;
+  margin-top: clamp(48px, 7vh, 72px);
+  padding-top: 30px;
+  border-top: 1px solid var(--line-soft);
+  padding-bottom: 8px;
+}
+
+.footer-col h4 {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 0 0 14px;
+  font-weight: 500;
+}
+
+.footer-col a {
+  display: block;
+  color: var(--ink-2);
+  text-decoration: none;
+  font-size: 14px;
+  padding: 4px 0;
+  transition: color 0.2s ease;
+}
+
+.footer-col a:hover { color: var(--ink); }
+
+.footer-col--legal {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+
+.footer-col--legal p { margin: 4px 0; }
+
+/* ---------- responsive ---------- */
+
+/* Short desktop windows (the 1366x768 / 1440x900 laptop class, and un-maximised
+ * 1080p browsers): tighten the hero rhythm so the treeline clears the fold. The
+ * band is sized off the viewport width (see .forest) and cannot shrink without
+ * slicing the trees, so the copy above it has to give way instead. */
+@media (min-width: 961px) and (max-height: 1120px) {
+  .hero { padding-top: clamp(40px, 5vh, 64px); }
+  .hero h1 { font-size: clamp(2.6rem, min(6.4vw, 8.6vh), 4.8rem); margin-bottom: 22px; }
+  .hero-sub { margin-bottom: 26px; }
+  .hero-actions { margin-bottom: clamp(24px, 3.4vh, 46px); }
+}
+
+@media (max-width: 960px) {
+  .nav-links { display: none; }
+  /* the full command (and the raw URL in the open-source block) does not fit
+   * below tablet width — show the shortened form instead of an ellipsis that
+   * bites into "install.sh" */
+  .cmd-full { display: none; }
+  .cmd-short { display: inline; }
+  .provider-panel { grid-template-columns: minmax(0, 1fr); min-height: 0; }
+  .feature-panel { grid-template-columns: minmax(0, 1fr); gap: 30px; }
+  .hero-stats { grid-template-columns: repeat(2, 1fr); gap: 22px; }
+  .perf-grid { grid-template-columns: repeat(2, 1fr); }
+  .orn-canopy { width: clamp(180px, 30vw, 260px); }
+  .orn-moon { right: 7%; top: 7%; width: clamp(150px, 20vw, 230px); }
+  .forest .orn-grove { width: clamp(190px, 24vw, 280px); }
+  .forest .orn-fern { width: clamp(170px, 21vw, 250px); }
+  .ff-orns--hero i:nth-child(n + 5) { display: none; }
+}
+
+@media (max-width: 560px) {
+  body { font-size: 15.5px; }
+  .install-chip { width: 100%; justify-content: space-between; }
+  .layers { grid-template-columns: 1fr; }
+  /* the plates get narrower, not taller: shrink the fixed label columns and the
+   * host pills so the drawing itself keeps its room */
+  .dg-lane { grid-template-columns: 54px minmax(0, 1fr) auto; gap: 8px; }
+  .dg-saver-row { grid-template-columns: 76px minmax(0, 1fr); gap: 10px; }
+  .dg-host { font-size: 9.5px; padding: 2px 8px; gap: 5px; }
+  /* an attempt row can no longer hold the tag, the key name and the status chip:
+   * the chip drops to its own line rather than squeezing the name into "k.." */
+  .dg-row.dg-attempt { flex-wrap: wrap; row-gap: 6px; }
+  .dg-row.dg-attempt .dg-key-name { flex: 1 1 auto; min-width: 8ch; }
+  .perf-grid { grid-template-columns: 1fr 1fr; gap: 20px; }
+  .footer-grid { grid-template-columns: 1fr 1fr; }
+  .footer-col--legal { text-align: left; }
+  /* the plates get narrower, not taller: a hop is 26px of line on a phone */
+  .diagram { --dg-hop: 26px; }
+  .wire { --hop: 26px; flex-direction: column; }
+  /* the same box-to-box hop, read down the column. Scoped to the wire so the
+   * plates' hops keep their own inset and gaps. */
+  .wire > .wire-link {
+    flex: 0 0 var(--hop-travel);
+    margin: calc(var(--wire-gap) * -1) 0;
+    width: 12px;
+    height: var(--hop-travel);
+    background-image: linear-gradient(180deg, rgba(190, 242, 100, 0.22), rgba(190, 242, 100, 0.45) 50%, rgba(190, 242, 100, 0.22));
+    background-size: 1px 100%;
+  }
+  .wire > .wire-link::after {
+    left: 50%;
+    top: 0;
+    width: 2px;
+    height: 16px;
+    margin: 0 0 0 -1px;
+    animation-name: wire-flow-y;
+  }
+  .wire-table { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11.5px; line-height: 1.85; }
+  .wire-table .w-arrow { padding: 0 6px; }
+  .orn-canopy--l { display: none; }
+  /* phones have no empty sky: a small moon tucks into the top corner instead */
+  .orn-moon { right: 8%; top: 4px; width: 60px; }
+  .forest .orn-grove,
+  .forest .orn-fern { display: none; }
+  .trail--perf { display: none; }
+  .ff-orns--hero i:nth-child(n + 4) { display: none; }
+}
+
+/* Narrow phones (360px class): the install one-liner is the longest string on
+ * the page, so claw the width back from padding and font size instead of
+ * clipping its tail. */
+@media (max-width: 400px) {
+  .install-chip,
+  .install-chip--lg { font-size: 12px; padding: 11px 14px; }
+  .install-hint { padding-left: 10px; }
+}
+
+/* ---------- reduced motion ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .btn, .btn:hover { transform: none; }
+  .wire-link::after,
+  .orn-canopy img,
+  .orn-moon::before,
+  .orn-moon::after,
+  .ff-orns i,
+  .trail path { animation: none; }
+  .wire-link::after { opacity: 0.5; }
+  .ff-orns i { opacity: 0.7; }
+  [data-parallax],
+  [data-scene],
+  [data-scene-grow] { will-change: auto; }
+  /* the plates stop moving but keep their story: the serving key stays lit, the
+   * skipped attempt stays parked on the rail, both streams read as steady */
+  .dg-row[data-active]::after,
+  .dg-attempt--reject,
+  .dg-attempt--accept,
+  .dg-attempts::after,
+  .dg-ticks,
+  .dg-gate i,
+  .dg-tick,
+  .dg-bars i::after,
+  .dg-route--live,
+  .dg-fly,
+  .dg-pip { animation: none; }
+  .dg-row[data-active]::after { opacity: 0.5; }
+  .dg-attempts::after { opacity: 0; }
+  .dg-attempt--accept { border-color: rgba(190, 242, 100, 0.4); background: var(--lime-wash); }
+  .dg-fly { opacity: 0.5; }
+}

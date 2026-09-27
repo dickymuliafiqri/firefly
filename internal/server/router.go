@@ -13,7 +13,9 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/limits"
 	"github.com/dickymuliafiqri/firefly/internal/observability/metrics"
+	"github.com/dickymuliafiqri/firefly/internal/observability/trace"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
+
 	"github.com/dickymuliafiqri/firefly/internal/registry"
 	"github.com/dickymuliafiqri/firefly/internal/security/auth"
 	"github.com/dickymuliafiqri/firefly/internal/security/oauth"
@@ -42,6 +44,7 @@ type RouterDeps struct {
 	Logger        *slog.Logger
 	Metrics       *metrics.Metrics
 	LiveLogs      *LiveLogHub
+	Traces        *trace.Recorder
 	AutoTLS       *AutoTLS
 	OAuthManager  *oauth.Manager
 	TursoStore    *turso.Store
@@ -236,6 +239,14 @@ func (s *Server) buildHandler(deps RouterDeps) http.Handler {
 	mux.HandleFunc("OPTIONS /api/history", deps.handleOptionsHistory)
 	mux.HandleFunc("GET /api/history", deps.handleGetHistory)
 	mux.HandleFunc("DELETE /api/history", deps.handleDeleteHistory)
+
+	// Visualizer API (admin-only in-memory routing traces + live SSE stream).
+	mux.HandleFunc("OPTIONS /api/visualizer/traces", deps.handleOptionsVisualizer)
+	mux.HandleFunc("OPTIONS /api/visualizer/events", deps.handleOptionsVisualizer)
+	mux.HandleFunc("GET /api/visualizer/traces", deps.handleVisualizerTraces)
+	mux.HandleFunc("GET /api/visualizer/events", deps.handleVisualizerEvents)
+	mux.HandleFunc("POST /api/visualizer/capture", deps.handleVisualizerCapture)
+	mux.HandleFunc("POST /api/visualizer/clear", deps.handleVisualizerClear)
 
 	// OAuth Management Endpoints (admin/dashboard guarded)
 	mux.HandleFunc("OPTIONS /api/oauth/providers", deps.handleOptionsOAuth)

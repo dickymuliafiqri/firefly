@@ -1,0 +1,16 @@
+{
+  "combos": [
+    {
+      "name": "smart-router",
+      "strategy": "least_inflight",
+      "models": ["gpt-4o-mini", "deepseek-chat", "gpt-4.1-mini"],
+      "enabled": true
+    },
+    {
+      "name": "coder-failover",
+      "strategy": "failover",
+      "models": ["claude-sonnet-4-6", "gpt-4.1-mini"],
+      "enabled": true
+    }
+  ]
+}

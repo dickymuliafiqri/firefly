@@ -8,6 +8,7 @@ import {
   Layers,
   Lock,
   MessageCircle,
+  Radar,
   Server,
   Sliders,
   Terminal,
@@ -26,6 +27,7 @@ import { ChatPage } from '@/pages/ChatPage';
 import { BenchmarkPage } from '@/pages/BenchmarkPage';
 import { QuotaPage } from '@/pages/QuotaPage';
 import { ConsolePage } from '@/pages/ConsolePage';
+import { VisualizerPage } from '@/pages/VisualizerPage';
 
 import { LoginPage } from '@/pages/LoginPage';
 import { UpstreamEditorPage } from '@/pages/UpstreamEditorPage';
@@ -43,6 +45,7 @@ export type PageId =
   | 'benchmark'
   | 'quota'
   | 'console'
+  | 'visualizer'
   | 'login'
   | 'upstream-editor';
 
@@ -68,6 +71,7 @@ export const PAGES: Record<PageId, PageDef> = {
   benchmark:  { id: 'benchmark',  title: 'Benchmark',  description: 'Gateway throughput benchmarking.',                group: 'TOOLS',         icon: Zap,           element: () => <BenchmarkPage /> },
   quota:      { id: 'quota',      title: 'Quota',      description: 'Tenant quota tracker with top-up.',               group: 'MONITORING',    icon: Coins,         element: () => <QuotaPage /> },
   console:    { id: 'console',    title: 'Console',    description: 'Structured request execution log.',               group: 'MONITORING',    icon: Terminal,      element: () => <ConsolePage /> },
+  visualizer: { id: 'visualizer', title: 'Visualizer', description: 'Live routing traces as pluggable diagrams.',      group: 'MONITORING',    icon: Radar,         element: () => <VisualizerPage /> },
   login:      { id: 'login',      title: 'Sign in',    description: 'Dashboard master password.',                      group: 'AUTH',          icon: Lock,          element: () => <LoginPage /> },
   'upstream-editor': { id: 'upstream-editor', title: 'Upstream Editor', description: 'Full-page upstream configuration.', group: 'EDITOR', icon: Server, element: () => <UpstreamEditorPage /> },
 };

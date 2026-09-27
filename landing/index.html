@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Firefly — the open-source AI router for the night shift</title>
+  <meta name="description" content="Firefly is a high-concurrency, OpenAI-compatible AI gateway written in pure Go. Pool keys, balance models across providers, survive outages and cut token bills by up to 90% — from a single static binary.">
+  <meta property="og:title" content="Firefly — the open-source AI router for the night shift">
+  <meta property="og:description" content="A high-concurrency, OpenAI-compatible AI gateway in pure Go. Native protocol adapters, virtual model combos, keyring rotation and a nocturnal dashboard — in one binary.">
+  <meta property="og:image" content="assets/img/overview.webp">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='14' r='4' fill='%23f0ffb4'/%3E%3Ccircle cx='12' cy='14' r='7' fill='%23bef264' opacity='.35'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..600;1,9..144,300..600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/style.css">
+  <noscript><style>.feature-panel[hidden] { display: block; } .tab-hint { display: none; }</style></noscript>
+</head>
+<body>
+
+  <canvas id="fireflies" aria-hidden="true"></canvas>
+  <div class="stars" aria-hidden="true"></div>
+
+  <!-- ============ nav ============ -->
+  <header class="nav">
+    <div class="nav-inner">
+      <a class="brand" href="#top" aria-label="Firefly home">
+        <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M11.2 9.6 C 7.6 5.2, 3.4 5.8, 4.4 9.0 C 5.2 11.6, 8.6 11.6, 11.2 9.6 Z" fill="#bef264" opacity=".55"/>
+          <path d="M12.8 9.6 C 16.4 5.2, 20.6 5.8, 19.6 9.0 C 18.8 11.6, 15.4 11.6, 12.8 9.6 Z" fill="#bef264" opacity=".55"/>
+          <circle cx="12" cy="14.2" r="3.4" fill="#f0ffb4"/>
+        </svg>
+        <span class="brand-name">firefly</span>
+      </a>
+      <nav class="nav-links" aria-label="Primary">
+        <a href="#providers">Providers</a>
+        <a href="#features">Features</a>
+        <a href="#performance">Performance</a>
+        <a href="#open-source">Open source</a>
+      </nav>
+      <div class="nav-cta">
+        <a class="btn btn-ghost" href="https://github.com/dickymuliafiqri/firefly" target="_blank" rel="noopener">GitHub</a>
+        <a class="btn btn-lime" href="#open-source">Install</a>
+      </div>
+    </div>
+  </header>
+
+  <main id="top">
+
+    <!-- ============ hero ============ -->
+    <section class="hero">
+      <div class="wrap hero-copy">
+        <h1>Every model, one endpoint, <em>nothing wasted.</em></h1>
+        <p class="hero-sub">One OpenAI-compatible endpoint in front of every provider you already pay for —
+          keys pooled, traffic rerouted the moment one slips, token bills trimmed on the way out.</p>
+        <div class="hero-actions">
+          <button class="install-chip" type="button" data-copy="curl -fsSL https://raw.githubusercontent.com/dickymuliafiqri/firefly/main/install.sh | bash">
+            <span class="install-cmd"><span class="cmd-full">curl -fsSL …/firefly/main/install.sh | bash</span><span class="cmd-short">curl -fsSL …/install.sh | bash</span></span>
+            <span class="install-hint" data-label="copy">copy</span>
+          </button>
+          <a class="btn btn-ghost" href="https://github.com/dickymuliafiqri/firefly" target="_blank" rel="noopener">View on GitHub →</a>
+        </div>
+      </div>
+
+      <!-- night-forest band: four layers rooted on one ground line, plus the
+           foreground grove and fern that grow out of it. The layers are split
+           into two paint groups: the mist and the far treeline stay behind the
+           page content, the near trees, the grass and the undergrowth stand in
+           front of it, so content rises out of the forest. Each group is also
+           the crossfade unit for the soil palette. -->
+      <div class="forest" aria-hidden="true">
+        <div class="forest-paint forest-paint--night">
+          <img class="fl fl-mist" src="assets/img/orn-mist-far.svg" alt="" width="2560" height="512" data-scene-mouse="5" data-scene-grow="1.18">
+          <img class="fl fl-far" src="assets/img/orn-pines-far.svg" alt="" width="2560" height="512" data-scene-mouse="8" data-scene-grow="1.25">
+        </div>
+        <div class="forest-paint forest-paint--front-night">
+          <img class="fl fl-near" src="assets/img/orn-pines-near.svg" alt="" width="2560" height="512" data-scene-mouse="12" data-scene-grow="1.35">
+          <img class="fl fl-floor" src="assets/img/orn-floor.svg" alt="" width="2560" height="512" data-scene-mouse="15" data-scene-grow="1.15">
+          <div class="clearing-glow" data-scene-grow="1.30"></div>
+          <img class="orn-grove" src="assets/img/orn-grove-right.svg" alt="" width="900" height="1200" data-scene-mouse="16" data-scene-grow="1.35">
+          <img class="orn-fern" src="assets/img/orn-fern-left.svg" alt="" width="620" height="470" data-scene-mouse="20" data-scene-grow="1.30">
+        </div>
+        <div class="forest-paint forest-paint--soil">
+          <img class="fl fl-mist" src="assets/img/orn-mist-far-soil.svg" alt="" width="2560" height="512" data-scene-mouse="5" data-scene-grow="1.18">
+          <img class="fl fl-far" src="assets/img/orn-pines-far-soil.svg" alt="" width="2560" height="512" data-scene-mouse="8" data-scene-grow="1.25">
+        </div>
+        <div class="forest-paint forest-paint--front-soil">
+          <img class="fl fl-near" src="assets/img/orn-pines-near-soil.svg" alt="" width="2560" height="512" data-scene-mouse="12" data-scene-grow="1.35">
+          <img class="fl fl-floor" src="assets/img/orn-floor-soil.svg" alt="" width="2560" height="512" data-scene-mouse="15" data-scene-grow="1.15">
+          <img class="orn-grove" src="assets/img/orn-grove-right-soil.svg" alt="" width="900" height="1200" data-scene-mouse="16" data-scene-grow="1.35">
+          <img class="orn-fern" src="assets/img/orn-fern-left-soil.svg" alt="" width="620" height="470" data-scene-mouse="20" data-scene-grow="1.30">
+        </div>
+      </div>
+
+      <div class="wrap">
+        <dl class="hero-stats">
+          <div><dt>1,000+</dt><dd>concurrent SSE streams, load-tested</dd></div>
+          <div><dt>60–90%</dt><dd>fewer tokens with the saver suite</dd></div>
+          <div><dt>2</dt><dd>failover layers: keyring, then breaker</dd></div>
+          <div><dt>1</dt><dd>static binary, dashboard embedded</dd></div>
+        </dl>
+      </div>
+
+      <!-- sky: moon, hanging boughs, a firefly trail -->
+      <div class="orn orn-moon" data-scene-grow="1.35" data-scene-mouse="5" data-scene-dims="soil" aria-hidden="true"></div>
+      <div class="orn orn-canopy orn-canopy--l" data-scene-grow="1.35" data-scene-mouse="12" data-scene-dims="soil" aria-hidden="true">
+        <img src="assets/img/orn-canopy-left.svg" alt="" width="620" height="380">
+      </div>
+      <div class="orn orn-canopy orn-canopy--r" data-scene-grow="1.35" data-scene-mouse="12" data-scene-dims="soil" aria-hidden="true">
+        <img src="assets/img/orn-canopy-right.svg" alt="" width="620" height="380">
+      </div>
+      <svg class="trail trail--hero" viewBox="0 0 520 340" data-trail data-scene aria-hidden="true">
+        <path d="M18 300 C 120 190, 210 268, 300 150 C 350 92, 420 96, 498 44"/>
+      </svg>
+      <div class="ff-orns ff-orns--hero" data-scene data-scene-mouse="10" aria-hidden="true">
+        <i style="--x: 62%; --y: 34%; --s: 5px; --d: 8.4s; --dl: -1.2s; --dx: 15px; --dy: -12px"></i>
+        <i style="--x: 74%; --y: 48%; --s: 3.5px; --d: 6.6s; --dl: -3.4s; --dx: -11px; --dy: -14px"></i>
+        <i style="--x: 86%; --y: 26%; --s: 4.5px; --d: 9.6s; --dl: -5.1s; --dx: 13px; --dy: 10px"></i>
+        <i style="--x: 6%; --y: 66%; --s: 4px; --d: 7.8s; --dl: -2.8s; --dx: 12px; --dy: -10px"></i>
+        <i style="--x: 15%; --y: 76%; --s: 3px; --d: 9.2s; --dl: -6.4s; --dx: -9px; --dy: 12px"></i>
+        <i style="--x: 92%; --y: 58%; --s: 6px; --d: 10.4s; --dl: -6.3s; --dx: -14px; --dy: -9px"></i>
+      </div>
+    </section>
+
+    <!-- ============ compatible strip ============ -->
+    <section class="compat" aria-label="Compatible providers">
+      <div class="wrap compat-inner">
+        <p class="compat-label mono">Speaks the wire of</p>
+        <ul class="compat-logos">
+          <li><img src="assets/img/brands/brand-openai.svg" alt="OpenAI" width="24" height="24"></li>
+          <li><img src="assets/img/brands/brand-anthropic.svg" alt="Anthropic" width="24" height="24"></li>
+          <li><img src="assets/img/brands/brand-googlegemini.svg" alt="Google Gemini" width="24" height="24"></li>
+          <li><img src="assets/img/brands/brand-x.svg" alt="xAI" width="24" height="24"></li>
+          <li><img src="assets/img/brands/brand-meta.svg" alt="Meta" width="24" height="24"></li>
+          <li><img src="assets/img/brands/brand-alibabacloud.svg" alt="Alibaba Cloud" width="24" height="24"></li>
+          <li><img src="assets/img/brands/brand-nvidia.svg" alt="NVIDIA" width="24" height="24"></li>
+          <li><img src="assets/img/brands/brand-ollama.svg" alt="Ollama" width="24" height="24"></li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ============ providers ============ -->
+    <section class="section" id="providers">
+      <div class="wrap">
+        <p class="kicker">Providers</p>
+        <h2>Every provider you actually use.</h2>
+        <p class="section-sub">Each adapter speaks the provider's own protocol natively — no glue code,
+          no restarts. OAuth accounts are authorized from the dashboard and pooled like any other key.</p>
+
+        <div class="tabs" role="tablist" aria-label="Protocol adapters">
+          <button role="tab" id="tab-openai" aria-selected="true" aria-controls="panel-provider" data-provider="openai">OpenAI</button>
+          <button role="tab" id="tab-anthropic" aria-selected="false" aria-controls="panel-provider" data-provider="anthropic">Anthropic</button>
+          <button role="tab" id="tab-antigravity" aria-selected="false" aria-controls="panel-provider" data-provider="antigravity">Antigravity</button>
+          <button role="tab" id="tab-cline" aria-selected="false" aria-controls="panel-provider" data-provider="cline">Cline</button>
+          <button role="tab" id="tab-codebuddy" aria-selected="false" aria-controls="panel-provider" data-provider="codebuddy">CodeBuddy</button>
+          <button role="tab" id="tab-grok" aria-selected="false" aria-controls="panel-provider" data-provider="grok">Grok</button>
+          <button role="tab" id="tab-opencode" aria-selected="false" aria-controls="panel-provider" data-provider="opencode">OpenCode</button>
+        </div>
+
+        <div class="provider-panel" id="panel-provider" role="tabpanel" aria-live="polite">
+          <div class="provider-copy">
+            <h3 id="pv-name">OpenAI</h3>
+            <p id="pv-blurb"></p>
+            <ul class="provider-facts" id="pv-facts"></ul>
+          </div>
+          <div class="provider-wire">
+            <div class="wire" aria-hidden="true">
+              <div class="wire-node">client<span>OpenAI wire</span></div>
+              <div class="wire-link"></div>
+              <div class="wire-node wire-node--ff">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <circle cx="12" cy="14.2" r="3.4" fill="#f0ffb4"/>
+                </svg>
+                firefly<span>adapter</span>
+              </div>
+              <div class="wire-link"></div>
+              <div class="wire-node">provider<span id="pv-proto">native protocol</span></div>
+            </div>
+            <pre class="wire-table mono" id="pv-wire"></pre>
+          </div>
+        </div>
+
+        <aside class="oauth-note">
+          <p><strong>Native OAuth, not env vars.</strong> Authorize accounts interactively from the dashboard —
+            authorization-code and device flows both. Tokens live in an encrypted vault, refresh before expiry,
+            and rotate across the keyring like any other credential.</p>
+        </aside>
+      </div>
+    </section>
+
+    <!-- ============ features ============ -->
+    <section class="section" id="features">
+      <div class="wrap">
+        <p class="kicker">Features</p>
+        <h2>A gateway that does the quiet work.</h2>
+        <p class="section-sub">What Firefly does while your request is in flight. <span class="tab-hint">Open one.</span></p>
+
+        <!-- Each panel draws its point instead of photographing it: the drawings sit
+             in the same vocabulary as the provider wires above (boxes, hairlines, one
+             lime packet per step), so the page keeps one hand throughout. The two that
+             move on their own — the key rotation and the metric counters — advance in
+             main.js off --dg-step, and stand still under prefers-reduced-motion. -->
+        <div class="tabs" role="tablist" aria-label="Features">
+          <button role="tab" id="ft-lb" aria-selected="true" aria-controls="fp-lb">Load balancing</button>
+          <button role="tab" id="ft-rs" aria-selected="false" aria-controls="fp-rs">Resilience</button>
+          <button role="tab" id="ft-tk" aria-selected="false" aria-controls="fp-tk">Token saver</button>
+          <button role="tab" id="ft-tn" aria-selected="false" aria-controls="fp-tn">Tenants</button>
+          <button role="tab" id="ft-ui" aria-selected="false" aria-controls="fp-ui">Dashboard</button>
+          <button role="tab" id="ft-tl" aria-selected="false" aria-controls="fp-tl">Tools</button>
+          <button role="tab" id="ft-ob" aria-selected="false" aria-controls="fp-ob">Observability</button>
+        </div>
+
+        <!-- 01 load balancing -->
+        <div class="feature-panel" role="tabpanel" id="fp-lb" aria-labelledby="ft-lb">
+          <div class="fp-text">
+            <h3>One route, many providers.</h3>
+            <p>A Virtual Combo pools models from different upstreams behind one public name — least in-flight,
+              round-robin, or a failover chain.</p>
+            <pre class="code mono">{
+  <span class="ck">"name"</span>: <span class="cs">"smart-router"</span>,
+  <span class="ck">"models"</span>: [
+    <span class="cs">"gpt-4o-mini"</span>,
+    <span class="cs">"deepseek-chat"</span>,
+    <span class="cs">"claude-sonnet-4-6"</span>
+  ],
+  <span class="ck">"strategy"</span>: <span class="cs">"least_inflight"</span>
+}</pre>
+          </div>
+          <div class="diagram" role="img" aria-label="Diagram: a client request enters the smart-router Virtual Combo, which fans out to three pooled keys — key_1 on gpt-4o-mini, key_2 on deepseek-chat, key_3 on claude-sonnet-4-6. One key serves at a time, showing one request in flight, and the highlight rotates from key to key.">
+            <div class="dg-flow">
+              <div class="wire-node">client<span>one OpenAI endpoint</span></div>
+            </div>
+            <div class="wire-link dg-link-v"></div>
+            <div class="dg-flow">
+              <div class="wire-node wire-node--ff">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="14.2" r="3.4" fill="#f0ffb4"/></svg>
+                smart-router<span>virtual combo</span>
+              </div>
+            </div>
+            <div class="dg-tree" data-keys>
+              <div class="dg-row dg-row--key" data-active>
+                <span class="dg-key-name"><b class="dg-key-id">key_1</b>gpt-4o-mini</span>
+                <span class="dg-inflight">1</span>
+              </div>
+              <div class="dg-row dg-row--key">
+                <span class="dg-key-name"><b class="dg-key-id">key_2</b>deepseek-chat</span>
+                <span class="dg-inflight">0</span>
+              </div>
+              <div class="dg-row dg-row--key">
+                <span class="dg-key-name"><b class="dg-key-id">key_3</b>claude-sonnet-4-6</span>
+                <span class="dg-inflight">0</span>
+              </div>
+            </div>
+            <p class="dg-note">least in-flight serves the next request</p>
+          </div>
+        </div>
+
+        <!-- 02 resilience -->
+        <div class="feature-panel" role="tabpanel" id="fp-rs" aria-labelledby="ft-rs" hidden>
+          <div class="fp-text">
+            <h3>A dead key never becomes an outage.</h3>
+            <p>Two counters that never touch: the keyring handles credentials, the breaker handles hosts.</p>
+            <div class="layers">
+              <div class="layer">
+                <p class="layer-name">KeyRing</p>
+                <p class="layer-body">429 → cooldown from <span class="mono">Retry-After</span><br>
+                  401 → key retired<br>
+                  → next key, instantly</p>
+              </div>
+              <div class="layer">
+                <p class="layer-name">Breaker</p>
+                <p class="layer-body">5× host failures → open 10s<br>
+                  trial traffic → close<br>
+                  → fallback upstream</p>
+              </div>
+            </div>
+          </div>
+          <div class="diagram" role="img" aria-label="Diagram: a request first tries key_4, which answers 429 and is parked on a twelve second cooldown; the same request immediately lands on key_1 and streams a 200. Below them the host breaker reads closed at zero of five failures — a key error is not a host failure.">
+            <div class="dg-flow">
+              <div class="wire-node">request<span>POST /v1/chat/completions</span></div>
+            </div>
+            <div class="wire-link dg-link-v"></div>
+            <div class="dg-tree dg-attempts">
+              <div class="dg-row dg-attempt dg-attempt--reject">
+                <span class="dg-tag">attempt 1</span>
+                <span class="dg-key-name"><b class="dg-key-id">key_4</b>opencode</span>
+                <span class="dg-chip">429 · cooldown 12s</span>
+              </div>
+              <div class="dg-row dg-attempt dg-attempt--accept">
+                <span class="dg-tag">attempt 2</span>
+                <span class="dg-key-name"><b class="dg-key-id">key_1</b>openai</span>
+                <span class="dg-chip dg-chip--ok">200 · streaming</span>
+              </div>
+            </div>
+            <div class="dg-breaker">
+              <span class="dg-tag">breaker</span>
+              <span class="dg-chip dg-chip--ok">closed · 0/5</span>
+              <span class="dg-note">a key error is not a host failure</span>
+            </div>
+            <p class="dg-note">masked hints only — the raw key never leaves the gateway</p>
+          </div>
+        </div>
+
+        <!-- 03 token saver -->
+        <div class="feature-panel" role="tabpanel" id="fp-tk" aria-labelledby="ft-tk" hidden>
+          <div class="fp-text">
+            <h3>Cut the bill, not the answer.</h3>
+            <p>Four optimizers inspect traffic before it leaves the gateway. Switched off, they cost nothing.</p>
+            <div class="saver-list">
+              <div class="saver"><span class="saver-name mono">rtk</span><p>compacts tool output — ANSI stripped, logs deduped, diffs folded</p></div>
+              <div class="saver"><span class="saver-name mono">caveman</span><p>tells the model to skip the pleasantries</p></div>
+              <div class="saver"><span class="saver-name mono">ponytail</span><p>biases code toward minimal diffs</p></div>
+              <div class="saver"><span class="saver-name mono">headroom</span><p>prunes stale context from the middle</p></div>
+            </div>
+            <div class="bars" role="img" aria-label="Shell output compressed from 12,400 characters to 1,856 characters, 85 percent smaller">
+              <div class="bar-row"><span class="bar-label">shell output, raw</span><span class="bar bar--raw"></span><span class="bar-val mono">12,400</span></div>
+              <div class="bar-row"><span class="bar-label">after rtk</span><span class="bar bar--cut"></span><span class="bar-val mono">1,856</span></div>
+              <div class="bar-note mono">−85% · every hunk preserved</div>
+            </div>
+          </div>
+          <div class="diagram" role="img" aria-label="Diagram: tool output enters as a dense stream of characters, passes through the four token-saver stages — rtk, caveman, ponytail, headroom — and leaves for the upstream as a much sparser stream of the same material.">
+            <div class="dg-saver">
+              <div class="dg-saver-row">
+                <span class="dg-saver-label">tool output</span>
+                <span class="dg-ticks dg-ticks--in" aria-hidden="true"></span>
+              </div>
+              <div class="wire-link dg-link-v dg-link-v--mid"></div>
+              <div class="dg-valves">
+                <span class="dg-valve">rtk</span>
+                <span class="dg-valve">caveman</span>
+                <span class="dg-valve">ponytail</span>
+                <span class="dg-valve">headroom</span>
+              </div>
+              <div class="wire-link dg-link-v dg-link-v--mid"></div>
+              <div class="dg-saver-row">
+                <span class="dg-saver-label">to upstream</span>
+                <span class="dg-ticks dg-ticks--out" aria-hidden="true"></span>
+              </div>
+            </div>
+            <p class="dg-note">hot-swapped at runtime — no restart, no dropped stream</p>
+          </div>
+        </div>
+
+        <!-- 04 tenants -->
+        <div class="feature-panel" role="tabpanel" id="fp-tn" aria-labelledby="ft-tn" hidden>
+          <div class="fp-text">
+            <h3>Keys you can sell.</h3>
+            <p>Issue <span class="mono">sk-gw-</span> tenant keys with token quotas, expiry dates and RPS gates.
+              Clients read their balance at <span class="mono">GET /v1/usage</span>; your webhook tops them up at
+              <span class="mono">POST /api/tenants/topup</span>.</p>
+          </div>
+          <div class="diagram" role="img" aria-label="Diagram: two tenant keys, team-alpha at 62 percent of a three million token quota and still active, team-beta at 96 percent and answered with 429 insufficient_quota. Each key carries its own expiry, rps and model limits, and every request is checked against quota, expiry, rps and model access before the body is parsed.">
+            <div class="dg-tenant">
+              <div class="dg-tenant-top">
+                <span class="dg-key-name"><b class="dg-key-id">sk-gw-team-alpha</b>&#8230;9c2f</span>
+                <span class="dg-chip dg-chip--ok">active</span>
+              </div>
+              <div class="dg-meter"><i style="width: 62%"></i></div>
+              <div class="dg-tenant-foot">
+                <span>1.86M / 3M tokens</span><span>expires in 21d</span><span>4 rps</span><span>4 models</span>
+              </div>
+            </div>
+            <div class="dg-tenant">
+              <div class="dg-tenant-top">
+                <span class="dg-key-name"><b class="dg-key-id">sk-gw-team-beta</b>&#8230;41ab</span>
+                <span class="dg-chip">429 · insufficient_quota</span>
+              </div>
+              <div class="dg-meter"><i style="width: 96%"></i></div>
+              <div class="dg-tenant-foot">
+                <span>2.88M / 3M tokens</span><span>expires in 4d</span><span>8 rps</span><span>1 model</span>
+              </div>
+            </div>
+            <div class="dg-gates">
+              <span class="dg-gate"><i style="--i: 0"></i>quota</span>
+              <span class="dg-gate"><i style="--i: 1"></i>expiry</span>
+              <span class="dg-gate"><i style="--i: 2"></i>rps</span>
+              <span class="dg-gate"><i style="--i: 3"></i>models</span>
+            </div>
+            <p class="dg-note">all four checked before the request body is parsed</p>
+          </div>
+        </div>
+
+        <!-- 05 dashboard -->
+        <div class="feature-panel" role="tabpanel" id="fp-ui" aria-labelledby="ft-ui" hidden>
+          <div class="fp-text">
+            <h3>Watch the network breathe.</h3>
+            <p>Embedded in the binary: upstreams drift as fireflies, live routes draw constellations, and the
+              overview stays public — no credentials needed.</p>
+            <p class="fp-meta mono">go:embed · &lt;250 KB gzip · keyboard-first</p>
+          </div>
+          <div class="diagram" role="img" aria-label="Diagram: the firefly gateway at the centre of a small constellation of upstreams — openai, anthropic, grok and opencode — with one live route drawn between them, plus two fireflies drifting through the empty sky.">
+            <div class="dg-topo">
+              <svg viewBox="0 0 600 210" aria-hidden="true">
+                <path class="dg-route" d="M176 96 C268 62 350 34 448 28"/>
+                <path class="dg-route dg-route--live" d="M178 106 C292 108 400 100 488 92"/>
+                <path class="dg-route" d="M176 116 C268 134 360 148 442 150"/>
+                <path class="dg-route" d="M160 118 C220 148 268 170 326 177"/>
+              </svg>
+              <span class="dg-host dg-host--ff" style="left: 22%; top: 50.5%"><i></i>firefly</span>
+              <span class="dg-host" style="left: 75.3%; top: 13.3%"><i></i>openai</span>
+              <span class="dg-host" style="left: 82%; top: 43.8%"><i></i>anthropic</span>
+              <span class="dg-host" style="left: 74.3%; top: 71.4%"><i></i>grok</span>
+              <span class="dg-host" style="left: 55%; top: 84.8%"><i></i>opencode</span>
+              <i class="dg-fly" style="left: 38%; top: 72%; --dx: 15px; --dy: -13px; --d: 9s"></i>
+              <i class="dg-fly" style="left: 62%; top: 88%; --dx: -12px; --dy: -11px; --d: 11s; --dl: -4s"></i>
+            </div>
+            <p class="dg-note">/overview is public by default — the rest sits behind your password</p>
+          </div>
+        </div>
+
+        <!-- 06 tools -->
+        <div class="feature-panel" role="tabpanel" id="fp-tl" aria-labelledby="ft-tl" hidden>
+          <div class="fp-text">
+            <h3>Test streams like an engineer.</h3>
+            <p>Chat any route and read TTFT, throughput and the raw SSE frames — or push N concurrent requests
+              through the benchmark tool and compare models.</p>
+          </div>
+          <div class="diagram" role="img" aria-label="Diagram: two measurement lanes — a chat stream, where a gap before the first tick is the time to first token at 240 milliseconds and the ticks then arrive in a steady run, and a benchmark row where four concurrent requests fill to different lengths, the median finishing at 1.9 seconds.">
+            <div class="dg-lane">
+              <span class="dg-lane-name">chat</span>
+              <span class="dg-water" aria-hidden="true">
+                <i class="dg-tick" style="--i: 0"></i>
+                <i class="dg-tick" style="--i: 1"></i>
+                <i class="dg-tick" style="--i: 2"></i>
+                <i class="dg-tick" style="--i: 3"></i>
+                <i class="dg-tick" style="--i: 4"></i>
+                <i class="dg-tick" style="--i: 5"></i>
+                <i class="dg-tick" style="--i: 6"></i>
+                <i class="dg-tick" style="--i: 7"></i>
+                <i class="dg-tick" style="--i: 8"></i>
+                <i class="dg-tick" style="--i: 9"></i>
+                <i class="dg-tick" style="--i: 10"></i>
+                <i class="dg-tick" style="--i: 11"></i>
+                <i class="dg-tick" style="--i: 12"></i>
+              </span>
+              <span class="dg-stat">TTFT 240 ms</span>
+            </div>
+            <div class="dg-lane">
+              <span class="dg-lane-name">bench &#215;4</span>
+              <span class="dg-bars" aria-hidden="true">
+                <i style="--w: 58%; --i: 0"></i>
+                <i style="--w: 86%; --i: 1"></i>
+                <i style="--w: 41%; --i: 2"></i>
+                <i style="--w: 72%; --i: 3"></i>
+              </span>
+              <span class="dg-stat">p50 1.9 s</span>
+            </div>
+            <p class="dg-note">gap = time to first token · bars = concurrent runs</p>
+          </div>
+        </div>
+
+        <!-- 07 observability -->
+        <div class="feature-panel" role="tabpanel" id="fp-ob" aria-labelledby="ft-ob" hidden>
+          <div class="fp-text">
+            <h3>Every request accounted for.</h3>
+            <p>Prometheus metrics on a separate admin plane, structured logs with secret redaction, active
+              health probes, and OpenAPI served by the gateway itself.</p>
+          </div>
+          <div class="diagram" role="img" aria-label="Diagram: three Prometheus counters — firefly_http_requests_total and firefly_key_cooldown_events_total ticking upwards, firefly_http_inflight_requests steady at twelve — above three green health probe pips for openai, anthropic and grok, and a structured request log line in which the bearer token reads REDACTED.">
+            <div class="dg-metrics">
+              <div class="dg-metric"><span>firefly_http_requests_total</span><b data-tick="1284309">1,284,309</b></div>
+              <div class="dg-metric"><span>firefly_http_inflight_requests</span><b>12</b></div>
+              <div class="dg-metric"><span>firefly_key_cooldown_events_total</span><b data-tick="3187">3,187</b></div>
+            </div>
+            <div class="dg-health">
+              <span><i class="dg-pip" style="--i: 0"></i>openai</span>
+              <span><i class="dg-pip" style="--i: 1"></i>anthropic</span>
+              <span><i class="dg-pip" style="--i: 2"></i>grok</span>
+              <span class="dg-note">/healthz</span>
+            </div>
+            <div class="dg-log">
+              <b>POST</b> /v1/chat/completions <b>200</b> · 1.42 s · 812 tok<br>
+              authorization: <span class="dg-red">Bearer [REDACTED]</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ performance ============ -->
+    <section class="section section--tight" id="performance">
+      <div class="wrap">
+        <p class="kicker">Performance</p>
+        <h2>Engineered for the hot path.</h2>
+        <p class="section-sub">Recycled buffers, zero-allocation routing, lock-free rotation, and a stream
+          watchdog that kills hung upstreams before they pin your goroutines.</p>
+        <dl class="perf-grid">
+          <div class="perf"><dt class="mono">1,000+</dt><dd>simultaneous SSE streams held steady</dd></div>
+          <div class="perf"><dt class="mono">−90%</dt><dd>heap allocations on payload decode</dd></div>
+          <div class="perf"><dt class="mono">0</dt><dd>synchronous DB writes on the data plane</dd></div>
+          <div class="perf"><dt class="mono">1,500</dt><dd>global admission slots · 1.5s queue guard</dd></div>
+        </dl>
+      </div>
+      <svg class="trail trail--perf" viewBox="0 0 420 260" data-trail aria-hidden="true">
+        <path d="M14 226 C 96 150, 172 206, 236 118 C 276 62, 344 66, 408 24"/>
+      </svg>
+      <div class="ff-orns ff-orns--perf" data-parallax="30,9" aria-hidden="true">
+        <i style="--x: 70%; --y: 16%; --s: 4.5px; --d: 8.8s; --dl: -2.6s; --dx: 12px; --dy: -11px"></i>
+        <i style="--x: 84%; --y: 38%; --s: 3px; --d: 6.9s; --dl: -4.4s; --dx: -10px; --dy: 11px"></i>
+      </div>
+    </section>
+
+    <!-- ============ open source ============ -->
+    <section class="section section--tight" id="open-source">
+      <div class="wrap">
+        <p class="kicker">Open source</p>
+        <h2>Pure Go. MIT. Yours.</h2>
+        <p class="section-sub">One static binary with the dashboard embedded. Zero-config first run, hot-reloading
+          catalog files, Auto-TLS, a systemd installer and a Docker image.</p>
+        <div class="oss-actions">
+          <button class="install-chip install-chip--lg" type="button" data-copy="curl -fsSL https://raw.githubusercontent.com/dickymuliafiqri/firefly/main/install.sh | bash">
+            <span class="install-cmd"><span class="cmd-full">curl -fsSL https://raw.githubusercontent.com/dickymuliafiqri/firefly/main/install.sh | bash</span><span class="cmd-short">curl -fsSL …/install.sh | bash</span></span>
+            <span class="install-hint" data-label="copy">copy</span>
+          </button>
+          <div class="oss-links">
+            <a class="btn btn-lime" href="https://github.com/dickymuliafiqri/firefly" target="_blank" rel="noopener">Star on GitHub</a>
+            <a class="btn btn-ghost" href="https://github.com/dickymuliafiqri/firefly/blob/main/AGENTS.md" target="_blank" rel="noopener">Read the architecture →</a>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ============ footer ============ -->
+  <footer class="footer">
+    <div class="wrap">
+      <p class="footer-line">Let every token <em>find its light.</em></p>
+      <div class="footer-actions">
+        <a class="btn btn-lime" href="https://github.com/dickymuliafiqri/firefly" target="_blank" rel="noopener">GitHub</a>
+        <a class="btn btn-ghost" href="#open-source">Install Firefly</a>
+      </div>
+      <div class="footer-grid">
+        <div class="footer-col">
+          <h4>Project</h4>
+          <a href="https://github.com/dickymuliafiqri/firefly" target="_blank" rel="noopener">Repository</a>
+          <a href="https://github.com/dickymuliafiqri/firefly/releases" target="_blank" rel="noopener">Releases</a>
+          <a href="https://github.com/dickymuliafiqri/firefly/actions" target="_blank" rel="noopener">CI</a>
+        </div>
+        <div class="footer-col">
+          <h4>Docs</h4>
+          <a href="https://github.com/dickymuliafiqri/firefly/blob/main/docs/production.md" target="_blank" rel="noopener">Production guide</a>
+          <a href="https://github.com/dickymuliafiqri/firefly/blob/main/docs/loadtest.md" target="_blank" rel="noopener">Load testing</a>
+          <a href="https://github.com/dickymuliafiqri/firefly/blob/main/AGENTS.md" target="_blank" rel="noopener">Architecture</a>
+        </div>
+        <div class="footer-col">
+          <h4>Community</h4>
+          <a href="https://github.com/dickymuliafiqri/firefly/issues" target="_blank" rel="noopener">Issues</a>
+          <a href="https://trakteer.id/dickymuliafiqri" target="_blank" rel="noopener">Support</a>
+        </div>
+        <div class="footer-col footer-col--legal">
+          <p>MIT License</p>
+          <p>© 2026 Dicky Mulia Fiqri</p>
+        </div>
+      </div>
+    </div>
+    <svg class="trail trail--footer" viewBox="0 0 460 300" data-trail aria-hidden="true">
+      <path d="M16 262 C 104 176, 186 236, 258 140 C 300 82, 372 84, 444 34"/>
+    </svg>
+    <div class="ff-orns ff-orns--footer" data-parallax="28,9" aria-hidden="true">
+      <i style="--x: 22%; --y: 26%; --s: 4px; --d: 8.1s; --dl: -1.8s; --dx: 13px; --dy: -11px"></i>
+      <i style="--x: 48%; --y: 40%; --s: 3px; --d: 7.4s; --dl: -3.9s; --dx: -10px; --dy: 12px"></i>
+      <i style="--x: 68%; --y: 20%; --s: 4.5px; --d: 9.8s; --dl: -5.6s; --dx: 11px; --dy: 10px"></i>
+    </div>
+    <div class="forest forest--footer" aria-hidden="true">
+      <img class="fl fl-mist" src="assets/img/orn-mist-far-soil.svg" alt="" width="2560" height="512" data-parallax="22,5" loading="lazy">
+      <img class="fl fl-far" src="assets/img/orn-pines-far-soil.svg" alt="" width="2560" height="512" data-parallax="34,8" loading="lazy">
+      <img class="fl fl-near" src="assets/img/orn-pines-near-soil.svg" alt="" width="2560" height="512" data-parallax="48,12" loading="lazy">
+      <img class="fl fl-floor" src="assets/img/orn-floor-soil.svg" alt="" width="2560" height="512" data-parallax="62,15" loading="lazy">
+      <div class="clearing-glow"></div>
+    </div>
+  </footer>
+
+  <script src="assets/js/fireflies.js" defer></script>
+  <script src="assets/js/forest.js" defer></script>
+  <script src="assets/js/main.js" defer></script>
+</body>
+</html>

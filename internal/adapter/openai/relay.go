@@ -11,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/dickymuliafiqri/firefly/internal/observability/trace"
 )
 
 // errStreamIdle indicates the upstream stopped delivering bytes for longer than
@@ -96,6 +98,11 @@ func RelaySSE(ctx context.Context, w http.ResponseWriter, body io.ReadCloser, id
 		f.Flush()
 	}
 
+	// Visualizer hooks: nil-safe, no-op unless someone is watching the trace stream.
+	capture := trace.FromContext(ctx)
+	capture.Stage(trace.StageTTFB, "")
+
+
 	// Stream watchdog: monitors both idle silence and client context cancellation.
 	// When client disconnects or upstream stalls, the watchdog closes the body immediately
 	// to unblock any pending Read() on the wire and free resources promptly.
@@ -125,6 +132,8 @@ func RelaySSE(ctx context.Context, w http.ResponseWriter, body io.ReadCloser, id
 			if r, ok := body.(idleResetter); ok {
 				r.Touch() // any delivered byte resets the idle deadline
 			}
+			capture.OnDelta(line)
+
 			n, werr := w.Write(line)
 			written += int64(n)
 			if werr != nil {

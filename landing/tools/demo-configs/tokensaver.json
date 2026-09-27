@@ -1,0 +1,9 @@
+{
+  "enabled": false,
+  "compress_tool_output": true,
+  "terse_output": false,
+  "minimal_code": false,
+  "compress_context": false,
+  "max_tool_output_chars": 12000,
+  "context_threshold": 32000
+}

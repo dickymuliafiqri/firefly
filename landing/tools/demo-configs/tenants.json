@@ -1,0 +1,24 @@
+{
+  "tenants": [
+    {
+      "api_key": "sk-gw-demo-dev-0001",
+      "name": "default-dev",
+      "status": "active",
+      "max_tokens": 25000000,
+      "used_tokens": 6148203,
+      "expires_at": 1893456000000,
+      "allowed_models": ["*"],
+      "rate_limit": { "rps": 50, "burst": 100, "max_concurrent": 20 }
+    },
+    {
+      "api_key": "sk-gw-demo-indie-0002",
+      "name": "indie-hacker",
+      "status": "active",
+      "max_tokens": 5000000,
+      "used_tokens": 1384417,
+      "expires_at": 1893456000000,
+      "allowed_models": ["gpt-4o-mini", "deepseek-chat", "smart-router"],
+      "rate_limit": { "rps": 10, "burst": 20, "max_concurrent": 6 }
+    }
+  ]
+}

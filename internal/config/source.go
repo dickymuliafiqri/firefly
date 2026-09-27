@@ -30,6 +30,7 @@ const (
 	FileNameCombos     = "combos.json"
 	FileNameTLS        = "tls.json"
 	FileNameTokenSaver = "tokensaver.json"
+	FileNameVisualizer = "visualizer.json"
 )
 
 // configFileNames is the tracked set in load order. It is the single source of
@@ -68,6 +69,7 @@ func (s *FileConfigSource) Load(ctx context.Context) (map[string][]byte, error) 
 		{"tenants", FileNameTenants},
 		{"combos", FileNameCombos},
 		{"tokensaver", FileNameTokenSaver},
+		{"visualizer", FileNameVisualizer},
 	}
 	out := make(map[string][]byte, len(fileOrder))
 	var errs []error
@@ -103,6 +105,7 @@ func FileSetFromMap(m map[string][]byte) FileSet {
 		Tenants:    m["tenants"],
 		Combos:     m["combos"],
 		TokenSaver: m["tokensaver"],
+		Visualizer: m["visualizer"],
 	}
 }
 
@@ -127,6 +130,7 @@ func EnsureConfigFiles(dir string) error {
 		{FileNameCombos, []byte("{\n  \"combos\": []\n}\n"), 0o644},
 		{FileNameTLS, []byte("{\n  \"enabled\": false\n}\n"), 0o644},
 		{FileNameTokenSaver, []byte("{\n  \"enabled\": false,\n  \"compress_tool_output\": true,\n  \"terse_output\": false,\n  \"minimal_code\": false,\n  \"compress_context\": false,\n  \"max_tool_output_chars\": 12000,\n  \"context_threshold\": 32000,\n  \"system_prompt\": \"\"\n}\n"), 0o644},
+		{FileNameVisualizer, []byte("{\n  \"enabled\": true,\n  \"retention\": 500,\n  \"keep_events\": 24\n}\n"), 0o644},
 	}
 
 	for _, d := range defaults {
