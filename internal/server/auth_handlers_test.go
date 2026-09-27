@@ -160,3 +160,71 @@ func TestAuthEndpoints_CompleteLifecycle(t *testing.T) {
 		t.Fatalf("verify after logout got %d, want 401", wVerifyLoggedOut.Code)
 	}
 }
+
+// TestAuthEndpoints_SessionHonoredByAnotherInstance is the HTTP-level regression
+// test for the "signed out seconds after login" bug. Two server instances share
+// the on-disk credential store, the way replicas sharing a config volume (or a
+// process that simply restarted) do, so a session minted by one must satisfy
+// /api/auth/verify on the other. Previously the session existed only in the
+// issuing process's memory, the second instance answered 401, and the dashboard's
+// 2-second telemetry poll turned that into an immediate sign-out.
+func TestAuthEndpoints_SessionHonoredByAnotherInstance(t *testing.T) {
+	dir := t.TempDir()
+
+	newInstance := func() http.Handler {
+		reg := registry.New()
+		deps := RouterDeps{
+			Snapshots: reg,
+			Registry:  reg,
+			ConfigDir: dir,
+			Auth:      auth.NewManager(dir, "", "12345678"),
+		}
+		return New(Config{Addr: "0.0.0.0:8080"}, deps, context.Background(), nil).Handler()
+	}
+
+	gatewayA := newInstance()
+	gatewayB := newInstance()
+
+	// Log in against instance A.
+	loginBody, _ := json.Marshal(LoginRequest{Password: "12345678"})
+	reqLogin := httptest.NewRequest("POST", "/api/auth/login", bytes.NewReader(loginBody))
+	wLogin := httptest.NewRecorder()
+	gatewayA.ServeHTTP(wLogin, reqLogin)
+	if wLogin.Code != http.StatusOK {
+		t.Fatalf("login on instance A got status %d, want 200", wLogin.Code)
+	}
+	var loginResp LoginResponse
+	if err := json.Unmarshal(wLogin.Body.Bytes(), &loginResp); err != nil {
+		t.Fatalf("unmarshal login response: %v", err)
+	}
+	if loginResp.Token == "" {
+		t.Fatal("expected a non-empty session token")
+	}
+
+	// The very same token must authorize instance B.
+	reqVerify := httptest.NewRequest("GET", "/api/auth/verify", nil)
+	reqVerify.Header.Set("Authorization", "Bearer "+loginResp.Token)
+	wVerify := httptest.NewRecorder()
+	gatewayB.ServeHTTP(wVerify, reqVerify)
+	if wVerify.Code != http.StatusOK {
+		t.Fatalf("session issued by instance A got %d on instance B, want 200", wVerify.Code)
+	}
+
+	// The protected admin surface must accept it as well, not just /verify.
+	reqSettings := httptest.NewRequest("GET", "/api/settings", nil)
+	reqSettings.Header.Set("Authorization", "Bearer "+loginResp.Token)
+	wSettings := httptest.NewRecorder()
+	gatewayB.ServeHTTP(wSettings, reqSettings)
+	if wSettings.Code != http.StatusOK {
+		t.Fatalf("GET /api/settings on instance B got %d, want 200", wSettings.Code)
+	}
+
+	// A garbage bearer value must still be rejected (fail closed).
+	reqBad := httptest.NewRequest("GET", "/api/auth/verify", nil)
+	reqBad.Header.Set("Authorization", "Bearer ff_sess_not-a-session")
+	wBad := httptest.NewRecorder()
+	gatewayB.ServeHTTP(wBad, reqBad)
+	if wBad.Code != http.StatusUnauthorized {
+		t.Fatalf("forged token got %d, want 401", wBad.Code)
+	}
+}

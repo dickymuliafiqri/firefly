@@ -52,6 +52,11 @@ func TestAuthManager_AdminTokenBypass(t *testing.T) {
 	}
 }
 
+// TestAuthManager_RevokeSession covers the sign-out contract: stateless tokens
+// carry no server-side record, so signing out retires the whole credential
+// generation instead of one entry. Every token issued before the call stops
+// validating — including a second browser — and the retirement is persisted, so
+// a process that starts later honors it too.
 func TestAuthManager_RevokeSession(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -61,15 +66,35 @@ func TestAuthManager_RevokeSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Authenticate failed: %v", err)
 	}
+	other, err := mgr.Authenticate(ctx, "12345678")
+	if err != nil {
+		t.Fatalf("Authenticate failed: %v", err)
+	}
 
 	if !mgr.ValidateToken(ctx, sess.Token) {
 		t.Fatal("token should be valid")
+	}
+
+	// A token that was never issued must not be able to force a write.
+	mgr.RevokeSession(ctx, "ff_sess_not-a-real-token")
+	if !mgr.ValidateToken(ctx, sess.Token) {
+		t.Fatal("revoking an unknown token must not retire a live session")
 	}
 
 	mgr.RevokeSession(ctx, sess.Token)
 
 	if mgr.ValidateToken(ctx, sess.Token) {
 		t.Fatal("token should be invalid after revocation")
+	}
+	if mgr.ValidateToken(ctx, other.Token) {
+		t.Fatal("sign-out retires the generation, so a second session is invalidated too")
+	}
+
+	// The retirement survives a restart: a process that reads auth.json now
+	// refuses the retired token.
+	restarted := NewManager(dir, "", "")
+	if restarted.ValidateToken(ctx, sess.Token) {
+		t.Fatal("a retired token must stay retired across restarts")
 	}
 }
 
@@ -145,6 +170,12 @@ func TestAuthManager_ContextCancellation(t *testing.T) {
 	}
 }
 
+// TestAuthManager_ConcurrentAccess exercises the manager under contention. It
+// deliberately does not call RevokeSession: with stateless sessions a sign-out
+// retires the credential generation for everyone, so a concurrent revocation
+// would (correctly) invalidate the other goroutines' tokens mid-loop and make
+// this test assert the wrong thing. Revocation semantics are covered by
+// TestAuthManager_RevokeSession.
 func TestAuthManager_ConcurrentAccess(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -165,7 +196,6 @@ func TestAuthManager_ConcurrentAccess(t *testing.T) {
 					t.Errorf("concurrent token validation failed")
 					return
 				}
-				mgr.RevokeSession(ctx, sess.Token)
 			}
 		}()
 	}

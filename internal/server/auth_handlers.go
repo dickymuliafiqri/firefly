@@ -96,7 +96,10 @@ func (deps RouterDeps) handleAuthVerify(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-// handleAuthLogout revokes the presented session token.
+// handleAuthLogout revokes the presented session token. Stateless sessions keep
+// no per-token record, so this retires the dashboard's credential generation:
+// every session issued before the call stops validating. See
+// auth.Manager.RevokeSession.
 func (deps RouterDeps) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Content-Type", "application/json")
