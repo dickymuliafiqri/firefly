@@ -1746,10 +1746,6 @@ input:disabled {
   opacity: 0.9;
 }
 
-.visualizer-svg .viz-flow.f2 {
-  animation-duration: 1.7s;
-}
-
 .visualizer-svg .viz-flow.info {
   stroke: var(--info);
 }
@@ -1772,17 +1768,6 @@ input:disabled {
 
 .visualizer-svg .viz-node.ff {
   stroke: rgba(190, 242, 100, 0.55);
-}
-
-/* Token Saver node on the request path: cyan while it only stands by, ok-green
-   once the trace proves it rewrote the body. */
-.visualizer-svg .viz-node.ts {
-  stroke: rgba(103, 232, 249, 0.45);
-}
-
-.visualizer-svg .viz-node.ts.applied {
-  stroke: var(--ok);
-  stroke-dasharray: none;
 }
 
 .visualizer-svg .viz-node.chosen {

@@ -15,26 +15,24 @@ import type { VisualizerView } from './index';
  */
 const ROW = 120;
 const PAD = 70;
-const W = 1580;
+const W = 1310;
 
 const X_ROOT = 90;
-const ROOT_W = 170;
+const ROOT_W = 200;
 /**
- * Token Saver column. The optimizer rewrites the chat body inside the gateway
- * (server-side it runs after the credential is acquired and before
- * `adapter.Forward`), so it owns the request leg between Firefly and the
- * upstream column instead of a row of its own. It is midline-anchored exactly
- * like the credential node: the rewrite does not depend on which upstream wins
- * the routing.
+ * Three columns, left to right: the Firefly root, one node per live catalog
+ * upstream, and the fixed stream-phase column. The credential and the Token
+ * Saver hop are deliberately *not* nodes here: one request spends exactly one
+ * credential out of a ring that may hold a thousand keys, and the rewrite is
+ * invisible in the payload unless it changed the body, so either of them would
+ * end up either exploding the graph or reporting noise. What the operator needs
+ * per row is the *model* the winning upstream serves, which is what the upstream
+ * node carries instead.
  */
-const X_TS = 320;
-const TS_W = 150;
-const X_UP = 620;
-const UP_W = 260;
-const X_KEY = 1040;
-const KEY_W = 210;
-const X_PHASE = 1330;
-const PHASE_W = 210;
+const X_UP = 470;
+const UP_W = 300;
+const X_PHASE = 1010;
+const PHASE_W = 230;
 const BOX_H = 56;
 const CURVE = 120;
 
@@ -51,12 +49,22 @@ function phaseLabel(kind: string): string {
 }
 
 /**
- * Terminal nodes are canvas topology, not traffic. The set is fixed — and
- * mirrors the `kind` values `trace.Classify` emits on the server — so the graph
- * never grows or shrinks while a trace streams in or completes; only a node's
- * *state* changes (`live` while that kind flows, `done` once the trace recorded
- * it, `idle` otherwise). The credential node is likewise fixed and shared: every
- * detected `key_ref` converges on that one node.
+ * Node sub-labels are single SVG text lines: they neither wrap nor ellipsize on
+ * their own, so a long model name or skip reason would silently run into the
+ * neighbouring column. Clip to what the box width actually holds.
+ */
+const SUB_CHARS = 34;
+
+function clip(text: string, max = SUB_CHARS): string {
+  return text.length <= max ? text : `${text.slice(0, max - 3)}...`;
+}
+
+/**
+ * Terminal nodes are canvas topology, not traffic. The set is fixed (it mirrors
+ * the `kind` values `trace.Classify` emits on the server), so the graph never
+ * grows or shrinks while a trace streams in or completes; only a node *state*
+ * changes: `live` while that kind flows, `done` once the trace recorded it,
+ * `idle` otherwise.
  */
 const TERMINAL_KINDS = ['reasoning', 'tool', 'answer', 'usage', 'error'] as const;
 
@@ -226,12 +234,12 @@ function PanCanvas({ viewBox, label, children }: { viewBox: string; label: strin
 
 /**
  * One reference row of this view. `idle` marks an upstream that exists in the
- * live catalog but was not touched by the selected trace — those rows are
- * permanent, exactly like the root node.
+ * live catalog but was not touched by the selected trace: those rows are
+ * permanent, exactly like the root node. The credential a candidate resolved is
+ * not carried here, because credentials are not nodes on this canvas.
  */
 type LaneNode = {
   upstream: string;
-  key?: string;
   note?: string;
   state: 'chosen' | 'skipped' | 'idle';
 };
@@ -258,24 +266,29 @@ function Packets({ pathId, dur, tone = '' }: { pathId: string; dur: number; tone
  * overlay and travelling light packets confined to the active path, dim base
  * lanes with floating status labels for skipped branches.
  *
- * The topology is permanent by design: the Firefly root, the Token Saver node on
- * the request leg, one node per live catalog upstream, the credential node and
- * one terminal node per stream phase sit on the canvas before the first request
- * arrives and stay there afterwards, so nothing appears or disappears mid-stream
- * and the operator never loses their place (rows are anchored, the credential
- * and Token Saver nodes are row-fixed). A request only changes node *state*.
+ * The topology is permanent by design: the Firefly root, one node per live
+ * catalog upstream and one terminal node per stream phase sit on the canvas
+ * before the first request arrives and stay there afterwards, so nothing appears
+ * or disappears mid-stream and the operator never loses their place (rows are
+ * anchored). A request only changes node *state*.
  *
- * Connectors past the upstream column are gated on routing actually resolving a
- * credential — a detected `key_ref` — and every detected `key_ref` converges on
- * the single fixed credential node. The Token Saver node is reported the same
- * way: it renders `applied` only when the trace carries the server's
- * `tokensaver` stage, meaning the gateway really rewrote the request body before
- * forwarding it, and `idle` on a pass-through.
+ * Connectors are permanent too: the root fans out to every upstream row and the
+ * winning row fans out to the whole phase column from the first render, so the
+ * canvas reads as one connected graph. The fan past the upstream column hangs
+ * off the row this request routed to (the phases belong to that provider); while
+ * nothing has resolved yet it hangs off the column midline, so the idle canvas
+ * is already complete. Only the state moves: bright + flowing on the path the
+ * request took, a settled trail on a phase it already left behind, dim on
+ * everything else.
+ *
+ * Each node states one fact: the root shows the ingress call, an upstream node
+ * shows the model it served (or why it was skipped), and a terminal node shows
+ * its phase state.
  */
 export const lineView: VisualizerView = {
   id: 'line',
   label: 'Line',
-  hint: 'Flow: Firefly → token saver → upstream → credential → stream phases.',
+  hint: 'Flow: Firefly -> upstream -> stream phases.',
   render: ({ trace, catalogUpstreams = [] }) => {
     const candidates = trace?.candidates ?? [];
     const routed: LaneNode[] = candidates.length
@@ -294,18 +307,6 @@ export const lineView: VisualizerView = {
       upstreams.findIndex((c) => c.state === 'chosen'),
       0,
     );
-    // Every credential the trace actually resolved: the routing candidates'
-    // keys plus the chosen ref. The lane set past the upstream column is drawn
-    // only once at least one was detected, and all of them converge on the one
-    // fixed credential node.
-    const keyRefs = [
-      ...new Set([
-        ...upstreams.map((c) => c.key).filter((k): k is string => !!k),
-        ...(trace?.key_ref ? [trace.key_ref] : []),
-      ]),
-    ];
-    const keyRef = upstreams[chosenIdx]?.key ?? trace?.key_ref ?? '';
-    const hasKey = keyRefs.length > 0;
 
     const phases = trace
       ? trace.phases?.length
@@ -326,147 +327,107 @@ export const lineView: VisualizerView = {
     const boxTop = (i: number) => rowCenter(i) - BOX_H / 2;
     const mid = height / 2;
     const rootY = mid - BOX_H / 2;
-    // The credential node is anchored to the canvas midline (the root's row) so
-    // it stays put no matter which upstream wins the routing.
-    const keyY = mid - BOX_H / 2;
-    const keyMid = mid;
     const rootRight = X_ROOT + ROOT_W;
-    const tsRight = X_TS + TS_W;
     const upRight = X_UP + UP_W;
-    const keyRight = X_KEY + KEY_W;
 
     const settled = trace ? !streaming : false;
 
-    // The Token Saver node reports what the gateway did to the request body
-    // before forwarding it. The server only emits `trace.StageTokenSaver` when a
-    // pass actually changed the body, so the stage's absence means pass-through;
-    // and on endpoints that carry no messages array (embeddings, legacy
-    // completions) the optimizer never runs at all.
+    // Root sub-label: the ingress call. The *model* belongs to the upstream row
+    // that served it, not here.
+    const ingress = trace ? `${trace.method ?? 'POST'} ${trace.path ?? ''}`.trim() : '';
+    // The phase the stream is inside right now, if any. `activity.kind` can also
+    // be a non-phase marker (`stage`), and then no terminal lane is live and the
+    // packet path must not be referenced at all.
+    const liveTerminal = TERMINAL_KINDS.find((k) => k === liveKind);
+    // The phases belong to the upstream that won the routing, so the fan past the
+    // upstream column hangs off that row. Before a trace has resolved a winner
+    // there is no such row and the fan hangs off the column midline, which keeps
+    // the idle canvas complete and symmetric; either way the node set is
+    // untouched and only lane geometry follows the winner.
+    const fanY = trace ? rowCenter(chosenIdx) : mid;
+    // Short legs need a shorter handle: a curve longer than the run itself bends
+    // the lane backwards and it visibly doubles back on itself.
+    const rootCurve = Math.min(CURVE, (X_UP - rootRight) / 2);
+    const phaseCurve = Math.min(CURVE, (X_PHASE - upRight) / 2);
+    // The pre-forward rewrite is still reported, it just does not own a node any
+    // more: the server emits `trace.StageTokenSaver` only when a pass really
+    // changed the body, so the stage is the "this request was compressed" fact.
     const tsStage = trace?.stages?.find((s) => s.name === 'tokensaver');
-    const tsApplied = !!tsStage;
-    const tsChatPath = !trace?.path || trace.path.endsWith('/chat/completions');
-    const tsY = mid - BOX_H / 2;
-    const rootToTs = lane(rootRight, mid, X_TS, mid, Math.min(CURVE, (X_TS - rootRight) / 2));
 
     return (
       <div className="visualizer-view">
         <PanCanvas viewBox={`0 0 ${W} ${height}`} label="Request routing flow">
-          {/* ---------- lane: Firefly -> Token Saver (the request leg) ---------- */}
-          <g>
-            <path d={rootToTs} className={`viz-base${trace ? '' : ' dim'}`} />
-            {trace && <path d={rootToTs} className={`viz-flow${settled ? ' settled' : ''}`} />}
-            {trace && !settled && <path id="viz-p0" d={rootToTs} className="viz-ghost" />}
-          </g>
-
-          {/* ---------- lanes: Token Saver -> upstreams ---------- */}
+          {/* ---------- lanes: Firefly -> upstream rows (permanent fan-out) ----------
+              The root fans out to the whole upstream column from the first render,
+              so the canvas is one connected graph before any traffic arrives. Only
+              the row the request routed to lights up (flowing dashes + packet). */}
           {upstreams.map((c, i) => {
-            const d = lane(tsRight, mid, X_UP, rowCenter(i));
             const chosen = c.state === 'chosen';
+            const d = lane(rootRight, mid, X_UP, rowCenter(i), rootCurve);
             return (
               <g key={`lane-up-${i}`}>
                 <path d={d} className={`viz-base${chosen ? '' : ' dim'}`} />
                 {chosen && <path d={d} className={`viz-flow${settled ? ' settled' : ''}`} />}
-                {chosen && !settled && <path id="viz-p1" d={d} className="viz-ghost" />}
-                {!chosen && c.state !== 'idle' && (
-                  <text
-                    className={`viz-st ${c.state === 'skipped' ? 'red' : 'dim'}`}
-                    x={(tsRight + X_UP) / 2}
-                    y={rowCenter(i) + (i % 2 ? 26 : -14)}
-                    textAnchor="middle"
-                  >
-                    {c.note || c.state}
-                  </text>
-                )}
+                {chosen && !settled && <path id="viz-p0" d={d} className="viz-ghost" />}
               </g>
             );
           })}
 
-          {/* ---------- lanes: upstream -> credential (needs a key_ref) ---------- */}
-          {hasKey &&
-            upstreams.map((c, i) => {
-              const detected = !!c.key || (c.state === 'chosen' && !!trace?.key_ref);
-              if (!detected) return null;
-              const chosen = c.state === 'chosen';
-              const d = lane(upRight, rowCenter(i), X_KEY, keyMid);
-              return (
-                <g key={`lane-key-${i}`}>
-                  <path d={d} className={`viz-base${chosen ? '' : ' dim'}`} />
-                  {chosen && <path d={d} className={`viz-flow f2${settled ? ' settled' : ''}`} />}
-                  {chosen && !settled && <path id="viz-p2" d={d} className="viz-ghost" />}
-                  {chosen && (
-                    <text className="viz-st grn" x={(upRight + X_KEY) / 2} y={keyMid - 14} textAnchor="middle">
-                      selected
-                    </text>
-                  )}
-                </g>
-              );
-            })}
-
-          {/* ---------- lanes: credential -> terminals (connection + key_ref) ---------- */}
-          {hasKey &&
-            TERMINAL_KINDS.map((kind, i) => {
-              if (!recorded.has(kind)) return null;
-              const d = lane(keyRight, keyMid, X_PHASE, rowCenter(i));
-              const live = kind === liveKind;
-              return (
-                <g key={`lane-ph-${kind}`}>
-                  <path d={d} className={`viz-base${live ? '' : ' dim'}`} />
-                  {live && <path d={d} className={`viz-flow info${settled ? ' settled' : ''}`} />}
-                  {live && !settled && <path id="viz-p3" d={d} className="viz-ghost" />}
-                </g>
-              );
-            })}
+          {/* ---------- lanes: winning upstream -> stream phases (permanent) ----------
+              All five lanes exist from the first render. Only the state moves: the
+              phase the stream is inside right now is bright and flowing, a phase it
+              already left behind keeps a settled trail, the rest stay dim. */}
+          {TERMINAL_KINDS.map((kind, i) => {
+            const live = kind === liveKind;
+            const done = !live && recorded.has(kind);
+            const d = lane(upRight, fanY, X_PHASE, rowCenter(i), phaseCurve);
+            return (
+              <g key={`lane-ph-${kind}`}>
+                <path d={d} className={`viz-base${live || done ? '' : ' dim'}`} />
+                {live && <path d={d} className={`viz-flow info${settled ? ' settled' : ''}`} />}
+                {done && <path d={d} className="viz-flow info settled" />}
+                {live && !settled && <path id="viz-p1" d={d} className="viz-ghost" />}
+              </g>
+            );
+          })}
 
           {/* ---------- packets on the active path ---------- */}
-          {streaming && hasKey && (
+          {streaming && (
             <g>
               <Packets pathId="viz-p0" dur={2.2} />
-              <Packets pathId="viz-p1" dur={2.2} />
-              <Packets pathId="viz-p2" dur={1.4} />
-              <Packets pathId="viz-p3" dur={1.1} tone="cyan" />
+              {liveTerminal && <Packets pathId="viz-p1" dur={1.1} tone="cyan" />}
             </g>
           )}
 
           {/* ---------- root node: Firefly (always visible) ---------- */}
           <g>
             <rect x={X_ROOT} y={rootY} width={ROOT_W} height={BOX_H} rx={12} className="viz-node ff" />
-            <text x={X_ROOT + ROOT_W / 2} y={rootY + 24} textAnchor="middle" className="viz-title">
+            <text x={X_ROOT + ROOT_W / 2} y={rootY + 25} textAnchor="middle" className="viz-title">
               Firefly
             </text>
             <text x={X_ROOT + ROOT_W / 2} y={rootY + 43} textAnchor="middle" className="viz-sub">
-              {trace
-                ? `${trace.model ?? trace.path ?? 'request'} · ${trace.error ? 'error' : trace.state}`
-                : 'waiting for a request…'}
+              {trace ? clip(ingress) : 'waiting for a request...'}
             </text>
+            {trace && (
+              <text
+                x={X_ROOT + ROOT_W - 20}
+                y={rootY + 25}
+                textAnchor="end"
+                className={`viz-st ${trace.error ? 'red' : 'dim'}`}
+              >
+                {trace.error ? 'error' : trace.state}
+              </text>
+            )}
           </g>
 
-          {/* ---------- Token Saver node: fixed, always visible ---------- */}
-          <g>
-            <rect
-              x={X_TS}
-              y={tsY}
-              width={TS_W}
-              height={BOX_H}
-              rx={10}
-              className={`viz-node ts${tsApplied ? ' applied' : ' idle'}`}
-            />
-            <text x={X_TS + TS_W / 2} y={tsY + 25} textAnchor="middle" className="viz-title">
-              Token Saver
-            </text>
-            <text x={X_TS + TS_W / 2} y={tsY + 43} textAnchor="middle" className="viz-sub">
-              {tsApplied
-                ? tsStage?.detail || 'rewrote body'
-                : !trace
-                  ? 'standby'
-                  : tsChatPath
-                    ? 'no change'
-                    : 'chat only'}
-            </text>
-          </g>
-
-          {/* ---------- upstream nodes ---------- */}
+          {/* ---------- upstream nodes: name plus the model it is serving ---------- */}
           {upstreams.map((c, i) => {
             const chosen = c.state === 'chosen';
+            const sub = chosen
+              ? clip(trace?.model ?? 'model')
+              : c.state === 'skipped'
+                ? clip(c.note ?? 'skipped')
+                : 'idle';
             return (
               <g key={`${c.upstream}-${i}`}>
                 <rect x={X_UP} y={boxTop(i)} width={UP_W} height={BOX_H} rx={10} className={`viz-node${chosen ? ' chosen' : c.state === 'idle' ? ' idle' : ' gone'}`} />
@@ -474,7 +435,7 @@ export const lineView: VisualizerView = {
                   {c.upstream}
                 </text>
                 <text x={X_UP + 24} y={boxTop(i) + 43} className="viz-sub">
-                  {c.note ?? ''}
+                  {sub}
                 </text>
                 <text
                   x={X_UP + UP_W - 20}
@@ -482,29 +443,11 @@ export const lineView: VisualizerView = {
                   textAnchor="end"
                   className={`viz-st ${chosen ? 'grn' : 'dim'}`}
                 >
-                  {c.state}
+                  {chosen ? `ttfb ${trace?.ttfb_ms ?? 0}ms` : c.state}
                 </text>
               </g>
             );
           })}
-
-          {/* ---------- credential node: fixed, always visible ---------- */}
-          <g>
-            <rect
-              x={X_KEY}
-              y={keyY}
-              width={KEY_W}
-              height={BOX_H}
-              rx={10}
-              className={`viz-node${hasKey ? ' chosen' : ' idle'}`}
-            />
-            <text x={X_KEY + KEY_W / 2} y={keyY + 25} textAnchor="middle" className="viz-title">
-              {keyRef || 'credential'}
-            </text>
-            <text x={X_KEY + KEY_W / 2} y={keyY + 43} textAnchor="middle" className="viz-sub">
-              {hasKey ? `ttfb ${trace?.ttfb_ms ?? 0}ms` : 'no key_ref detected'}
-            </text>
-          </g>
 
           {/* ---------- terminal nodes: fixed set, always visible ---------- */}
           {TERMINAL_KINDS.map((kind, i) => {
@@ -543,6 +486,7 @@ export const lineView: VisualizerView = {
               <span>Total {trace.duration_ms ?? 0}ms</span>
               <span>{trace.deltas} deltas</span>
               <span>{trace.bytes}B content</span>
+              {tsStage && <span>{`token saver ${tsStage.detail ?? 'rewrote body'}`}</span>}
             </>
           ) : (
             <span className="muted">Send a request through the gateway to populate the flow.</span>

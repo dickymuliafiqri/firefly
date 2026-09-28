@@ -5,6 +5,22 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.34.0] - 2026-09-28
+
+### Changed
+
+- **Three-column Line canvas: credentials and the Token Saver hop are no longer nodes (`frontend/src/components/visualizer/views/line.tsx`, `frontend/src/styles/global.css`)**: the canvas is now exactly `Firefly -> upstream -> stream phases`, so a request reads as one connected path instead of five columns of plumbing.
+  - The Token Saver node and the credential node are gone, together with their lanes. Nothing changed server-side: the `tokensaver` stage and the masked `key_ref` are still recorded in the trace payload, they simply stopped owning a column. The rewrite fact still reaches the operator - the legend appends `token saver guard+compress -8.2kB` when the stage is present.
+  - The *model* moved from the root node to the upstream node that served it, which is where it belongs: the winning row shows the model as its sub-label and its TTFB as its status, a skipped row shows why it lost (`429 cooldown 30s`), an untouched row shows `idle`, and the root now states the ingress call (`POST /v1/chat/completions`) next to the trace state.
+  - Lane topology follows the columns: the root fans out to every upstream row and the winning row fans out to the whole phase column (`ROOT_W` 200, `X_UP` 470, `UP_W` 300, `X_PHASE` 1010, canvas `W` 1310). Both fans are permanent and only change state - bright + flowing on the path the request took, a settled trail on a phase it already left behind, `viz-base dim` on everything else - and because no credential is drawn at all, an unauthenticated trace can never look like it spent a key. The floating skip-reason lane labels were folded into the node sub-labels, which also removed the text that used to overlap the fan.
+  - Node labels stay inside their box: SVG text neither wraps nor ellipsizes, so a new `clip()` helper caps every sub-label (a 40-character model name renders as `claude-sonnet-4-5-20250929-thin...`), and `.viz-node.ts` / `.viz-flow.f2` were dropped from the stylesheet now that nothing uses them.
+- **Regression coverage:** `frontend/scripts/line-view-check.tsx` was rewritten around the new topology and grew to 68 headless assertions: the node count is `1 + upstreams + 5` in every scenario (empty, streaming, finished, failed, unrouted, 8-upstream catalog, non-chat endpoint), the root lanes start at x=290 and end on the upstream rows while the phase lanes start on the winning row (or on the column midline before anything is routed) and end on the five terminal rows, a long model name is asserted to be clipped, and both `Token Saver` and `credential` are asserted absent from the markup.
+- **Docs/version:** the README dashboard bullet describes the three-column canvas and where the rewrite fact now lives, and the sidebar version is `v1.34.0`.
+- **Verified:** `npm run check:line-view` (68 assertions), `tsc --noEmit`, and `vite build`.
+- **Permanent connectors (the un-released 1.33.0 work, shipped together with this release):** the edge set became canvas topology exactly like the node set - every leg drawn from the first render and only its *state* following the trace (bright + flowing on the path the request took, a settled trail on a phase it already left behind, `viz-base dim` on everything else). That rule carried straight into the column removal above; what changed here is only which columns exist. It also replaced the old gated connectors, whose `credLaneSources` helper hardcoded the canvas midline (y=370) and so could only check a fixed row count.
+- **Verified (1.33.0 window):** `npm run check:line-view` (70 assertions at the time), `tsc --noEmit`, and `vite build`.
+
+
 ## [1.32.0] - 2026-09-28
 
 ### Added
