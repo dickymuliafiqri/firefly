@@ -1787,6 +1787,12 @@ input:disabled {
   opacity: 0.45;
 }
 
+/* Upstream present in the catalog but untouched by the selected trace. */
+.visualizer-svg .viz-node.idle {
+  opacity: 0.72;
+  stroke-dasharray: 6 4;
+}
+
 .visualizer-svg .viz-pkt {
   fill: var(--biolum-bright);
 }

@@ -11,6 +11,13 @@ export interface ViewProps {
   trace?: RoutingTrace;
   /** Recent traces, oldest first — the fleet context for aggregate views. */
   traces: RoutingTrace[];
+  /**
+   * Names of every upstream in the live catalog (telemetry order). Views that
+   * draw a fixed topology keep one permanent node per entry instead of only
+   * the upstreams the selected trace happened to touch. Empty when telemetry
+   * is unavailable.
+   */
+  catalogUpstreams?: string[];
 }
 
 export interface VisualizerView {

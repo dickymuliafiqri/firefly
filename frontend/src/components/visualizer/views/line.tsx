@@ -199,6 +199,18 @@ function PanCanvas({ viewBox, label, children }: { viewBox: string; label: strin
   );
 }
 
+/**
+ * One reference row of this view. `idle` marks an upstream that exists in the
+ * live catalog but was not touched by the selected trace — those rows are
+ * permanent, exactly like the root node.
+ */
+type LaneNode = {
+  upstream: string;
+  key?: string;
+  note?: string;
+  state: 'chosen' | 'skipped' | 'idle';
+};
+
 /** Staggered light packets riding a ghost path (SMIL animateMotion). */
 function Packets({ pathId, dur, tone = '' }: { pathId: string; dur: number; tone?: string }) {
   const begins = [0, dur / 4.4, dur / 2.2];
@@ -219,20 +231,28 @@ function Packets({ pathId, dur, tone = '' }: { pathId: string; dur: number; tone
  * Line view: the monitored request drawn as one left-to-right flow in the
  * firefly-web illustration style — smooth bezier lanes, a dashed "data flow"
  * overlay and travelling light packets confined to the active path, dim base
- * lanes with floating status labels for skipped branches. The Firefly root is
- * always on the canvas, even before the first request arrives.
+ * lanes with floating status labels for skipped branches. The Firefly root and
+ * one node per live catalog upstream are always on the canvas, even before the
+ * first request arrives.
  */
 export const lineView: VisualizerView = {
   id: 'line',
   label: 'Line',
   hint: 'Flow: Firefly → upstream → key → stream phases.',
-  render: ({ trace }) => {
+  render: ({ trace, catalogUpstreams = [] }) => {
     const candidates = trace?.candidates ?? [];
-    const upstreams = candidates.length
+    const routed: LaneNode[] = candidates.length
       ? candidates
       : trace?.upstream
-        ? [{ upstream: trace.upstream, state: 'chosen' as const }]
+        ? [{ upstream: trace.upstream, state: 'chosen' }]
         : [];
+    const routedNames = new Set(routed.map((c) => c.upstream));
+    const upstreams: LaneNode[] = [
+      ...routed,
+      ...catalogUpstreams
+        .filter((name) => !routedNames.has(name))
+        .map((name) => ({ upstream: name, state: 'idle' as const })),
+    ];
     const chosenIdx = Math.max(
       upstreams.findIndex((c) => c.state === 'chosen'),
       0,
@@ -276,7 +296,7 @@ export const lineView: VisualizerView = {
                 <path d={d} className={`viz-base${chosen ? '' : ' dim'}`} />
                 {chosen && <path d={d} className={`viz-flow${settled ? ' settled' : ''}`} />}
                 {chosen && !settled && <path id="viz-p1" d={d} className="viz-ghost" />}
-                {!chosen && (
+                {!chosen && c.state !== 'idle' && (
                   <text
                     className={`viz-st ${c.state === 'skipped' ? 'red' : 'dim'}`}
                     x={(rootRight + X_UP) / 2}
@@ -345,7 +365,7 @@ export const lineView: VisualizerView = {
             const chosen = c.state === 'chosen';
             return (
               <g key={`${c.upstream}-${i}`}>
-                <rect x={X_UP} y={boxTop(i)} width={UP_W} height={BOX_H} rx={10} className={`viz-node${chosen ? ' chosen' : ' gone'}`} />
+                <rect x={X_UP} y={boxTop(i)} width={UP_W} height={BOX_H} rx={10} className={`viz-node${chosen ? ' chosen' : c.state === 'idle' ? ' idle' : ' gone'}`} />
                 <text x={X_UP + 24} y={boxTop(i) + 25} className="viz-title">
                   {c.upstream}
                 </text>

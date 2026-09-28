@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTelemetryQuery } from '@/services/api';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { KpiCard, KpiGrid, PageHeader } from '@/components/ui/PageHeader';
@@ -109,6 +110,14 @@ export function VisualizerPage() {
     return found ?? filtered[filtered.length - 1] ?? traces[traces.length - 1];
   }, [traces, filtered, selectedId]);
 
+  const { data: telemetry } = useTelemetryQuery();
+  // Every upstream in the live catalog, so the canvas always shows one node
+  // per active upstream — not just the ones the selected trace touched.
+  const catalogUpstreams = useMemo(
+    () => telemetry?.upstreams.map((u) => u.name) ?? [],
+    [telemetry],
+  );
+
   const view = lineView;
 
   return (
@@ -170,7 +179,7 @@ export function VisualizerPage() {
             <h2>{view.label} view</h2>
             <span className="viz-sub">Drag to pan; scroll to zoom; double-click to reset.</span>
           </div>
-          <div className="card-body">{view.render({ trace: selected, traces: filtered })}</div>
+          <div className="card-body">{view.render({ trace: selected, traces: filtered, catalogUpstreams })}</div>
         </div>
 
         <div className="card">

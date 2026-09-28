@@ -5,6 +5,16 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.30.0] - 2026-09-28
+
+### Added
+
+- **Permanent upstream nodes on the Visualizer Line Canvas (`frontend/src/components/visualizer/views/line.tsx`, `frontend/src/components/visualizer/views/index.ts`, `frontend/src/pages/VisualizerPage.tsx`, `frontend/src/styles/global.css`)**:
+  - The canvas now draws one node per upstream in the live catalog — the same count as `GET /api/telemetry` reports — so the topology is visible before the first request arrives instead of only the upstreams a selected trace happened to touch. Root (Firefly) and every upstream node are permanent; `catalogUpstreams` is threaded from `useTelemetryQuery()` through `ViewProps` into `lineView.render`.
+  - Nodes untouched by the selected trace render as dashed `viz-node idle` rows (72% opacity, no lane label), while the routed upstream keeps the existing `chosen`/`skipped` treatment; canvas height already derives from the node count, and the empty-trace case now shows the full fan-out from root.
+  - Verified: `tsc --noEmit`, `vite build`, and a headless render of `lineView.render` (3 catalog upstreams → root + 3 permanent nodes with no trace; with a trace the chosen node is highlighted and the rest fall back to `idle`).
+- **Docs:** the README dashboard bullet now names the Visualizer canvas and its permanent node set (root + one node per active upstream).
+
 ## [1.29.0] - 2026-09-28
 
 ### Added
