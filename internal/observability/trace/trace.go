@@ -15,15 +15,22 @@ import (
 
 // Stage names emitted along the request lifecycle, in order. The dashboard
 // renders its phase timeline from this sequence.
+//
+// StageTokenSaver sits between StageKey and StageAttempt because that is where
+// the server rewrites the chat body (operator system prompt + RTK/Caveman/
+// Ponytail/Headroom) — after the credential is acquired and before the request
+// leaves the gateway. It is emitted only when a pass actually changed the body,
+// so the dashboard can tell a rewritten request from a pass-through one.
 const (
-	StageReceived = "received"
-	StageResolve  = "resolve"
-	StageRoute    = "route"
-	StageKey      = "key"
-	StageAttempt  = "attempt"
-	StageTTFB     = "ttfb"
-	StageStream   = "stream"
-	StageDone     = "done"
+	StageReceived   = "received"
+	StageResolve    = "resolve"
+	StageRoute      = "route"
+	StageKey        = "key"
+	StageTokenSaver = "tokensaver"
+	StageAttempt    = "attempt"
+	StageTTFB       = "ttfb"
+	StageStream     = "stream"
+	StageDone       = "done"
 )
 
 // Activity kinds classified from the SSE stream.

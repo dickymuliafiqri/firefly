@@ -5,6 +5,20 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.32.0] - 2026-09-28
+
+### Added
+
+- **Token Saver hop on the Visualizer Line canvas (`internal/observability/trace/trace.go`, `internal/server/handlers.go`, `frontend/src/components/visualizer/views/line.tsx`, `frontend/src/styles/global.css`)**: the pre-forward body rewrite is now drawn as its own hop between the Firefly root and the upstream column, so a request the gateway compressed is visually distinguishable from a pass-through.
+  - New trace stage `tokensaver` (`trace.StageTokenSaver`), recorded after the credential is acquired and before the upstream attempt — the same place the rewrite happens — and **only when a pass actually changed the body**: a pass-through request records no stage at all, which is exactly what the canvas reads as "nothing happened on this hop".
+  - The stage detail names the passes that ran (`guard`, `compress`, `guard+compress`) plus the byte delta when the body shrank (`-8.2kB`). The operator System Prompt Guard can only grow the body, so a grow-only rewrite reports the marks without a misleading negative saving.
+  - Canvas geometry: the upstream column moved right to make room (`X_UP` 540 → 620) and the Token Saver node is midline-anchored like the credential node, because the rewrite is independent of which upstream wins routing. The request leg Firefly → Token Saver is drawn on every pass, the fan-out to the upstream column now starts at the Token Saver node (`lane()` grew a clamped curve so the short leg keeps a sane shape), and the node sub-label reads the stage detail, `no change` for a chat request that was left alone, or `chat only` for endpoints the optimizer never touches (`/v1/embeddings`, `/v1/completions`, …).
+  - Node styling: `.viz-node.ts` (cyan) while the hop is idle and `.viz-node.ts.applied` (green) once the stage is present; the view hint now reads `Firefly → token saver → upstream → credential → stream phases`.
+- **Regression coverage:** `TestForwardRecordsTokenSaverStage` (`internal/server/tokensaver_test.go`) drives real chat requests through the router and pins the contract — `guard` for a guard-only rewrite, `compress` for RTK, **no stage** on pass-through, and the stage ordered between `key` and `attempt`. `frontend/scripts/line-view-check.tsx` grew to 50 headless assertions and its geometry helpers became midline-aware (`midOf`/`requestLeg`/`tsFan`), so the 8-upstream catalog checks the new fan-out instead of a hardcoded y=370.
+- **Docs/version:** the README dashboard bullet names the Token Saver node and its idle labels, and the sidebar version is `v1.32.0`.
+- **Verified:** `go test ./internal/server/... ./internal/observability/trace/...`, `npm run check:line-view` (50 assertions), `tsc --noEmit`, and `vite build`.
+
+
 ## [1.31.0] - 2026-09-28
 
 ### Changed

@@ -19,7 +19,17 @@ const W = 1580;
 
 const X_ROOT = 90;
 const ROOT_W = 170;
-const X_UP = 540;
+/**
+ * Token Saver column. The optimizer rewrites the chat body inside the gateway
+ * (server-side it runs after the credential is acquired and before
+ * `adapter.Forward`), so it owns the request leg between Firefly and the
+ * upstream column instead of a row of its own. It is midline-anchored exactly
+ * like the credential node: the rewrite does not depend on which upstream wins
+ * the routing.
+ */
+const X_TS = 320;
+const TS_W = 150;
+const X_UP = 620;
 const UP_W = 260;
 const X_KEY = 1040;
 const KEY_W = 210;
@@ -50,9 +60,14 @@ function phaseLabel(kind: string): string {
  */
 const TERMINAL_KINDS = ['reasoning', 'tool', 'answer', 'usage', 'error'] as const;
 
-/** Smooth left-to-right bezier lane between two port points. */
-function lane(x0: number, y0: number, x1: number, y1: number): string {
-  return `M ${x0} ${y0} C ${x0 + CURVE} ${y0}, ${x1 - CURVE} ${y1}, ${x1} ${y1}`;
+/**
+ * Smooth left-to-right bezier lane between two port points. `curve` is the
+ * horizontal handle length; callers clamp it to half the horizontal run for
+ * short legs, because a handle longer than the gap itself bends the path
+ * backwards and the lane visibly doubles back on itself.
+ */
+function lane(x0: number, y0: number, x1: number, y1: number, curve = CURVE): string {
+  return `M ${x0} ${y0} C ${x0 + curve} ${y0}, ${x1 - curve} ${y1}, ${x1} ${y1}`;
 }
 
 /**
@@ -243,21 +258,24 @@ function Packets({ pathId, dur, tone = '' }: { pathId: string; dur: number; tone
  * overlay and travelling light packets confined to the active path, dim base
  * lanes with floating status labels for skipped branches.
  *
- * The topology is permanent by design: the Firefly root, one node per live
- * catalog upstream, the credential node and one terminal node per stream phase
- * sit on the canvas before the first request arrives and stay there afterwards,
- * so nothing appears or disappears mid-stream and the operator never loses
- * their place (rows are anchored, the credential node is row-fixed). A request
- * only changes node *state*.
+ * The topology is permanent by design: the Firefly root, the Token Saver node on
+ * the request leg, one node per live catalog upstream, the credential node and
+ * one terminal node per stream phase sit on the canvas before the first request
+ * arrives and stay there afterwards, so nothing appears or disappears mid-stream
+ * and the operator never loses their place (rows are anchored, the credential
+ * and Token Saver nodes are row-fixed). A request only changes node *state*.
  *
  * Connectors past the upstream column are gated on routing actually resolving a
  * credential — a detected `key_ref` — and every detected `key_ref` converges on
- * the single fixed credential node.
+ * the single fixed credential node. The Token Saver node is reported the same
+ * way: it renders `applied` only when the trace carries the server's
+ * `tokensaver` stage, meaning the gateway really rewrote the request body before
+ * forwarding it, and `idle` on a pass-through.
  */
 export const lineView: VisualizerView = {
   id: 'line',
   label: 'Line',
-  hint: 'Flow: Firefly → upstream → credential → stream phases.',
+  hint: 'Flow: Firefly → token saver → upstream → credential → stream phases.',
   render: ({ trace, catalogUpstreams = [] }) => {
     const candidates = trace?.candidates ?? [];
     const routed: LaneNode[] = candidates.length
@@ -313,17 +331,36 @@ export const lineView: VisualizerView = {
     const keyY = mid - BOX_H / 2;
     const keyMid = mid;
     const rootRight = X_ROOT + ROOT_W;
+    const tsRight = X_TS + TS_W;
     const upRight = X_UP + UP_W;
     const keyRight = X_KEY + KEY_W;
 
     const settled = trace ? !streaming : false;
 
+    // The Token Saver node reports what the gateway did to the request body
+    // before forwarding it. The server only emits `trace.StageTokenSaver` when a
+    // pass actually changed the body, so the stage's absence means pass-through;
+    // and on endpoints that carry no messages array (embeddings, legacy
+    // completions) the optimizer never runs at all.
+    const tsStage = trace?.stages?.find((s) => s.name === 'tokensaver');
+    const tsApplied = !!tsStage;
+    const tsChatPath = !trace?.path || trace.path.endsWith('/chat/completions');
+    const tsY = mid - BOX_H / 2;
+    const rootToTs = lane(rootRight, mid, X_TS, mid, Math.min(CURVE, (X_TS - rootRight) / 2));
+
     return (
       <div className="visualizer-view">
         <PanCanvas viewBox={`0 0 ${W} ${height}`} label="Request routing flow">
-          {/* ---------- lanes: Firefly -> upstreams ---------- */}
+          {/* ---------- lane: Firefly -> Token Saver (the request leg) ---------- */}
+          <g>
+            <path d={rootToTs} className={`viz-base${trace ? '' : ' dim'}`} />
+            {trace && <path d={rootToTs} className={`viz-flow${settled ? ' settled' : ''}`} />}
+            {trace && !settled && <path id="viz-p0" d={rootToTs} className="viz-ghost" />}
+          </g>
+
+          {/* ---------- lanes: Token Saver -> upstreams ---------- */}
           {upstreams.map((c, i) => {
-            const d = lane(rootRight, mid, X_UP, rowCenter(i));
+            const d = lane(tsRight, mid, X_UP, rowCenter(i));
             const chosen = c.state === 'chosen';
             return (
               <g key={`lane-up-${i}`}>
@@ -333,7 +370,7 @@ export const lineView: VisualizerView = {
                 {!chosen && c.state !== 'idle' && (
                   <text
                     className={`viz-st ${c.state === 'skipped' ? 'red' : 'dim'}`}
-                    x={(rootRight + X_UP) / 2}
+                    x={(tsRight + X_UP) / 2}
                     y={rowCenter(i) + (i % 2 ? 26 : -14)}
                     textAnchor="middle"
                   >
@@ -383,6 +420,7 @@ export const lineView: VisualizerView = {
           {/* ---------- packets on the active path ---------- */}
           {streaming && hasKey && (
             <g>
+              <Packets pathId="viz-p0" dur={2.2} />
               <Packets pathId="viz-p1" dur={2.2} />
               <Packets pathId="viz-p2" dur={1.4} />
               <Packets pathId="viz-p3" dur={1.1} tone="cyan" />
@@ -399,6 +437,30 @@ export const lineView: VisualizerView = {
               {trace
                 ? `${trace.model ?? trace.path ?? 'request'} · ${trace.error ? 'error' : trace.state}`
                 : 'waiting for a request…'}
+            </text>
+          </g>
+
+          {/* ---------- Token Saver node: fixed, always visible ---------- */}
+          <g>
+            <rect
+              x={X_TS}
+              y={tsY}
+              width={TS_W}
+              height={BOX_H}
+              rx={10}
+              className={`viz-node ts${tsApplied ? ' applied' : ' idle'}`}
+            />
+            <text x={X_TS + TS_W / 2} y={tsY + 25} textAnchor="middle" className="viz-title">
+              Token Saver
+            </text>
+            <text x={X_TS + TS_W / 2} y={tsY + 43} textAnchor="middle" className="viz-sub">
+              {tsApplied
+                ? tsStage?.detail || 'rewrote body'
+                : !trace
+                  ? 'standby'
+                  : tsChatPath
+                    ? 'no change'
+                    : 'chat only'}
             </text>
           </g>
 

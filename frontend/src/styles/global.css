@@ -1774,6 +1774,17 @@ input:disabled {
   stroke: rgba(190, 242, 100, 0.55);
 }
 
+/* Token Saver node on the request path: cyan while it only stands by, ok-green
+   once the trace proves it rewrote the body. */
+.visualizer-svg .viz-node.ts {
+  stroke: rgba(103, 232, 249, 0.45);
+}
+
+.visualizer-svg .viz-node.ts.applied {
+  stroke: var(--ok);
+  stroke-dasharray: none;
+}
+
 .visualizer-svg .viz-node.chosen {
   stroke: var(--ok);
 }

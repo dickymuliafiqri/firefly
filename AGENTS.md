@@ -51,7 +51,7 @@ Before modifying or adding code to Firefly, every AI Agent **must understand and
 | `config` | `internal/config/` | JSON configuration loader (`upstreams.json`, `models.json`, `tenants.json`, `combos.json`) with strict schema validation and keyless free tier auto-provisioning. |
 | `registry` | `internal/registry/` | Thread-safe catalog snapshot store backed by `atomic.Pointer[domain.CatalogSnapshot]`. Zero-downtime hot-swap configuration reloads. |
 | `limits` | `internal/limits/` | Token-bucket rate limiters (`golang.org/x/time/rate`) per tenant, and CAS atomic concurrency gates per-credential/keyslot. |
-| `tokensaver` | `internal/tokensaver/` | Token Saver optimization suite: tool output compression (RTK - ANSI stripping, log deduplication, git diff compacting, head/tail truncation), brevity prompt injection (Caveman), minimal code bias (Ponytail), and conversation middle context pruning (Headroom). Also hosts the operator System Prompt Guard (`guard.go`, `InjectSystemPrompt`): appends the `token_saver.system_prompt` directive to the tail of every chat request's system block (idempotent, independent of the master switch, capped at `domain.MaxSystemPromptChars`) so third-party proxy-inserted promotional prompts are overridden. Standalone compression via `POST /v1/compress`. |
+| `tokensaver` | `internal/tokensaver/` | Token Saver optimization suite: tool output compression (RTK - ANSI stripping, log deduplication, git diff compacting, head/tail truncation), brevity prompt injection (Caveman), minimal code bias (Ponytail), and conversation middle context pruning (Headroom). Also hosts the operator System Prompt Guard (`guard.go`, `InjectSystemPrompt`): appends the `token_saver.system_prompt` directive to the tail of every chat request's system block (idempotent, independent of the master switch, capped at `domain.MaxSystemPromptChars`) so third-party proxy-inserted promotional prompts are overridden. Standalone compression via `POST /v1/compress`. Chat requests report their rewrite to the trace recorder as `trace.StageTokenSaver` — emitted only when a pass actually changed the body — which is what the Visualizer Line canvas draws as the rewrite hop. |
 | `watch` | `internal/watch/` | File watcher combining `fsnotify`, periodic polling, and SIGHUP signals for atomic configuration hot-reloading with quiet-window debounce coalescing. |
 | `reqid` | `internal/reqid/` | Leaf package managing context-bound request identifiers without external dependencies. |
 | `binx` | `internal/binx/` | Global binary management utilities: platform-specific executable naming (`ExecutableName`), fallback directory resolution (`DefaultDir`), binary resolution (`Find` across PATH, home, local paths, and custom directories), archive extraction (`ExtractTarGz`), and atomic HTTP binary downloading (`Download`). |
@@ -131,6 +131,14 @@ Before modifying or adding code to Firefly, every AI Agent **must understand and
     │                               If all keys cooldown -> HTTP 429 (Retry-After: 1)
     ├── Credential In-Flight Gate : `deps.Limiter.AcquireKeySlot()` acquires key concurrency ticket.
     │                               If key limit reached -> HTTP 429
+    ├── Token Saver Rewrite       : Chat only (`upstreamPath == "/chat/completions"`). The operator
+    │                               System Prompt Guard (`tokensaver.InjectSystemPrompt`) runs
+    │                               first, then `tokensaver.Process` (RTK/Caveman/Ponytail/Headroom)
+    │                               rewrites the body before the adapter reads it, and
+    │                               `trace.StageTokenSaver` is recorded *only* when a pass really
+    │                               changed the body — absence is the pass-through signal the
+    │                               Visualizer Line canvas reads. `tokensIn` is then re-estimated
+    │                               from the rewritten body.
     │
     ▼ 6. Upstream Adapter Execution (ports.UpstreamAdapter)
     ├── Protocol Lookup           : Select adapter (`openai` or `anthropic`)

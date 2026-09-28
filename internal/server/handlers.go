@@ -184,6 +184,39 @@ func (t *responseTracker) extractUsage() (promptToks int, compToks int, ok bool)
 	return 0, 0, false
 }
 
+// tokenSaverDetail summarizes one pre-forward rewrite for the visualizer's
+// Token Saver node: which pass ran and how many bytes it took out of the body.
+// The operator guard can only grow a body (it appends a directive), so a
+// non-positive delta is reported as marks alone instead of negative savings.
+func tokenSaverDetail(guard, compress bool, saved int) string {
+	var marks string
+	switch {
+	case guard && compress:
+		marks = "guard+compress"
+	case guard:
+		marks = "guard"
+	case compress:
+		marks = "compress"
+	default:
+		return ""
+	}
+	if saved <= 0 {
+		return marks
+	}
+	return marks + " -" + savedBytesText(saved)
+}
+
+func savedBytesText(n int) string {
+	switch {
+	case n < 1024:
+		return strconv.Itoa(n) + "B"
+	case n < 1<<20:
+		return strconv.FormatFloat(float64(n)/1024, 'f', 1, 64) + "kB"
+	default:
+		return strconv.FormatFloat(float64(n)/(1<<20), 'f', 2, 64) + "MB"
+	}
+}
+
 func estimateInputTokens(body []byte) int {
 	if len(body) == 0 {
 		return 0
@@ -467,21 +500,34 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 		// before adapter.Forward, so every protocol is covered — the anthropic
 		// adapter folds the system block into its own schema the same way it
 		// already does for persona directives.
+		// The rewrite is reported to the visualizer as trace.StageTokenSaver, and
+		// only when a pass actually changed the body: the Line canvas draws a
+		// Token Saver node on the request path and uses that stage to tell a
+		// rewritten request from a pass-through one. Nothing is allocated when no
+		// pass rewrites anything.
 		bodyModified := false
 		if upstreamPath == "/chat/completions" {
-			if sp := snap.TokenSaver().SystemPrompt; sp != "" {
-				if transformed, modified := tokensaver.InjectSystemPrompt(body, sp); modified {
+			ts := snap.TokenSaver()
+			bodyLenBefore := len(body)
+			guardApplied := false
+			if ts.SystemPrompt != "" {
+				if transformed, modified := tokensaver.InjectSystemPrompt(body, ts.SystemPrompt); modified {
 					body = transformed
 					bodyModified = true
+					guardApplied = true
 				}
 			}
-			if snap.TokenSaver().Enabled {
-				if transformed, modified := tokensaver.Process(body, snap.TokenSaver()); modified {
+			compressApplied := false
+			if ts.Enabled {
+				if transformed, modified := tokensaver.Process(body, ts); modified {
 					body = transformed
 					bodyModified = true
+					compressApplied = true
 				}
 			}
 			if bodyModified {
+				capture.Stage(trace.StageTokenSaver,
+					tokenSaverDetail(guardApplied, compressApplied, bodyLenBefore-len(body)))
 				tokensIn = estimateInputTokens(body)
 			}
 		}
