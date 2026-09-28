@@ -1700,6 +1700,26 @@ input:disabled {
 }
 
 
+.viz-town-wrap {
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.viz-town {
+  height: 520px;
+  overflow: hidden;
+  background: transparent;
+}
+
+.viz-town canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
 .visualizer-legend {
   display: flex;
   flex-wrap: wrap;

@@ -5,6 +5,7 @@
 import type { ReactNode } from 'react';
 import type { RoutingTrace } from '@/services/visualizer';
 import { lineView } from './line';
+import { townView } from './town';
 
 export interface ViewProps {
   /** The selected trace (may be undefined before the first request arrives). */
@@ -27,7 +28,7 @@ export interface VisualizerView {
   render: (props: ViewProps) => ReactNode;
 }
 
-export const VISUALIZER_VIEWS: VisualizerView[] = [lineView];
+export const VISUALIZER_VIEWS: VisualizerView[] = [lineView, townView];
 
 export function findView(id: string): VisualizerView {
   return VISUALIZER_VIEWS.find((v) => v.id === id) ?? lineView;

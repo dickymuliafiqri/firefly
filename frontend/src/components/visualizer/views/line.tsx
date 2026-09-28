@@ -79,13 +79,42 @@ function lane(x0: number, y0: number, x1: number, y1: number, curve = CURVE): st
 }
 
 /**
- * Google-Maps-style pannable + zoomable canvas: the SVG renders larger than
- * its viewport; pointer drags pan it, the wheel (and two-finger pinch) zoom
+ * Viewport-fitted pannable + zoomable canvas: the SVG renders larger than its
+ * viewport; pointer drags pan it, the wheel (and two-finger pinch) zoom
  * toward the cursor, zoom buttons sit in the corner, and double-click snaps
- * back to the origin at 100%.
+ * back to the fitted view.
+ *
+ * Auto-fit: on mount, on viewport resize, and whenever the content height
+ * changes (one more upstream row), the transform resets so the whole content
+ * box is visible with a margin, clamped to the zoom limits. Any manual
+ * pan/zoom takes over until the next content/viewport change.
  */
-const MIN_ZOOM = 0.3;
-const MAX_ZOOM = 3;
+export const MIN_ZOOM = 0.3;
+export const MAX_ZOOM = 3;
+const FIT_MARGIN = 1.08; // ~8% breathing room around the content box.
+
+export function contentSize(rows: number): { width: number; height: number } {
+  return { width: W, height: 2 * PAD + Math.max(rows, TERMINAL_KINDS.length) * ROW };
+}
+
+/**
+ * Largest zoom (within limits) that fits the whole content box into the
+ * viewport with a margin. Pure, so the headless check can assert it.
+ */
+export function fitZoom(viewportW: number, viewportH: number, contentW: number, contentH: number): number {
+  if (viewportW <= 0 || viewportH <= 0 || contentW <= 0 || contentH <= 0) return 1;
+  return clampZoom(Math.min(viewportW / (contentW * FIT_MARGIN), viewportH / (contentH * FIT_MARGIN)));
+}
+
+/**
+ * Transform that centers the content box in the viewport at the fitted zoom.
+ * Pan offset is in CSS pixels: content point (cx, cy) lands at z*c+t,
+ * so centering means t = (viewport - z*content)/2.
+ */
+export function fitTransform(viewportW: number, viewportH: number, contentW: number, contentH: number): Transform {
+  const z = fitZoom(viewportW, viewportH, contentW, contentH);
+  return { x: (viewportW - contentW * z) / 2, y: (viewportH - contentH * z) / 2, z };
+}
 
 type Transform = { x: number; y: number; z: number };
 
@@ -100,11 +129,27 @@ function zoomAround(prev: Transform, mx: number, my: number, nz: number): Transf
   };
 }
 
-function PanCanvas({ viewBox, label, children }: { viewBox: string; label: string; children: ReactNode }) {
+function PanCanvas({ viewBox, label, children, rows }: { viewBox: string; label: string; children: ReactNode; rows: number }) {
   const [t, setT] = useState<Transform>({ x: 0, y: 0, z: 1 });
   const tRef = useRef(t);
   tRef.current = t;
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
   const canvasRef = useRef<HTMLDivElement>(null);
+  // Bump whenever the auto-fit must re-run: mount, viewport resize, or a
+  // content-height change. Manual pan/zoom never touches it.
+  const doFit = () => {
+    const host = canvasRef.current;
+    if (!host) return;
+    const rect = host.getBoundingClientRect();
+    const size = contentSize(rowsRef.current);
+    const next = fitTransform(rect.width, rect.height, size.width, size.height);
+    tRef.current = next;
+    setT(next);
+  };
+  const [fitEpoch, setFitEpoch] = useState(0);
+  const fitEpochRef = useRef(0);
+  fitEpochRef.current = fitEpoch;
   const drag = useRef<{ px: number; py: number; ox: number; oy: number } | null>(null);
   const pointers = useRef(new Map<number, { x: number; y: number }>());
   const pinch = useRef<{ dist: number; mx: number; my: number; ox: number; oy: number; z: number } | null>(null);
@@ -133,7 +178,8 @@ function PanCanvas({ viewBox, label, children }: { viewBox: string; label: strin
     setT(zoomAround(prev, rect.width / 2, rect.height / 2, nz));
   };
 
-  const reset = () => setT({ x: 0, y: 0, z: 1 });
+  // Double-click (and the reset button) return to the fitted view.
+  const reset = () => doFit();
 
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -196,6 +242,31 @@ function PanCanvas({ viewBox, label, children }: { viewBox: string; label: strin
       drag.current = null;
     }
   };
+
+  // Fit once on mount and whenever the viewport resizes (the card can resize
+  // without the window changing); content-height changes re-fit via the rows
+  // effect below. Manual pan/zoom takes over until the next trigger.
+  useEffect(() => {
+    doFit();
+    const host = canvasRef.current;
+    if (!host) return;
+    const ro = new ResizeObserver(() => {
+      const epoch = fitEpochRef.current + 1;
+      fitEpochRef.current = epoch;
+      setFitEpoch(epoch);
+    });
+    ro.observe(host);
+    return () => ro.disconnect();
+    // Mount-only: doFit reads live refs so it always fits current content.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Re-fit when the viewport resized or the row count changed.
+  useEffect(() => {
+    if (fitEpoch === 0) return;
+    doFit();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fitEpoch, rows]);
 
   return (
     <div
@@ -303,10 +374,6 @@ export const lineView: VisualizerView = {
         .filter((name) => !routedNames.has(name))
         .map((name) => ({ upstream: name, state: 'idle' as const })),
     ];
-    const chosenIdx = Math.max(
-      upstreams.findIndex((c) => c.state === 'chosen'),
-      0,
-    );
 
     const phases = trace
       ? trace.phases?.length
@@ -339,12 +406,11 @@ export const lineView: VisualizerView = {
     // be a non-phase marker (`stage`), and then no terminal lane is live and the
     // packet path must not be referenced at all.
     const liveTerminal = TERMINAL_KINDS.find((k) => k === liveKind);
-    // The phases belong to the upstream that won the routing, so the fan past the
-    // upstream column hangs off that row. Before a trace has resolved a winner
-    // there is no such row and the fan hangs off the column midline, which keeps
-    // the idle canvas complete and symmetric; either way the node set is
-    // untouched and only lane geometry follows the winner.
-    const fanY = trace ? rowCenter(chosenIdx) : mid;
+    // Every upstream row owns a full fan to the five terminals, so the canvas
+    // is one connected graph from the first render no matter which row wins.
+    // Only state moves: the winning row fans out bright (flowing while live,
+    // settled trails once done), every other row stays dim. The node set is
+    // untouched; phases are per-row lanes, not per-row nodes.
     // Short legs need a shorter handle: a curve longer than the run itself bends
     // the lane backwards and it visibly doubles back on itself.
     const rootCurve = Math.min(CURVE, (X_UP - rootRight) / 2);
@@ -356,7 +422,7 @@ export const lineView: VisualizerView = {
 
     return (
       <div className="visualizer-view">
-        <PanCanvas viewBox={`0 0 ${W} ${height}`} label="Request routing flow">
+        <PanCanvas viewBox={`0 0 ${W} ${height}`} label="Request routing flow" rows={upstreams.length}>
           {/* ---------- lanes: Firefly -> upstream rows (permanent fan-out) ----------
               The root fans out to the whole upstream column from the first render,
               so the canvas is one connected graph before any traffic arrives. Only
@@ -373,24 +439,27 @@ export const lineView: VisualizerView = {
             );
           })}
 
-          {/* ---------- lanes: winning upstream -> stream phases (permanent) ----------
-              All five lanes exist from the first render. Only the state moves: the
-              phase the stream is inside right now is bright and flowing, a phase it
-              already left behind keeps a settled trail, the rest stay dim. */}
-          {TERMINAL_KINDS.map((kind, i) => {
-            const live = kind === liveKind;
-            const done = !live && recorded.has(kind);
-            const d = lane(upRight, fanY, X_PHASE, rowCenter(i), phaseCurve);
-            return (
-              <g key={`lane-ph-${kind}`}>
-                <path d={d} className={`viz-base${live || done ? '' : ' dim'}`} />
-                {live && <path d={d} className={`viz-flow info${settled ? ' settled' : ''}`} />}
-                {done && <path d={d} className="viz-flow info settled" />}
-                {live && !settled && <path id="viz-p1" d={d} className="viz-ghost" />}
-              </g>
-            );
+          {/* ---------- lanes: every upstream row -> stream phases (permanent) ----------
+              Each upstream row owns a full fan to the five terminals from the first
+              render, so every node connects to every phase whether or not it won the
+              routing. Only the state moves: the winning row fans out bright (flowing
+              while live, settled trails once done), every other row stays dim. */}
+          {upstreams.map((c, r) => {
+            const won = c.state === 'chosen';
+            return TERMINAL_KINDS.map((kind, i) => {
+              const live = won && kind === liveKind;
+              const done = won && !live && recorded.has(kind);
+              const d = lane(upRight, rowCenter(r), X_PHASE, rowCenter(i), phaseCurve);
+              return (
+                <g key={`lane-ph-${r}-${kind}`}>
+                  <path d={d} className={`viz-base${live || done ? '' : ' dim'}`} />
+                  {live && <path d={d} className={`viz-flow info${settled ? ' settled' : ''}`} />}
+                  {done && <path d={d} className="viz-flow info settled" />}
+                  {live && !settled && <path id="viz-p1" d={d} className="viz-ghost" />}
+                </g>
+              );
+            });
           })}
-
           {/* ---------- packets on the active path ---------- */}
           {streaming && (
             <g>

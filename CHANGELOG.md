@@ -5,6 +5,26 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.35.0] - 2026-09-28
+
+### Added
+
+- **Town view: the Visualizer gains a pixel-art office staffed by the live catalog (`frontend/src/components/visualizer/views/town.tsx`, `frontend/src/components/visualizer/views/index.ts`, `frontend/src/pages/VisualizerPage.tsx`)**: a second view alongside the Line canvas, powered by `agent-town@0.1.0` (MIT, pinned exact - `0.2.0` ships no `dist` because its `build` script runs `next build`).
+  - One agent per catalog upstream (`up:<name>`), never one per trace: the roster follows `catalogUpstreams` (telemetry order) with trace-only upstreams appended, so the office is always staffed exactly like the fleet - even before the first request arrives. Unrouted traces (upstream not yet resolved) are ignored: the office mirrors the catalog, never the routing transient.
+  - Idle crews lounge (engine `scheduleMovement` walks them to `break_area`/`whiteboard_area` on the `idle` table); a live trace pinned to their upstream puts them to work (`typing` on answer, `thinking` on reasoning/unrouted, `reading` on tools, `waiting` on usage) which walks them to a `desk`. A settled trace leaves an 8s success/error afterglow (`AFTERGLOW_MS`) before they drop back to idle. Bubbles carry `model @ tenant · NΔ` (error text clipped to 80 chars) - key refs never enter the town.
+  - Office size follows the roster (small/medium/large from the engine's 20x13 / 26x16 / 34x20 grids) and `officeScale()` fits the grid to the viewport (the engine auto-fits a fixed 24x16 window, so its scale is overridden at construction).
+  - Camera controls (`+`/`-`/reset + follow pause) with the effective zoom persisted to `localStorage` (`firefly.visualizer.town.camera.v1`); a 1.5x boost (`TOWN_ZOOM_BOOST`) layers over the engine fit, and pause freezes statuses while the crew keeps roaming.
+- **View switcher:** the Visualizer card header picks Line/Town via `findView(id)`; every view supplies its own hint. `ViewProps` now carries `catalogUpstreams` (already produced by `useTelemetryQuery`) to both views.
+
+### Changed
+
+- **Line canvas: auto-fit zoom + a permanent phase fan per upstream row (`frontend/src/components/visualizer/views/line.tsx`)**:
+  - The canvas opens fitted: `contentSize`/`fitZoom`/`fitTransform` compute the largest zoom (clamped 0.3-3) that shows the whole content box with ~8% margin and center it; re-fits on mount, viewport resize (`ResizeObserver` on the host) and row-count changes, while manual pan/zoom takes over until the next trigger. Double-click and the reset button return to the fitted view instead of the old fixed 100% origin (which rendered the 1310px canvas zoomed-in on load).
+  - The phase fan is no longer a single lane set hanging off the winning row/midline: **every upstream row owns a full fan to the five terminals** (`upstreams.map x TERMINAL_KINDS.map`), so the graph is one connected mesh from the first render. Only lane state moves - the winning row lights up (flowing while live, settled trails for phases it left behind), untouched rows stay `viz-base dim`.
+- **Regression coverage:** `frontend/scripts/line-view-check.tsx` grew to 116 headless assertions covering the per-row fan topology (10 lanes for a 2-row catalog, 40 for 8 rows, y0 pinned to each row), the auto-fit helpers (`contentSize`/`fitZoom`/`fitTransform` bounds), and the town camera clamps - alongside the existing roster/idle/work/afterglow and office-scale checks.
+- **Docs/version:** the README dashboard bullet describes both views, and the sidebar version is `v1.35.0`.
+- **Verified:** `npm run check:line-view` (116 assertions), `tsc --noEmit`, and `vite build`.
+
 ## [1.34.0] - 2026-09-28
 
 ### Changed

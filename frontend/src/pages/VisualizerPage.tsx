@@ -2,8 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTelemetryQuery } from '@/services/api';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
+import { Segmented } from '@/components/ui/Controls';
 import { KpiCard, KpiGrid, PageHeader } from '@/components/ui/PageHeader';
-import { lineView } from '@/components/visualizer/views/line';
+import { VISUALIZER_VIEWS, findView } from '@/components/visualizer/views/index';
 import {
   clearVisualizer,
   fetchVisualizerSnapshot,
@@ -35,6 +36,7 @@ export function VisualizerPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [follow, setFollow] = useState(true);
   const [search, setSearch] = useState('');
+  const [viewId, setViewId] = useState('line');
   const [error, setError] = useState<string | null>(null);
   const followRef = useRef(follow);
   const selectedRef = useRef(selectedId);
@@ -118,7 +120,7 @@ export function VisualizerPage() {
     [telemetry],
   );
 
-  const view = lineView;
+  const view = findView(viewId);
 
   return (
     <div className="page-col">
@@ -177,7 +179,14 @@ export function VisualizerPage() {
         <div className="card">
           <div className="card-header">
             <h2>{view.label} view</h2>
-            <span className="viz-sub">Drag to pan; scroll to zoom; double-click to reset.</span>
+            <span className="viz-sub">{view.hint}</span>
+            <span className="spacer" />
+            <Segmented
+              items={VISUALIZER_VIEWS.map((v) => ({ id: v.id, label: v.label }))}
+              value={view.id}
+              onChange={setViewId}
+              ariaLabel="Visualizer view"
+            />
           </div>
           <div className="card-body">{view.render({ trace: selected, traces: filtered, catalogUpstreams })}</div>
         </div>
