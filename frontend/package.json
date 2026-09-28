@@ -1,13 +1,14 @@
 {
   "name": "firefly-frontend",
   "private": true,
-  "version": "1.30.0",
+  "version": "1.31.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "check:line-view": "esbuild scripts/line-view-check.tsx --bundle --platform=node --format=cjs --outfile=node_modules/.cache/line-view-check.cjs --alias:@=./src --jsx=automatic --loader:.css=empty --log-level=warning && node node_modules/.cache/line-view-check.cjs"
   },
   "dependencies": {
     "@fontsource/fraunces": "^5.3.0",

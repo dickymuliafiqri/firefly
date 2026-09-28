@@ -40,6 +40,16 @@ function phaseLabel(kind: string): string {
   return PHASE_LABELS[kind] ?? kind.charAt(0).toUpperCase() + kind.slice(1);
 }
 
+/**
+ * Terminal nodes are canvas topology, not traffic. The set is fixed — and
+ * mirrors the `kind` values `trace.Classify` emits on the server — so the graph
+ * never grows or shrinks while a trace streams in or completes; only a node's
+ * *state* changes (`live` while that kind flows, `done` once the trace recorded
+ * it, `idle` otherwise). The credential node is likewise fixed and shared: every
+ * detected `key_ref` converges on that one node.
+ */
+const TERMINAL_KINDS = ['reasoning', 'tool', 'answer', 'usage', 'error'] as const;
+
 /** Smooth left-to-right bezier lane between two port points. */
 function lane(x0: number, y0: number, x1: number, y1: number): string {
   return `M ${x0} ${y0} C ${x0 + CURVE} ${y0}, ${x1 - CURVE} ${y1}, ${x1} ${y1}`;
@@ -231,14 +241,23 @@ function Packets({ pathId, dur, tone = '' }: { pathId: string; dur: number; tone
  * Line view: the monitored request drawn as one left-to-right flow in the
  * firefly-web illustration style — smooth bezier lanes, a dashed "data flow"
  * overlay and travelling light packets confined to the active path, dim base
- * lanes with floating status labels for skipped branches. The Firefly root and
- * one node per live catalog upstream are always on the canvas, even before the
- * first request arrives.
+ * lanes with floating status labels for skipped branches.
+ *
+ * The topology is permanent by design: the Firefly root, one node per live
+ * catalog upstream, the credential node and one terminal node per stream phase
+ * sit on the canvas before the first request arrives and stay there afterwards,
+ * so nothing appears or disappears mid-stream and the operator never loses
+ * their place (rows are anchored, the credential node is row-fixed). A request
+ * only changes node *state*.
+ *
+ * Connectors past the upstream column are gated on routing actually resolving a
+ * credential — a detected `key_ref` — and every detected `key_ref` converges on
+ * the single fixed credential node.
  */
 export const lineView: VisualizerView = {
   id: 'line',
   label: 'Line',
-  hint: 'Flow: Firefly → upstream → key → stream phases.',
+  hint: 'Flow: Firefly → upstream → credential → stream phases.',
   render: ({ trace, catalogUpstreams = [] }) => {
     const candidates = trace?.candidates ?? [];
     const routed: LaneNode[] = candidates.length
@@ -257,7 +276,18 @@ export const lineView: VisualizerView = {
       upstreams.findIndex((c) => c.state === 'chosen'),
       0,
     );
+    // Every credential the trace actually resolved: the routing candidates'
+    // keys plus the chosen ref. The lane set past the upstream column is drawn
+    // only once at least one was detected, and all of them converge on the one
+    // fixed credential node.
+    const keyRefs = [
+      ...new Set([
+        ...upstreams.map((c) => c.key).filter((k): k is string => !!k),
+        ...(trace?.key_ref ? [trace.key_ref] : []),
+      ]),
+    ];
     const keyRef = upstreams[chosenIdx]?.key ?? trace?.key_ref ?? '';
+    const hasKey = keyRefs.length > 0;
 
     const phases = trace
       ? trace.phases?.length
@@ -266,18 +296,22 @@ export const lineView: VisualizerView = {
           ? [trace.activity.kind]
           : [trace.state === 'error' ? 'error' : 'done']
       : [];
+    const recorded = new Set(phases);
     const streaming = trace?.state === 'stream';
     const liveKind = streaming ? trace?.activity?.kind : undefined;
-    const liveIdx = liveKind ? phases.indexOf(liveKind) : -1;
 
-    const rows = Math.max(upstreams.length, phases.length, 1);
+    // Rows are reserved for the fixed terminal column too, so the canvas never
+    // resizes when a trace arrives or a phase lights up.
+    const rows = Math.max(upstreams.length, TERMINAL_KINDS.length, 1);
     const height = rows * ROW + PAD * 2;
     const rowCenter = (i: number) => PAD + ROW * i + ROW / 2;
     const boxTop = (i: number) => rowCenter(i) - BOX_H / 2;
     const mid = height / 2;
     const rootY = mid - BOX_H / 2;
-    const keyY = boxTop(chosenIdx);
-    const keyMid = keyY + BOX_H / 2;
+    // The credential node is anchored to the canvas midline (the root's row) so
+    // it stays put no matter which upstream wins the routing.
+    const keyY = mid - BOX_H / 2;
+    const keyMid = mid;
     const rootRight = X_ROOT + ROOT_W;
     const upRight = X_UP + UP_W;
     const keyRight = X_KEY + KEY_W;
@@ -310,36 +344,44 @@ export const lineView: VisualizerView = {
             );
           })}
 
-          {/* ---------- lane: chosen upstream -> key ---------- */}
-          {trace && (
-            <g>
-              <path d={lane(upRight, rowCenter(chosenIdx), X_KEY, keyMid)} className="viz-base" />
-              <path
-                d={lane(upRight, rowCenter(chosenIdx), X_KEY, keyMid)}
-                className={`viz-flow f2${settled ? ' settled' : ''}`}
-              />
-              {!settled && <path id="viz-p2" d={lane(upRight, rowCenter(chosenIdx), X_KEY, keyMid)} className="viz-ghost" />}
-              <text className="viz-st grn" x={(upRight + X_KEY) / 2} y={keyMid - 14} textAnchor="middle">
-                selected
-              </text>
-            </g>
-          )}
+          {/* ---------- lanes: upstream -> credential (needs a key_ref) ---------- */}
+          {hasKey &&
+            upstreams.map((c, i) => {
+              const detected = !!c.key || (c.state === 'chosen' && !!trace?.key_ref);
+              if (!detected) return null;
+              const chosen = c.state === 'chosen';
+              const d = lane(upRight, rowCenter(i), X_KEY, keyMid);
+              return (
+                <g key={`lane-key-${i}`}>
+                  <path d={d} className={`viz-base${chosen ? '' : ' dim'}`} />
+                  {chosen && <path d={d} className={`viz-flow f2${settled ? ' settled' : ''}`} />}
+                  {chosen && !settled && <path id="viz-p2" d={d} className="viz-ghost" />}
+                  {chosen && (
+                    <text className="viz-st grn" x={(upRight + X_KEY) / 2} y={keyMid - 14} textAnchor="middle">
+                      selected
+                    </text>
+                  )}
+                </g>
+              );
+            })}
 
-          {/* ---------- lanes: key -> phases ---------- */}
-          {phases.map((_kind, i) => {
-            const d = lane(keyRight, keyMid, X_PHASE, rowCenter(i));
-            const live = i === liveIdx;
-            return (
-              <g key={`lane-ph-${i}`}>
-                <path d={d} className={`viz-base${live ? '' : ' dim'}`} />
-                {live && <path d={d} className={`viz-flow info${settled ? ' settled' : ''}`} />}
-                {live && !settled && <path id="viz-p3" d={d} className="viz-ghost" />}
-              </g>
-            );
-          })}
+          {/* ---------- lanes: credential -> terminals (connection + key_ref) ---------- */}
+          {hasKey &&
+            TERMINAL_KINDS.map((kind, i) => {
+              if (!recorded.has(kind)) return null;
+              const d = lane(keyRight, keyMid, X_PHASE, rowCenter(i));
+              const live = kind === liveKind;
+              return (
+                <g key={`lane-ph-${kind}`}>
+                  <path d={d} className={`viz-base${live ? '' : ' dim'}`} />
+                  {live && <path d={d} className={`viz-flow info${settled ? ' settled' : ''}`} />}
+                  {live && !settled && <path id="viz-p3" d={d} className="viz-ghost" />}
+                </g>
+              );
+            })}
 
           {/* ---------- packets on the active path ---------- */}
-          {streaming && (
+          {streaming && hasKey && (
             <g>
               <Packets pathId="viz-p1" dur={2.2} />
               <Packets pathId="viz-p2" dur={1.4} />
@@ -384,38 +426,44 @@ export const lineView: VisualizerView = {
             );
           })}
 
-          {/* ---------- key node ---------- */}
-          {trace && (
-            <g>
-              <rect x={X_KEY} y={keyY} width={KEY_W} height={BOX_H} rx={10} className="viz-node chosen" />
-              <text x={X_KEY + KEY_W / 2} y={keyY + 25} textAnchor="middle" className="viz-title">
-                {keyRef || 'credential'}
-              </text>
-              <text x={X_KEY + KEY_W / 2} y={keyY + 43} textAnchor="middle" className="viz-sub">
-                ttfb {trace.ttfb_ms ?? 0}ms
-              </text>
-            </g>
-          )}
+          {/* ---------- credential node: fixed, always visible ---------- */}
+          <g>
+            <rect
+              x={X_KEY}
+              y={keyY}
+              width={KEY_W}
+              height={BOX_H}
+              rx={10}
+              className={`viz-node${hasKey ? ' chosen' : ' idle'}`}
+            />
+            <text x={X_KEY + KEY_W / 2} y={keyY + 25} textAnchor="middle" className="viz-title">
+              {keyRef || 'credential'}
+            </text>
+            <text x={X_KEY + KEY_W / 2} y={keyY + 43} textAnchor="middle" className="viz-sub">
+              {hasKey ? `ttfb ${trace?.ttfb_ms ?? 0}ms` : 'no key_ref detected'}
+            </text>
+          </g>
 
-          {/* ---------- phase nodes ---------- */}
-          {phases.map((kind, i) => {
-            const live = i === liveIdx;
+          {/* ---------- terminal nodes: fixed set, always visible ---------- */}
+          {TERMINAL_KINDS.map((kind, i) => {
+            const live = kind === liveKind;
+            const done = !live && recorded.has(kind);
             return (
-              <g key={`${kind}-${i}`}>
-                <rect x={X_PHASE} y={boxTop(i)} width={PHASE_W} height={BOX_H} rx={10} className={`viz-node${live ? ' live' : ''}`} />
+              <g key={`terminal-${kind}`}>
+                <rect x={X_PHASE} y={boxTop(i)} width={PHASE_W} height={BOX_H} rx={10} className={`viz-node${live ? ' live' : done ? '' : ' idle'}`} />
                 <text x={X_PHASE + 24} y={boxTop(i) + 25} className="viz-title">
                   {phaseLabel(kind)}
                 </text>
                 <text x={X_PHASE + 24} y={boxTop(i) + 43} className="viz-sub">
-                  {live ? `${trace?.deltas ?? 0} deltas` : 'done'}
+                  {live ? `${trace?.deltas ?? 0} deltas` : done ? 'done' : 'idle'}
                 </text>
                 <text
                   x={X_PHASE + PHASE_W - 20}
                   y={boxTop(i) + 25}
                   textAnchor="end"
-                  className={`viz-st ${live ? 'cyan' : 'dim'}`}
+                  className={`viz-st ${live ? 'cyan' : done ? 'grn' : 'dim'}`}
                 >
-                  {live ? 'live' : 'done'}
+                  {live ? 'live' : done ? 'done' : 'idle'}
                 </text>
               </g>
             );

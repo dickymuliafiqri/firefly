@@ -5,6 +5,19 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.31.0] - 2026-09-28
+
+### Changed
+
+- **Locked topology on the Visualizer Line canvas (`frontend/src/components/visualizer/views/line.tsx`)**: every node is now permanent — nothing appears, moves, or disappears while traces stream in, complete, or are reselected.
+  - The terminal column is a fixed set (`TERMINAL_KINDS`: Thinking, Tool, Writing, Usage, Error — the same `kind` values `trace.Classify` emits) rendered on every pass, and canvas rows are reserved for it so the canvas never resizes either. A phase the selected trace did not record renders as a dashed `viz-node idle` row, the phase currently streaming renders `viz-node live`, and a recorded one renders as plain `done`. Previously the node list was built from the live `phases` array, so nodes popped in and out as activity flipped between reasoning/tool/answer.
+  - The credential node is always rendered and row-anchored to the canvas midline; it used to follow `chosenIdx`, so it jumped between rows whenever the winning upstream changed. With no credential in play it stays on the canvas as `viz-node idle` with the sub-label `no key_ref detected`.
+  - Connectors past the upstream column are drawn only when the routing actually resolved a credential: the `upstream → credential` lane requires a detected `key_ref` (a candidate `key` or `trace.key_ref`), and `credential → terminal` requires that plus a recorded phase. Without any `key_ref` the graph ends at the upstream column and no packets animate.
+  - All detected `key_ref`s converge on the single fixed credential node: a trace whose candidates carry different keys draws one lane per detected key, all terminating on the same node, so the credential stage never fans out into duplicate nodes.
+  - Verified: `npm run check:line-view` (28 headless `react-dom/server` assertions across the empty canvas, a streaming trace with two detected `key_ref`s, a trace with no `key_ref`, and an 8-upstream catalog — the node count is identical in every case), `tsc --noEmit`, and `vite build`.
+- **Verification tooling:** `frontend/scripts/line-view-check.tsx` with `npm run check:line-view` bundles the view via esbuild and renders it headlessly to pin the invariants above, so a future refactor cannot silently reintroduce nodes that come and go. The script is covered by `tsc --noEmit` (`scripts` is in `tsconfig.include`) and fails the run by throwing, so no Node globals are needed.
+- **Docs:** the README dashboard bullet (and the sidebar version) now describe the locked Line canvas — credential node plus a fixed terminal column, with connectors gated on a detected `key_ref`.
+
 ## [1.30.0] - 2026-09-28
 
 ### Added

@@ -19,7 +19,7 @@ Written in pure Go, Firefly handles thousands of simultaneous streaming connecti
 - **System Prompt Guard**: Automatically attaches your custom instructions (like blocking unwanted promotional ads from API account sellers) to every chat request.
 - **Smart Load Balancing**: Combine multiple models across different providers into a single "Virtual Combo" to distribute traffic smoothly.
 - **Client Keys & Monetization**: Create and sell your own API keys with token budgets, rate limits, and expiration dates.
-- **Built-in Web Dashboard**: Manage models, upstreams, API keys, and monitor real-time traffic from a clean web interface — no external tools required. The **Visualizer** page animates every request as a routed line on a zoomable canvas, where the Firefly root node and one node per active upstream are always present (idle upstreams stay dimmed until a request selects them).
+- **Built-in Web Dashboard**: Manage models, upstreams, API keys, and monitor real-time traffic from a clean web interface — no external tools required. The **Visualizer** page animates every request as a routed line on a zoomable canvas, where the topology is locked: the Firefly root, one node per active upstream, the credential node and a fixed terminal column (Thinking, Tool, Writing, Usage, Error) are always present — untouched rows stay dashed and dimmed until a request lights them — and connectors past the upstream column appear only once the request resolves a credential (`key_ref`).
 - **Single Binary, Easy Setup**: Runs as a single lightweight file with an embedded web UI and auto-generated configs.
 
 ---
