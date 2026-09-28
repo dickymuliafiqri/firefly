@@ -59,7 +59,7 @@ export function Sidebar({ groups, activeId, version }: SidebarProps) {
         </nav>
 
         <div className="sidebar-foot">
-          {version} &middot; new
+          {version}
         </div>
       </aside>
 

@@ -138,6 +138,7 @@ func (c *Capture) Finish(status int, err error) {
 	c.t.Activity = Activity{Kind: KindStage, State: c.t.State, Stage: StageDone, Reason: statusText(status), Bytes: c.t.Bytes, Deltas: c.t.Deltas, At: at}
 	snapshot := c.t
 	snapshot.Events = append([]Event(nil), c.events...)
+	snapshot.Phases = append([]string(nil), c.t.Phases...)
 	c.mu.Unlock()
 	c.rec.live.Add(-1)
 	c.rec.publish(snapshot)
@@ -162,6 +163,16 @@ func (c *Capture) OnDelta(raw []byte) {
 	}
 	c.t.Bytes += size
 	c.t.Deltas++
+	phaseSeen := false
+	for _, p := range c.t.Phases {
+		if p == kind {
+			phaseSeen = true
+			break
+		}
+	}
+	if !phaseSeen {
+		c.t.Phases = append(c.t.Phases, kind)
+	}
 	c.t.Activity = Activity{Kind: kind, State: StateStream, Stage: StageStream, Bytes: c.t.Bytes, Deltas: c.t.Deltas, At: at}
 	c.flushLocked(false, at)
 	c.mu.Unlock()

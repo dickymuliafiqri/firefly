@@ -1562,16 +1562,31 @@ input:disabled {
     background: var(--surface-raised);
     border: 1px solid var(--line-strong);
     display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--biolum);
+    margin-bottom: 12px;
+}
+
 /* ---------- Visualizer (admin-only routing traces) ---------- */
 .visualizer-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  align-items: stretch;
+  margin-bottom: 16px;
+}
+
+.visualizer-lower {
   display: grid;
-  grid-template-columns: minmax(320px, 1fr) minmax(420px, 1.4fr);
+  grid-template-columns: 1fr 1fr;
   gap: 16px;
   align-items: start;
+  margin-bottom: 16px;
 }
 
 @media (max-width: 1100px) {
-  .visualizer-grid {
+  .visualizer-lower {
     grid-template-columns: 1fr;
   }
 }
@@ -1589,6 +1604,11 @@ input:disabled {
   background: rgba(56, 189, 248, 0.12);
 }
 
+/* Sections stacked inside one card (view / phase timeline / raw frames) */
+.visualizer-grid .card > .card-header:not(:first-child) {
+  border-top: 1px solid var(--line);
+}
+
 .viz-sub,
 .muted {
   color: var(--muted);
@@ -1599,6 +1619,7 @@ input:disabled {
 .viz-error {
   color: var(--danger);
   font-size: 13px;
+  margin: 0 0 16px;
 }
 
 .viz-toggle {
@@ -1616,10 +1637,29 @@ input:disabled {
 }
 
 .visualizer-svg {
-  width: 100%;
+  width: 1500px;
+  max-width: none;
   height: auto;
-  max-height: 320px;
   color: var(--ink);
+  will-change: transform;
+}
+
+.viz-canvas {
+  position: relative;
+  height: 520px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background:
+    radial-gradient(circle, rgba(148, 163, 184, 0.18) 1px, transparent 1px) 0 0 / 24px 24px,
+    var(--surface);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.viz-canvas:active {
+  cursor: grabbing;
 }
 
 .visualizer-legend {
@@ -1646,19 +1686,6 @@ input:disabled {
   fill: var(--info);
 }
 
-.viz-sweep {
-  stroke: rgba(6, 182, 212, 0.5);
-  stroke-width: 2;
-}
-
-.viz-blip {
-  fill: rgba(6, 182, 212, 0.7);
-}
-
-.viz-blip.error {
-  fill: var(--danger);
-}
-
 .viz-edge {
   stroke: var(--line-strong);
   fill: none;
@@ -1667,11 +1694,6 @@ input:disabled {
 .viz-box {
   fill: rgba(148, 163, 184, 0.1);
   stroke: var(--line-strong);
-}
-
-.viz-label {
-  fill: var(--ink);
-  font-size: 12px;
 }
 
 .viz-chosen .viz-box,
@@ -1683,44 +1705,14 @@ input:disabled {
   opacity: 0.6;
 }
 
-.viz-office {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-  gap: 10px;
+.viz-live .viz-box {
+  stroke: var(--info);
+  fill: rgba(56, 189, 248, 0.12);
 }
 
-.viz-desk {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface-raised);
+.viz-label {
+  fill: var(--ink);
   font-size: 12px;
-}
-
-.viz-desk.active {
-  border-color: var(--info);
-}
-
-.viz-desk header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.viz-desk footer {
-  display: flex;
-  justify-content: space-between;
-  color: var(--muted);
-}
-
-    align-items: center;
-    justify-content: center;
-    color: var(--biolum);
-    margin-bottom: 12px;
 }
 
 .login-wordmark {

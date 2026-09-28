@@ -1,14 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
-import { Segmented } from '@/components/ui/Controls';
 import { KpiCard, KpiGrid, PageHeader } from '@/components/ui/PageHeader';
-import { VISUALIZER_VIEWS, findView } from '@/components/visualizer/views';
+import { lineView } from '@/components/visualizer/views/line';
 import {
   clearVisualizer,
   fetchVisualizerSnapshot,
   openVisualizerStream,
-  setVisualizerCapture,
   type RoutingTrace,
   type VisualizerStats,
 } from '@/services/visualizer';
@@ -34,10 +32,8 @@ export function VisualizerPage() {
   const [traces, setTraces] = useState<RoutingTrace[]>([]);
   const [stats, setStats] = useState<VisualizerStats | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [viewId, setViewId] = useState(VISUALIZER_VIEWS[0].id);
   const [follow, setFollow] = useState(true);
   const [search, setSearch] = useState('');
-  const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const followRef = useRef(follow);
   const selectedRef = useRef(selectedId);
@@ -78,25 +74,14 @@ export function VisualizerPage() {
       },
       (err: unknown) => {
         if (!live) return;
-        setConnected(false);
         setError(err instanceof Error ? err.message : String(err));
       },
     );
-    setConnected(true);
     return () => {
       live = false;
       close();
     };
   }, [upsert]);
-
-  const toggleCapture = async () => {
-    try {
-      const res = await setVisualizerCapture(!(stats?.enabled ?? true));
-      setStats(res.stats);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  };
 
   const clear = async () => {
     try {
@@ -124,8 +109,7 @@ export function VisualizerPage() {
     return found ?? filtered[filtered.length - 1] ?? traces[traces.length - 1];
   }, [traces, filtered, selectedId]);
 
-  const view = findView(viewId);
-
+  const view = lineView;
 
   return (
     <div className="page-col">
@@ -133,15 +117,9 @@ export function VisualizerPage() {
         title="Visualizer"
         description="Live model-routing traces: which upstream and credential won, and what the stream did. In-memory only, captured while this page is open."
         actions={
-          <>
-            <Badge tone={connected ? (stats?.live ? 'ok' : 'warn') : 'danger'}>
-              {connected ? (stats?.live ? 'capturing' : 'idle') : 'disconnected'}
-            </Badge>
-            <Button onClick={toggleCapture}>{stats?.enabled ? 'Pause capture' : 'Resume capture'}</Button>
-            <Button variant="ghost" onClick={clear}>
-              Clear
-            </Button>
-          </>
+          <Button variant="ghost" onClick={clear}>
+            Clear
+          </Button>
         }
       />
 
@@ -164,12 +142,6 @@ export function VisualizerPage() {
       </KpiGrid>
 
       <div className="filter-bar">
-        <Segmented
-          items={VISUALIZER_VIEWS.map((v) => ({ id: v.id, label: v.label }))}
-          value={viewId}
-          onChange={setViewId}
-          ariaLabel="Visualizer view"
-        />
         <span className="spacer" />
         <label className="viz-toggle">
           <input
@@ -192,12 +164,18 @@ export function VisualizerPage() {
         />
       </div>
 
-
       <div className="visualizer-grid">
         <div className="card">
           <div className="card-header">
+            <h2>{view.label} view</h2>
+            <span className="viz-sub">Drag to pan; double-click to reset.</span>
+          </div>
+          <div className="card-body">{view.render({ trace: selected, traces: filtered })}</div>
+        </div>
+
+        <div className="card">
+          <div className="card-header">
             <h2>Requests</h2>
-            <span className="viz-sub">retention {stats?.retention ?? 0}</span>
           </div>
           <div className="card-body tight table-wrap viz-scroll">
             <table>
@@ -243,17 +221,12 @@ export function VisualizerPage() {
             </table>
           </div>
         </div>
+      </div>
 
+      <div className="visualizer-lower">
         <div className="card">
           <div className="card-header">
-            <h2>{view.label} view</h2>
-            <span className="viz-sub">{view.hint}</span>
-          </div>
-          <div className="card-body">{view.render({ trace: selected, traces: filtered })}</div>
-
-          <div className="card-header">
             <h2>Phase timeline</h2>
-            <span className="viz-sub">{selected?.id ?? '—'}</span>
           </div>
           <div className="card-body tight table-wrap viz-scroll">
             <table>
@@ -279,10 +252,11 @@ export function VisualizerPage() {
               </tbody>
             </table>
           </div>
+        </div>
 
+        <div className="card">
           <div className="card-header">
             <h2>Raw frames</h2>
-            <span className="viz-sub">newest last</span>
           </div>
           <div className="card-body tight table-wrap viz-scroll">
             <table>

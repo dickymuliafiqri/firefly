@@ -61,6 +61,7 @@ export interface RoutingTrace {
   stages: TraceStage[];
   candidates?: TraceCandidate[];
   events?: TraceEvent[];
+  phases?: string[];
   activity: TraceActivity;
 }
 
@@ -104,10 +105,6 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function fetchVisualizerSnapshot(): Promise<VisualizerSnapshot> {
   return call<VisualizerSnapshot>('/api/visualizer/traces');
-}
-
-export function setVisualizerCapture(enabled: boolean): Promise<{ stats: VisualizerStats }> {
-  return call('/api/visualizer/capture', { method: 'POST', body: JSON.stringify({ enabled }) });
 }
 
 export function clearVisualizer(): Promise<{ stats: VisualizerStats }> {

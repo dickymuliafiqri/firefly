@@ -99,8 +99,9 @@ func (deps RouterDeps) handleVisualizerClear(w http.ResponseWriter, r *http.Requ
 }
 
 // handleVisualizerEvents streams live traces as Server-Sent Events. Attaching a
-// subscriber is what enables capture, and it stops as soon as the last browser
-// disconnects, so an unopened dashboard costs nothing.
+// subscriber is what enables capture — opening the page always turns tracing on
+// (a manual pause never outlives the next page open) — and it stops as soon as
+// the last browser disconnects, so an unopened dashboard costs nothing.
 func (deps RouterDeps) handleVisualizerEvents(w http.ResponseWriter, r *http.Request) {
 	if !deps.authorizeVisualizer(w, r) {
 		return
@@ -118,6 +119,8 @@ func (deps RouterDeps) handleVisualizerEvents(w http.ResponseWriter, r *http.Req
 		openai.WriteError(w, http.StatusTooManyRequests, openai.TypeAPI, "too many visualizer streams")
 		return
 	}
+
+	rec.SetEnabled(true)
 
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")

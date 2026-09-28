@@ -5,6 +5,20 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.27.0] - 2026-09-28
+
+### Changed
+
+- **Visualizer Redesigned Around a Single Pannable Line Flow (`frontend/src/pages/VisualizerPage.tsx`, `frontend/src/components/visualizer/views/**`, `internal/server/visualizer.go`, `internal/observability/trace/**`)**:
+  - The Tree, Office, and Radar views are removed; the registry (`views/index.ts`) now serves only the **Line** view, and the view switcher is gone with it. Line is redrawn as the hand-drawn spec: one left-to-right flow — `Firefly` → considered **upstreams** (fan-out from `trace.candidates`, chosen highlighted, skipped dimmed) → the **key ref** actually spent → the stream **phases** the response produced (`Thinking`/`Writing`/`Tool`/…).
+  - The phase column is now data-driven: `Capture.OnDelta` records every distinct delta kind seen into a new `Trace.Phases` field (snapshot-copied under the recorder lock), so `Thinking`, `Writing`, etc. appear only when the stream actually produced them; the phase currently streaming is highlighted live.
+  - **Capture is automatic while the page is open**: attaching an SSE subscriber now calls `Recorder.SetEnabled(true)` (a manual pause never outlives the next page open) and it stops when the last browser disconnects, so an unwatched gateway still pays nothing. The dashboard's Pause/Resume button, the capturing/idle/disconnected badge, and the `setVisualizerCapture` client helper are removed (the `POST /api/visualizer/capture` endpoint remains for API callers).
+  - The Firefly root node renders even before the first trace arrives ("waiting for a request…"), so the canvas is never empty.
+  - The Line canvas is a dedicated full-width card on top (520 px tall, dotted map-style backdrop) with Google-Maps-style panning: the SVG renders 1500 px wide and pointer drags translate it (grab/grabbing cursors, touch supported via pointer capture; double-click resets). Requests is a full-width card below, with Phase timeline and Raw frames side by side beneath it.
+  - Header clutter removed: retention count, `newest last`, and the per-trace id are gone from card headers; the sidebar footer now shows a plain version without the stale `new` tag and tracks the release (`v1.27.0`).
+  - Fixed the actual spacing root cause: a broken CSS merge in `global.css` left `.login-emblem` unclosed, nesting every `.visualizer-*`/`.viz-*` rule inside it so none applied; the block is closed and the visualizer styles (edges, boxes, chosen/skipped/live states, section separators, card `margin-bottom`) work again.
+  - Verified: `go test -count=1 ./internal/observability/trace/`, `go test -count=1 -run Visualizer ./internal/server/`, `go vet ./...`, `go build ./...`, and frontend `tsc --noEmit` + `vite build` all pass.
+
 ## [1.26.0] - 2026-09-28
 
 

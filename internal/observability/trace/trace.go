@@ -118,6 +118,7 @@ type Trace struct {
 	Stages     []Stage     `json:"stages"`
 	Candidates []Candidate `json:"candidates,omitempty"`
 	Events     []Event     `json:"events,omitempty"`
+	Phases     []string    `json:"phases,omitempty"`
 	Activity   Activity    `json:"activity"`
 }
 
