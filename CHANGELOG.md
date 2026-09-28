@@ -5,6 +5,18 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.28.0] - 2026-09-28
+
+### Changed
+
+- **Visualizer Line Canvas Now Flows Like the firefly-web Feature Illustrations (`frontend/src/components/visualizer/views/line.tsx`, `frontend/src/styles/global.css`)**:
+  - Elbow connectors are replaced with smooth cubic-bezier lanes (`lane()` helper, 120px control offset) that fan out from Firefly to every considered upstream and from the spent credential to each stream phase.
+  - Every active lane is drawn in two layers, exactly like the firefly-web diagrams: a dim `viz-base` stroke plus an animated dashed `viz-flow` overlay (`stroke-dashoffset` keyframes) that reads as moving data. Staggered glowing packets ride the lanes via SMIL `animateMotion` + `mpath` (3 per segment, cyan on the key→phase hop) — but only on the active path: `Firefly → chosen upstream → key → live phase`. Skipped branches stay as dim base lanes with floating red status labels (`c.note`, e.g. `429 · cooldown`) beside the curve.
+  - Nodes adopt the illustration card style: dark fill, semantic strokes — Firefly gets the biolum accent, chosen upstream and key green, the live phase cyan with a soft pulse, skipped upstreams dimmed. Sub-captions carry model+state, TTFB, and per-phase delta counts; edge labels (`selected`, `live`, `skipped`) float on the lanes.
+  - When a trace settles (stream finished or errored) the dash flow fades to 0.35 opacity and pauses and packets are not rendered, so a completed request reads as still; `prefers-reduced-motion` disables all animation and hides packets.
+  - Dead classes (`viz-axis`, `viz-line`, `viz-edge`, `viz-box`, `viz-chosen`, `viz-skipped`, `viz-live`, old `viz-label`) removed; the new `viz-base/flow/ghost/node/pkt/title/sub/st` system is scoped under `.visualizer-svg` and the SVG width tracks the 1580px viewBox 1:1. Google-Maps panning and the always-visible Firefly root are unchanged.
+  - Verified: frontend `tsc --noEmit` + `vite build`, `go build ./...`, and a rebuilt `firefly.exe` with the new embedded assets.
+
 ## [1.27.0] - 2026-09-28
 
 ### Changed

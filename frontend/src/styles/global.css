@@ -1637,7 +1637,7 @@ input:disabled {
 }
 
 .visualizer-svg {
-  width: 1500px;
+  width: 1580px;
   max-width: none;
   height: auto;
   color: var(--ink);
@@ -1670,49 +1670,138 @@ input:disabled {
   color: var(--muted);
 }
 
-.viz-axis {
-  stroke: var(--line-strong);
-  stroke-width: 1;
-  fill: none;
+/* Line canvas diagram — borrowed from the firefly-web feature illustrations */
+@keyframes vizflow {
+  to {
+    stroke-dashoffset: -12;
+  }
 }
 
-.viz-line {
+@keyframes vizpulse {
+  0%,
+  100% {
+    stroke-opacity: 1;
+  }
+  50% {
+    stroke-opacity: 0.35;
+  }
+}
+
+.visualizer-svg .viz-base {
   fill: none;
-  stroke: var(--info);
+  stroke: var(--line-strong);
+  stroke-width: 1.5;
+  opacity: 0.8;
+}
+
+.visualizer-svg .viz-base.dim {
+  opacity: 0.45;
+}
+
+.visualizer-svg .viz-flow {
+  fill: none;
+  stroke: var(--biolum);
   stroke-width: 2;
+  stroke-linecap: round;
+  stroke-dasharray: 3 9;
+  animation: vizflow 1.35s linear infinite;
+  opacity: 0.9;
 }
 
-.viz-node {
-  fill: var(--info);
+.visualizer-svg .viz-flow.f2 {
+  animation-duration: 1.7s;
 }
 
-.viz-edge {
-  stroke: var(--line-strong);
+.visualizer-svg .viz-flow.info {
+  stroke: var(--info);
+}
+
+.visualizer-svg .viz-flow.settled {
+  opacity: 0.35;
+  animation-play-state: paused;
+}
+
+.visualizer-svg .viz-ghost {
   fill: none;
+  stroke: none;
 }
 
-.viz-box {
-  fill: rgba(148, 163, 184, 0.1);
-  stroke: var(--line-strong);
+.visualizer-svg .viz-node {
+  fill: rgba(10, 18, 34, 0.92);
+  stroke: #3b4d6b;
+  stroke-width: 1.5;
 }
 
-.viz-chosen .viz-box,
-.viz-chosen .viz-edge {
+.visualizer-svg .viz-node.ff {
+  stroke: rgba(190, 242, 100, 0.55);
+}
+
+.visualizer-svg .viz-node.chosen {
   stroke: var(--ok);
 }
 
-.viz-skipped {
-  opacity: 0.6;
-}
-
-.viz-live .viz-box {
+.visualizer-svg .viz-node.live {
   stroke: var(--info);
-  fill: rgba(56, 189, 248, 0.12);
+  animation: vizpulse 1.6s ease-in-out infinite;
 }
 
-.viz-label {
+.visualizer-svg .viz-node.gone {
+  opacity: 0.45;
+}
+
+.visualizer-svg .viz-pkt {
+  fill: var(--biolum-bright);
+}
+
+.visualizer-svg .viz-pkt.dim {
+  fill: var(--biolum);
+  opacity: 0.55;
+}
+
+.visualizer-svg .viz-pkt.cyan {
+  fill: #67e8f9;
+}
+
+.visualizer-svg .viz-title {
   fill: var(--ink);
   font-size: 12px;
+  font-weight: 600;
+}
+
+.visualizer-svg .viz-sub {
+  fill: var(--muted);
+  font-size: 11px;
+}
+
+.visualizer-svg .viz-st {
+  font-size: 10.5px;
+}
+
+.visualizer-svg .viz-st.red {
+  fill: var(--danger);
+}
+
+.visualizer-svg .viz-st.grn {
+  fill: var(--biolum);
+}
+
+.visualizer-svg .viz-st.cyan {
+  fill: var(--info);
+}
+
+.visualizer-svg .viz-st.dim {
+  fill: #5c6f8f;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .visualizer-svg .viz-flow,
+  .visualizer-svg .viz-node.live {
+    animation: none;
+  }
+
+  .visualizer-svg .viz-pkt {
+    display: none;
+  }
 }
 
 .login-wordmark {
