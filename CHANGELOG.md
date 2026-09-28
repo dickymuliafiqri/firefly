@@ -5,6 +5,15 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.29.0] - 2026-09-28
+
+### Added
+
+- **Zoom on the Visualizer Line Canvas (`frontend/src/components/visualizer/views/line.tsx`, `frontend/src/styles/global.css`)**:
+  - The pannable Line canvas now zooms three ways, Google-Maps style: the mouse wheel zooms toward the cursor position via a non-passive `wheel` listener (`preventDefault` keeps the page from scrolling with it), a two-finger pinch scales from the pointer-distance ratio while holding the pinch midpoint, and `+`/`−` buttons (plus `⟲` reset) sit in the canvas corner, centered on the viewport.
+  - Scale is clamped to 0.3x–3x; a live percentage indicator (e.g. `137%`) sits above the buttons; one-finger drag remains pan, double-click now resets both pan and scale to 100%, and `touch-action: none` keeps browser pinch-zoom out of the way. The zoom panel reuses the panel styling (surface-raised, line stroke, biolum hover).
+  - The card header hint reads "Drag to pan; scroll to zoom; double-click to reset." Verified: frontend `tsc --noEmit` + `vite build`, `go build ./...`, and a rebuilt `firefly.exe` with the new embedded assets.
+
 ## [1.28.0] - 2026-09-28
 
 ### Changed

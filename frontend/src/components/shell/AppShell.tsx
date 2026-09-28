@@ -6,7 +6,7 @@ import { Topbar } from "@/components/shell/Topbar";
 import { ToastHost } from "@/components/ui/ToastHost";
 import { SIDEBAR_GROUPS } from "@/registry";
 
-const VERSION = "v1.28.0";
+const VERSION = "v1.29.0";
 
 interface AppShellProps {
   page: PageDef;

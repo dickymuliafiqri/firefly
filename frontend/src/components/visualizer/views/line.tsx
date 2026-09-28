@@ -1,4 +1,10 @@
-import { useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import {
+  useEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from 'react';
 import { Badge } from '@/components/ui/Badge';
 import type { VisualizerView } from './index';
 
@@ -40,46 +46,155 @@ function lane(x0: number, y0: number, x1: number, y1: number): string {
 }
 
 /**
- * Google-Maps-style pannable canvas: the SVG renders larger than its viewport
- * and pointer drags translate it. Double-click snaps back to the origin.
+ * Google-Maps-style pannable + zoomable canvas: the SVG renders larger than
+ * its viewport; pointer drags pan it, the wheel (and two-finger pinch) zoom
+ * toward the cursor, zoom buttons sit in the corner, and double-click snaps
+ * back to the origin at 100%.
  */
+const MIN_ZOOM = 0.3;
+const MAX_ZOOM = 3;
+
+type Transform = { x: number; y: number; z: number };
+
+const clampZoom = (z: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z));
+
+/** Keep the viewport point m fixed while zooming from z to nz around it. */
+function zoomAround(prev: Transform, mx: number, my: number, nz: number): Transform {
+  return {
+    x: mx - ((mx - prev.x) * nz) / prev.z,
+    y: my - ((my - prev.y) * nz) / prev.z,
+    z: nz,
+  };
+}
+
 function PanCanvas({ viewBox, label, children }: { viewBox: string; label: string; children: ReactNode }) {
-  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [t, setT] = useState<Transform>({ x: 0, y: 0, z: 1 });
+  const tRef = useRef(t);
+  tRef.current = t;
+  const canvasRef = useRef<HTMLDivElement>(null);
   const drag = useRef<{ px: number; py: number; ox: number; oy: number } | null>(null);
+  const pointers = useRef(new Map<number, { x: number; y: number }>());
+  const pinch = useRef<{ dist: number; mx: number; my: number; ox: number; oy: number; z: number } | null>(null);
+
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const prev = tRef.current;
+      const nz = clampZoom(prev.z * Math.exp(-e.deltaY * 0.0015));
+      if (nz === prev.z) return;
+      const rect = el.getBoundingClientRect();
+      setT(zoomAround(prev, e.clientX - rect.left, e.clientY - rect.top, nz));
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
+
+  const zoomBy = (factor: number) => {
+    const el = canvasRef.current;
+    const prev = tRef.current;
+    const nz = clampZoom(prev.z * factor);
+    if (!el || nz === prev.z) return;
+    const rect = el.getBoundingClientRect();
+    setT(zoomAround(prev, rect.width / 2, rect.height / 2, nz));
+  };
+
+  const reset = () => setT({ x: 0, y: 0, z: 1 });
 
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
-    drag.current = { px: e.clientX, py: e.clientY, ox: pan.x, oy: pan.y };
+    pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     e.currentTarget.setPointerCapture(e.pointerId);
+    if (pointers.current.size === 2) {
+      drag.current = null;
+      const [a, b] = [...pointers.current.values()];
+      pinch.current = {
+        dist: Math.hypot(a.x - b.x, a.y - b.y),
+        mx: (a.x + b.x) / 2,
+        my: (a.y + b.y) / 2,
+        ox: tRef.current.x,
+        oy: tRef.current.y,
+        z: tRef.current.z,
+      };
+      return;
+    }
+    if (pointers.current.size === 1) {
+      drag.current = { px: e.clientX, py: e.clientY, ox: tRef.current.x, oy: tRef.current.y };
+    }
   };
+
   const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (!drag.current) return;
-    setPan({
-      x: drag.current.ox + (e.clientX - drag.current.px),
-      y: drag.current.oy + (e.clientY - drag.current.py),
-    });
+    if (!pointers.current.has(e.pointerId)) return;
+    pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const el = canvasRef.current;
+    if (!el) return;
+    if (pointers.current.size === 2 && pinch.current) {
+      const [a, b] = [...pointers.current.values()];
+      const dist = Math.hypot(a.x - b.x, a.y - b.y);
+      const nz = clampZoom((pinch.current.z * dist) / pinch.current.dist);
+      const rect = el.getBoundingClientRect();
+      const nmx = (a.x + b.x) / 2 - rect.left;
+      const nmy = (a.y + b.y) / 2 - rect.top;
+      const imx = pinch.current.mx - rect.left;
+      const imy = pinch.current.my - rect.top;
+      setT({
+        x: nmx - ((imx - pinch.current.ox) * nz) / pinch.current.z,
+        y: nmy - ((imy - pinch.current.oy) * nz) / pinch.current.z,
+        z: nz,
+      });
+      return;
+    }
+    if (pointers.current.size === 1 && drag.current) {
+      setT({
+        ...tRef.current,
+        x: drag.current.ox + (e.clientX - drag.current.px),
+        y: drag.current.oy + (e.clientY - drag.current.py),
+      });
+    }
   };
-  const endDrag = () => {
-    drag.current = null;
+
+  const endPointer = (e: ReactPointerEvent<HTMLDivElement>) => {
+    pointers.current.delete(e.pointerId);
+    if (pointers.current.size < 2) pinch.current = null;
+    if (pointers.current.size === 1) {
+      const [p] = [...pointers.current.values()];
+      drag.current = { px: p.x, py: p.y, ox: tRef.current.x, oy: tRef.current.y };
+    } else {
+      drag.current = null;
+    }
   };
 
   return (
     <div
+      ref={canvasRef}
       className="viz-canvas"
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
-      onPointerUp={endDrag}
-      onPointerCancel={endDrag}
-      onDoubleClick={() => setPan({ x: 0, y: 0 })}
+      onPointerUp={endPointer}
+      onPointerCancel={endPointer}
+      onDoubleClick={reset}
     >
       <svg
         viewBox={viewBox}
         className="visualizer-svg"
         role="img"
         aria-label={label}
-        style={{ transform: `translate(${pan.x}px, ${pan.y}px)` }}
+        style={{ transform: `translate(${t.x}px, ${t.y}px) scale(${t.z})`, transformOrigin: '0 0' }}
       >
         {children}
       </svg>
+      <div className="viz-zoom" onPointerDown={(e) => e.stopPropagation()}>
+        <div className="zoom-level">{Math.round(t.z * 100)}%</div>
+        <button type="button" title="Zoom in" onClick={() => zoomBy(1.25)}>
+          +
+        </button>
+        <button type="button" title="Zoom out" onClick={() => zoomBy(0.8)}>
+          −
+        </button>
+        <button type="button" title="Reset view" onClick={reset}>
+          ⟲
+        </button>
+      </div>
     </div>
   );
 }

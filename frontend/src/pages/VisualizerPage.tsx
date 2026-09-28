@@ -168,7 +168,7 @@ export function VisualizerPage() {
         <div className="card">
           <div className="card-header">
             <h2>{view.label} view</h2>
-            <span className="viz-sub">Drag to pan; double-click to reset.</span>
+            <span className="viz-sub">Drag to pan; scroll to zoom; double-click to reset.</span>
           </div>
           <div className="card-body">{view.render({ trace: selected, traces: filtered })}</div>
         </div>
