@@ -110,11 +110,18 @@ export interface AuthorizeResponseDTO {
   session_id: string;
   auth_url: string;
   state: string;
+  user_code?: string;
+  verification_uri?: string;
 }
 
 export interface CallbackRequestDTO {
   state: string;
   code: string;
+}
+
+export interface CallbackResponseDTO {
+  status: string;
+  connection: ConnectionDTO;
 }
 
 export interface PollRequestDTO {

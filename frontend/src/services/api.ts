@@ -17,6 +17,8 @@ import type {
   ConnectionDTO,
   AuthorizeRequestDTO,
   AuthorizeResponseDTO,
+  CallbackRequestDTO,
+  CallbackResponseDTO,
   PollRequestDTO,
   PollResponseDTO,
   WarpStatusDTO,
@@ -247,6 +249,16 @@ export async function initiateOAuthAuthorize(payload: AuthorizeRequestDTO): Prom
 
 export async function pollOAuthStatus(payload: PollRequestDTO): Promise<PollResponseDTO> {
   return request('/api/oauth/poll', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+/**
+ * Manually verify an OAuth callback by exchanging the authorization code
+ * extracted from a pasted callback URL. Used when the provider redirected the
+ * browser to a host this server cannot reach (e.g. localhost on a deployed
+ * instance), so the automatic browser callback never arrived.
+ */
+export async function verifyOAuthCallback(payload: CallbackRequestDTO): Promise<CallbackResponseDTO> {
+  return request('/api/oauth/callback', { method: 'POST', body: JSON.stringify(payload) });
 }
 
 export async function deleteOAuthConnection(id: string) {

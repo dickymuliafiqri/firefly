@@ -173,6 +173,37 @@ func TestServer_OAuthEndpoints(t *testing.T) {
 	assert.Empty(t, connsAfter)
 }
 
+// TestServer_OAuthCallback_ManualVerify covers the manual callback-URL paste
+// path used when the provider redirected the browser to a host (e.g. localhost)
+// the deployed server never receives: the dashboard extracts {state, code} from
+// the pasted URL and POSTs them to /api/oauth/callback. The happy path is
+// covered by TestServer_OAuthEndpoints step 4; failures here must close
+// fail-closed with a JSON 400 the dialog can surface inline.
+func TestServer_OAuthCallback_ManualVerify(t *testing.T) {
+	t.Parallel()
+
+	handler, _, _ := setupOAuthServer(t)
+
+	// Unknown/stale state: fail closed with a JSON 400.
+	req := httptest.NewRequest(http.MethodPost, "/api/oauth/callback",
+		bytes.NewReader([]byte(`{"state":"stale-state","code":"valid-code"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	require.True(t, gjson.ValidBytes(rec.Body.Bytes()))
+	assert.Contains(t, gjson.GetBytes(rec.Body.Bytes(), "error.message").String(), "invalid or expired OAuth state")
+
+	// Missing authorization code: fail closed with a JSON 400.
+	req = httptest.NewRequest(http.MethodPost, "/api/oauth/callback",
+		bytes.NewReader([]byte(`{"state":"stale-state"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	require.True(t, gjson.ValidBytes(rec.Body.Bytes()))
+}
+
 type mockDeviceOAuthProvider struct {
 	mockOAuthProvider
 	pollCount int

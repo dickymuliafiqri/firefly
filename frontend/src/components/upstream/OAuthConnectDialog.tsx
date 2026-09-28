@@ -3,7 +3,7 @@ import { ExternalLink, Loader2, Check, AlertCircle, X } from 'lucide-react';
 import { Badge } from '@/components/ui/Badge';
 import type { ConnectionDTO } from '@/services/schema';
 import { canonicalProtocol } from '@/services/schema';
-import { initiateOAuthAuthorize, pollOAuthStatus } from '@/services/api';
+import { initiateOAuthAuthorize, pollOAuthStatus, verifyOAuthCallback } from '@/services/api';
 
 export interface OAuthConnectDialogProps {
   open: boolean;
@@ -46,6 +46,30 @@ function getProviderHint(p: string): string {
 
 export const canonicalOAuthProvider = canonicalProtocol;
 
+/**
+ * Extract query parameters from a pasted OAuth callback. Accepts a full URL
+ * (http://localhost:8080/api/oauth/callback?code=…&state=…), a scheme-less
+ * host/path with a query (localhost:8080/api/oauth/callback?code=…), or a bare
+ * query string ("code=…&state=…"). Decoding matches Go's r.URL.Query() so a
+ * code parsed here is byte-identical to what the browser callback would send.
+ */
+function parseCallbackParams(raw: string): URLSearchParams {
+  const input = raw.trim();
+  if (!input) return new URLSearchParams();
+
+  const queryStart = input.indexOf('?');
+  if (queryStart >= 0) {
+    const tail = input.slice(queryStart + 1);
+    const fragmentStart = tail.indexOf('#');
+    return new URLSearchParams(fragmentStart >= 0 ? tail.slice(0, fragmentStart) : tail);
+  }
+  // Bare query string without a URL — only when it does not look like a scheme.
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(input) && input.includes('=')) {
+    return new URLSearchParams(input.replace(/^[?&]+/, ''));
+  }
+  return new URLSearchParams();
+}
+
 type Phase = 'idle' | 'starting' | 'waiting' | 'success' | 'error';
 
 export function OAuthConnectDialog({
@@ -59,6 +83,12 @@ export function OAuthConnectDialog({
   const [sessionState, setSessionState] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [connection, setConnection] = useState<ConnectionDTO | null>(null);
+  // Device-code sessions (RFC 8628) carry a user_code — they never redirect a
+  // browser callback, so the manual paste fallback is hidden for them.
+  const [userCode, setUserCode] = useState<string | null>(null);
+  const [callbackUrl, setCallbackUrl] = useState('');
+  const [verifying, setVerifying] = useState(false);
+  const [manualError, setManualError] = useState<string | null>(null);
 
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cancelledRef = useRef(false);
@@ -76,12 +106,17 @@ export function OAuthConnectDialog({
     setAuthUrl(null);
     setSessionState(null);
     setConnection(null);
+    setUserCode(null);
+    setCallbackUrl('');
+    setVerifying(false);
+    setManualError(null);
     cancelledRef.current = false;
 
     try {
       const res = await initiateOAuthAuthorize({ provider: canonicalOAuthProvider(provider) });
       setAuthUrl(res.auth_url);
       setSessionState(res.state);
+      setUserCode(res.user_code ?? null);
       setPhase('waiting');
 
       if (res.auth_url) {
@@ -92,6 +127,58 @@ export function OAuthConnectDialog({
       setErrorMessage(err instanceof Error ? err.message : 'Failed to initiate authorization');
     }
   }, [provider]);
+
+  /**
+   * Manual fallback for server deployments: the provider redirected the browser
+   * to a URL this server never receives (typically localhost). The operator
+   * copies that callback URL from the browser address bar, we extract
+   * code/state, and POST them to /api/oauth/callback — the same exchange the
+   * automatic browser callback would have performed.
+   */
+  const handleManualVerify = useCallback(async () => {
+    const raw = callbackUrl.trim();
+    if (!raw) {
+      setManualError('Paste the callback URL first.');
+      return;
+    }
+
+    const params = parseCallbackParams(raw);
+    const oauthError = params.get('error');
+    if (oauthError) {
+      setManualError(params.get('error_description') || oauthError);
+      return;
+    }
+
+    const code = params.get('code');
+    if (!code) {
+      setManualError('No authorization code (code=…) found in the pasted URL.');
+      return;
+    }
+    const state = params.get('state') || sessionState || '';
+    if (!state) {
+      setManualError('No OAuth state found in the URL — it does not belong to this session.');
+      return;
+    }
+
+    setVerifying(true);
+    setManualError(null);
+    try {
+      const res = await verifyOAuthCallback({ state, code });
+      if (!res.connection) {
+        throw new Error('Server accepted the callback but returned no connection.');
+      }
+      clearPoll();
+      setPhase('success');
+      setConnection(res.connection);
+      onSuccess(res.connection);
+    } catch (err) {
+      // Stay in the waiting phase so the operator can correct the pasted URL
+      // and retry; the polling loop keeps running in parallel.
+      setManualError(err instanceof Error ? err.message : 'Manual verification failed.');
+    } finally {
+      setVerifying(false);
+    }
+  }, [callbackUrl, sessionState, clearPoll, onSuccess]);
 
   // Polling loop
   useEffect(() => {
@@ -168,6 +255,10 @@ export function OAuthConnectDialog({
       setAuthUrl(null);
       setSessionState(null);
       setErrorMessage(null);
+      setUserCode(null);
+      setCallbackUrl('');
+      setVerifying(false);
+      setManualError(null);
     }
   }, [open, startAuthFlow, clearPoll]);
 
@@ -312,6 +403,72 @@ export function OAuthConnectDialog({
                 />
                 <span>Waiting for authorization to complete in browser...</span>
               </div>
+
+              {/* Manual callback verification — server deployments where the
+                  provider redirected the browser to a host (e.g. localhost)
+                  this server never receives. */}
+              {!userCode && (
+                <div
+                  style={{
+                    border: '1px dashed var(--line)',
+                    borderRadius: 6,
+                    padding: '12px 14px',
+                    background: 'var(--surface-raised)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 8,
+                  }}
+                >
+                  <span style={{ color: 'var(--faint)', fontSize: 11, lineHeight: 1.5 }}>
+                    Callback never reached this server (e.g. the login redirected to{' '}
+                    <span style={{ fontFamily: '"JetBrains Mono", monospace' }}>localhost</span>
+                    )? Copy the full callback URL from the browser address bar — the page may
+                    show a connection error — and paste it below to verify manually.
+                  </span>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <input
+                      id="oauth-callback-url"
+                      type="text"
+                      value={callbackUrl}
+                      onChange={(e) => setCallbackUrl(e.target.value)}
+                      placeholder={
+                        'http://localhost:8080/api/oauth/callback?code=...&state=...'
+                      }
+                      autoComplete="off"
+                      spellCheck={false}
+                      aria-label="OAuth callback URL"
+                      style={{ flex: 1, minWidth: 0, fontSize: 11 }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          void handleManualVerify();
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={() => void handleManualVerify()}
+                      disabled={verifying || !callbackUrl.trim()}
+                      style={{ fontSize: 12, padding: '8px 14px' }}
+                    >
+                      {verifying && (
+                        <Loader2
+                          style={{
+                            width: 13,
+                            height: 13,
+                            animation: 'spin 1s linear infinite',
+                          }}
+                        />
+                      )}
+                      Verify
+                    </button>
+                  </div>
+                  {manualError && (
+                    <span style={{ color: '#fda4af', fontSize: 11 }}>{manualError}</span>
+                  )}
+                </div>
+              )}
             </div>
           )}
           {/* Success phase */}

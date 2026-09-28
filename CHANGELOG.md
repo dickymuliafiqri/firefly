@@ -5,6 +5,17 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.36.0] - 2026-09-29
+
+### Added
+
+- **Manual OAuth callback verification for server deployments (`frontend/src/components/upstream/OAuthConnectDialog.tsx`, `frontend/src/services/api.ts`, `frontend/src/services/schema.ts`, `internal/server/oauth_test.go`)**: the OAuth connect dialog no longer hangs on "Waiting for authorization..." when the provider redirected the browser to a callback URL the deployed gateway never receives (typically `localhost:<port>` after an Antigravity login on a remote instance).
+  - The waiting phase gained a paste field + **Verify** button: the operator copies the full callback URL from the browser address bar (the page may show a connection error) and pastes it. `parseCallbackParams` accepts a full URL, a scheme-less `host/path?code=…&state=…`, or a bare query string, decoding `code`/`state` exactly like Go's `r.URL.Query()` and falling back to the session's state when the callback omits it.
+  - Verification reuses the existing `POST /api/oauth/callback` JSON contract through the new `verifyOAuthCallback` client — the same exchange the automatic browser callback performs: the state is validated against the in-memory session, the code is traded for tokens with the session's stored `redirect_uri`, and the completed session lets the dialog's poll resolve immediately. Failures (stale state, missing code, `error=…` in the URL) surface inline while polling keeps running, so the pasted URL can be corrected and retried; device-code sessions (RFC 8628 `user_code`) hide the input because they never redirect a browser. The authorize/poll DTOs now type `user_code`/`verification_uri` and the callback response is typed as `CallbackResponseDTO`.
+  - **Regression coverage:** `TestServer_OAuthCallback_ManualVerify` pins the fail-closed JSON 400 contract for a stale state and a missing code (the happy path stays covered by `TestServer_OAuthEndpoints` step 4).
+- **Docs/version:** the README provider list notes the manual callback fallback for server deployments, `frontend/package.json` is `1.36.0`, and the sidebar version is `v1.36.0`.
+- **Verified:** `go test ./internal/server/...`, `tsc --noEmit`, and `vite build`.
+
 ## [1.35.0] - 2026-09-28
 
 ### Added
