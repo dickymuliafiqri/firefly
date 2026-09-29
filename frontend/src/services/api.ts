@@ -7,7 +7,7 @@
  * MOCK PAYLOADS defined at the bottom of this module so the UI can still be reviewed;
  * real ApiErrors (401/409/5xx) are still forwarded to the UI.
  */
-import { QueryClient, useQuery, useMutation } from '@tanstack/react-query';
+import { QueryClient, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type {
   SettingsDTO,
   HealthStatus,
@@ -35,6 +35,7 @@ import type {
   TursoKeyHintsResponse,
   TursoDTO,
   ProviderRecordDTO,
+  ProviderQuotaResponseDTO,
 } from './schema';
 
 import { getAdminToken } from '@/state/auth';
@@ -263,6 +264,39 @@ export async function verifyOAuthCallback(payload: CallbackRequestDTO): Promise<
 
 export async function deleteOAuthConnection(id: string) {
   return request(`/api/oauth/connections/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+// ---- Provider-side quota (`/api/quota/providers*`) ----
+// The upstream's own allowance for a connected account (per model, per rolling
+// window). Distinct from the tenant token ledger on the Quota page. Reads are
+// cached server-side for 60s; pass refresh=true to force a real fetch.
+
+export async function fetchProviderQuota(refresh = false): Promise<ProviderQuotaResponseDTO> {
+  return request<ProviderQuotaResponseDTO>(`/api/quota/providers${refresh ? '?refresh=1' : ''}`);
+}
+
+/**
+ * No mock fallback: a demo-mode quota would be a fabricated allowance, and this
+ * panel exists precisely to avoid fabricated numbers. The gateway being
+ * unreachable surfaces as an error the QueryGate renders.
+ */
+export function useProviderQuotaQuery() {
+  // 60s: the server cache TTL, so polling cannot outrun the data.
+  return useQuery({
+    queryKey: ['quota', 'providers'],
+    queryFn: () => fetchProviderQuota(false),
+    refetchInterval: 60000,
+  });
+}
+
+export function useProviderQuotaRefreshMutation() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: () => fetchProviderQuota(true),
+    onSuccess: (data) => {
+      client.setQueryData(['quota', 'providers'], data);
+    },
+  });
 }
 
 // ---- Operator provider CRUD (`/api/providers*`, machine surface) ----

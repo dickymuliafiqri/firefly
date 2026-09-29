@@ -150,6 +150,7 @@ All Token Saver features can be toggled on or off individually from the **Settin
 Create and distribute your own gateway API keys (`sk-gw-...`) to customers or team members:
 
 - **Token Quotas**: Set a maximum token balance (e.g. 5,000,000 tokens) or leave unlimited (`0`).
+- **Provider Quota (upstream side)**: the **Quota** page also shows what each connected OAuth account has left, straight from the provider — per model and per rolling window (weekly / 5h). These reads are read-only: refreshing them never spends the quota it reports. A model the provider reports at 0% is skipped by routing until its reset time instead of being forwarded into a guaranteed failure, and a generation 429/409 invalidates the snapshot so the next read reflects reality. A provider that does not expose a quota endpoint is omitted rather than shown as zero.
 - **Expiration Dates**: Set validity periods (e.g. 7 days, 30 days). Expired keys are rejected automatically.
 - **Rate Limits**: Control requests-per-second (RPS) and concurrent connections per client.
 - **Check Balance Endpoint (`GET /v1/usage`)**:
@@ -209,6 +210,7 @@ All settings can be updated live from the web dashboard with **zero server resta
 | — | `FIREFLY_SESSION_SECRET` | auto | HMAC key for stateless dashboard sessions; set it on serverless/multi-instance hosts so sessions survive restarts |
 | `-log-level` | `FIREFLY_LOG_LEVEL` | `info` | Log detail level (`debug`, `info`, `warn`, `error`) |
 | `-health-check-interval` | — | `15s` | Background health probe interval (`0` to disable) |
+| `-quota-poll-interval` | — | `2m` | Background provider-quota refresh for OAuth connections (`0` keeps quota reads on demand only) |
 | `-tunnel` | `FIREFLY_TUNNEL` | `disabled` | Cloudflare Tunnel mode (`disabled`, `quick`, `named`) |
 | `-tunnel-token` | `FIREFLY_TUNNEL_TOKEN` | `""` | Secret token for named Cloudflare Tunnels |
 | `-tunnel-bin-dir` | `FIREFLY_TUNNEL_BIN_DIR` | auto | Custom folder to find or download the `cloudflared` binary |

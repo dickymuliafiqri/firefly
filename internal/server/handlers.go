@@ -434,6 +434,55 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 			}
 		}
 
+		// 3b. Provider-quota gate. The upstream account can tell us, before we
+		// spend a round trip, that it has no allowance left for this model.
+		// Positive evidence only: with no fresh quota saying "exhausted", the
+		// request routes exactly as before. This is a Layer 1 credential
+		// outcome (429 to the client), never a Layer 2 breaker event.
+		if resetAt, exhausted := deps.quotaBlocked(target, time.Now()); exhausted {
+			retryAfter := 60
+			if !resetAt.IsZero() {
+				retryAfter = int(time.Until(resetAt).Seconds()) + 1
+			}
+			if retryAfter < 1 {
+				retryAfter = 1
+			}
+			if retryAfter > 3600 {
+				retryAfter = 3600
+			}
+			if deps.Logger != nil {
+				deps.Logger.Warn("request skipped: provider quota exhausted",
+					"request_id", httpx.RequestIDFrom(r.Context()),
+					"model", model, "upstream_model", target.UpstreamModel,
+					"upstream", target.Upstream.Name, "retry_after_s", retryAfter)
+			}
+			deps.Metrics.ObserveKeyCooldown(target.Upstream.Name, keyRefOrTarget(target))
+			capture.Candidate(target.Upstream.Name, "", trace.CandidateSkipped, "provider quota exhausted")
+			capture.Fail(http.StatusTooManyRequests, nil)
+			deps.recordLog(LiveLog{
+				ID:            httpx.RequestIDFrom(r.Context()),
+				Timestamp:     time.Now().UnixMilli(),
+				Method:        r.Method,
+				Path:          r.URL.Path,
+				Status:        http.StatusTooManyRequests,
+				DurationMs:    0,
+				Model:         model,
+				Upstream:      target.Upstream.Name,
+				KeyRef:        keyRefOrTarget(target),
+				Tenant:        tenant.Name,
+				Stream:        stream,
+				TokensIn:      tokensIn,
+				TokensOut:     0,
+				Tokens:        tokensIn,
+				EstimatedCost: float64(tokensIn) * 0.0000025,
+				Error:         "provider quota exhausted for " + target.UpstreamModel,
+			})
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			openai.WriteError(w, http.StatusTooManyRequests, openai.TypeRateLimit,
+				"provider quota exhausted for model "+target.UpstreamModel+" on upstream "+target.Upstream.Name)
+			return
+		}
+
 		// 4. Per-credential aggregate limit. AdmissionMiddleware already took
 		//    the tenant slot; here we bound the shared upstream key. This runs
 		//    AFTER routing precisely so the credential ref is exact.
@@ -592,6 +641,13 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 			keyStatus = http.StatusOK
 		} else if errors.As(fwdErr, &ue) && ue.Status > 0 {
 			keyStatus = ue.Status
+			// An upstream rate limit is the ground truth about the account: when
+			// it contradicts a positive quota reading, the cached picture is
+			// stale and gets dropped so the next read is real. Layer 1 only —
+			// the breaker and key policy already saw this 429.
+			if ue.Status == http.StatusTooManyRequests || ue.Status == http.StatusConflict {
+				deps.noteQuotaRateLimit(keyRefOrTarget(target))
+			}
 		} else if errors.Is(fwdErr, context.Canceled) {
 			keyStatus = 499
 		} else {
@@ -671,6 +727,19 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 			}
 		}
 	}
+}
+
+// keyRefOrTarget resolves the credential reference a request would use, before
+// the concurrency slot is acquired. The quota gate needs it for metrics and
+// logging; the authoritative value is recomputed just after.
+func keyRefOrTarget(target *domain.Target) string {
+	if target == nil {
+		return ""
+	}
+	if target.KeySlot != nil && target.KeySlot.Ref != "" {
+		return target.KeySlot.Ref
+	}
+	return target.CredentialRef
 }
 
 // recordLog dispatches the request log to LiveLogs (and persistent storage) or directly to Analytics.

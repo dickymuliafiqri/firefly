@@ -230,3 +230,120 @@ func TestQuotaEndpoints_ConcurrentRefreshIsCoalesced(t *testing.T) {
 	assert.Empty(t, quotaCache.inflight, "the coalescing window must be released")
 	assert.Len(t, quotaCache.entries, 1, "one cache entry per connection")
 }
+
+// seedQuota installs a quota snapshot for a connection without any network.
+func seedQuota(id string, models ...antigravity.ModelQuota) {
+	quotaCache.mu.Lock()
+	defer quotaCache.mu.Unlock()
+	quotaCache.entries[id] = quotaCacheEntry{
+		fetchedAt: time.Now(),
+		dto: QuotaProviderDTO{
+			ConnectionID: id,
+			Provider:     "antigravity",
+			Plan:         "Google AI Pro",
+			Models:       models,
+			Windows:      []antigravity.WindowQuota{},
+		},
+	}
+}
+
+func clearQuotaCache() {
+	quotaCache.mu.Lock()
+	defer quotaCache.mu.Unlock()
+	quotaCache.entries = make(map[string]quotaCacheEntry)
+	quotaCache.inflight = make(map[string]*sync.WaitGroup)
+}
+
+func exhaustedTarget(ref, upstreamModel string) *domain.Target {
+	return &domain.Target{
+		Upstream:      &domain.Upstream{Name: "ag-upstream"},
+		UpstreamModel: upstreamModel,
+		CredentialRef: ref,
+	}
+}
+
+func TestQuotaGate_BlocksOnlyOnPositiveEvidence(t *testing.T) {
+	var deps RouterDeps
+	now := time.Now()
+
+	// No snapshot at all: route it.
+	clearQuotaCache()
+	_, blocked := deps.quotaBlocked(exhaustedTarget("oauth:ag-1", "gemini-3.8-flash"), now)
+	assert.False(t, blocked, "no quota data must never block a route")
+
+	// Snapshot without the model: route it.
+	seedQuota("ag-1", antigravity.ModelQuota{Model: "claude-sonnet-4-6", RemainingPct: 10})
+	_, blocked = deps.quotaBlocked(exhaustedTarget("oauth:ag-1", "gemini-3.8-flash"), now)
+	assert.False(t, blocked, "a model upstream does not meter is not a block")
+
+	// Non-OAuth credential: the gate does not apply.
+	seedQuota("ag-1", antigravity.ModelQuota{Model: "gemini-3.8-flash", Exhausted: true,
+		ResetAt: now.Add(time.Hour).Format(time.RFC3339)})
+	_, blocked = deps.quotaBlocked(exhaustedTarget("sk-gw-plain", "gemini-3.8-flash"), now)
+	assert.False(t, blocked, "a non-OAuth credential has no provider quota")
+
+	// Exhausted with a future reset: blocked, with the reset surfaced.
+	reset, blocked := deps.quotaBlocked(exhaustedTarget("oauth:ag-1", "gemini-3.8-flash"), now)
+	require.True(t, blocked)
+	assert.True(t, reset.After(now), "the client is told when to come back")
+
+	// Exhausted but the reset already passed: the picture is stale, route it.
+	seedQuota("ag-1", antigravity.ModelQuota{Model: "gemini-3.8-flash", Exhausted: true,
+		ResetAt: now.Add(-time.Minute).Format(time.RFC3339)})
+	_, blocked = deps.quotaBlocked(exhaustedTarget("oauth:ag-1", "gemini-3.8-flash"), now)
+	assert.False(t, blocked, "a reset in the past is not evidence")
+
+	// Exhausted with an unreadable reset: block conservatively, no reset claim.
+	reset, blocked = func() (time.Time, bool) {
+		seedQuota("ag-1", antigravity.ModelQuota{Model: "gemini-3.8-flash", Exhausted: true,
+			ResetAt: "not-a-timestamp"})
+		return deps.quotaBlocked(exhaustedTarget("oauth:ag-1", "gemini-3.8-flash"), now)
+	}()
+	require.True(t, blocked)
+	assert.True(t, reset.IsZero(), "an unparseable reset time must not become a Retry-After claim")
+
+	// A healthy model on the same account routes.
+	seedQuota("ag-1",
+		antigravity.ModelQuota{Model: "gemini-3.8-flash", Exhausted: true, ResetAt: now.Add(time.Hour).Format(time.RFC3339)},
+		antigravity.ModelQuota{Model: "gemini-3.8-pro", RemainingPct: 40},
+	)
+	_, blocked = deps.quotaBlocked(exhaustedTarget("oauth:ag-1", "gemini-3.8-pro"), now)
+	assert.False(t, blocked, "one exhausted model must not block its siblings")
+
+	clearQuotaCache()
+}
+
+func TestQuotaGate_KeySlotRefWinsOverCredentialRef(t *testing.T) {
+	var deps RouterDeps
+	now := time.Now()
+	clearQuotaCache()
+	seedQuota("ag-1", antigravity.ModelQuota{Model: "gemini-3.8-flash", Exhausted: true,
+		ResetAt: now.Add(time.Hour).Format(time.RFC3339)})
+
+	target := exhaustedTarget("oauth:other", "gemini-3.8-flash")
+	target.KeySlot = &domain.KeySlot{Ref: "oauth:ag-1"}
+	_, blocked := deps.quotaBlocked(target, now)
+	assert.True(t, blocked, "the key slot actually used decides the credential")
+
+	target.KeySlot = &domain.KeySlot{Ref: "sk-gw-other"}
+	_, blocked = deps.quotaBlocked(target, now)
+	assert.False(t, blocked)
+	clearQuotaCache()
+}
+
+func TestQuotaRateLimit_InvalidatesSnapshot(t *testing.T) {
+	clearQuotaCache()
+	seedQuota("ag-1", antigravity.ModelQuota{Model: "gemini-3.8-flash", RemainingPct: 50})
+	seedQuota("ag-2", antigravity.ModelQuota{Model: "gemini-3.8-flash", RemainingPct: 50})
+
+	// A nil manager keeps the invalidation local (no background refetch).
+	RouterDeps{}.noteQuotaRateLimit("oauth:ag-1")
+	_, ok := quotaEntryFor("ag-1")
+	assert.False(t, ok, "a contradicted snapshot is dropped")
+	_, ok = quotaEntryFor("ag-2")
+	assert.True(t, ok, "other connections are untouched")
+
+	// A non-OAuth credential has no quota to invalidate.
+	RouterDeps{}.noteQuotaRateLimit("sk-gw-plain")
+	clearQuotaCache()
+}

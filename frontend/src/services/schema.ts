@@ -632,3 +632,49 @@ export function parseApiError(err: unknown): string {
 
   return 'Request failed';
 }
+
+/* ---------- Provider-side quota (upstream allowance, not the tenant ledger) ---------- */
+
+export interface ProviderQuotaModelDTO {
+  model: string;
+  display_name?: string;
+  remaining_percent: number;
+  used: number;
+  total: number;
+  reset_at?: string;
+  exhausted: boolean;
+  unlimited?: boolean;
+}
+
+export interface ProviderQuotaWindowDTO {
+  family: string;
+  window: string;
+  display_name?: string;
+  remaining_percent: number;
+  used: number;
+  total: number;
+  reset_at?: string;
+}
+
+export interface ProviderQuotaDTO {
+  connection_id: string;
+  provider: string;
+  email?: string;
+  plan: string;
+  paid_tier_id?: string;
+  free_tier: boolean;
+  project_id?: string;
+  token_expired: boolean;
+  fetched_at: string;
+  age_seconds: number;
+  from_cache: boolean;
+  message?: string;
+  models: ProviderQuotaModelDTO[];
+  windows: ProviderQuotaWindowDTO[];
+}
+
+export interface ProviderQuotaResponseDTO {
+  providers: ProviderQuotaDTO[];
+  fetched_at: string;
+  supported: string[];
+}

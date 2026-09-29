@@ -32,6 +32,12 @@ const (
 	quotaMaxParallel  = 4
 )
 
+// DefaultQuotaPollInterval is how often the background poller refreshes the
+// provider-quota picture. It is deliberately slower than the 60s cache TTL:
+// the poller exists so routing has fresh data with no dashboard open, not to
+// poll Google continuously. A tick that lands inside the TTL costs nothing.
+const DefaultQuotaPollInterval = 2 * time.Minute
+
 // quotaProvider is the per-provider seam: adding cline / codebuddy / grok-cli
 // later means adding one entry here and one fetch function next to it.
 type quotaProvider struct {
