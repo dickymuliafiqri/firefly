@@ -23,7 +23,7 @@ export function Topbar({ title }: TopbarProps) {
 
   const live = health.data?.status === 'ok' && !health.data.__mock;
   const mock = health.data?.__mock === true;
-  const statusLabel = mock ? 'demo data' : live ? 'backend healthy' : 'backend offline';
+  const statusLabel = mock ? 'demo data' : live ? '' : 'backend offline';
   const statusColor = mock ? 'var(--info)' : live ? 'var(--ok)' : 'var(--danger)';
 
   useEffect(() => {
@@ -56,10 +56,16 @@ export function Topbar({ title }: TopbarProps) {
         <span
           className="backend-status"
           style={{ color: statusColor }}
-          title={mock ? 'Gateway unreachable — displaying demo data' : undefined}
+          title={
+            mock
+              ? 'Gateway unreachable — displaying demo data'
+              : live
+              ? 'Backend healthy'
+              : 'Backend offline'
+          }
         >
           <span className="dot" style={{ background: statusColor }} />
-          {statusLabel}
+          {statusLabel ? <span>{statusLabel}</span> : null}
         </span>
         <span className="topbar-clock">{clock}</span>
         <button className="icon-btn" type="button" aria-label="Logout" title="Logout" onClick={() => void logout()}>

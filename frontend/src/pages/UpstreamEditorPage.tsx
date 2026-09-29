@@ -354,38 +354,51 @@ export function UpstreamEditorPage() {
         }
       />
 
-      <div style={{ display: 'flex', gap: 8, borderBottom: '1px solid var(--line)', marginBottom: 20 }}>
+      {/* Responsive Tab Bar: horizontal scrollable without overflow on mobile */}
+      <div className="flex items-center gap-1.5 sm:gap-2 border-b border-[var(--line)] mb-5 overflow-x-auto pb-2 scrollbar-none -mx-4 px-4 sm:mx-0 sm:px-0">
         <button
           type="button"
-          className={`btn ${activeTab === 'general' ? 'btn-primary' : 'btn-ghost'}`}
+          className={`btn shrink-0 whitespace-nowrap text-xs sm:text-sm py-2 px-3 sm:px-4 ${
+            activeTab === 'general' ? 'btn-primary' : 'btn-ghost'
+          }`}
           onClick={() => setActiveTab('general')}
         >
-          <Server style={{ width: 15, height: 15 }} />
-          General & Network
+          <Server className="w-4 h-4 shrink-0" />
+          <span>
+            General<span className="hidden sm:inline"> & Network</span>
+          </span>
         </button>
         <button
           type="button"
-          className={`btn ${activeTab === 'keys' ? 'btn-primary' : 'btn-ghost'}`}
+          className={`btn shrink-0 whitespace-nowrap text-xs sm:text-sm py-2 px-3 sm:px-4 ${
+            activeTab === 'keys' ? 'btn-primary' : 'btn-ghost'
+          }`}
           onClick={() => setActiveTab('keys')}
         >
-          <KeyRound style={{ width: 15, height: 15 }} />
-          Keys ({keys.length})
+          <KeyRound className="w-4 h-4 shrink-0" />
+          <span>Keys</span>
+          <span className="opacity-75">({keys.length})</span>
         </button>
         <button
           type="button"
-          className={`btn ${activeTab === 'models' ? 'btn-primary' : 'btn-ghost'}`}
+          className={`btn shrink-0 whitespace-nowrap text-xs sm:text-sm py-2 px-3 sm:px-4 ${
+            activeTab === 'models' ? 'btn-primary' : 'btn-ghost'
+          }`}
           onClick={() => setActiveTab('models')}
         >
-          <Layers style={{ width: 15, height: 15 }} />
-          Models ({discoveredModels.length})
+          <Layers className="w-4 h-4 shrink-0" />
+          <span>Models</span>
+          <span className="opacity-75">({discoveredModels.length})</span>
         </button>
         <button
           type="button"
-          className={`btn ${activeTab === 'resilience' ? 'btn-primary' : 'btn-ghost'}`}
+          className={`btn shrink-0 whitespace-nowrap text-xs sm:text-sm py-2 px-3 sm:px-4 ${
+            activeTab === 'resilience' ? 'btn-primary' : 'btn-ghost'
+          }`}
           onClick={() => setActiveTab('resilience')}
         >
-          <Shield style={{ width: 15, height: 15 }} />
-          Resilience
+          <Shield className="w-4 h-4 shrink-0" />
+          <span>Resilience</span>
         </button>
       </div>
 
@@ -450,41 +463,33 @@ export function UpstreamEditorPage() {
         />
       )}
 
-      <div
-        style={{
-          position: 'fixed',
-          bottom: 0,
-          left: 0,
-          right: 0,
-          background: 'var(--surface-overlay)',
-          borderTop: '1px solid var(--line-strong)',
-          padding: '12px 24px',
-          display: 'flex',
-          justifyContent: isEdit ? 'space-between' : 'flex-end',
-          alignItems: 'center',
-          gap: 12,
-          zIndex: 40,
-        }}
-      >
+      {/* Bottom Save Bar: responsive padding & button sizes on mobile */}
+      <div className="fixed bottom-0 left-0 right-0 bg-[var(--surface-overlay)] border-t border-[var(--line-strong)] px-3 sm:px-6 py-3 flex items-center justify-between gap-2 sm:gap-3 z-40">
         {isEdit ? (
           <button
             type="button"
-            className="btn btn-ghost"
-            style={{ color: 'var(--danger)' }}
+            className="btn btn-ghost text-xs sm:text-sm px-2.5 sm:px-4 text-[var(--danger)] hover:bg-rose-500/10"
             onClick={handleDeleteUpstream}
             disabled={saveSmart.isPending}
           >
-            <Trash2 style={{ width: 14, height: 14 }} />
-            Delete Upstream
+            <Trash2 className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+            <span className="hidden sm:inline">Delete Upstream</span>
+            <span className="sm:hidden">Delete</span>
           </button>
-        ) : null}
-        <div style={{ display: 'flex', gap: 12 }}>
-          <button type="button" className="btn btn-secondary" onClick={() => navigate('upstreams')}>
+        ) : (
+          <div />
+        )}
+        <div className="flex items-center gap-2 sm:gap-3">
+          <button
+            type="button"
+            className="btn btn-secondary text-xs sm:text-sm px-3 sm:px-4"
+            onClick={() => navigate('upstreams')}
+          >
             Cancel
           </button>
           <button
             type="button"
-            className="btn btn-primary"
+            className="btn btn-primary text-xs sm:text-sm px-3 sm:px-4 whitespace-nowrap"
             disabled={
               saveSmart.isPending ||
               !general.name.trim() ||

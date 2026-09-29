@@ -84,6 +84,14 @@ body {
     background: var(--line-strong);
 }
 
+.scrollbar-none {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+    display: none;
+}
+
 :focus-visible {
     outline: 2px solid var(--biolum);
     outline-offset: 2px;

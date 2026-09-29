@@ -5,6 +5,24 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.42.4] - 2026-09-29
+
+### Changed
+
+- **Responsive Upstream Editor & Mobile Tab Navigation (`frontend/src/pages/UpstreamEditorPage.tsx`, `frontend/src/styles/global.css`, `frontend/src/components/upstream/KeysTab.tsx`)**:
+  - Implemented responsive horizontal scrollable tab strip with smooth touch-bleed padding (`-mx-4 px-4 sm:mx-0 sm:px-0`), non-wrapping tabs (`shrink-0 whitespace-nowrap`), and hidden native scrollbars via `.scrollbar-none`.
+  - Added adaptive tab text label: `"General & Network"` renders as compact `"General"` on mobile viewports (`hidden sm:inline`), saving horizontal width and preventing overflow.
+  - Made the fixed bottom action bar fully responsive with compact delete button labels on mobile (`Delete` vs `Delete Upstream`), responsive button padding, and text sizing.
+  - Added `flexWrap: 'wrap'` on OAuth account connection notice in `KeysTab` to prevent clipping on narrow viewports.
+
+### Removed
+
+- **Removed Redundant 'Backend Healthy' Navbar Text (`frontend/src/components/shell/Topbar.tsx`)**:
+  - Removed textual `'backend healthy'` label in top navigation bar when backend is live, keeping only the minimalist status indicator dot and tooltip title (`title="Backend healthy"`).
+  - Preserved warning text labels for offline (`'backend offline'`) and demo (`'demo data'`) states.
+
+- **Version bump**: `frontend/package.json` and `AppShell.tsx` bumped to `v1.42.4`.
+
 ## [1.42.3] - 2026-09-29
 
 ### Changed
