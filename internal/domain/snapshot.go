@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -216,6 +217,41 @@ func (s *CatalogSnapshot) ResolveTargetWithBreaker(
 	publicName string,
 	canUseUpstream func(upstreamName string) bool,
 ) (*Target, bool, error) {
+	return s.ResolveTargetWithCandidates(tenant, publicName, canUseUpstream, nil)
+}
+
+// TargetCandidate is the (upstream, model, credential) triple a resolver is
+// about to route to, exposed so a caller can veto a candidate for a reason the
+// resolver cannot know — most importantly provider quota, which depends on the
+// account rather than on the catalog. Returning false from the veto makes the
+// resolver try the next candidate, exactly like a breaker-open upstream.
+type TargetCandidate struct {
+	Upstream      string
+	UpstreamModel string
+	CredentialRef string
+}
+
+// ErrProviderQuotaExhausted reports that every candidate for a public model was
+// rejected solely by the caller's candidate veto, which in practice means the
+// provider reported the account out of allowance. It is deliberately distinct
+// from ErrAllKeysExhausted (a key is in cooldown) and from
+// ResolveUpstreamUnavailable (no candidate exists at all): the transport layer
+// turns it into an honest 429 with the provider's reset time instead of a
+// misleading "no upstream available".
+var ErrProviderQuotaExhausted = errors.New("provider quota exhausted for every candidate")
+
+// ResolveTargetWithCandidates is ResolveTargetWithBreaker plus a candidate-level
+// veto. The two filters are kept separate on purpose: canUseUpstream is about
+// host reachability (breaker) and decides the failure kind, while
+// canUseCandidate is about the account and only changes which candidate is
+// picked. When the veto is the only thing that made routing impossible, the
+// returned error is ErrProviderQuotaExhausted.
+func (s *CatalogSnapshot) ResolveTargetWithCandidates(
+	tenant *Tenant,
+	publicName string,
+	canUseUpstream func(upstreamName string) bool,
+	canUseCandidate func(TargetCandidate) bool,
+) (*Target, bool, error) {
 	if tenant == nil {
 		return nil, false, &ResolveError{Kind: ResolveTenantInvalid}
 	}
@@ -234,6 +270,7 @@ func (s *CatalogSnapshot) ResolveTargetWithBreaker(
 
 		nowNano := time.Now().UnixNano()
 		var hadExhaustedKey bool
+		var quotaVetoed bool
 
 		// tryModel evaluates a concrete model candidate within the combo.
 		tryModel := func(modelName string) (*Target, bool, bool) {
@@ -267,6 +304,17 @@ func (s *CatalogSnapshot) ResolveTargetWithBreaker(
 				if slot != nil && !slot.IsAvailable(nowNano) {
 					return nil, true, false
 				}
+			}
+
+			// The account-level veto runs last, on the fully resolved
+			// credential, so it sees the same triple the request would use.
+			if canUseCandidate != nil && !canUseCandidate(TargetCandidate{
+				Upstream:      up.Name,
+				UpstreamModel: entry.UpstreamModel,
+				CredentialRef: cred,
+			}) {
+				quotaVetoed = true
+				return nil, false, false
 			}
 
 			target := &Target{
@@ -340,6 +388,11 @@ func (s *CatalogSnapshot) ResolveTargetWithBreaker(
 		if hadExhaustedKey {
 			return nil, false, ErrAllKeysExhausted
 		}
+		// Quota was the only thing standing in the way: say so, so the client
+		// gets an honest 429 with a reset time instead of "no upstream".
+		if quotaVetoed {
+			return nil, false, ErrProviderQuotaExhausted
+		}
 		return nil, false, &ResolveError{Kind: ResolveUpstreamUnavailable, Model: publicName}
 	}
 
@@ -379,6 +432,16 @@ func (s *CatalogSnapshot) ResolveTargetWithBreaker(
 		if slot != nil && !slot.IsAvailable(nowNano) {
 			return nil, false, ErrAllKeysExhausted
 		}
+	}
+
+	// A direct model has no second candidate: a quota veto is the final answer,
+	// reported as such instead of as an unavailable upstream.
+	if canUseCandidate != nil && !canUseCandidate(TargetCandidate{
+		Upstream:      up.Name,
+		UpstreamModel: entry.UpstreamModel,
+		CredentialRef: cred,
+	}) {
+		return nil, false, ErrProviderQuotaExhausted
 	}
 
 	target := &Target{

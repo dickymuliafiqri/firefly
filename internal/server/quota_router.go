@@ -97,6 +97,39 @@ func (deps RouterDeps) quotaBlocked(target *domain.Target, now time.Time) (reset
 	return time.Time{}, false
 }
 
+// quotaBlockedCandidate is the candidate-level form of quotaBlocked, used by the
+// resolver's veto. It is the same decision on the same data; only the input
+// shape differs (a candidate triple instead of a resolved target).
+func (deps RouterDeps) quotaBlockedCandidate(
+	c domain.TargetCandidate, now time.Time,
+) (resetAt time.Time, blocked bool) {
+	return deps.quotaBlocked(&domain.Target{
+		UpstreamModel: c.UpstreamModel,
+		CredentialRef: c.CredentialRef,
+	}, now)
+}
+
+// quotaRetryAfter turns a provider reset time into a Retry-After in seconds.
+// A zero reset time means the provider gave us no deadline, so the answer is a
+// short, honest "come back soon" rather than a long promise we cannot keep.
+func quotaRetryAfter(resetAt time.Time) int {
+	const (
+		defaultWait = 60
+		maxWait     = 3600
+	)
+	wait := defaultWait
+	if !resetAt.IsZero() {
+		wait = int(time.Until(resetAt).Seconds()) + 1
+	}
+	if wait < 1 {
+		wait = 1
+	}
+	if wait > maxWait {
+		wait = maxWait
+	}
+	return wait
+}
+
 // noteQuotaRateLimit reacts to a generation-side 429/409 on an OAuth-backed
 // credential. Upstream is the ground truth: a rate limit that contradicts a
 // positive quota reading means our picture is stale, so the cached entry is

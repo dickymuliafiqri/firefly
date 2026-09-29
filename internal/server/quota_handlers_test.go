@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -16,6 +18,9 @@ import (
 
 	"github.com/dickymuliafiqri/firefly/internal/adapter/antigravity"
 	"github.com/dickymuliafiqri/firefly/internal/domain"
+	"github.com/dickymuliafiqri/firefly/internal/limits"
+	"github.com/dickymuliafiqri/firefly/internal/observability/usage"
+	"github.com/dickymuliafiqri/firefly/internal/ports"
 	"github.com/dickymuliafiqri/firefly/internal/security/auth"
 	"github.com/dickymuliafiqri/firefly/internal/security/oauth"
 )
@@ -346,4 +351,117 @@ func TestQuotaRateLimit_InvalidatesSnapshot(t *testing.T) {
 	// A non-OAuth credential has no quota to invalidate.
 	RouterDeps{}.noteQuotaRateLimit("sk-gw-plain")
 	clearQuotaCache()
+}
+
+// quotaForwardServer wires a data-plane server whose only model is served by two
+// OAuth-backed upstreams through a failover combo, mirroring a real deployment
+// where one Google account runs out of allowance and another does not.
+func quotaForwardServer(t *testing.T, adapter ports.UpstreamAdapter) *Server {
+	t.Helper()
+	hash := auth.HashKey(testKey)
+	snap := domain.NewCatalogSnapshot(
+		1,
+		map[string]*domain.Upstream{
+			"ag-1": {Name: "ag-1", Protocol: domain.ProtocolOpenAI, BaseURL: "https://a/v1", CredentialRef: "oauth:ag-1"},
+			"ag-2": {Name: "ag-2", Protocol: domain.ProtocolOpenAI, BaseURL: "https://b/v1", CredentialRef: "oauth:ag-2"},
+		},
+		[]string{"ag-1", "ag-2"},
+		map[string]*domain.ModelEntry{
+			"flash-a": {PublicName: "flash-a", Upstream: "ag-1", UpstreamModel: "gemini-3.8-flash", Enabled: true},
+			"flash-b": {PublicName: "flash-b", Upstream: "ag-2", UpstreamModel: "gemini-3.8-flash", Enabled: true},
+		},
+		[]string{"flash-a", "flash-b"},
+		map[string]*domain.Tenant{hash: {
+			KeyHash: hash, Name: "alpha", Status: domain.TenantStatusActive,
+			AllowedModels: []string{"fast"},
+			RateLimit:     domain.RateLimit{RPS: 1000, Burst: 1000, MaxConcurrent: 100},
+		}},
+		[]string{hash},
+		domain.WithCombos(
+			map[string]*domain.Combo{
+				"fast": {Name: "fast", Strategy: domain.RoutingStrategyFailover,
+					Models: []string{"flash-a", "flash-b"}, Enabled: true},
+			},
+			[]string{"fast"},
+		),
+	)
+	store := auth.NewStore(fakeProvider{snap})
+	return newTestServer(t, RouterDeps{
+		Snapshots:   fakeProvider{snap},
+		TenantStore: store,
+		Limiter:     limits.New(),
+		Adapter:     adapter,
+		Usage:       usage.NewCounters(),
+		Logger:      discardLogger(),
+	})
+}
+
+func postFast(t *testing.T, s *Server) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"fast","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer "+testKey)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+// TestForward_QuotaExhaustedFailsOverToHealthyAccount is the user-visible payoff:
+// a model the primary account is out of is served by the second account instead
+// of failing the request.
+func TestForward_QuotaExhaustedFailsOverToHealthyAccount(t *testing.T) {
+	clearQuotaCache()
+	seedQuota("ag-1", antigravity.ModelQuota{
+		Model: "gemini-3.8-flash", Exhausted: true,
+		ResetAt: time.Now().Add(2 * time.Hour).Format(time.RFC3339),
+	})
+	seedQuota("ag-2", antigravity.ModelQuota{Model: "gemini-3.8-flash", RemainingPct: 80})
+
+	fa := &fakeAdapter{body: `{"id":"x","object":"chat.completion"}`}
+	s := quotaForwardServer(t, fa)
+
+	rec := postFast(t, s)
+	require.Equal(t, http.StatusOK, rec.Code, "body=%s", rec.Body.String())
+	require.NotNil(t, fa.lastTarget)
+	assert.Equal(t, "ag-2", fa.lastTarget.Upstream.Name, "the exhausted account must be skipped")
+	clearQuotaCache()
+}
+
+// TestForward_QuotaExhaustedEverywhereIs429 pins the honest failure: when no
+// account has allowance, the client gets 429 with a Retry-After derived from the
+// provider's reset time — not a 503 that would suggest a broken deployment.
+func TestForward_QuotaExhaustedEverywhereIs429(t *testing.T) {
+	clearQuotaCache()
+	reset := time.Now().Add(90 * time.Minute).Format(time.RFC3339)
+	for _, id := range []string{"ag-1", "ag-2"} {
+		seedQuota(id, antigravity.ModelQuota{Model: "gemini-3.8-flash", Exhausted: true, ResetAt: reset})
+	}
+
+	fa := &fakeAdapter{body: `{"id":"x"}`}
+	s := quotaForwardServer(t, fa)
+
+	rec := postFast(t, s)
+	require.Equal(t, http.StatusTooManyRequests, rec.Code, "body=%s", rec.Body.String())
+	assert.Nil(t, fa.lastTarget, "no doomed request may reach the upstream")
+	assert.Contains(t, rec.Body.String(), "quota exhausted")
+
+	retry, err := strconv.Atoi(rec.Header().Get("Retry-After"))
+	require.NoError(t, err, "a quota answer must tell the client when to come back")
+	assert.Greater(t, retry, 60, "the provider's reset time drives Retry-After")
+	assert.LessOrEqual(t, retry, 3600)
+	clearQuotaCache()
+}
+
+// TestForward_NoQuotaDataRoutesNormally pins the safety property: with no quota
+// snapshot at all, nothing is vetoed and the primary account is used, so the
+// feature can never turn into a self-inflicted outage.
+func TestForward_NoQuotaDataRoutesNormally(t *testing.T) {
+	clearQuotaCache()
+	fa := &fakeAdapter{body: `{"id":"x","object":"chat.completion"}`}
+	s := quotaForwardServer(t, fa)
+
+	rec := postFast(t, s)
+	require.Equal(t, http.StatusOK, rec.Code, "body=%s", rec.Body.String())
+	require.NotNil(t, fa.lastTarget)
+	assert.Equal(t, "ag-1", fa.lastTarget.Upstream.Name)
 }

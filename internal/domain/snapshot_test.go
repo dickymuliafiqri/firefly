@@ -2,6 +2,7 @@ package domain
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -309,6 +310,93 @@ func TestResolveTargetWithBreakerFallback(t *testing.T) {
 	tgt, fb, err = snap.ResolveTargetWithBreaker(tenant, "gpt-4", func(string) bool { return false })
 	if err == nil {
 		t.Fatalf("expected error when all upstreams unavailable, got tgt=%+v fb=%v", tgt, fb)
+	}
+}
+
+// quotaComboSnapshot builds a two-member failover combo whose members run on
+// separate OAuth credentials, mirroring a real Antigravity setup where one
+// account is out of allowance and another is not.
+func quotaComboSnapshot() (*CatalogSnapshot, *Tenant) {
+	u1 := &Upstream{Name: "ag-1", Protocol: ProtocolOpenAI, BaseURL: "https://a/v1", CredentialRef: "oauth:ag-1"}
+	u2 := &Upstream{Name: "ag-2", Protocol: ProtocolOpenAI, BaseURL: "https://b/v1", CredentialRef: "oauth:ag-2"}
+	snap := NewCatalogSnapshot(
+		1,
+		map[string]*Upstream{"ag-1": u1, "ag-2": u2},
+		[]string{"ag-1", "ag-2"},
+		map[string]*ModelEntry{
+			"flash-a": {PublicName: "flash-a", Upstream: "ag-1", UpstreamModel: "gemini-3.8-flash", Enabled: true},
+			"flash-b": {PublicName: "flash-b", Upstream: "ag-2", UpstreamModel: "gemini-3.8-flash", Enabled: true},
+		},
+		[]string{"flash-a", "flash-b"},
+		map[string]*Tenant{
+			"h": {KeyHash: "h", Name: "t1", Status: TenantStatusActive, AllowedModels: []string{"*"}},
+		},
+		[]string{"h"},
+		WithCombos(
+			map[string]*Combo{
+				"fast": {Name: "fast", Strategy: RoutingStrategyFailover, Models: []string{"flash-a", "flash-b"}, Enabled: true},
+			},
+			[]string{"fast"},
+		),
+	)
+	tenant, _ := snap.TenantByHash("h")
+	return snap, tenant
+}
+
+// TestResolveTarget_CandidateVetoFailsOver pins the account-level veto: a member
+// whose credential has no allowance is skipped and the combo serves the request
+// from the member that does, exactly as it does for a breaker-open upstream.
+func TestResolveTarget_CandidateVetoFailsOver(t *testing.T) {
+	snap, tenant := quotaComboSnapshot()
+
+	tgt, fb, err := snap.ResolveTargetWithCandidates(tenant, "fast", nil, func(c TargetCandidate) bool {
+		return c.CredentialRef != "oauth:ag-1" // ag-1 is out of allowance
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tgt.Upstream.Name != "ag-2" {
+		t.Fatalf("expected failover to ag-2, got %s", tgt.Upstream.Name)
+	}
+	if !fb {
+		t.Fatal("a vetoed primary must be reported as a fallback, not a silent swap")
+	}
+}
+
+// TestResolveTarget_CandidateVetoAllExhausted pins the failure kind: when quota
+// is the only reason nothing resolved, the error says so, so the transport can
+// answer an honest 429 instead of a misleading "no upstream available".
+func TestResolveTarget_CandidateVetoAllExhausted(t *testing.T) {
+	snap, tenant := quotaComboSnapshot()
+
+	_, _, err := snap.ResolveTargetWithCandidates(tenant, "fast", nil, func(TargetCandidate) bool {
+		return false
+	})
+	if !errors.Is(err, ErrProviderQuotaExhausted) {
+		t.Fatalf("want ErrProviderQuotaExhausted, got %T %v", err, err)
+	}
+
+	// A breaker filter is a different failure and must keep its own kind: the
+	// veto only decides the candidate, never the classification.
+	_, _, err = snap.ResolveTargetWithCandidates(tenant, "fast", func(string) bool { return false },
+		func(TargetCandidate) bool { return true })
+	if errors.Is(err, ErrProviderQuotaExhausted) {
+		t.Fatal("a breaker rejection must not be reported as quota exhaustion")
+	}
+	var re *ResolveError
+	if !errors.As(err, &re) || re.Kind != ResolveUpstreamUnavailable {
+		t.Fatalf("want ResolveUpstreamUnavailable, got %T %v", err, err)
+	}
+}
+
+// TestResolveTargetWithBreaker_IgnoresCandidateVeto pins backward compatibility:
+// the old entry point keeps its exact previous behavior, since callers that do
+// not know about quota must never be vetoed.
+func TestResolveTargetWithBreaker_IgnoresCandidateVeto(t *testing.T) {
+	snap, tenant := quotaComboSnapshot()
+	tgt, fb, err := snap.ResolveTargetWithBreaker(tenant, "fast", nil)
+	if err != nil || fb || tgt.Upstream.Name != "ag-1" {
+		t.Fatalf("expected the primary, got fb=%v tgt=%+v err=%v", fb, tgt, err)
 	}
 }
 

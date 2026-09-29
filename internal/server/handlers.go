@@ -355,8 +355,54 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 				return deps.Breakers.Allow(name) == nil
 			}
 		}
-		target, fallbackUsed, err := snap.ResolveTargetWithBreaker(tenant, model, canUseUpstream)
+		var quotaResetAt time.Time
+	quotaNow := time.Now()
+	canUseCandidate := func(c domain.TargetCandidate) bool {
+		reset, blocked := deps.quotaBlockedCandidate(c, quotaNow)
+		if blocked {
+			if quotaResetAt.IsZero() {
+				quotaResetAt = reset
+			}
+			return false
+		}
+		return true
+	}
+	target, fallbackUsed, err := snap.ResolveTargetWithCandidates(tenant, model, canUseUpstream, canUseCandidate)
 		if err != nil {
+			if errors.Is(err, domain.ErrProviderQuotaExhausted) {
+				// Every candidate was vetoed for quota and nothing else: answer
+				// with the provider's own reset time, not a misleading 503.
+				retryAfter := quotaRetryAfter(quotaResetAt)
+				if deps.Logger != nil {
+					deps.Logger.Warn("no route: provider quota exhausted",
+						"request_id", httpx.RequestIDFrom(r.Context()),
+						"model", model, "retry_after_s", retryAfter)
+				}
+				deps.recordLog(LiveLog{
+					ID:            httpx.RequestIDFrom(r.Context()),
+					Timestamp:     time.Now().UnixMilli(),
+					Method:        r.Method,
+					Path:          r.URL.Path,
+					Status:        http.StatusTooManyRequests,
+					DurationMs:    0,
+					Model:         model,
+					Upstream:      "",
+					KeyRef:        "",
+					Tenant:        tenant.Name,
+					Stream:        stream,
+					TokensIn:      tokensIn,
+					TokensOut:     0,
+					Tokens:        tokensIn,
+					EstimatedCost: float64(tokensIn) * 0.0000025,
+					Error:         "provider quota exhausted for every candidate",
+				})
+				capture.Fail(http.StatusTooManyRequests, nil)
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+				openai.WriteError(w, http.StatusTooManyRequests, openai.TypeRateLimit,
+					"provider quota exhausted for every upstream serving model "+model+
+						"; retry after the window resets")
+				return
+			}
 			status := http.StatusInternalServerError
 			var re *domain.ResolveError
 			if errors.As(err, &re) {
@@ -432,55 +478,6 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 					capture.Candidate(me.Upstream, "", trace.CandidateSkipped, "combo member "+member)
 				}
 			}
-		}
-
-		// 3b. Provider-quota gate. The upstream account can tell us, before we
-		// spend a round trip, that it has no allowance left for this model.
-		// Positive evidence only: with no fresh quota saying "exhausted", the
-		// request routes exactly as before. This is a Layer 1 credential
-		// outcome (429 to the client), never a Layer 2 breaker event.
-		if resetAt, exhausted := deps.quotaBlocked(target, time.Now()); exhausted {
-			retryAfter := 60
-			if !resetAt.IsZero() {
-				retryAfter = int(time.Until(resetAt).Seconds()) + 1
-			}
-			if retryAfter < 1 {
-				retryAfter = 1
-			}
-			if retryAfter > 3600 {
-				retryAfter = 3600
-			}
-			if deps.Logger != nil {
-				deps.Logger.Warn("request skipped: provider quota exhausted",
-					"request_id", httpx.RequestIDFrom(r.Context()),
-					"model", model, "upstream_model", target.UpstreamModel,
-					"upstream", target.Upstream.Name, "retry_after_s", retryAfter)
-			}
-			deps.Metrics.ObserveKeyCooldown(target.Upstream.Name, keyRefOrTarget(target))
-			capture.Candidate(target.Upstream.Name, "", trace.CandidateSkipped, "provider quota exhausted")
-			capture.Fail(http.StatusTooManyRequests, nil)
-			deps.recordLog(LiveLog{
-				ID:            httpx.RequestIDFrom(r.Context()),
-				Timestamp:     time.Now().UnixMilli(),
-				Method:        r.Method,
-				Path:          r.URL.Path,
-				Status:        http.StatusTooManyRequests,
-				DurationMs:    0,
-				Model:         model,
-				Upstream:      target.Upstream.Name,
-				KeyRef:        keyRefOrTarget(target),
-				Tenant:        tenant.Name,
-				Stream:        stream,
-				TokensIn:      tokensIn,
-				TokensOut:     0,
-				Tokens:        tokensIn,
-				EstimatedCost: float64(tokensIn) * 0.0000025,
-				Error:         "provider quota exhausted for " + target.UpstreamModel,
-			})
-			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-			openai.WriteError(w, http.StatusTooManyRequests, openai.TypeRateLimit,
-				"provider quota exhausted for model "+target.UpstreamModel+" on upstream "+target.Upstream.Name)
-			return
 		}
 
 		// 4. Per-credential aggregate limit. AdmissionMiddleware already took
