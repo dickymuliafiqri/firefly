@@ -112,6 +112,47 @@ func TestHealthChecker_ProbeOnce(t *testing.T) {
 	}
 }
 
+// Antigravity (Google Cloud Code) has no unauthenticated health route, so the
+// background pass must stand down instead of firing a probe whose 404 would be
+// reported as a host failure and open the breaker for a healthy upstream. The
+// real check is the dashboard's live probe against the generation verb.
+func TestHealthChecker_SkipsAntigravity(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	up := &domain.Upstream{
+		Name:      "antigravity-live",
+		BaseURL:   srv.URL,
+		Protocol:  domain.ProtocolAntigravity,
+		ProbeModel: "gemini-2.5-pro",
+	}
+
+	reporter := newMockBreakerReporter()
+	checker := NewHealthCheckerWithStaticUpstreams(
+		HealthCheckConfig{Timeout: time.Second, Concurrency: 2},
+		[]*domain.Upstream{up},
+		nil,
+		reporter,
+		nil,
+	)
+	if err := checker.ProbeOnce(context.Background()); err != nil {
+		t.Fatalf("ProbeOnce returned error: %v", err)
+	}
+
+	if n := calls.Load(); n != 0 {
+		t.Errorf("background prober must not call Cloud Code (%d calls)", n)
+	}
+	if rep := reporter.getReports("antigravity-live"); len(rep) != 0 {
+		t.Errorf("no breaker outcome may be invented for antigravity, got: %v", rep)
+	}
+}
+
 func TestHealthChecker_ConcurrencyLimit(t *testing.T) {
 	defer goleak.VerifyNone(t)
 

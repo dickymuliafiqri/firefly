@@ -63,6 +63,11 @@ type UpstreamModelsResponse struct {
 	LatencyMs  int64    `json:"latency_ms"`
 	Message    string   `json:"message,omitempty"`
 	KeyRef     string   `json:"key_ref,omitempty"`
+	// Unavailable lists candidates the upstream refused during a live sweep
+	// (protocols without a model-list route, e.g. antigravity). It is what
+	// turned a hardcoded list into a real answer, so the dashboard can show
+	// which ids Google did not serve instead of silently hiding them.
+	Unavailable []string `json:"unavailable,omitempty"`
 }
 
 // makeCheckClient builds an http.Client bound to the configured egress mode (warp, proxy, or direct).
@@ -297,57 +302,14 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 	}
 
 	if protocol == "antigravity" {
-		models := []string{
-			"gemini-2.5-pro",
-			"gemini-2.5-flash",
-			"gemini-2.0-flash",
-			"gemini-2.0-pro",
-			"claude-3-7-sonnet",
-			"claude-3-5-sonnet",
-		}
-		if req.Model != "" {
-			reqModel := strings.TrimSpace(req.Model)
-			found := false
-			for _, m := range models {
-				if strings.EqualFold(m, reqModel) {
-					found = true
-					break
-				}
-			}
-			if found {
-				w.WriteHeader(http.StatusOK)
-				_ = json.NewEncoder(w).Encode(UpstreamCheckResponse{
-					Healthy:    true,
-					StatusCode: 200,
-					LatencyMs:  1,
-					Message:    fmt.Sprintf("Antigravity Cloud Code supports model %q", reqModel),
-					KeyRef:     resolvedKeyRef,
-				})
-			} else {
-				// Custom / unlisted models are allowed: the curated list is not
-				// exhaustive, so an unknown id is accepted and routed as-is.
-				w.WriteHeader(http.StatusOK)
-				_ = json.NewEncoder(w).Encode(UpstreamCheckResponse{
-					Healthy:    true,
-					StatusCode: 200,
-					LatencyMs:  1,
-					Message:    fmt.Sprintf("Antigravity accepts custom model %q (not in the curated list; routed as-is)", reqModel),
-					KeyRef:     resolvedKeyRef,
-				})
-			}
-			return
-		}
-
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(UpstreamCheckResponse{
-			Healthy:    true,
-			StatusCode: 200,
-			LatencyMs:  1,
-			Message:    fmt.Sprintf("Antigravity Cloud Code upstream (%d models available)", len(models)),
-			ModelCount: len(models),
-			Models:     models,
-			KeyRef:     resolvedKeyRef,
-		})
+		// Live probe against Google Cloud Code: there is no model-list route on
+		// that host, so "healthy" can only mean a real one-token generation
+		// answered. Never infer it from a hardcoded list.
+		deps.handleAntigravityCheck(
+			w, ctx, existingUp, targetSlot,
+			baseURL, apiKey, resolvedKeyRef, req.Model,
+			timeout, egressMode, proxyURL,
+		)
 		return
 	}
 
@@ -836,20 +798,7 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 
 	// Update Layer 1 key status if a specific slot from an existing upstream was used
 	if targetSlot != nil {
-		switch resp.StatusCode {
-		case http.StatusUnauthorized, http.StatusForbidden:
-			isFreeTierErr := strings.Contains(string(bodyBytes), "FreeTierError") || strings.Contains(string(bodyBytes), "free tier can only be used")
-			isPublicKey := targetSlot.Ref == "public" || targetSlot.Secret == "public" || strings.HasPrefix(targetSlot.Ref, "public:")
-			if !isFreeTierErr && !isPublicKey {
-				targetSlot.Revoked.Store(true)
-			}
-		case http.StatusTooManyRequests:
-			if existingUp != nil && existingUp.KeyRing != nil {
-				retryAfter := resp.Header.Get("Retry-After")
-				kr := &upstream.KeyRing{KeyRing: existingUp.KeyRing}
-				kr.Handle429(targetSlot.Ref, retryAfter)
-			}
-		}
+		applyProbeKeyStatus(existingUp, targetSlot, resp.StatusCode, resp.Header.Get("Retry-After"), bodyBytes)
 	}
 
 	if reqModel != "" {
@@ -990,6 +939,29 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 		Message:    fmt.Sprintf("Upstream returned HTTP %d", resp.StatusCode),
 		KeyRef:     resolvedKeyRef,
 	})
+}
+
+// applyProbeKeyStatus folds a probe response into Layer 1 key state: a genuine
+// credential rejection revokes the slot, a quota rejection cools it down. It is
+// shared by the generic probe path and the protocol-specific live probes
+// (antigravity) so both classify a probe identically.
+func applyProbeKeyStatus(existingUp *domain.Upstream, targetSlot *domain.KeySlot, statusCode int, retryAfter string, body []byte) {
+	if targetSlot == nil {
+		return
+	}
+	switch statusCode {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		isFreeTierErr := strings.Contains(string(body), "FreeTierError") || strings.Contains(string(body), "free tier can only be used")
+		isPublicKey := targetSlot.Ref == "public" || targetSlot.Secret == "public" || strings.HasPrefix(targetSlot.Ref, "public:")
+		if !isFreeTierErr && !isPublicKey {
+			targetSlot.Revoked.Store(true)
+		}
+	case http.StatusTooManyRequests:
+		if existingUp != nil && existingUp.KeyRing != nil {
+			kr := &upstream.KeyRing{KeyRing: existingUp.KeyRing}
+			kr.Handle429(targetSlot.Ref, retryAfter)
+		}
+	}
 }
 
 // parseModelIDsFromBody parses model IDs from OpenAI, Anthropic, or compatible models JSON payload.
@@ -1195,24 +1167,14 @@ func (deps RouterDeps) handleFetchUpstreamModels(w http.ResponseWriter, r *http.
 	}
 
 	if protocol == "antigravity" {
-		models := []string{
-			"gemini-2.5-pro",
-			"gemini-2.5-flash",
-			"gemini-2.0-flash",
-			"gemini-1.5-pro",
-			"gemini-1.5-flash",
-			"claude-3-5-sonnet-20241022",
-			"claude-3-7-sonnet-20250219",
-			"claude-3-5-haiku-20241022",
-		}
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(UpstreamModelsResponse{
-			Models:     models,
-			ModelCount: len(models),
-			LatencyMs:  1,
-			Message:    fmt.Sprintf("Antigravity Cloud Code (%d models available)", len(models)),
-			KeyRef:     resolvedKeyRef,
-		})
+		// Live sweep against Google Cloud Code. The host has no model-list route,
+		// so every candidate is verified with a one-token generation and the
+		// answer reports what Google actually served.
+		deps.handleAntigravityModels(
+			w, ctx, existingUp,
+			baseURL, apiKey, resolvedKeyRef,
+			timeout, egressMode, proxyURL,
+		)
 		return
 	}
 

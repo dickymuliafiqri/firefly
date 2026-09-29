@@ -340,6 +340,13 @@ export interface UpstreamModelsResponse {
   latency_ms: number;
   message?: string;
   key_ref?: string;
+  /**
+   * Candidates the upstream refused during a live sweep. Protocols without a
+   * model-list route (antigravity / Google Cloud Code) verify every id with a
+   * one-token generation, so this is the honest counterpart of `models`: what
+   * the host did not serve.
+   */
+  unavailable?: string[];
 }
 
 export async function checkUpstreamHealth(

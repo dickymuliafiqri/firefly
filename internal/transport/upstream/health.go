@@ -219,6 +219,19 @@ func (h *HealthChecker) probeOne(ctx context.Context, u *domain.Upstream) {
 		}
 	}
 
+	// Antigravity (Google Cloud Code) serves exactly one verb,
+	// `v1internal:generateContent`, and it requires an OAuth access token this
+	// component cannot resolve. Probing it here would mean either an
+	// unauthenticated call or a fake one whose 401/404 would be reported as a
+	// host failure and open the breaker for a perfectly healthy upstream.
+	// The dashboard's live probe (POST /api/upstreams/check) does the real
+	// work, so the background pass stands down instead of inventing an outcome.
+	if u.Protocol == domain.ProtocolAntigravity {
+		h.logger.Debug("antigravity background probe skipped: no unauthenticated health route on Cloud Code",
+			"upstream", u.Name, "probe_model", u.ProbeModel)
+		return
+	}
+
 	trimmedBase := strings.TrimRight(u.BaseURL, "/")
 	var activeSlot *domain.KeySlot
 

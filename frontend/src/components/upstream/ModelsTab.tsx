@@ -66,6 +66,9 @@ export function ModelsTab({
   const setCachedModels = useModelCacheStore((s) => s.setModels);
 
   const [modelChecks, setModelChecks] = useState<Record<string, ModelCheckState>>({});
+  // Candidates the upstream refused live (antigravity verifies every id with a
+  // real one-token generation, so the refused ones are worth showing).
+  const [unavailableModels, setUnavailableModels] = useState<string[]>([]);
   const [checkingAll, setCheckingAll] = useState(false);
   const [concurrency, setConcurrency] = useState(5);
   const [checkProgress, setCheckProgress] = useState<{
@@ -99,6 +102,7 @@ export function ModelsTab({
     setCheckingAll(false);
     setCheckProgress(null);
     setModelChecks({});
+    setUnavailableModels([]);
   }, [upstreamName]);
 
   // A saved upstream resolves to a KeyRing in the gateway snapshot; probing it
@@ -127,7 +131,11 @@ export function ModelsTab({
       };
       const res = await modelsMutation.mutateAsync(payload);
       const fetched = res.models || [];
+      const refused = res.unavailable || [];
       onDiscover(fetched, res.latency_ms);
+      setUnavailableModels(refused);
+      // Only live-verified ids are cached: a model list is what the operator may
+      // route to, and a refused id must never come back as a suggestion.
       if (upstreamName && fetched.length > 0) {
         setCachedModels(upstreamName, fetched);
       }
@@ -139,7 +147,10 @@ export function ModelsTab({
       pushToast({
         type: 'success',
         title: 'Models discovered',
-        message: `${res.model_count} models available from upstream host.`,
+        message:
+          res.message ||
+          `${res.model_count} models available from upstream host.` +
+            (refused.length > 0 ? ` ${refused.length} refused by the upstream.` : ''),
       });
     } catch (err) {
       pushToast({
@@ -378,6 +389,15 @@ export function ModelsTab({
             {latencyMs !== null && latencyMs > 0 && (
               <span className="mono" style={{ fontSize: 12, color: 'var(--ok)' }}>
                 Response time: {latencyMs}ms
+              </span>
+            )}
+
+            {unavailableModels.length > 0 && (
+              <span
+                className="badge warn"
+                title="These ids were probed live and the upstream refused them, so they are not routed and not offered as probe models."
+              >
+                {unavailableModels.length} refused live: {unavailableModels.join(', ')}
               </span>
             )}
 

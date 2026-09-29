@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dickymuliafiqri/firefly/internal/adapter/antigravity"
 	"github.com/dickymuliafiqri/firefly/internal/adapter/opencode"
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/security/oauth"
@@ -283,13 +284,28 @@ func TestUpstreamCheck_Cline_OAuthResolution(t *testing.T) {
 	}
 }
 
+// Antigravity no longer answers from a curated list: a check without a model
+// probes the cheapest Gemini with a real one-token generation and reports the
+// host's own verdict (the previous 200/"N models available" answer was served
+// from a hardcoded slice with a fabricated 1ms latency).
 func TestUpstreamCheck_Antigravity(t *testing.T) {
-	deps := RouterDeps{}
-	s := New(Config{Addr: "0.0.0.0:8080"}, deps, context.Background(), nil)
+	var askedPath, askedAuth, askedModel string
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		askedPath = r.URL.Path
+		askedAuth = r.Header.Get("Authorization")
+		var envelope antigravity.AntigravityEnvelope
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &envelope)
+		askedModel = envelope.Model
+		_, _ = w.Write([]byte(`{"response":{"candidates":[]}}`))
+	}))
+	defer mockServer.Close()
 
+	s := New(Config{Addr: "0.0.0.0:8080"}, RouterDeps{}, context.Background(), nil)
 	payload := UpstreamCheckRequest{
 		Protocol: "antigravity",
-		BaseURL:  "https://cloudsandbox-pa.googleapis.com",
+		BaseURL:  mockServer.URL,
+		APIKey:   "ya29.live-token",
 	}
 	body, _ := json.Marshal(payload)
 	req := httptest.NewRequest(http.MethodPost, "/api/upstreams/check", bytes.NewReader(body))
@@ -299,17 +315,21 @@ func TestUpstreamCheck_Antigravity(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
-
 	var res UpstreamCheckResponse
 	if err := json.NewDecoder(w.Body).Decode(&res); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
-
 	if !res.Healthy {
-		t.Errorf("expected healthy=true, got false: %s", res.Message)
+		t.Errorf("expected healthy=true from a live 200, got false: %s", res.Message)
 	}
-	if res.ModelCount == 0 || len(res.Models) == 0 {
-		t.Errorf("expected models for antigravity, got none")
+	if askedPath != antigravity.GenerateContentPath {
+		t.Errorf("probed %q, want the Cloud Code generation verb %q", askedPath, antigravity.GenerateContentPath)
+	}
+	if askedAuth != "Bearer ya29.live-token" {
+		t.Errorf("Authorization = %q, want the OAuth token", askedAuth)
+	}
+	if askedModel != antigravity.DefaultProbeModel {
+		t.Errorf("probed model = %q, want the default probe model %q", askedModel, antigravity.DefaultProbeModel)
 	}
 }
 
@@ -462,41 +482,52 @@ func TestUpstreamCheck_Model_Anthropic_Success(t *testing.T) {
 }
 
 func TestUpstreamCheck_Model_Antigravity(t *testing.T) {
-	deps := RouterDeps{}
-	s := New(Config{Addr: "0.0.0.0:8080"}, deps, context.Background(), nil)
+	// The probe verdict now mirrors the host: a model the account may use is
+	// healthy, and a model the host refuses is reported as failed with the
+	// upstream's own reason instead of being waved through as "custom".
+	served := map[string]bool{"gemini-2.5-pro": true}
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var envelope antigravity.AntigravityEnvelope
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &envelope)
+		if served[envelope.Model] {
+			_, _ = w.Write([]byte(`{"response":{"candidates":[]}}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"message":"model is not available for this account"}}`))
+	}))
+	defer mockServer.Close()
 
-	// Valid Antigravity model
-	payload := UpstreamCheckRequest{
-		Protocol: "antigravity",
-		BaseURL:  "https://cloudsandbox-pa.googleapis.com",
-		Model:    "gemini-2.5-pro",
+	s := New(Config{Addr: "0.0.0.0:8080"}, RouterDeps{}, context.Background(), nil)
+
+	post := func(model string) UpstreamCheckResponse {
+		payload := UpstreamCheckRequest{
+			Protocol:  "antigravity",
+			BaseURL:   mockServer.URL,
+			APIKey:    "ya29.live-token",
+			Model:     model,
+			TimeoutMs: 5000,
+		}
+		body, _ := json.Marshal(payload)
+		req := httptest.NewRequest(http.MethodPost, "/api/upstreams/check", bytes.NewReader(body))
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, req)
+		var res UpstreamCheckResponse
+		_ = json.NewDecoder(w.Body).Decode(&res)
+		return res
 	}
-	body, _ := json.Marshal(payload)
-	req := httptest.NewRequest(http.MethodPost, "/api/upstreams/check", bytes.NewReader(body))
-	w := httptest.NewRecorder()
-	s.Handler().ServeHTTP(w, req)
 
-	var res UpstreamCheckResponse
-	_ = json.NewDecoder(w.Body).Decode(&res)
-	if !res.Healthy || res.StatusCode != 200 {
-		t.Errorf("expected gemini-2.5-pro to be healthy, got %v", res)
+	if res := post("gemini-2.5-pro"); !res.Healthy || res.StatusCode != 200 {
+		t.Errorf("expected gemini-2.5-pro to be healthy, got %+v", res)
 	}
 
-	// Custom / unlisted Antigravity model: now ACCEPTED (custom models allowed),
-	// not rejected. The curated list is not exhaustive.
-	payload = UpstreamCheckRequest{
-		Protocol: "antigravity",
-		BaseURL:  "https://cloudsandbox-pa.googleapis.com",
-		Model:    "random-nonexistent-model",
+	res := post("random-nonexistent-model")
+	if res.Healthy {
+		t.Errorf("a model the host refuses must not report healthy: %+v", res)
 	}
-	body, _ = json.Marshal(payload)
-	req = httptest.NewRequest(http.MethodPost, "/api/upstreams/check", bytes.NewReader(body))
-	w = httptest.NewRecorder()
-	s.Handler().ServeHTTP(w, req)
-
-	_ = json.NewDecoder(w.Body).Decode(&res)
-	if !res.Healthy || res.StatusCode == http.StatusBadRequest {
-		t.Errorf("expected custom model to be accepted (healthy, no 400), got %v", res)
+	if !strings.Contains(res.Message, "model is not available for this account") {
+		t.Errorf("message must carry the upstream reason: %q", res.Message)
 	}
 }
 
@@ -744,14 +775,27 @@ func TestUpstreamCheck_GrokCLICustomModelAccepted(t *testing.T) {
 	}
 }
 
-func TestUpstreamCheck_AntigravityCustomModelAccepted(t *testing.T) {
-	deps := RouterDeps{}
-	s := New(Config{Addr: "0.0.0.0:8080"}, deps, context.Background(), nil)
+// A custom (operator-defined) model id must reach Cloud Code verbatim — the
+// probe may not filter it through a curated list — and the verdict then mirrors
+// the host, which is what keeps such routes honest.
+func TestUpstreamCheck_AntigravityCustomModelProbedVerbatim(t *testing.T) {
+	var askedModel string
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var envelope antigravity.AntigravityEnvelope
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &envelope)
+		askedModel = envelope.Model
+		_, _ = w.Write([]byte(`{"response":{"candidates":[]}}`))
+	}))
+	defer mockServer.Close()
 
+	s := New(Config{Addr: "0.0.0.0:8080"}, RouterDeps{}, context.Background(), nil)
 	payload := UpstreamCheckRequest{
-		Protocol: "antigravity",
-		BaseURL:  "https://cloudsandbox-pa.googleapis.com",
-		Model:    "gemini-9-ultra",
+		Protocol:  "antigravity",
+		BaseURL:   mockServer.URL,
+		APIKey:    "ya29.live-token",
+		Model:     "gemini-9-ultra",
+		TimeoutMs: 5000,
 	}
 	body, _ := json.Marshal(payload)
 	req := httptest.NewRequest(http.MethodPost, "/api/upstreams/check", bytes.NewReader(body))
@@ -760,8 +804,11 @@ func TestUpstreamCheck_AntigravityCustomModelAccepted(t *testing.T) {
 
 	var resp UpstreamCheckResponse
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if askedModel != "gemini-9-ultra" {
+		t.Fatalf("custom model must be probed verbatim, upstream saw %q", askedModel)
+	}
 	if !resp.Healthy {
-		t.Fatalf("antigravity custom model must be accepted, got: %s", resp.Message)
+		t.Fatalf("a model the host served must be healthy, got: %s", resp.Message)
 	}
 }
 
