@@ -8,6 +8,7 @@ import {
   Layers,
   Lock,
   MessageCircle,
+  Plug,
   Radar,
   Server,
   Sliders,
@@ -22,6 +23,7 @@ import { UpstreamsPage } from '@/pages/UpstreamsPage';
 import { ProvidersPage } from '@/pages/ProvidersPage';
 import { ModelsPage } from '@/pages/ModelsPage';
 import { TenantsPage } from '@/pages/TenantsPage';
+import { ConnectPage } from '@/pages/ConnectPage';
 import { SettingsPage } from '@/pages/SettingsPage';
 import { ChatPage } from '@/pages/ChatPage';
 import { BenchmarkPage } from '@/pages/BenchmarkPage';
@@ -40,6 +42,7 @@ export type PageId =
   | 'providers'
   | 'models'
   | 'tenants'
+  | 'connect'
   | 'settings'
   | 'chat'
   | 'benchmark'
@@ -66,6 +69,7 @@ export const PAGES: Record<PageId, PageDef> = {
   providers:  { id: 'providers',  title: 'Providers',  description: 'Stored credential pools and key lifecycle.',      group: 'SERVICES',      icon: Database,      element: () => <ProvidersPage /> },
   models:     { id: 'models',     title: 'Models',     description: 'Direct models and virtual combos.',               group: 'SERVICES',      icon: Layers,        element: () => <ModelsPage /> },
   tenants:    { id: 'tenants',    title: 'Tenants',    description: 'Tenant auth, rate limits, and access.',           group: 'SERVICES',      icon: Users,         element: () => <TenantsPage /> },
+  connect:    { id: 'connect',    title: 'Connect',    description: 'Wire AI agents to this gateway.',                 group: 'SERVICES',      icon: Plug,          element: () => <ConnectPage /> },
   settings:   { id: 'settings',   title: 'Settings',   description: 'Global gateway configuration.',                   group: 'CONFIGURATION', icon: Sliders,       element: () => <SettingsPage /> },
   chat:       { id: 'chat',       title: 'Chat',       description: 'SSE chat tester with stream inspector.',          group: 'TOOLS',         icon: MessageCircle, element: () => <ChatPage /> },
   benchmark:  { id: 'benchmark',  title: 'Benchmark',  description: 'Gateway throughput benchmarking.',                group: 'TOOLS',         icon: Zap,           element: () => <BenchmarkPage /> },

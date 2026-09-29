@@ -5,6 +5,20 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.37.0] - 2026-09-29
+
+### Added
+
+- **Connect page: wire AI agents to Firefly without leaving the dashboard (`frontend/src/pages/ConnectPage.tsx`, `frontend/src/lib/connect.ts`, `frontend/src/registry.tsx`, `frontend/src/styles/global.css`)**: a new entry in the **Services** sidebar group that answers "how do I point Cline / OpenCode / my SDK at this gateway?" on a single screen.
+  - **Base URL** defaults to the dashboard's own origin (the dashboard and the `/v1` data plane share one listener) and stays editable for tunnel, reverse-proxy or custom-host installs; the normalized **gateway origin** and the **OpenAI base URL** (origin + `/v1`) each get their own copy button, and the value is persisted in `localStorage`. Normalization is idempotent — a pasted `…/v1` is stripped — so the base URL can never degrade into `/v1/v1`. The inbound endpoint table (`/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/compress`, `/v1/models`, `/v1/usage`) is listed with a copy button per route.
+  - **Tenant key dropdown** lists every catalog tenant with its status; the selected key is shown masked (`sk-gw-••••1234`) with Show and Copy, and a paste field fills in the secret for tenants whose plaintext no longer lives in the catalog (a key is displayed only once, at creation). The pasted key is kept per tenant in `sessionStorage` — never written to disk — and switching tenants swaps the key with it, so one tenant's secret can never reach another tenant's snippets. A **model dropdown** lists public models and combos, filtered to the tenant's `allowed_models` when it has any.
+  - **Test connection** calls `GET /v1/models` with the selected key and reports how many models it can see. It is offered only on the dashboard's own origin: the data plane sends no CORS headers, so a cross-origin probe would be blocked by the browser rather than by Firefly.
+  - **Client presets** for Cline, Roo Code, Kilo Code and Cursor (the "OpenAI Compatible" form fields), Continue (`config.json`) and OpenCode (`opencode.json`), Aider (env vars plus `aider --model openai/<model>`), the OpenAI Python and Node SDKs, and raw cURL — each with a where-to-paste summary, a docs link, per-field copy buttons, a copyable config block, and a **Copy everything** bundle for handing the connection to a teammate. Every preset stays on the OpenAI wire surface: Firefly serves no inbound `/v1/messages` or `/v1/responses`, which the page states explicitly.
+- **Snippet builder kept headless and verified (`frontend/src/lib/connect.ts`, `frontend/scripts/connect-check.ts`)**: the page only renders values, so URL normalization, key masking and every emitted snippet live in a pure module checked by `npm run check:connect` (esbuild bundle + node, the same pattern as the existing `check:line-view`).
+  - **Coverage:** base-URL normalization (missing scheme, trailing slash, `/v1` stripping, reverse-proxy path prefix, query/hash, empty → dashboard origin); the endpoint table pinned to the inbound data plane of `internal/server/router.go`; masked / empty / redacted secrets refused by `isUsableKey` and replaced by `sk-gw-YOUR_KEY`; `maskKey` never revealing the middle of a key; every preset substituting base URL, key and model; both JSON presets parsing and carrying the keys their client actually reads (`provider.options.baseURL`, `models[0].apiBase`); no preset targeting an unserved inbound route; the copy-everything bundle; and a `renderToStaticMarkup` smoke render of the page against a populated and an empty catalog, where a masked key never reaches the DOM in full.
+- **Docs/version:** the README feature list documents the Connect page, `frontend/package.json` is `1.37.0` (with the new `check:connect` script), and the sidebar version is `v1.37.0`.
+- **Verified:** `tsc --noEmit`, `npm run check:connect`, `npm run check:line-view`, and `vite build`.
+
 ## [1.36.1] - 2026-09-29
 
 ### Fixed

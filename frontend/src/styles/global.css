@@ -1809,6 +1809,139 @@ input:disabled {
   stroke-dasharray: 6 4;
 }
 
+
+/* ============================================================
+   CONNECT (Services → Connect) — copyable client presets
+   ============================================================ */
+.connect-copy-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 14px;
+}
+.connect-copy-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.connect-copy-label {
+    min-width: 150px;
+    font-size: 12px;
+    color: var(--muted);
+}
+.connect-copy-value {
+    flex: 1;
+    min-width: 0;
+    padding: 7px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--surface-raised);
+    color: var(--ink);
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.connect-copy {
+    flex-shrink: 0;
+    padding: 6px 12px;
+}
+.connect-note {
+    margin-top: 12px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--faint);
+}
+.connect-note code {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    color: var(--muted);
+}
+.connect-endpoints td {
+    white-space: normal;
+}
+.connect-endpoints .connect-endpoint-note {
+    color: var(--muted);
+    min-width: 260px;
+}
+.connect-probe {
+    margin-top: 16px;
+    flex-wrap: wrap;
+}
+.connect-probe-result {
+    font-size: 12px;
+    color: var(--muted);
+}
+.connect-clients {
+    display: grid;
+    gap: 16px;
+}
+.connect-client .card-header {
+    align-items: center;
+}
+.connect-client-title {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    min-width: 0;
+}
+.connect-client-kind {
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--faint);
+}
+.connect-client-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+.connect-client-summary {
+    font-size: 13px;
+    color: var(--muted);
+    line-height: 1.6;
+}
+.connect-client .connect-copy-list {
+    margin-top: 12px;
+}
+.connect-snippet {
+    margin-top: 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--surface-page);
+}
+.connect-snippet-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 6px 8px 6px 12px;
+    border-bottom: 1px solid var(--line);
+    background: var(--surface-raised);
+}
+.connect-snippet-head .lang {
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--faint);
+}
+.connect-snippet pre {
+    margin: 0;
+    padding: 12px 14px;
+    max-height: 320px;
+    overflow: auto;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--ink);
+    white-space: pre;
+}
+.connect-snippet pre code {
+    font-family: inherit;
+}
+
 .visualizer-svg .viz-pkt {
   fill: var(--biolum-bright);
 }
