@@ -66,7 +66,7 @@ Firefly supports direct API keys and native OAuth login for:
 - **CodeBuddy** (China & International)
 - **OpenCode & OpenCode Go**
 
-> **Server deployments:** when the provider's login redirects to a callback URL the gateway never receives (e.g. `http://localhost:<port>/api/oauth/callback?...`), copy that URL from the browser address bar and paste it into the OAuth dialog's **Verify** field — the gateway validates the state and exchanges the authorization code manually.
+> **Server deployments:** the consent link's `redirect_uri` is always pinned to `localhost` (the only redirect family these OAuth clients register), so the link stays valid no matter which host serves the dashboard. When the provider's login then redirects to a callback URL the gateway never receives (e.g. `http://localhost:<port>/api/oauth/callback?...`), copy that URL from the browser address bar and paste it into the OAuth dialog's **Verify** field — the gateway validates the state and exchanges the authorization code manually.
 
 ---
 

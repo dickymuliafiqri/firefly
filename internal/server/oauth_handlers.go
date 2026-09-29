@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -133,11 +134,22 @@ func (deps RouterDeps) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reque
 
 	redirectURI := req.RedirectURI
 	if redirectURI == "" {
+		// Pin the callback host to localhost: the OAuth clients behind these
+		// providers only have loopback redirect URIs registered, so building
+		// this from r.Host yielded redirect_uri_mismatch (an invalid consent
+		// link) whenever the dashboard was reached through a server host. The
+		// port still points at this instance's listener, so the same-machine
+		// callback keeps working unchanged; a remote browser completes the flow
+		// through the dialog's manual callback-URL paste (POST /api/oauth/callback).
 		scheme := "http"
 		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
 			scheme = "https"
 		}
-		redirectURI = fmt.Sprintf("%s://%s/api/oauth/callback", scheme, r.Host)
+		host := "localhost"
+		if _, port, err := net.SplitHostPort(r.Host); err == nil && port != "" {
+			host = "localhost:" + port
+		}
+		redirectURI = fmt.Sprintf("%s://%s/api/oauth/callback", scheme, host)
 	}
 
 	sess, err := deps.OAuthManager.PrepareAuth(r.Context(), req.Provider, redirectURI)

@@ -15,6 +15,7 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/ports"
 	"github.com/dickymuliafiqri/firefly/internal/security/auth"
 	"github.com/dickymuliafiqri/firefly/internal/security/oauth"
+	antigravity "github.com/dickymuliafiqri/firefly/internal/security/oauth/providers/antigravity"
 	cline "github.com/dickymuliafiqri/firefly/internal/security/oauth/providers/cline"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -202,6 +203,62 @@ func TestServer_OAuthCallback_ManualVerify(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	require.True(t, gjson.ValidBytes(rec.Body.Bytes()))
+}
+
+// TestServer_OAuthAuthorizePinsLocalhostCallback pins the loopback callback
+// invariant: the consent link's redirect_uri must always point at localhost —
+// the only redirect URI family these OAuth clients accept, since a server-host
+// value yields redirect_uri_mismatch and an invalid consent link. The port is
+// carried over from the request so the same-machine listener still receives
+// the callback; a remote browser completes the flow via the dialog's manual
+// callback-URL paste.
+func TestServer_OAuthAuthorizePinsLocalhostCallback(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	store, err := oauth.NewStore(filepath.Join(dir, "oauth.json"))
+	require.NoError(t, err)
+	mgr := oauth.NewManager(store)
+	require.NoError(t, mgr.RegisterProvider(antigravity.New()))
+
+	authMgr := auth.NewManager(dir, "admin-secret-pass", "default-pass")
+	srv := &Server{}
+	handler := srv.buildHandler(RouterDeps{
+		OAuthManager:           mgr,
+		Auth:                   authMgr,
+		Logger:                 slog.Default(),
+		DisableGlobalAdmission: true,
+	})
+
+	session, err := authMgr.Authenticate(context.Background(), "admin-secret-pass")
+	require.NoError(t, err)
+	adminAuth := "Bearer " + session.Token
+
+	cases := []struct {
+		name string
+		host string
+		want string
+	}{
+		{"server host with port", "gateway.example.com:9443", "redirect_uri=http%3A%2F%2Flocalhost%3A9443%2Fapi%2Foauth%2Fcallback"},
+		{"server host without port", "gateway.example.com", "redirect_uri=http%3A%2F%2Flocalhost%2Fapi%2Foauth%2Fcallback"},
+		{"already localhost keeps byte-identical URI", "localhost:8080", "redirect_uri=http%3A%2F%2Flocalhost%3A8080%2Fapi%2Foauth%2Fcallback"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/oauth/authorize",
+				bytes.NewReader([]byte(`{"provider":"antigravity"}`)))
+			req.Host = tc.host
+			req.Header.Set("Authorization", adminAuth)
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			require.Equal(t, http.StatusOK, rec.Code)
+
+			authURL := gjson.GetBytes(rec.Body.Bytes(), "auth_url").String()
+			assert.Contains(t, authURL, tc.want)
+			assert.NotContains(t, authURL, "gateway.example.com")
+		})
+	}
 }
 
 type mockDeviceOAuthProvider struct {

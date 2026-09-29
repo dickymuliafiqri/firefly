@@ -5,6 +5,15 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.36.1] - 2026-09-29
+
+### Fixed
+
+- **OAuth consent link always carries a localhost callback (`internal/server/oauth_handlers.go`)**: the default `redirect_uri` for `POST /api/oauth/authorize` was built from `r.Host`, so reaching the dashboard through a server host produced `redirect_uri_mismatch` — an invalid consent link — because the OAuth clients behind these providers only register loopback redirect URIs. The host is now pinned to `localhost` while the request's port and scheme are preserved, so the same-machine callback stays byte-identical to the working local form and a remote browser completes the flow through the dialog's manual callback-URL paste (1.36.0). The explicit `redirect_uri` request override (never sent by the dashboard) is still honored.
+  - **Regression coverage:** `TestServer_OAuthAuthorizePinsLocalhostCallback` drives the real Antigravity provider through `POST /api/oauth/authorize` and pins `localhost:<port>` for a server host with a port, plain `localhost` without one, and the byte-identical `localhost:<port>` form — asserting the server host never appears in `auth_url`.
+- **Docs/version:** the README server-deployments note states the consent link's `redirect_uri` is pinned to localhost, `frontend/package.json` is `1.36.1`, and the sidebar version is `v1.36.1`.
+- **Verified:** `go test ./internal/server/...` and `go build ./...`.
+
 ## [1.36.0] - 2026-09-29
 
 ### Added
