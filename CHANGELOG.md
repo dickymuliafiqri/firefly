@@ -5,6 +5,26 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.42.0] - 2026-09-29
+
+### Added
+
+- **Tabbed Quota Page with Contextual KPIs (`frontend/src/pages/QuotaPage.tsx`)**:
+  - Separated the Quota page into two dedicated views using the standard `Segmented` control: **Provider Accounts** (OAuth/upstream allowance) and **Tenant Quotas** (tenant token ledger and expiry).
+  - Contextual KPI summaries complying with DESIGN_RULES §5.2 (maximum 4 cards per page):
+    - Provider Tab: *Provider accounts*, *Models out of quota*, *Needs reconnect*, and *Live accounts*.
+    - Tenant Tab: *Tenants with quota*, *Total remaining*, *Expiring ≤7d*, and *Non-active*.
+- **Compact & Minimalist Provider Quota Cards**:
+  - Replaced the full-width block table layout with a responsive multi-column grid (`grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4`), allowing 6 to 9 accounts to fit within a single viewport without long vertical scrolling.
+  - Redesigned card anatomy: compact header with official provider icon via `ProviderIcon`, truncated account identifier, plan badge, status badge (`ACTIVE`, `OUT OF QUOTA`, `EXPIRED`), and live/cache indicator.
+  - High-density model quota rows (~26px per model) with 4px mini progress bars, numeric percentages, and reset countdowns.
+  - Progressive disclosure: shows the top 3 models by default with a `+X more models` expand/collapse toggle to maintain balanced card heights across the grid.
+- **Unified Filtering & Pagination**:
+  - Integrated search bars and status filters for both provider accounts and tenants with automatic page reset.
+  - Standard pagination bar (`.pagination-bar`) with per-page selectors (6/12/24 for providers, 10/25/50 for tenants) and `ChevronLeft`/`ChevronRight` navigation.
+  - Harmonized spacing and padding across the page, eliminating conflicting inline margins and component overlaps.
+- **Version bump**: `frontend/package.json` and `AppShell.tsx` bumped to `v1.42.0`.
+
 ## [1.41.0] - 2026-09-29
 
 ### Added
