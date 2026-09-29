@@ -162,53 +162,6 @@ func TestProbeModel_TransportFailureIsReported(t *testing.T) {
 	}
 }
 
-func TestDiscoverModels_VerifiesEveryCandidateLive(t *testing.T) {
-	var mu sync.Mutex
-	var seen []string
-	srv := cloudCodeStub(t, map[string]bool{
-		"gemini-2.5-pro":   true,
-		"gemini-2.5-flash": true,
-	}, http.StatusNotFound, &mu, &seen)
-	defer srv.Close()
-
-	candidates := []string{"gemini-2.5-pro", "gemini-2.5-flash", "gemini-legacy", "gemini-2.5-pro", "  "}
-	results := DiscoverModels(context.Background(), srv.Client(), srv.URL, "ya29.test-token", "proj-1", candidates, 2)
-
-	if len(results) != 3 {
-		t.Fatalf("results = %d, want 3 (deduped, blanks dropped): %+v", len(results), results)
-	}
-	var okIDs []string
-	for _, r := range results {
-		if r.OK {
-			okIDs = append(okIDs, r.Model)
-		}
-	}
-	if strings.Join(okIDs, ",") != "gemini-2.5-flash,gemini-2.5-pro" {
-		t.Errorf("verified models = %v, want the two the host served (sorted)", okIDs)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(seen) != 3 {
-		t.Errorf("upstream saw %d probes (%v), want one per candidate", len(seen), seen)
-	}
-}
-
-func TestDiscoverModels_EmptyCandidatesMakeNoCalls(t *testing.T) {
-	var mu sync.Mutex
-	var seen []string
-	srv := cloudCodeStub(t, nil, http.StatusNotFound, &mu, &seen)
-	defer srv.Close()
-
-	if got := DiscoverModels(context.Background(), srv.Client(), srv.URL, "ya29.test-token", "proj-1", nil, 0); got != nil {
-		t.Errorf("empty candidate list must not sweep: %+v", got)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(seen) != 0 {
-		t.Errorf("upstream must not be called for an empty sweep: %v", seen)
-	}
-}
-
 func TestUpstreamErrorMessage(t *testing.T) {
 	cases := map[string]struct {
 		status int

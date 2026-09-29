@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -188,9 +189,8 @@ func TestAntigravityCheck_WithoutCredentialNeverClaimsHealthy(t *testing.T) {
 	}
 }
 
-func TestAntigravityModels_VerifiesCandidatesLive(t *testing.T) {
-	served := map[string]bool{"gemini-3.8-flash": true, "gemini-3.6-flash": true}
-	stub := newAGStub(t, served, http.StatusNotFound)
+func TestAntigravityModels_ServesBuiltInCatalogWithoutNetwork(t *testing.T) {
+	stub := newAGStub(t, map[string]bool{"gemini-3.8-flash": true}, http.StatusNotFound)
 
 	var res UpstreamModelsResponse
 	agPost(t, "/api/upstreams/models", UpstreamModelsRequest{
@@ -200,31 +200,26 @@ func TestAntigravityModels_VerifiesCandidatesLive(t *testing.T) {
 		TimeoutMs: 20000,
 	}, &res)
 
-	if res.ModelCount != 2 {
-		t.Fatalf("verified %d models, want the 2 the host served: %+v", res.ModelCount, res)
+	if res.ModelCount != len(antigravity.CuratedModels()) {
+		t.Fatalf("catalog = %d models, want the built-in %d: %+v",
+			res.ModelCount, len(antigravity.CuratedModels()), res)
 	}
-	for _, m := range res.Models {
-		if m == "gemini-3.1-pro-low" {
-			t.Errorf("a refused model must not be reported: %v", res.Models)
+	if got := stub.asked(); len(got) != 0 {
+		t.Errorf("Fetch models must not call the upstream (saw %d probes: %v)", len(got), got)
+	}
+	for _, want := range []string{"gemini-3.8-flash", "gemini-3.1-pro-low", "claude-sonnet-4-6-thinking", "gpt-oss-120b-medium"} {
+		if !slices.Contains(res.Models, want) {
+			t.Errorf("built-in catalog is missing %q", want)
 		}
 	}
-	if len(res.Unavailable) == 0 {
-		t.Error("refused candidates must be reported in unavailable")
-	}
-	if got := stub.asked(); len(got) != len(antigravity.CuratedModels()) {
-		t.Errorf("upstream saw %d probes, want one per candidate (%d)", len(got), len(antigravity.CuratedModels()))
-	}
-	for _, asked := range stub.asked() {
-		if asked == "" {
-			t.Fatal("every probe must name the model it verifies")
-		}
-	}
-	if !strings.Contains(res.Message, "Cloud Code serves no model-list route") {
-		t.Errorf("message must explain the verification method: %q", res.Message)
+	if !strings.Contains(res.Message, "no network call") {
+		t.Errorf("message must say the list is built-in: %q", res.Message)
 	}
 }
 
-func TestAntigravityModels_WithoutCredentialServesNoList(t *testing.T) {
+// The built-in list is served even before a Google account is connected: it
+// costs nothing and the per-model Check is what needs the credential.
+func TestAntigravityModels_WithoutCredentialStillServesCatalog(t *testing.T) {
 	stub := newAGStub(t, nil, http.StatusNotFound)
 
 	var res UpstreamModelsResponse
@@ -234,13 +229,10 @@ func TestAntigravityModels_WithoutCredentialServesNoList(t *testing.T) {
 		TimeoutMs: 5000,
 	}, &res)
 
-	if len(res.Models) != 0 {
-		t.Fatalf("no credential must produce no model list: %v", res.Models)
-	}
-	if !strings.Contains(res.Message, "connect a Google account") {
-		t.Errorf("message = %q, want the connect-OAuth guidance", res.Message)
+	if len(res.Models) == 0 {
+		t.Fatal("the built-in catalog must be available without a credential")
 	}
 	if got := stub.asked(); len(got) != 0 {
-		t.Errorf("no anonymous sweep may be made: %v", got)
+		t.Errorf("no network call may be made: %v", got)
 	}
 }

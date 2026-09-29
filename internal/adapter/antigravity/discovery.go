@@ -7,12 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/tidwall/gjson"
-	"golang.org/x/sync/errgroup"
 
 	"github.com/dickymuliafiqri/firefly/internal/textx"
 )
@@ -34,8 +32,6 @@ const (
 	CloudCodeUserAgent = "antigravity/ide/2.11.0 darwin/arm64"
 	// ProbeMaxOutputTokens keeps a verification call to a single token.
 	ProbeMaxOutputTokens = 1
-	// DefaultDiscoveryParallelism bounds concurrent verification calls in a sweep.
-	DefaultDiscoveryParallelism = 6
 	// maxProbeBodyBytes bounds the response body read from a probe.
 	maxProbeBodyBytes = 8 << 10
 	// maxErrorMessageChars bounds a surfaced upstream error message.
@@ -46,24 +42,24 @@ const (
 	clientMetadata = `{"ideType":"ANTIGRAVITY","platform":"MACOS","pluginType":"GEMINI"}`
 )
 
-// curatedModels seeds the discovery sweep — it is a *candidate list*, not an
-// answer. Every entry is still verified live before it is reported, and
-// operators can point the sweep at any other id (the dashboard adds the models
-// already mapped to the upstream in the catalog).
+// curatedModels is the built-in Antigravity catalog served by Fetch models.
+// Cloud Code exposes no model-list route, so this is the documented id set
+// (docs: antigravity.google/docs/models, verified against the Cloud Code
+// unified-gateway spec) rather than something the host can be asked for.
 //
-// The ids below follow the Cloud Code "Unified Gateway" convention, where the
-// family keeps its version in the middle and the tier is a **suffix**:
+// The ids follow the Cloud Code convention, where the family keeps its version
+// in the middle and the tier is a **suffix**:
 //
-//	gemini-<version>-<tier>          gemini-3.8-flash, gemini-3.1-pro-low
+//	gemini-<version>-<tier>               gemini-3.8-flash, gemini-3.1-pro-low
 //	claude-<family>-<version>[-thinking]   claude-sonnet-4-6-thinking
-//	gpt-oss-<size>[-<effort>]       gpt-oss-120b-medium
+//	gpt-oss-<size>[-<effort>]              gpt-oss-120b-medium
 //
 // Not `gemini-flash-3.8`: Antigravity rejects that shape. The Gemini 3 Pro
 // family additionally *requires* a thinking-tier suffix — a bare
 // `gemini-3.1-pro` answers 404 "Requested entity was not found" — which is why
 // the Pro entries only exist in their tier forms. Because the Antigravity model
-// selector also offers a Fast tier for Flash, those variants are seeded too and
-// simply drop out of the result when the host does not serve them.
+// selector also offers a Fast tier for Flash, those variants are listed too; the
+// per-model Check is what proves an id is actually served to this account.
 var curatedModels = []string{
 	// Gemini 3.8 / 3.7 / 3.6 Flash — tier optional, but every offered tier is swept.
 	"gemini-3.8-flash", "gemini-3.8-flash-fast", "gemini-3.8-flash-low", "gemini-3.8-flash-medium", "gemini-3.8-flash-high",
@@ -226,54 +222,6 @@ func ProbeModel(
 	return result
 }
 
-// DiscoverModels verifies every candidate live and returns one result per
-// candidate, ordered by model id. Duplicates are collapsed and blanks dropped;
-// maxParallel <= 0 falls back to a small default so a sweep never serializes
-// into a multi-minute request.
-func DiscoverModels(
-	ctx context.Context,
-	client *http.Client,
-	baseURL, accessToken, projectID string,
-	candidates []string,
-	maxParallel int,
-) []ProbeResult {
-	if maxParallel <= 0 {
-		maxParallel = DefaultDiscoveryParallelism
-	}
-	unique := make([]string, 0, len(candidates))
-	seen := make(map[string]bool, len(candidates))
-	for _, c := range candidates {
-		c = strings.TrimSpace(c)
-		if c == "" || seen[c] {
-			continue
-		}
-		seen[c] = true
-		unique = append(unique, c)
-	}
-	if len(unique) == 0 {
-		return nil
-	}
-
-	results := make([]ProbeResult, len(unique))
-	group, groupCtx := errgroup.WithContext(ctx)
-	group.SetLimit(maxParallel)
-	for i, model := range unique {
-		i, model := i, model
-		group.Go(func() error {
-			if err := groupCtx.Err(); err != nil {
-				results[i] = ProbeResult{Model: model, Message: err.Error()}
-				return nil
-			}
-			results[i] = ProbeModel(groupCtx, client, baseURL, accessToken, projectID, model)
-			return nil
-		})
-	}
-	_ = group.Wait()
-	sort.Slice(results, func(i, j int) bool { return results[i].Model < results[j].Model })
-	return results
-}
-
-// DefaultDiscoveryParallelism bounds concurrent verification calls in one sweep.
 
 // UpstreamErrorMessage extracts a human-readable reason from a Cloud Code error
 // payload, falling back to the raw payload and then the HTTP status text. The

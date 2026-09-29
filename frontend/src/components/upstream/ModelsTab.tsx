@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { Activity, RefreshCw, Square } from 'lucide-react';
+import { Activity, Plus, RefreshCw, Square, X } from 'lucide-react';
 import { Badge } from '@/components/ui/Badge';
 import { Field } from '@/components/ui/Controls';
+import { isValidModelName, MODEL_NAME_HINT } from '@/services/schema';
 import {
   useCheckUpstreamMutation,
   useSettingsQuery,
@@ -66,9 +67,14 @@ export function ModelsTab({
   const setCachedModels = useModelCacheStore((s) => s.setModels);
 
   const [modelChecks, setModelChecks] = useState<Record<string, ModelCheckState>>({});
-  // Candidates the upstream refused live (antigravity verifies every id with a
-  // real one-token generation, so the refused ones are worth showing).
+  // Candidates a protocol reported as unusable (a live sweep or a filtered
+  // upstream list). Kept separate so they are never offered as routes.
   const [unavailableModels, setUnavailableModels] = useState<string[]>([]);
+  // Models typed by the operator. They join the same list as the discovered
+  // ones (so they can be probed and routed) but are marked, because nothing has
+  // verified them yet.
+  const [manualModels, setManualModels] = useState<string[]>([]);
+  const [manualDraft, setManualDraft] = useState('');
   const [checkingAll, setCheckingAll] = useState(false);
   const [concurrency, setConcurrency] = useState(5);
   const [checkProgress, setCheckProgress] = useState<{
@@ -103,6 +109,8 @@ export function ModelsTab({
     setCheckProgress(null);
     setModelChecks({});
     setUnavailableModels([]);
+    setManualModels([]);
+    setManualDraft('');
   }, [upstreamName]);
 
   // A saved upstream resolves to a KeyRing in the gateway snapshot; probing it
@@ -126,10 +134,6 @@ export function ModelsTab({
         protocol,
         base_url: effectiveBaseUrl,
         api_key: firstKey || undefined,
-        // Protocols without a model-list route (antigravity) verify every
-        // candidate with a real one-token generation, so the sweep needs more
-        // than the 10s default budget.
-        timeout_ms: 30000,
         egress_mode: egressMode,
         proxy_url: proxyUrl || undefined,
       };
@@ -163,6 +167,39 @@ export function ModelsTab({
         message: err instanceof Error ? err.message : 'Unknown error',
       });
     }
+  }
+
+  // Manual model ids: some providers (notably antigravity / Google Cloud Code)
+  // expose no model list at all, so the only way to route a model Antigravity
+  // has but does not advertise — or one that appeared after this build — is to
+  // type it. The id joins the same working list, so it can be probed with Check
+  // and registered as a route, but it is marked MANUAL because nothing has
+  // verified it yet.
+  function addManualModel() {
+    const id = manualDraft.trim();
+    if (!id) return;
+    if (!isValidModelName(id)) {
+      pushToast({ type: 'error', title: 'Invalid model id', message: MODEL_NAME_HINT });
+      return;
+    }
+    if (discoveredModels.some((m) => m.toLowerCase() === id.toLowerCase())) {
+      pushToast({ type: 'info', title: 'Already listed', message: `${id} is already in the list.` });
+      setManualDraft('');
+      return;
+    }
+    onDiscover([...discoveredModels, id], latencyMs ?? 0);
+    setManualModels((prev) => [...prev, id]);
+    setManualDraft('');
+    pushToast({
+      type: 'success',
+      title: 'Model added',
+      message: `${id} — run Check to verify it against the upstream.`,
+    });
+  }
+
+  function removeManualModel(id: string) {
+    onDiscover(discoveredModels.filter((m) => m !== id), latencyMs ?? 0);
+    setManualModels((prev) => prev.filter((m) => m !== id));
   }
 
   // Saved upstreams omit api_key so the backend picks a KeyRing credential per the
@@ -384,9 +421,10 @@ export function ModelsTab({
         </div>
         <div className="card-body">
           <p className="hint" style={{ marginBottom: 14 }}>
-            Discover models supported by this upstream and create gateway routes in the catalog with one click. Each
-            model can be probed with a minimal inference request; saved upstreams pick the credential through the
-            KeyRing&apos;s load-balancing strategy (the key used is reported with the result).
+            Populate the model list, then create gateway routes in the catalog with one click. Each model can be
+            probed with a minimal inference request; saved upstreams pick the credential through the KeyRing&apos;s
+            load-balancing strategy (the key used is reported with the result). Protocols without a model-list
+            endpoint (Antigravity) return their built-in catalog — type any extra id below.
           </p>
 
           <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 16, marginBottom: 12 }}>
@@ -399,7 +437,7 @@ export function ModelsTab({
             {unavailableModels.length > 0 && (
               <span
                 className="badge warn"
-                title="These ids were probed live and the upstream refused them, so they are not routed and not offered as probe models."
+                title="These ids are not available on this upstream, so they are not routed and not offered as probe models."
               >
                 {unavailableModels.length} refused live: {unavailableModels.join(', ')}
               </span>
@@ -411,6 +449,42 @@ export function ModelsTab({
                 {checkProgress.failed} failed)
               </span>
             )}
+          </div>
+
+          <div className="form-row" style={{ marginTop: 4, marginBottom: 14, alignItems: 'flex-end' }}>
+            <div style={{ flex: 1 }}>
+              <Field
+                label="Add a model id manually"
+                htmlFor="u-manual-model"
+                hint="For providers without a model-list endpoint. The id joins the list below, so you can Check it and register a route."
+              >
+                <input
+                  id="u-manual-model"
+                  type="text"
+                  value={manualDraft}
+                  spellCheck={false}
+                  autoComplete="off"
+                  placeholder="e.g. gemini-3.1-pro-high"
+                  onChange={(e) => setManualDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      addManualModel();
+                    }
+                  }}
+                />
+              </Field>
+            </div>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={!manualDraft.trim()}
+              onClick={addManualModel}
+              style={{ marginBottom: 2 }}
+            >
+              <Plus style={{ width: 14, height: 14 }} />
+              Add model
+            </button>
           </div>
 
           <div className="table-wrap">
@@ -427,7 +501,7 @@ export function ModelsTab({
                 {discoveredModels.length === 0 ? (
                   <tr>
                     <td colSpan={4} className="faint">
-                      No models discovered yet. Click &quot;Fetch Models&quot; to populate.
+                      No models yet. Click &quot;Fetch Models&quot; to populate the list, or type a model id above.
                     </td>
                   </tr>
                 ) : (
@@ -446,6 +520,15 @@ export function ModelsTab({
                             {isProbe && (
                               <Badge tone="info" className="text-[10px] py-0 px-1.5">
                                 PROBE
+                              </Badge>
+                            )}
+                            {manualModels.includes(m) && (
+                              <Badge
+                                tone="warn"
+                                className="text-[10px] py-0 px-1.5"
+                                title="Added by hand — not verified yet. Use Check to probe it against the upstream."
+                              >
+                                MANUAL
                               </Badge>
                             )}
                           </div>
@@ -522,6 +605,16 @@ export function ModelsTab({
                             >
                               {inCatalog ? 'Registered' : 'Add route'}
                             </button>
+                            {manualModels.includes(m) && (
+                              <button
+                                type="button"
+                                className="btn btn-ghost"
+                                title="Remove this manually added id from the list"
+                                onClick={() => removeManualModel(m)}
+                              >
+                                <X style={{ width: 13, height: 13 }} />
+                              </button>
+                            )}
                           </div>
                         </td>
                       </tr>

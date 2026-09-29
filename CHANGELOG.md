@@ -5,6 +5,24 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.40.0] - 2026-09-29
+
+### Changed
+
+- **Antigravity "Fetch models" serves the built-in catalog again, with no network call (`internal/server/upstream_check_antigravity.go`)**: after 1.38.0 turned discovery into a live sweep, clicking **Fetch models** on an Antigravity upstream fired one authenticated one-token generation per candidate — up to 26 round trips, billable, impossible before a Google account is connected, and useless offline. Cloud Code has no model-list route, so the list is now the built-in catalog (the documented id set from 1.39.0) merged with every model already mapped to this upstream in the catalog, so an operator's own ids are still part of the answer. It answers instantly, works without a credential, and cannot claim the host serves a model it does not — the per-model **Check** is the live, authenticated verification, unchanged from 1.38.0.
+  - The now-unused sweep helper (`antigravity.DiscoverModels` and its concurrency knob) is removed rather than left as dead code, with its tests; `ProbeModel`, the request builder and the curated catalog stay.
+- **Per-model health checks are untouched and still real** (1.38.0): a Check is an authenticated one-token generation against `v1internal:generateContent` with the resolved OAuth token, the companion project id and the Cloud Code identity headers, and its verdict mirrors the host (401/404/transport failure are failures, never a fabricated "healthy").
+
+### Added
+
+- **Manual model id input in the Models tab (`frontend/src/components/upstream/ModelsTab.tsx`)**: an **"Add a model id manually"** field (Enter or **Add model**) for providers that expose no model list, so a model Antigravity has but does not advertise — or one released after this build — can still be routed.
+  - The id joins the same working list, so it can be probed with **Check**, chosen as the probe model, and registered with **Add route** / **Add all routes** like any discovered model.
+  - It is marked with a **MANUAL** badge (nothing has verified it yet) and can be removed again with the ✕ button on its row; the mark clears when the editor switches upstream.
+  - Input is validated against the same rules the gateway enforces on model names (`isValidModelName` / `MODEL_NAME_HINT`), and duplicates are rejected case-insensitively.
+- **Docs/version:** the README describes the Antigravity behavior accurately (built-in catalog for Fetch models, live per-model Check, manual ids for anything missing), `frontend/package.json` is `1.40.0`, and the sidebar version is `v1.40.0`.
+- **Regression coverage:** `TestAntigravityModels_ServesBuiltInCatalogWithoutNetwork` (the full built-in catalog is served and the upstream is never called), `TestAntigravityModels_WithoutCredentialStillServesCatalog` (the list works before a Google account is connected), plus the per-model live-check tests from 1.38.0.
+- **Verified:** `go build ./...`, `go vet ./internal/...`, `go test ./internal/server/...`, `go test ./internal/adapter/antigravity/...`, `go test ./internal/transport/upstream/...`, `tsc --noEmit`, and `npm run check:connect`.
+
 ## [1.39.0] - 2026-09-29
 
 ### Added

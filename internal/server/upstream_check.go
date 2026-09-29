@@ -1167,14 +1167,10 @@ func (deps RouterDeps) handleFetchUpstreamModels(w http.ResponseWriter, r *http.
 	}
 
 	if protocol == "antigravity" {
-		// Live sweep against Google Cloud Code. The host has no model-list route,
-		// so every candidate is verified with a one-token generation and the
-		// answer reports what Google actually served.
-		deps.handleAntigravityModels(
-			w, ctx, existingUp,
-			baseURL, apiKey, resolvedKeyRef,
-			timeout, egressMode, proxyURL,
-		)
+		// Built-in catalog, no network call: Cloud Code has no model-list route,
+		// so a sweep would need one billable one-token call per candidate. The
+		// per-model health check stays a real call.
+		deps.handleAntigravityModels(w, existingUp, resolvedKeyRef)
 		return
 	}
 
