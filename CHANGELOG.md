@@ -5,6 +5,24 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.42.3] - 2026-09-29
+
+### Changed
+
+- **Harmonized Card Header & Clean Plain-Text Layout (`frontend/src/pages/QuotaPage.tsx`, `frontend/src/pages/UpstreamsPage.tsx`)**:
+  - Removed wrapper box containers (`.upstream-icon-badge` and quota logo boxes) from provider icons across Quota and Upstream cards, rendering `ProviderIcon` directly for a modern, minimalist aesthetic.
+  - Replaced badge pill containers in card headers with plain text styled using clean semantic status colors (`Active`, `Out of Quota`, `Expired`, `Breaker Open`, `Half-Open`, `Disabled`).
+  - Restructured card headers into a spacious two-row layout with clear vertical breathing room and indentation (`pl-[26px]` / `pl-[30px]`), eliminating vertical text crowding and wrapping collisions.
+  - Reorganized metadata (provider, plan, fleet assignment, egress mode, and cache status) onto a dedicated, indented secondary line aligned with the item title.
+
+### Removed
+
+- **Remove Free Tier Per-Model Quota Notice (`internal/adapter/antigravity/quota.go`, `internal/adapter/antigravity/quota_test.go`, `frontend/src/pages/QuotaPage.tsx`)**:
+  - Removed string `"Free tier: Cloud Code does not report per-model quota — see the rolling windows."` from backend quota responses and frontend message banners.
+  - Updated unit test assertions in `internal/adapter/antigravity/quota_test.go` (`assert.Empty(t, quota.Message)`).
+
+- **Version bump**: `frontend/package.json` and `AppShell.tsx` bumped to `v1.42.3`.
+
 ## [1.42.2] - 2026-09-29
 
 ### Refactored

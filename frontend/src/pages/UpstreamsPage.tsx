@@ -1,5 +1,4 @@
 import { useState, useMemo } from 'react';
-import { Badge } from '@/components/ui/Badge';
 import { KpiCard, KpiGrid, PageHeader } from '@/components/ui/PageHeader';
 import { QueryGate } from '@/components/ui/QueryGate';
 import { ProviderIcon } from '@/components/ui/ProviderIcon';
@@ -290,50 +289,57 @@ export function UpstreamsPage() {
                   }
                 }}
               >
-                {/* Row 1: Protocol Icon + Name + Protocol/Egress badge on left, Status on right */}
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <div className="upstream-icon-badge">
-                      <ProviderIcon protocol={u.protocol} name={u.name} size={20} />
-                    </div>
-                    <div className="flex items-center gap-2 min-w-0">
+                {/* Header: Protocol Icon + Name on left, Status on right, Subtitle metadata below */}
+                <div className="pb-2.5 border-b border-[var(--line)]">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <ProviderIcon protocol={u.protocol} name={u.name} size={20} className="shrink-0" />
                       <span className="font-semibold text-ink text-sm truncate" title={u.name}>
                         {u.name}
                       </span>
-                      <span className="px-1.5 py-0.5 rounded text-[10px] uppercase font-mono font-medium bg-[var(--surface-raised)] text-muted border border-[var(--line)] shrink-0">
-                        {u.protocol}
-                      </span>
-                      {entry?.egress_mode === 'warp' ? (
-                        <span
-                          className="px-1.5 py-0.5 rounded text-[10px] font-mono font-medium bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 shrink-0"
-                          title="Cloudflare WARP Egress"
-                        >
+                    </div>
+
+                    <div className="shrink-0 text-xs font-medium whitespace-nowrap">
+                      {isDisabled ? (
+                        <span className="text-faint">Disabled</span>
+                      ) : u.breaker_state === 'OPEN' ? (
+                        <span className="text-danger">Breaker Open</span>
+                      ) : u.breaker_state === 'HALF-OPEN' ? (
+                        <span className="text-warn">Half-Open</span>
+                      ) : stat.active === 0 ? (
+                        <span className="text-warn">0 Keys</span>
+                      ) : (
+                        <span className="text-ok">
+                          {stat.active} {stat.active === 1 ? 'key' : 'keys'} active
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Subtitle / Metadata: Protocol & Egress Mode */}
+                  <div className="flex items-center gap-1.5 text-[11px] text-faint mt-1.5 pl-[30px] flex-wrap">
+                    <span className="uppercase font-mono text-[10px] tracking-wide text-ink/70">
+                      {u.protocol}
+                    </span>
+                    {entry?.egress_mode === 'warp' ? (
+                      <>
+                        <span>&middot;</span>
+                        <span className="text-cyan-400 font-mono text-[10px] font-medium" title="Cloudflare WARP Egress">
                           WARP
                         </span>
-                      ) : null}
-                      {entry?.egress_mode === 'proxy' ? (
+                      </>
+                    ) : null}
+                    {entry?.egress_mode === 'proxy' ? (
+                      <>
+                        <span>&middot;</span>
                         <span
-                          className="px-1.5 py-0.5 rounded text-[10px] font-mono font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20 shrink-0"
+                          className="text-amber-400 font-mono text-[10px] font-medium"
                           title={entry.proxy_url ? `Proxy: ${entry.proxy_url}` : 'Egress Proxy'}
                         >
                           PROXY
                         </span>
-                      ) : null}
-                    </div>
-                  </div>
-
-                  <div className="shrink-0">
-                    {isDisabled ? (
-                      <Badge tone="neutral">DISABLED</Badge>
-                    ) : u.breaker_state === 'OPEN' ? (
-                      <Badge tone="danger">BREAKER OPEN</Badge>
-                    ) : u.breaker_state === 'HALF-OPEN' ? (
-                      <Badge tone="warn">HALF-OPEN</Badge>
-                    ) : stat.active === 0 ? (
-                      <Badge tone="warn">0 KEYS</Badge>
-                    ) : (
-                      <Badge tone="ok">{stat.active} {stat.active === 1 ? 'KEY' : 'KEYS'}</Badge>
-                    )}
+                      </>
+                    ) : null}
                   </div>
                 </div>
 

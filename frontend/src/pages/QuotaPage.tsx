@@ -126,47 +126,36 @@ function ProviderQuotaCard({ quota, inUpstream, isDeleting, onDelete }: Provider
     <div className="card p-3.5 flex flex-col justify-between h-full bg-[var(--surface-card)] border border-[var(--line)] rounded-xl hover:border-[var(--line-strong)] transition-colors">
       <div>
         {/* Card Header */}
-        <div className="flex items-start justify-between gap-2 pb-2.5 border-b border-[var(--line)]">
-          <div className="flex items-center gap-2 min-w-0">
-            <div className="w-7 h-7 rounded-md bg-[var(--surface-raised)] border border-[var(--line)] flex items-center justify-center shrink-0">
-              <ProviderIcon protocol={quota.provider} size={15} />
-            </div>
-            <div className="min-w-0">
-              <div
+        <div className="pb-3 border-b border-[var(--line)]">
+          {/* Top Row: Provider Icon + Account Name (Left), Status + Delete Action (Right) */}
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <ProviderIcon protocol={quota.provider} size={18} className="shrink-0" />
+              <span
                 className="font-semibold text-xs text-ink truncate"
                 title={quota.email || quota.connection_id}
               >
                 {quota.email || quota.connection_id}
-              </div>
-              <div className="flex items-center gap-1.5 text-[11px] text-faint font-mono">
-                <span className="uppercase">{quota.provider}</span>
-                <span>&middot;</span>
-                <span>
-                  {quota.from_cache && quota.age_seconds > 0
-                    ? `${quota.age_seconds}s ago`
-                    : 'live'}
-                </span>
-              </div>
+              </span>
             </div>
-          </div>
 
-          <div className="flex flex-col items-end gap-1 shrink-0">
-            <div className="flex items-center gap-1">
-              <Badge tone={inUpstream ? 'info' : 'neutral'} title={inUpstream ? 'Configured in Upstream fleet' : 'Unassigned from Upstreams'}>
-                {inUpstream ? 'UPSTREAM' : 'UNASSIGNED'}
-              </Badge>
-              <Badge tone={quota.free_tier ? 'neutral' : 'info'}>{quota.plan}</Badge>
-              {quota.token_expired ? (
-                <Badge tone="danger">EXPIRED</Badge>
-              ) : isExhausted ? (
-                <Badge tone="warn">OUT OF QUOTA</Badge>
-              ) : (
-                <Badge tone="ok">ACTIVE</Badge>
-              )}
+            <div className="flex items-center gap-2 shrink-0">
+              <span
+                className={`text-xs font-medium whitespace-nowrap ${
+                  quota.token_expired
+                    ? 'text-danger'
+                    : isExhausted
+                    ? 'text-warn'
+                    : 'text-ok'
+                }`}
+              >
+                {quota.token_expired ? 'Expired' : isExhausted ? 'Out of Quota' : 'Active'}
+              </span>
+
               {onDelete ? (
                 <button
                   type="button"
-                  className="btn btn-ghost text-xs p-1 text-faint hover:text-danger cursor-pointer transition-colors ml-0.5"
+                  className="btn btn-ghost text-xs p-1 text-faint hover:text-danger cursor-pointer transition-colors"
                   title="Disconnect and delete account from OAuth vault"
                   disabled={isDeleting}
                   onClick={onDelete}
@@ -176,10 +165,29 @@ function ProviderQuotaCard({ quota, inUpstream, isDeleting, onDelete }: Provider
               ) : null}
             </div>
           </div>
+
+          {/* Bottom Row: Metadata (Provider, Plan, Fleet Status, Cache/Live) with clear breathing room */}
+          <div className="flex items-center gap-1.5 text-[11px] text-faint mt-2 pl-[26px] flex-wrap">
+            <span className="uppercase font-mono text-[10px] tracking-wide text-ink/70">
+              {quota.provider}
+            </span>
+            <span>&middot;</span>
+            <span>{quota.plan || 'Free'}</span>
+            <span>&middot;</span>
+            <span className={inUpstream ? 'text-faint' : 'text-faint/80 italic'}>
+              {inUpstream ? 'In Fleet' : 'Unassigned'}
+            </span>
+            <span>&middot;</span>
+            <span>
+              {quota.from_cache && quota.age_seconds > 0
+                ? `${quota.age_seconds}s ago`
+                : 'live'}
+            </span>
+          </div>
         </div>
 
-        {/* Message Banner if any */}
-        {quota.message ? (
+        {/* Message Banner if any (skip free tier per-model notice) */}
+        {quota.message && !quota.message.includes('does not report per-model quota') ? (
           <p className="text-[11px] text-faint bg-[var(--surface-raised)] border border-[var(--line)] rounded px-2 py-1 my-2 leading-snug">
             {quota.message}
           </p>

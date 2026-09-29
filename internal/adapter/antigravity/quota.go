@@ -260,9 +260,7 @@ func FetchQuota(
 	if !opts.SkipModels {
 		switch {
 		case out.FreeTier:
-			// Skip the call entirely rather than fetching a number that does not
-			// describe this plan's allowance.
-			out.Message = "Free tier: Cloud Code does not report per-model quota — see the rolling windows."
+			// Skip the call entirely for free tier accounts.
 		default:
 			raw, err := FetchAvailableModels(ctx, client, baseURL, accessToken, out.ProjectID)
 			if err != nil {

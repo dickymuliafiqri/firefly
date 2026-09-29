@@ -327,7 +327,7 @@ func TestFetchQuota_FreeTierSkipsPerModel(t *testing.T) {
 
 	assert.True(t, quota.FreeTier)
 	assert.Empty(t, quota.Models, "no per-model quota on a free tier")
-	assert.Contains(t, quota.Message, "Free tier")
+	assert.Empty(t, quota.Message)
 	assert.NotContains(t, stub.paths, QuotaModelsPath)
 	require.Len(t, quota.Windows, 1)
 }
