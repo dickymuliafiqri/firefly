@@ -5,7 +5,7 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.41.0] - 2026-09-29
 
 ### Added
 
@@ -40,7 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Parser hardening:** undocumented shapes are tolerated, not trusted — RFC3339 *or* numeric reset timestamps, `groups` *or* `quotaSummary.groups`, a `cloudaicompanionProject` that is a string or an object, `project_id`/`projectId` spellings, windows labeled through `window`, `bucketId` or `displayName`. Internal and unmetered models are dropped; an exhausted model is *reported* at 0%, because "you are out" is the answer an operator needs.
   - **Coverage, all hermetic (no live Google, no OAuth):** `TestParseAvailableModels_Table`, `TestParseQuotaSummary_Table`, `TestParseSubscriptionInfo_Table`, `TestNormalizeProjectID`, `TestFetchQuota_AssemblesAllThreeVerbs` (the three verbs, the bearer header and the project id in the body), `TestFetchQuota_FreeTierSkipsPerModel`, `TestFetchQuota_RefusalsBecomeMessages`, `TestFetchQuota_RequiresToken`, plus `TestQuotaEndpoints_*` for the auth gate, the 404s, the TTL/`?refresh` behavior, an unrecoverable OAuth token and concurrent-refresh coalescing.
 
-- **Docs:** the README documents `-quota-poll-interval` and explains that the provider quota is a different number from the tenant token ledger.
+- **Docs/version:** the README documents `-quota-poll-interval` and explains that the provider quota is a different number from the tenant token ledger; `frontend/package.json` is `1.41.0` and the sidebar version is `v1.41.0`.
 - **Verified:** `go build ./...`, `go vet ./internal/... ./cmd/...`, `go test -count=1 -race ./...`, `tsc --noEmit`, `npm run check:connect`, `npm run check:line-view`. `TestPhase4_HighConcurrencyStreaming1000Users` is flaky under a full-suite `-race` run (7/1000 streams fail under CPU contention, passes in isolation) and was confirmed **pre-existing** by running the same full suite on `d60de08` (v1.40.0) in a clean worktree.
 
 ## [1.40.0] - 2026-09-29
