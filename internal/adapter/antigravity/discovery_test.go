@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -239,6 +240,79 @@ func TestCuratedModels_IsACopy(t *testing.T) {
 	first[0] = "mutated"
 	if CuratedModels()[0] == "mutated" {
 		t.Error("CuratedModels must return a copy, not the shared slice")
+	}
+}
+
+// The candidate seed must follow the Cloud Code id convention and cover the
+// model set the Antigravity selector offers, otherwise discovery silently
+// misses the models an operator is looking for.
+func TestCuratedModels_FollowCloudCodeIDConvention(t *testing.T) {
+	seeds := CuratedModels()
+	has := func(id string) bool {
+		for _, s := range seeds {
+			if s == id {
+				return true
+			}
+		}
+		return false
+	}
+
+	// The Antigravity model selector (docs: antigravity.google/docs/models).
+	for _, family := range []string{
+		"gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash",
+		"gemini-3.1-pro-low", "claude-sonnet-4-6-thinking",
+		"claude-opus-4-6-thinking", "gpt-oss-120b-medium",
+	} {
+		if !has(family) {
+			t.Errorf("curated seed is missing the Antigravity model %q", family)
+		}
+	}
+
+	// The Gemini 3 Pro family requires a tier suffix: the bare id 404s.
+	if has("gemini-3.1-pro") || has("gemini-3.1-pro-preview") {
+		t.Error("bare Gemini 3 Pro ids must never be seeded (Cloud Code answers 404)")
+	}
+
+	// The version sits in the middle of the id, not after the tier.
+	for _, s := range seeds {
+		if strings.HasPrefix(s, "gemini-flash-") {
+			t.Errorf("id %q uses the gemini-flash-<version> shape, which Cloud Code rejects", s)
+		}
+	}
+
+	// Every seeded id belongs to a family the selector offers.
+	allowed := regexp.MustCompile(`^(gemini-3\.[0-9]+-(flash|pro)(-(fast|low|medium|high))?|claude-(sonnet|opus)-4-6(-thinking)?|gpt-oss-120b(-(low|medium|high))?)$`)
+	for _, s := range seeds {
+		if !allowed.MatchString(s) {
+			t.Errorf("curated id %q does not match the documented Cloud Code naming", s)
+		}
+	}
+
+	// The effort tiers the selector offers are swept for every family.
+	for _, tier := range []string{"low", "medium", "high"} {
+		for _, family := range []string{"gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.1-pro", "gpt-oss-120b"} {
+			if !has(family + "-" + tier) {
+				t.Errorf("missing effort variant %s-%s", family, tier)
+			}
+		}
+	}
+}
+
+func TestDefaultProbeModels_FallsBackInOrder(t *testing.T) {
+	chain := DefaultProbeModels()
+	if len(chain) == 0 {
+		t.Fatal("probe chain must not be empty")
+	}
+	if chain[0] != DefaultProbeModel {
+		t.Errorf("chain must start at the default probe model: %q vs %q", chain[0], DefaultProbeModel)
+	}
+	if !strings.HasSuffix(chain[0], "-flash") {
+		t.Errorf("reachability probe should use a Flash model (cheapest), got %q", chain[0])
+	}
+	// The Pro fallback must carry its mandatory tier suffix.
+	last := chain[len(chain)-1]
+	if strings.Contains(last, "pro") && !strings.HasSuffix(last, "-low") && !strings.HasSuffix(last, "-high") {
+		t.Errorf("Pro fallback %q must carry a tier suffix", last)
 	}
 }
 

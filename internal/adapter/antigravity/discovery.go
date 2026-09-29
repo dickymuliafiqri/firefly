@@ -35,24 +35,47 @@ const (
 	// ProbeMaxOutputTokens keeps a verification call to a single token.
 	ProbeMaxOutputTokens = 1
 	// DefaultDiscoveryParallelism bounds concurrent verification calls in a sweep.
-	DefaultDiscoveryParallelism = 4
+	DefaultDiscoveryParallelism = 6
 	// maxProbeBodyBytes bounds the response body read from a probe.
 	maxProbeBodyBytes = 8 << 10
 	// maxErrorMessageChars bounds a surfaced upstream error message.
 	maxErrorMessageChars = 512
+	// googleAPIClient / clientMetadata are the two identity headers the Cloud
+	// Code unified gateway documents besides Authorization and User-Agent.
+	googleAPIClient = "google-cloud-sdk vscode_cloudshelleditor/0.1"
+	clientMetadata = `{"ideType":"ANTIGRAVITY","platform":"MACOS","pluginType":"GEMINI"}`
 )
 
 // curatedModels seeds the discovery sweep — it is a *candidate list*, not an
 // answer. Every entry is still verified live before it is reported, and
 // operators can point the sweep at any other id (the dashboard adds the models
 // already mapped to the upstream in the catalog).
+//
+// The ids below follow the Cloud Code "Unified Gateway" convention, where the
+// family keeps its version in the middle and the tier is a **suffix**:
+//
+//	gemini-<version>-<tier>          gemini-3.8-flash, gemini-3.1-pro-low
+//	claude-<family>-<version>[-thinking]   claude-sonnet-4-6-thinking
+//	gpt-oss-<size>[-<effort>]       gpt-oss-120b-medium
+//
+// Not `gemini-flash-3.8`: Antigravity rejects that shape. The Gemini 3 Pro
+// family additionally *requires* a thinking-tier suffix — a bare
+// `gemini-3.1-pro` answers 404 "Requested entity was not found" — which is why
+// the Pro entries only exist in their tier forms. Because the Antigravity model
+// selector also offers a Fast tier for Flash, those variants are seeded too and
+// simply drop out of the result when the host does not serve them.
 var curatedModels = []string{
-	"gemini-3-pro-preview",
-	"gemini-2.5-pro",
-	"gemini-2.5-flash",
-	"gemini-2.0-flash",
-	"claude-sonnet-4-5",
-	"claude-3-7-sonnet",
+	// Gemini 3.8 / 3.7 / 3.6 Flash — tier optional, but every offered tier is swept.
+	"gemini-3.8-flash", "gemini-3.8-flash-fast", "gemini-3.8-flash-low", "gemini-3.8-flash-medium", "gemini-3.8-flash-high",
+	"gemini-3.7-flash", "gemini-3.7-flash-fast", "gemini-3.7-flash-low", "gemini-3.7-flash-medium", "gemini-3.7-flash-high",
+	"gemini-3.6-flash", "gemini-3.6-flash-fast", "gemini-3.6-flash-low", "gemini-3.6-flash-medium", "gemini-3.6-flash-high",
+	// Gemini 3.1 Pro — tier suffix is mandatory (bare id 404s).
+	"gemini-3.1-pro-low", "gemini-3.1-pro-medium", "gemini-3.1-pro-high",
+	// Claude 4.6 — the Antigravity selector exposes them as thinking models.
+	"claude-sonnet-4-6", "claude-sonnet-4-6-thinking",
+	"claude-opus-4-6", "claude-opus-4-6-thinking",
+	// GPT-OSS 120B.
+	"gpt-oss-120b", "gpt-oss-120b-low", "gpt-oss-120b-medium", "gpt-oss-120b-high",
 }
 
 // CuratedModels returns a copy of the candidate model ids used to seed a live
@@ -66,9 +89,16 @@ func CuratedModels() []string {
 // DefaultBaseURL is the provider-managed Cloud Code host.
 func DefaultBaseURL() string { return defaultDailyEndpoint }
 
-// DefaultProbeModel is the model used when a reachability check arrives without
-// one: the cheapest widely available Gemini on Cloud Code.
-const DefaultProbeModel = "gemini-2.5-flash"
+// DefaultProbeModel is the first model tried when a reachability check arrives
+// without one: the current Flash default, which needs no tier suffix.
+const DefaultProbeModel = "gemini-3.8-flash"
+
+// DefaultProbeModels is the ordered fallback chain for a reachability check
+// with no model: the first id the account can actually serve wins, so an
+// unavailable default never turns a healthy upstream red.
+func DefaultProbeModels() []string {
+	return []string{"gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.1-pro-low"}
+}
 
 // NormalizeBaseURL trims trailing slashes and falls back to the managed host
 // when the caller supplies nothing.
@@ -137,6 +167,8 @@ func NewProbeRequest(
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", CloudCodeUserAgent)
 	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Goog-Api-Client", googleAPIClient)
+	req.Header.Set("Client-Metadata", clientMetadata)
 	return req, nil
 }
 

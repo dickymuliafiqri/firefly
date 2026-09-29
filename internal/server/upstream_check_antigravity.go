@@ -55,12 +55,28 @@ func (deps RouterDeps) handleAntigravityCheck(
 
 	projectID := deps.antigravityProjectID(ctx, accessToken, keyRef)
 	client := deps.makeCheckClient(timeout, egressMode, proxyURL)
-	result := antigravity.ProbeModel(ctx, client, baseURL, accessToken, projectID, target)
+
+	var result antigravity.ProbeResult
+	tried := []string{}
+	if implicit {
+		// No model requested: walk the fallback chain so an account without the
+		// newest Flash still reports the host as reachable.
+		for _, candidate := range antigravity.DefaultProbeModels() {
+			tried = append(tried, candidate)
+			result = antigravity.ProbeModel(ctx, client, baseURL, accessToken, projectID, candidate)
+			if result.OK {
+				break
+			}
+		}
+	} else {
+		result = antigravity.ProbeModel(ctx, client, baseURL, accessToken, projectID, target)
+	}
 	applyProbeKeyStatus(existingUp, targetSlot, result.StatusCode, "", []byte(result.Message))
 
 	subject := fmt.Sprintf("Model %q", target)
 	if implicit {
-		subject = fmt.Sprintf("Host (probed with %q — Cloud Code has no model-list route)", target)
+		subject = fmt.Sprintf("Host (probed with %d candidate model(s) %s — Cloud Code has no model-list route)",
+			len(tried), strings.Join(tried, ", "))
 	}
 	verb := "answered live"
 	if !result.OK {

@@ -5,6 +5,21 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.39.0] - 2026-09-29
+
+### Added
+
+- **Antigravity model catalog follows the Cloud Code id convention (`internal/adapter/antigravity/discovery.go`)**: the discovery seed is now the model set the Antigravity model selector actually offers - **Gemini 3.8 / 3.7 / 3.6 Flash**, **Gemini 3.1 Pro**, **Claude Sonnet 4.6 & Opus 4.6 (thinking)** and **GPT-OSS 120B** - with every reasoning-effort tier the selector exposes, instead of the previous hand-written guess list (`gemini-2.5-pro`, `claude-3-5-sonnet-20241022`, ...), whose ids Cloud Code no longer serves.
+  - **Codename convention, pinned by tests** (`TestCuratedModels_FollowCloudCodeIDConvention`): the version sits in the **middle** and the tier is a **suffix** - `gemini-<version>-<tier>`, `claude-<family>-<version>[-thinking]`, `gpt-oss-<size>[-<effort>]`. So it is `gemini-3.8-flash`, **not** `gemini-flash-3.8`, and the effort variants are separate ids (`gemini-3.8-flash-low|-medium|-high|-fast`, `gemini-3.1-pro-low|-medium|-high`, `gpt-oss-120b-low|-medium|-high`, `claude-sonnet-4-6[-thinking]`, `claude-opus-4-6[-thinking]`).
+  - **The Gemini 3 Pro family requires a tier suffix**: a bare `gemini-3.1-pro` is rejected by Cloud Code with 404 "Requested entity was not found", which is why no bare Pro id is ever seeded. A test fails the build if one reappears.
+  - Nothing is trusted blindly: every seeded id is still verified with a real one-token generation (1.38.0), so an id Antigravity retires simply drops into `unavailable` instead of being offered as a route. The `-fast` tier is seeded for the Flash families because the selector shows it; if the account does not serve it, it is filtered out live.
+  - **Probe requests now carry the two documented Cloud Code identity headers** (`X-Goog-Api-Client: google-cloud-sdk vscode_cloudshelleditor/0.1` and `Client-Metadata: {"ideType":"ANTIGRAVITY","platform":"MACOS","pluginType":"GEMINI"}`) next to the bearer token and the `antigravity/ide/2.11.0` fingerprint, matching what the unified gateway documents for the generation verb.
+  - **Reachability check without a model walks a fallback chain** (`DefaultProbeModels`: `gemini-3.8-flash` → `3.7-flash` → `3.6-flash` → `3.1-pro-low`): the first id the account can serve decides the verdict, so an account without the newest Flash no longer shows a healthy upstream as down.
+  - **Sweep budget fits the catalog**: parallelism 4 → 6 and the dashboard now requests a 30s budget for Fetch models (26 verified candidates at one token each, well under a cent).
+- **Docs/version:** the README explains the id convention (version in the middle, effort as a suffix) for the Antigravity provider, `frontend/package.json` is `1.39.0`, and the sidebar version is `v1.39.0`.
+- **Regression coverage:** `TestAntigravityCheck_FallsBackWhenNewestModelUnavailable` (a missing 3.8 Flash still reports the host live, and the chain is really walked), plus the naming-convention test above.
+- **Verified:** `go build ./...`, `go test ./internal/server/...`, `go test ./internal/adapter/antigravity/...`, and `tsc --noEmit`.
+
 ## [1.38.0] - 2026-09-29
 
 ### Fixed

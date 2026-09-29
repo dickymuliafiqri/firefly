@@ -126,6 +126,10 @@ export function ModelsTab({
         protocol,
         base_url: effectiveBaseUrl,
         api_key: firstKey || undefined,
+        // Protocols without a model-list route (antigravity) verify every
+        // candidate with a real one-token generation, so the sweep needs more
+        // than the 10s default budget.
+        timeout_ms: 30000,
         egress_mode: egressMode,
         proxy_url: proxyUrl || undefined,
       };

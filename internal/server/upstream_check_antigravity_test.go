@@ -117,6 +117,32 @@ func TestAntigravityCheck_ProbesGoogleLive(t *testing.T) {
 	}
 }
 
+func TestAntigravityCheck_FallsBackWhenNewestModelUnavailable(t *testing.T) {
+	// The account has no Gemini 3.8 Flash: the reachability check must walk the
+	// chain and still report the host as live instead of failing on the default.
+	served := map[string]bool{"gemini-3.6-flash": true}
+	stub := newAGStub(t, served, http.StatusNotFound)
+
+	var res UpstreamCheckResponse
+	agPost(t, "/api/upstreams/check", UpstreamCheckRequest{
+		Protocol:  "antigravity",
+		BaseURL:   stub.URL,
+		APIKey:    "ya29.live-token",
+		TimeoutMs: 10000,
+	}, &res)
+
+	if !res.Healthy {
+		t.Fatalf("host should be healthy via a fallback model: %s", res.Message)
+	}
+	asked := stub.asked()
+	if len(asked) < 2 {
+		t.Fatalf("expected the chain to be walked, upstream saw %v", asked)
+	}
+	if asked[len(asked)-1] != "gemini-3.6-flash" {
+		t.Errorf("last probe = %q, want the served fallback", asked[len(asked)-1])
+	}
+}
+
 func TestAntigravityCheck_ReportsUpstreamFailureTruthfully(t *testing.T) {
 	stub := newAGStub(t, nil, http.StatusForbidden)
 
@@ -163,10 +189,7 @@ func TestAntigravityCheck_WithoutCredentialNeverClaimsHealthy(t *testing.T) {
 }
 
 func TestAntigravityModels_VerifiesCandidatesLive(t *testing.T) {
-	served := map[string]bool{}
-	for _, m := range antigravity.CuratedModels() {
-		served[m] = m == "gemini-2.5-pro" || m == "gemini-2.5-flash"
-	}
+	served := map[string]bool{"gemini-3.8-flash": true, "gemini-3.6-flash": true}
 	stub := newAGStub(t, served, http.StatusNotFound)
 
 	var res UpstreamModelsResponse
@@ -181,7 +204,7 @@ func TestAntigravityModels_VerifiesCandidatesLive(t *testing.T) {
 		t.Fatalf("verified %d models, want the 2 the host served: %+v", res.ModelCount, res)
 	}
 	for _, m := range res.Models {
-		if m == "gemini-2.0-flash" {
+		if m == "gemini-3.1-pro-low" {
 			t.Errorf("a refused model must not be reported: %v", res.Models)
 		}
 	}
