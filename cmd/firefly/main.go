@@ -93,7 +93,7 @@ func run() error {
 		graceSecs            = flag.Int("shutdown-grace-seconds", 30, "max seconds to drain in-flight requests on shutdown")
 		adminToken           = flag.String("admin-token", "", "bearer token guarding /debug/* endpoints (defaults to $FIREFLY_ADMIN_TOKEN; empty disables them)")
 		dashboardPassword    = flag.String("dashboard-password", "", "master password for dashboard access (defaults to $INITIAL_PASSWORD, $FIREFLY_DASHBOARD_PASSWORD, or 12345678)")
-		healthInterval       = flag.Duration("health-check-interval", upstream.DefaultHealthCheckInterval, "interval between background upstream health checks (0 to disable)")
+		healthInterval       = flag.Duration("health-check-interval", upstream.DefaultHealthCheckInterval, "interval between background upstream health checks (0 disables; defaults to $FIREFLY_HEALTH_CHECK_INTERVAL or 15s)")
 		showVersion          = flag.Bool("version", false, "print version information and exit")
 		tursoURL             = flag.String("turso-url", "", "Turso database URL (e.g. libsql://...; defaults to $TURSO_DATABASE_URL)")
 		tursoToken           = flag.String("turso-token", "", "Turso JWT auth token (defaults to $TURSO_AUTH_TOKEN)")
@@ -184,6 +184,13 @@ func run() error {
 			}
 		} else if tcfg.SyncMaxIntervalSec > 0 {
 			*tursoSyncMaxInterval = time.Duration(tcfg.SyncMaxIntervalSec) * time.Second
+		}
+	}
+	if envHealth := os.Getenv("FIREFLY_HEALTH_CHECK_INTERVAL"); envHealth != "" {
+		if d, err := time.ParseDuration(envHealth); err == nil {
+			if *healthInterval == upstream.DefaultHealthCheckInterval {
+				*healthInterval = d
+			}
 		}
 	}
 	if envWarp := os.Getenv("FIREFLY_WARP_ROTATE_INTERVAL"); envWarp != "" {

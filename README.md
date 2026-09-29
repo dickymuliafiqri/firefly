@@ -209,7 +209,7 @@ All settings can be updated live from the web dashboard with **zero server resta
 | `-admin-token` | `FIREFLY_ADMIN_TOKEN` | `""` | Secret token protecting administrative endpoints |
 | — | `FIREFLY_SESSION_SECRET` | auto | HMAC key for stateless dashboard sessions; set it on serverless/multi-instance hosts so sessions survive restarts |
 | `-log-level` | `FIREFLY_LOG_LEVEL` | `info` | Log detail level (`debug`, `info`, `warn`, `error`) |
-| `-health-check-interval` | — | `15s` | Background health probe interval (`0` to disable) |
+| `-health-check-interval` | `FIREFLY_HEALTH_CHECK_INTERVAL` | `15s` | Background health probe interval (`0` to disable) |
 | `-quota-poll-interval` | — | `2m` | Background provider-quota refresh for OAuth connections (`0` keeps quota reads on demand only) |
 | `-tunnel` | `FIREFLY_TUNNEL` | `disabled` | Cloudflare Tunnel mode (`disabled`, `quick`, `named`) |
 | `-tunnel-token` | `FIREFLY_TUNNEL_TOKEN` | `""` | Secret token for named Cloudflare Tunnels |

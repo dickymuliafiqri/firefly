@@ -5,6 +5,16 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.42.5] - 2026-09-29
+
+### Added
+
+- **`FIREFLY_HEALTH_CHECK_INTERVAL` Environment Variable (`cmd/firefly`)**: The `-health-check-interval` flag now resolves its value from `$FIREFLY_HEALTH_CHECK_INTERVAL` when the flag is left at its default (`15s`), closing the gap where the background health-check interval was the only daemon cadence flag without an environment override. An explicit flag always wins over the variable; unparsable values are ignored and fall back to the default. Set `FIREFLY_HEALTH_CHECK_INTERVAL=0` to disable the background upstream health checker entirely (the checker goroutine is then never spawned).
+
+### Changed
+
+- **Version bump**: `frontend/package.json` and `AppShell.tsx` bumped to `v1.42.5`.
+
 ## [1.42.4] - 2026-09-29
 
 ### Changed
