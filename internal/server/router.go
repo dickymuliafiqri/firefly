@@ -263,6 +263,12 @@ func (s *Server) buildHandler(deps RouterDeps) http.Handler {
 	mux.HandleFunc("OPTIONS /api/oauth/connections/{id}", deps.handleOptionsOAuth)
 	mux.HandleFunc("DELETE /api/oauth/connections/{id}", deps.handleDeleteOAuthConnection)
 
+	// Provider-Side Quota (upstream allowance per OAuth connection)
+	mux.HandleFunc("OPTIONS /api/quota/providers", deps.handleOptionsSettings)
+	mux.HandleFunc("GET /api/quota/providers", deps.handleListProviderQuota)
+	mux.HandleFunc("OPTIONS /api/quota/providers/{id}", deps.handleOptionsSettings)
+	mux.HandleFunc("GET /api/quota/providers/{id}", deps.handleGetProviderQuota)
+
 	// Cloudflare WARP Userspace Egress API
 	mux.HandleFunc("OPTIONS /api/warp/status", deps.handleOptionsSettings)
 	mux.HandleFunc("GET /api/warp/status", deps.handleGetWarpStatus)

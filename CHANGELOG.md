@@ -5,6 +5,21 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Provider-side quota tracking (backend, phase 1 of 2) — `internal/adapter/antigravity/quota.go`, `internal/server/quota_handlers.go`**: Firefly can now read Google Cloud Code's *own* allowance for a connected Antigravity account, instead of only reacting to a 401/429 after the fact. This is a different number from the tenant ledger the Quota page has always shown: per model, per rolling window, straight from Google.
+  - **Three read-only verbs, no generation:** `v1internal:fetchAvailableModels` (per-model `quotaInfo.remainingFraction` + `resetTime`), `v1internal:retrieveUserQuotaSummary` (the weekly and 5-hour windows per family) and `v1internal:loadCodeAssist` on the production host (plan name, paid tier id, companion project). Refreshing the picture never spends the quota it reports, because nothing is generated.
+  - **Refusals degrade, they never fabricate:** a 401 becomes "Quota API authentication expired — reconnect the Google account" and a 403 becomes "Inference may still work — this plan does not expose quota", with empty lists instead of a fabricated 0%. A free tier (`paidTier.id` absent or `free-tier`) is treated as "per-model quota is not reported by Cloud Code" and the call is skipped rather than fetched and discarded, exactly like the honest 1.40.0 model probe.
+  - **New admin endpoints:** `GET /api/quota/providers` (every connection with a quota client) and `GET /api/quota/providers/{connectionID}?refresh=1`. A provider without a quota endpoint (cline, codebuddy, grok-cli) is *not listed* rather than reported as an empty quota the operator cannot act on; the response's `supported` array names the providers Firefly can read.
+  - **Cheap to poll:** a 60s TTL cache with in-flight coalescing, so a dashboard poll or several operators watching cost one upstream call per window, plus `?refresh=1` to bypass. Connections are fetched 4-at-a-time under a 15s per-connection budget.
+  - **Parser hardening:** the undocumented shapes are tolerated, not trusted — RFC3339 *or* numeric reset timestamps, `groups` *or* `quotaSummary.groups`, a `cloudaicompanionProject` that is a string or an object, `project_id`/`projectId` spellings, windows labeled through `window`, `bucketId` or `displayName`. Internal and unmetered models are dropped; an exhausted model is *reported* at 0%, because "you are out" is the answer an operator needs.
+  - **Regression coverage, all hermetic (no live Google, no OAuth):** `TestParseAvailableModels_Table`, `TestParseQuotaSummary_Table`, `TestParseSubscriptionInfo_Table`, `TestNormalizeProjectID`, `TestFetchQuota_AssemblesAllThreeVerbs` (the three verbs, the bearer header and the project id in the body), `TestFetchQuota_FreeTierSkipsPerModel`, `TestFetchQuota_RefusalsBecomeMessages`, `TestFetchQuota_RequiresToken`, plus `TestQuotaEndpoints_*` for the auth gate, the 404s, the TTL/`?refresh` behavior, an unrecoverable OAuth token and concurrent-refresh coalescing.
+  - **Not in this phase:** the dashboard has no Provider quota section yet, and routing does not yet skip an exhausted model — both are the phase-2 follow-ups on top of this read path.
+
+- **Verified:** `go build ./...`, `go vet ./internal/adapter/antigravity/... ./internal/server/...`, and `go test -count=1 -race ./internal/server/... ./internal/adapter/... ./internal/security/...`.
+
 ## [1.40.0] - 2026-09-29
 
 ### Changed
