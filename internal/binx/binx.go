@@ -52,9 +52,9 @@ func DefaultDir() (string, error) {
 // Find searches for an existing executable binary by name:
 // 1. If customDir is specified, it strictly searches within customDir.
 // 2. Otherwise:
-//    - Checks system PATH via exec.LookPath
-//    - Checks Firefly's home directory (~/.firefly/bin)
-//    - Checks local directories (./data/bin and ./bin)
+//   - Checks system PATH via exec.LookPath
+//   - Checks Firefly's home directory (~/.firefly/bin)
+//   - Checks local directories (./data/bin and ./bin)
 //
 // Returns the resolved executable path and true if found, or ("", false) otherwise.
 func Find(name string, customDir string) (string, bool) {

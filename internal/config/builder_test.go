@@ -1164,4 +1164,3 @@ func TestBuildVisualizerConfig(t *testing.T) {
 		}
 	}
 }
-

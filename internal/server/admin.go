@@ -130,8 +130,8 @@ func requireToken(token string) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			got := r.Header.Get("X-Admin-Token")
 			if got == "" {
-				if h := r.Header.Get("Authorization"); len(h) > 7 && h[:7] == "Bearer " {
-					got = h[7:]
+				if tok, ok := httpx.ExtractBearer(r.Header.Get("Authorization")); ok {
+					got = tok
 				}
 			}
 			if subtle.ConstantTimeCompare([]byte(got), want) != 1 {

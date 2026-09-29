@@ -5,8 +5,6 @@ package auth
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"reflect"
 	"strings"
 
@@ -44,8 +42,7 @@ const KeyPrefix = "sk-gw-"
 
 // HashKey returns the canonical `sha256:<hex>` hash for a plaintext key.
 func HashKey(plaintext string) string {
-	sum := sha256.Sum256([]byte(plaintext))
-	return "sha256:" + hex.EncodeToString(sum[:])
+	return domain.HashKey(plaintext)
 }
 
 // ExtractBearer pulls the token from an Authorization header value. It accepts

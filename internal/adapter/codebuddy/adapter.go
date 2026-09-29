@@ -163,7 +163,7 @@ func (a *Adapter) Forward(ctx context.Context, t *domain.Target, req ports.Forwa
 			lastErr = &openai.ErrUpstream{Status: res.status, Retried: true, Body: res.body, Header: res.headers}
 			continue
 		case decision.Relay:
-			relayError(respW, res.status, res.headers, res.body)
+			upstream.RelayError(respW, res.status, res.headers, res.body)
 			return nil
 		default: // decision.Fail
 			lastErr = &openai.ErrUpstream{Status: res.status, Retried: attempt > 1, Cause: res.err, Body: res.body, Header: res.headers}
@@ -175,7 +175,7 @@ func (a *Adapter) Forward(ctx context.Context, t *domain.Target, req ports.Forwa
 
 	var lastUE *openai.ErrUpstream
 	if errors.As(lastErr, &lastUE) && len(lastUE.Body) > 0 {
-		relayError(respW, lastUE.Status, lastUE.Header, lastUE.Body)
+		upstream.RelayError(respW, lastUE.Status, lastUE.Header, lastUE.Body)
 		return nil
 	}
 	return lastErr
@@ -370,24 +370,6 @@ func (a *Adapter) attempt(ctx context.Context, u *domain.Upstream, req ports.For
 		streamed: false,
 		body:     aggregatedJSON,
 		err:      werr,
-	}
-}
-
-func relayError(w http.ResponseWriter, status int, headers http.Header, body []byte) {
-	if status == 0 {
-		status = http.StatusBadGateway
-	}
-	if headers != nil {
-		if ct := headers.Get("Content-Type"); ct != "" {
-			w.Header().Set("Content-Type", ct)
-		}
-		if ra := headers.Get("Retry-After"); ra != "" {
-			w.Header().Set("Retry-After", ra)
-		}
-	}
-	w.WriteHeader(status)
-	if len(body) > 0 {
-		_, _ = w.Write(body)
 	}
 }
 

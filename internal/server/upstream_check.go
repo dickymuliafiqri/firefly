@@ -19,9 +19,9 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/adapter/opencode"
 	"github.com/dickymuliafiqri/firefly/internal/adapter/qoder"
 	"github.com/dickymuliafiqri/firefly/internal/domain"
+	"github.com/dickymuliafiqri/firefly/internal/textx"
 	"github.com/dickymuliafiqri/firefly/internal/transport/upstream"
 	"github.com/dickymuliafiqri/firefly/internal/transport/warp"
-	"github.com/tidwall/gjson"
 )
 
 type UpstreamCheckRequest struct {
@@ -108,26 +108,7 @@ func (deps RouterDeps) handleOptionsUpstreamCheck(w http.ResponseWriter, r *http
 
 // extractUpstreamError extracts an error description from upstream JSON response body or plain text.
 func extractUpstreamError(body []byte) string {
-	if len(body) == 0 {
-		return ""
-	}
-	if msg := gjson.GetBytes(body, "error.message").String(); msg != "" {
-		return msg
-	}
-	if msg := gjson.GetBytes(body, "message").String(); msg != "" {
-		return msg
-	}
-	if msg := gjson.GetBytes(body, "detail").String(); msg != "" {
-		return msg
-	}
-	if msg := gjson.GetBytes(body, "error").String(); msg != "" {
-		return msg
-	}
-	trimmed := strings.TrimSpace(string(body))
-	if len(trimmed) > 0 && len(trimmed) <= 300 && !strings.HasPrefix(trimmed, "<") {
-		return trimmed
-	}
-	return ""
+	return textx.ExtractErrorMessage(body, 300)
 }
 
 // canonicalProbeProtocol maps every protocol spelling a dashboard form, a legacy
@@ -141,19 +122,7 @@ func extractUpstreamError(body []byte) string {
 // exactly that mismatch — the picker emitted it, the catalog normalized it, and
 // the probe treated it as an unknown protocol.
 func canonicalProbeProtocol(protocol string) string {
-	switch protocol {
-	case "codebuddy", "codebuddy_cn":
-		return "codebuddy-cn"
-	case "codebuddy_intl":
-		return "codebuddy-intl"
-	case "antigravity-go", "antigravity_go":
-		return "antigravity"
-	case "grok_cli", "grok", "gcli", "grok-build":
-		return "grok-cli"
-	case "qodercli", "qoder-cli":
-		return "qoder"
-	}
-	return protocol
+	return domain.NormalizeProtocol(protocol)
 }
 
 // handleCheckUpstream actively tests connectivity and authentication against an upstream endpoint.

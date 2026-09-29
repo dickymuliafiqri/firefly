@@ -82,17 +82,6 @@ func New(cfg Config, deps RouterDeps, baseCtx context.Context, logger *slog.Logg
 	return s
 }
 
-// NewWithHandler constructs a Server from a pre-built handler (used in tests and
-// when the caller wants full control of routing).
-func NewWithHandler(cfg Config, handler http.Handler, baseCtx context.Context, logger *slog.Logger) *Server {
-	if logger == nil {
-		logger = slog.Default()
-	}
-	s := newServer(cfg, baseCtx, logger)
-	s.http.Handler = s.drainGuard(handler)
-	return s
-}
-
 func newServer(cfg Config, baseCtx context.Context, logger *slog.Logger) *Server {
 	if cfg.Addr == "" {
 		cfg.Addr = "0.0.0.0:8080"

@@ -10,13 +10,13 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
 	"github.com/dickymuliafiqri/firefly/internal/config"
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/storage/turso"
+	"github.com/dickymuliafiqri/firefly/internal/textx"
 	"github.com/dickymuliafiqri/firefly/internal/transport/httpx"
 )
 
@@ -30,18 +30,12 @@ func (deps RouterDeps) handleOptionsSettings(w http.ResponseWriter, r *http.Requ
 
 // maskSecret redacts sensitive credentials for frontend safe display.
 func maskSecret(s string) string {
-	if s == "" {
-		return ""
-	}
-	if len(s) <= 8 {
-		return "[REDACTED]"
-	}
-	return s[:3] + "..." + s[len(s)-4:]
+	return textx.MaskSecret(s)
 }
 
 // isMasked checks if a submitted secret string is a placeholder from a previous GET.
 func isMasked(s string) bool {
-	return strings.Contains(s, "...") || s == "[REDACTED]"
+	return textx.IsMasked(s)
 }
 
 // sanitizePublicSettings extracts safe public metadata for dashboard display,

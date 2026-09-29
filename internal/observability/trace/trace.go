@@ -10,6 +10,7 @@ package trace
 import (
 	"bytes"
 
+	"github.com/dickymuliafiqri/firefly/internal/textx"
 	"github.com/tidwall/gjson"
 )
 
@@ -139,13 +140,7 @@ type Frame struct {
 // MaskRef redacts a credential reference, keeping just enough of it to tell two
 // keys apart. Secrets must never reach the browser (AGENTS.md 1.6).
 func MaskRef(ref string) string {
-	if ref == "" {
-		return ""
-	}
-	if len(ref) <= 8 {
-		return ref[:2] + "***"
-	}
-	return ref[:4] + "***" + ref[len(ref)-4:]
+	return textx.MaskRef(ref)
 }
 
 // Classify maps one raw SSE line to an activity kind. ok is false for frames

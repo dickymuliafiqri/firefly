@@ -271,8 +271,8 @@ func TestDefaultProbeModels_FallsBackInOrder(t *testing.T) {
 
 func TestNormalizeBaseURL(t *testing.T) {
 	cases := map[string]string{
-		"":                                         DefaultBaseURL(),
-		"https://daily-cloudcode-pa.googleapis.com": DefaultBaseURL(),
+		"": DefaultBaseURL(),
+		"https://daily-cloudcode-pa.googleapis.com":  DefaultBaseURL(),
 		"https://daily-cloudcode-pa.googleapis.com/": "https://daily-cloudcode-pa.googleapis.com",
 		" https://host/ ": "https://host",
 	}

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 
@@ -89,26 +88,7 @@ func tenantDTOFromDomain(t *domain.Tenant) config.TenantDTO {
 // readTenantBody decodes a tenant payload bounded by the gateway-wide body
 // limit, mapping oversized bodies to 413 and malformed JSON to 400.
 func readTenantBody(w http.ResponseWriter, r *http.Request) (config.TenantDTO, bool) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
-	defer r.Body.Close()
-
-	bodyBytes, err := io.ReadAll(r.Body)
-	if err != nil {
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
-			openai.WriteError(w, http.StatusRequestEntityTooLarge, openai.TypeInvalidRequest, "request body too large")
-			return config.TenantDTO{}, false
-		}
-		openai.WriteError(w, http.StatusBadRequest, openai.TypeInvalidRequest, "read request body: "+err.Error())
-		return config.TenantDTO{}, false
-	}
-
-	var dto config.TenantDTO
-	if err := json.Unmarshal(bodyBytes, &dto); err != nil {
-		openai.WriteError(w, http.StatusBadRequest, openai.TypeInvalidRequest, "parse JSON tenant: "+err.Error())
-		return config.TenantDTO{}, false
-	}
-	return dto, true
+	return httpx.ReadJSON[config.TenantDTO](w, r, maxRequestBodyBytes, "tenant")
 }
 
 // findTenantByName locates a tenant DTO by display name in the current

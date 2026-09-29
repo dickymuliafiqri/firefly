@@ -13,8 +13,6 @@ const (
 	HeaderRequest = "x-opencode-request"
 	HeaderClient  = "x-opencode-client"
 	HeaderProject = "x-opencode-project"
-
-	maxSessionLength = 256
 )
 
 // IsValidSessionID reports whether s matches the OpenCode canonical session format:
@@ -36,18 +34,6 @@ func IsValidSessionID(s string) bool {
 		}
 	}
 	return true
-}
-
-// GenerateDescendingID creates a timestamp-based 26-character ID identical to the official
-// OpenCode client: 12 hex characters from ~(timestamp_ms*0x1000 + counter) and 14 base62 random chars.
-func GenerateDescendingID() string {
-	return upstream.GenerateOpenCodeTimestampID(true)
-}
-
-// GenerateAscendingID creates a timestamp-based 26-character ID identical to the official
-// OpenCode client: 12 hex characters from (timestamp_ms*0x1000 + counter) and 14 base62 random chars.
-func GenerateAscendingID() string {
-	return upstream.GenerateOpenCodeTimestampID(false)
 }
 
 // GenerateSessionID creates a new canonical OpenCode session identifier (ses_<26-chars>).

@@ -13,7 +13,6 @@ type ctxKey int
 
 const (
 	ctxKeyTenant ctxKey = iota
-	ctxKeyTarget
 )
 
 // RequestIDFrom returns the request id stored in ctx, or "".

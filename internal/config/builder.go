@@ -2,13 +2,10 @@ package config
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
-	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -226,9 +223,6 @@ func (e *ValidationError) Error() string {
 	return fmt.Sprintf("validation error: %s: %s", e.Field, e.Msg)
 }
 
-// EnvLookupOrOS is the production environment lookup.
-func EnvLookupOrOS(name string) (string, bool) { return os.LookupEnv(name) }
-
 // NormalizeProtocol resolves an upstream's protocol aliases to their canonical
 // domain value, applying the default when it is absent. The catalog builder and
 // the exported PinOAuthManagedEndpoints share it, so an alias can never reach the
@@ -237,24 +231,7 @@ func NormalizeProtocol(proto string) string {
 	if proto == "" {
 		return DefaultProtocol
 	}
-	switch proto {
-	case "codebuddy", "codebuddy_cn":
-		// Bare "codebuddy" is the dormant alias the dashboard's protocol picker
-		// used to emit; the adapter's non-international branch, the OAuth
-		// provider id, and the probe surface all spell the region "-cn".
-		return string(domain.ProtocolCodeBuddyCN)
-	case "codebuddy_intl":
-		return string(domain.ProtocolCodeBuddyIntl)
-	case "grok_cli", "grok", "gcli", "grok-build":
-		return string(domain.ProtocolGrokCLI)
-	case "opencode_go", "opencode-go", "ocg", "oc":
-		return string(domain.ProtocolOpenCode)
-	case "qoder", "qodercli", "qoder-cli":
-		return string(domain.ProtocolQoder)
-	case "antigravity-go", "antigravity_go":
-		return string(domain.ProtocolAntigravity)
-	}
-	return proto
+	return domain.NormalizeProtocol(proto)
 }
 
 func normalizeProtocol(proto string) string {
@@ -732,8 +709,7 @@ func translateTenant(i int, d TenantDTO, models map[string]*domain.ModelEntry, c
 	apiKey := d.APIKey
 	if apiKey != "" {
 		if d.KeyHash == "" {
-			sum := sha256.Sum256([]byte(apiKey))
-			d.KeyHash = "sha256:" + hex.EncodeToString(sum[:])
+			d.KeyHash = domain.HashKey(apiKey)
 		}
 	} else if d.KeyHash != "" {
 		if !keyHashRe.MatchString(d.KeyHash) {

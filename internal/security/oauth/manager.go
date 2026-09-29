@@ -89,15 +89,9 @@ func (m *Manager) GetProvider(name string) (ports.OAuthProvider, bool) {
 	defer m.mu.RUnlock()
 	p, ok := m.providers[name]
 	if !ok {
-		switch name {
-		case "codebuddy", "codebuddy_cn":
-			p, ok = m.providers["codebuddy-cn"]
-		case "codebuddy_intl":
-			p, ok = m.providers["codebuddy-intl"]
-		case "antigravity-go", "antigravity_go":
-			p, ok = m.providers["antigravity"]
-		case "gcli", "grok-build", "grok_cli":
-			p, ok = m.providers["grok-cli"]
+		canonical := domain.NormalizeProtocol(name)
+		if canonical != name {
+			p, ok = m.providers[canonical]
 		}
 	}
 	return p, ok

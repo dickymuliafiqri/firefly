@@ -96,16 +96,6 @@ func readKeyRow(t *testing.T, store *Store, secret string) keyRow {
 	return r
 }
 
-func readProviderID(t *testing.T, store *Store, name string) int64 {
-	t.Helper()
-	var id int64
-	if err := store.DB().QueryRowContext(context.Background(),
-		"SELECT id FROM providers WHERE name = ?", name).Scan(&id); err != nil {
-		t.Fatalf("read provider %q id: %v", name, err)
-	}
-	return id
-}
-
 func readRevision(t *testing.T, store *Store) int64 {
 	t.Helper()
 	rev, err := store.GetCatalogRevision(context.Background())

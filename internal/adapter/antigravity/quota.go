@@ -183,12 +183,6 @@ func FetchQuotaSummary(
 	return postQuota(ctx, client, NormalizeBaseURL(baseURL)+QuotaSummaryPath, accessToken, projectID)
 }
 
-// FetchSubscriptionInfo returns the raw `loadCodeAssist` body from the
-// production host (the daily host does not serve it).
-func FetchSubscriptionInfo(ctx context.Context, client *http.Client, accessToken string) ([]byte, error) {
-	return fetchSubscriptionURL(ctx, client, accessToken, LoadCodeAssistHost+LoadCodeAssistPath)
-}
-
 func fetchSubscriptionURL(ctx context.Context, client *http.Client, accessToken, url string) ([]byte, error) {
 	if client == nil {
 		return nil, fmt.Errorf("antigravity: nil http client")

@@ -217,7 +217,6 @@ func TestNormalizeProjectID(t *testing.T) {
 	assert.Equal(t, "", NormalizeProjectID(nil))
 }
 
-
 // quotaStub is a Cloud Code stand-in: it answers the three quota verbs and
 // records what the client sent, so request shape and assembly are testable
 // without Google.
@@ -392,4 +391,3 @@ func TestFetchQuota_RequiresToken(t *testing.T) {
 	assert.Equal(t, "Unknown", quota.Plan)
 	assert.NotEmpty(t, quota.Message)
 }
-

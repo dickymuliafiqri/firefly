@@ -144,7 +144,7 @@ func (a *Adapter) Forward(ctx context.Context, t *domain.Target, req ports.Forwa
 			Status:    res.status,
 			Err:       res.err,
 			Headers:   res.headers,
-			Committed: res.streamed || headerCommitted(respW),
+			Committed: res.streamed || httpx.HeaderCommitted(respW),
 		}, a.breaker, a.metrics, a.cfg.Notifier, a.cfg.Logger)
 
 		switch {
@@ -361,20 +361,6 @@ func (a *Adapter) secret(u *domain.Upstream, t *domain.Target) (string, bool) {
 }
 
 func relayError(w http.ResponseWriter, status int, headers http.Header, body []byte) {
-	if headers != nil {
-		if ra := headers.Get("Retry-After"); ra != "" {
-			w.Header().Set("Retry-After", ra)
-		}
-	}
 	outStatus, outBody := TranslateAnthropicError(status, body)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(outStatus)
-	_, _ = w.Write(outBody)
-}
-
-func headerCommitted(w http.ResponseWriter) bool {
-	if rec, ok := w.(interface{ Committed() bool }); ok {
-		return rec.Committed()
-	}
-	return false
+	upstream.RelayError(w, outStatus, headers, outBody)
 }

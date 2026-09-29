@@ -75,18 +75,18 @@ type QuotaProvidersResponse struct {
 
 // QuotaProviderDTO is one connection's provider-side quota.
 type QuotaProviderDTO struct {
-	ConnectionID string `json:"connection_id"`
-	Provider     string `json:"provider"`
-	Email        string `json:"email,omitempty"`
-	Plan         string `json:"plan"`
-	PaidTierID   string `json:"paid_tier_id,omitempty"`
-	FreeTier     bool   `json:"free_tier"`
-	ProjectID    string `json:"project_id,omitempty"`
-	TokenExpired bool   `json:"token_expired"`
-	FetchedAt    string `json:"fetched_at"`
-	AgeSeconds   int64  `json:"age_seconds"`
-	FromCache    bool   `json:"from_cache"`
-	Message      string `json:"message,omitempty"`
+	ConnectionID string                    `json:"connection_id"`
+	Provider     string                    `json:"provider"`
+	Email        string                    `json:"email,omitempty"`
+	Plan         string                    `json:"plan"`
+	PaidTierID   string                    `json:"paid_tier_id,omitempty"`
+	FreeTier     bool                      `json:"free_tier"`
+	ProjectID    string                    `json:"project_id,omitempty"`
+	TokenExpired bool                      `json:"token_expired"`
+	FetchedAt    string                    `json:"fetched_at"`
+	AgeSeconds   int64                     `json:"age_seconds"`
+	FromCache    bool                      `json:"from_cache"`
+	Message      string                    `json:"message,omitempty"`
 	Models       []antigravity.ModelQuota  `json:"models"`
 	Windows      []antigravity.WindowQuota `json:"windows"`
 }

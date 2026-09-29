@@ -5,6 +5,39 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.42.2] - 2026-09-29
+
+### Refactored
+
+- **Codebase-Wide DRY & Unified Upstream Error Relaying (`upstream.RelayError`, `httpx.HeaderCommitted`)**:
+  - Centralized upstream error relaying via [`upstream.RelayError`](internal/transport/upstream/attempt.go), eliminating 7 duplicated implementations across protocol adapters (`anthropic`, `antigravity`, `cline`, `codebuddy`, `grok`, `opencode`, `qoder`).
+  - Added [`httpx.HeaderCommitted`](internal/transport/httpx/response.go), `httpx.WriteJSON`, and `httpx.SetCORS` in `internal/transport/httpx/response.go`, unifying HTTP header write tracking and eliminating local duplicates.
+  - Centralized protocol normalization through [`domain.NormalizeProtocol`](internal/domain/protocol_endpoint.go), eliminating duplicated protocol mapping switch-cases across configuration building, check handlers, and OAuth manager.
+  - Added [`domain.HashKey`](internal/domain/domain.go), unifying SHA-256 key hashing across auth, config builder, and Turso storage with zero circular dependencies.
+
+- **Global Reusable Utilities (`textx`, `httpx`)**:
+  - Extracted secret and reference masking helpers (`MaskSecret`, `IsMasked`, `MaskRef`) into [`internal/textx/textx.go`](internal/textx/textx.go), replacing local module-specific implementations.
+  - Added [`textx.ExtractErrorMessage`](internal/textx/textx.go) to standardize upstream JSON error extraction across live discovery and upstream diagnostic check endpoints.
+  - Added generic [`httpx.ReadJSON[T]`](internal/transport/httpx/request.go) with request body size boundaries and [`httpx.ExtractBearer`](internal/transport/httpx/request.go) for case-insensitive Bearer token extraction across admin endpoints.
+
+### Removed
+
+- **YAGNI & Dead Code Removal**:
+  - Removed unused `newIdleWatchdog` in `internal/adapter/openai/relay.go`.
+  - Removed unused `TargetFrom`, `WithTarget`, and `ctxKeyTarget` in `internal/transport/httpx`.
+  - Removed unused `GeneratePKCE` in `internal/security/oauth/pkce.go`.
+  - Removed unused `NewWithHandler` constructor in `internal/server/server.go`.
+  - Removed unused `EnvLookupOrOS` in `internal/config/builder.go`.
+  - Removed unused `FetchSubscriptionInfo` in `internal/adapter/antigravity/quota.go`.
+  - Removed unused `GenerateDescendingID`, `GenerateAscendingID`, and `maxSessionLength` in `internal/adapter/opencode/session.go`.
+  - Removed unused test helper `readProviderID` in `internal/storage/turso/provider_store_test.go`.
+
+### Fixed
+
+- **High-Concurrency Windows TCP Backlog Resilience (`internal/integration/phase4_test.go`)**:
+  - Enhanced connection retry loop with jittered backoff in `TestPhase4_HighConcurrencyStreaming1000Users` to gracefully withstand Windows loopback TCP SYN backlog pressure during burst connection of 1,000 simultaneous streams.
+- **Version bump**: `frontend/package.json` and `AppShell.tsx` bumped to `v1.42.2`.
+
 ## [1.42.1] - 2026-09-29
 
 ### Fixed

@@ -467,4 +467,3 @@ func TestHandleKeyOutcome_ThresholdCooldown_KeepsKeyInKeyRing(t *testing.T) {
 		t.Fatal("cd-key must still be in KeyRing during cooldown")
 	}
 }
-

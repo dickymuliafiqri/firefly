@@ -50,3 +50,24 @@ func OAuthManagedBaseURL(p Protocol) (string, bool) {
 	endpoint, ok := oauthManagedBaseURLs[p]
 	return endpoint, ok
 }
+
+// NormalizeProtocol resolves any known alias or spelling variant of an upstream
+// protocol onto its canonical Protocol domain value. If proto is unrecognized,
+// it returns the input unchanged.
+func NormalizeProtocol(proto string) string {
+	switch proto {
+	case "codebuddy", "codebuddy_cn":
+		return string(ProtocolCodeBuddyCN)
+	case "codebuddy_intl":
+		return string(ProtocolCodeBuddyIntl)
+	case "grok_cli", "grok", "gcli", "grok-build":
+		return string(ProtocolGrokCLI)
+	case "opencode_go", "opencode-go", "ocg", "oc":
+		return string(ProtocolOpenCode)
+	case "qoder", "qodercli", "qoder-cli":
+		return string(ProtocolQoder)
+	case "antigravity-go", "antigravity_go":
+		return string(ProtocolAntigravity)
+	}
+	return proto
+}

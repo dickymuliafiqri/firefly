@@ -207,3 +207,31 @@ func selectNextKey(u *domain.Upstream, target *domain.Target) bool {
 	target.CredentialRef = nextSlot.Ref
 	return true
 }
+
+// RelayError writes a terminal upstream error response to the client:
+// - sets Content-Type (defaulting to application/json if absent)
+// - propagates Retry-After if present in upstream headers
+// - writes the HTTP status code (defaulting to 502 Bad Gateway if 0)
+// - writes the body if non-empty
+func RelayError(w http.ResponseWriter, status int, headers http.Header, body []byte) {
+	if status == 0 {
+		status = http.StatusBadGateway
+	}
+	ct := ""
+	if headers != nil {
+		ct = headers.Get("Content-Type")
+	}
+	if ct == "" {
+		ct = "application/json"
+	}
+	w.Header().Set("Content-Type", ct)
+	if headers != nil {
+		if ra := headers.Get("Retry-After"); ra != "" {
+			w.Header().Set("Retry-After", ra)
+		}
+	}
+	w.WriteHeader(status)
+	if len(body) > 0 {
+		_, _ = w.Write(body)
+	}
+}

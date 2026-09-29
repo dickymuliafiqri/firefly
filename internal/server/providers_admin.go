@@ -5,14 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
 
 	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
 	"github.com/dickymuliafiqri/firefly/internal/storage/turso"
+	"github.com/dickymuliafiqri/firefly/internal/transport/httpx"
 )
 
 const (
@@ -132,41 +131,9 @@ func (deps RouterDeps) reloadAfterMutation(ctx context.Context, op string) bool 
 }
 
 // readAdminJSON decodes a request body bounded by the gateway-wide limit into T,
-// writing 413 for oversized bodies and 400 for malformed JSON or unreadable
-// bodies. what names the payload in failure messages ("provider", "key patch").
+// writing 413 for oversized bodies and 400 for malformed JSON or unreadable bodies.
 func readAdminJSON[T any](w http.ResponseWriter, r *http.Request, what string) (T, bool) {
-	var v T
-
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
-	defer r.Body.Close()
-
-	bodyBytes, err := io.ReadAll(r.Body)
-	if err != nil {
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
-			openai.WriteError(w, http.StatusRequestEntityTooLarge, openai.TypeInvalidRequest, "request body too large")
-			return v, false
-		}
-		openai.WriteError(w, http.StatusBadRequest, openai.TypeInvalidRequest, "read request body: "+err.Error())
-		return v, false
-	}
-
-	if err := json.Unmarshal(bodyBytes, &v); err != nil {
-		openai.WriteError(w, http.StatusBadRequest, openai.TypeInvalidRequest, describeJSONError(err, what))
-		return v, false
-	}
-	return v, true
-}
-
-// describeJSONError renders a decode failure without repeating any of the body.
-// Go's syntax error quotes the offending byte, and the bodies on these surfaces
-// carry credentials, so the position is reported instead of the character.
-func describeJSONError(err error, what string) string {
-	var syntaxErr *json.SyntaxError
-	if errors.As(err, &syntaxErr) {
-		return fmt.Sprintf("parse JSON %s: malformed JSON at byte offset %d", what, syntaxErr.Offset)
-	}
-	return "parse JSON " + what + ": " + err.Error()
+	return httpx.ReadJSON[T](w, r, maxRequestBodyBytes, what)
 }
 
 // pathID parses a positive int64 path segment, writing 400 on anything else.

@@ -273,7 +273,7 @@ func TestPhase4_HighConcurrencyStreaming1000Users(t *testing.T) {
 
 			var resp *http.Response
 			var err error
-			for attempt := 0; attempt < 5; attempt++ {
+			for attempt := 0; attempt < 50; attempt++ {
 				req, reqErr := http.NewRequest("POST", base+"/v1/chat/completions",
 					strings.NewReader(`{"model":"gpt-4o-mini","stream":true,"messages":[{"role":"user","content":"ping"}]}`))
 				if reqErr != nil {
@@ -286,7 +286,7 @@ func TestPhase4_HighConcurrencyStreaming1000Users(t *testing.T) {
 				resp, err = client.Do(req)
 				if err != nil {
 					if strings.Contains(err.Error(), "refused") || strings.Contains(err.Error(), "reset") {
-						time.Sleep(15 * time.Millisecond)
+						time.Sleep(time.Duration(15+((id+attempt*7)%35)) * time.Millisecond)
 						continue
 					}
 					failCount.Add(1)

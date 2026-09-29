@@ -127,9 +127,9 @@ func TestHealthChecker_SkipsAntigravity(t *testing.T) {
 	defer srv.Close()
 
 	up := &domain.Upstream{
-		Name:      "antigravity-live",
-		BaseURL:   srv.URL,
-		Protocol:  domain.ProtocolAntigravity,
+		Name:       "antigravity-live",
+		BaseURL:    srv.URL,
+		Protocol:   domain.ProtocolAntigravity,
 		ProbeModel: "gemini-2.5-pro",
 	}
 
@@ -820,8 +820,8 @@ func TestHealthChecker_ThresholdActionOnProbeFailure(t *testing.T) {
 	defer srv.Close()
 
 	slot := &domain.KeySlot{
-		Ref:       "k1",
-		Secret:    "sk-test-threshold",
+		Ref:      "k1",
+		Secret:   "sk-test-threshold",
 		APIKeyID: 101,
 	}
 	kr := domain.NewKeyRing(domain.KeyStrategyRoundRobin, []*domain.KeySlot{slot})

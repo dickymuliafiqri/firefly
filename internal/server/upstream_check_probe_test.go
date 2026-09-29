@@ -92,4 +92,3 @@ func TestDiscoverModelsFallbackToOAuthManagedEndpoint(t *testing.T) {
 		t.Errorf("bare codebuddy discover hit empty base_url gate: %s", res.Message)
 	}
 }
-

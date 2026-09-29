@@ -1512,4 +1512,3 @@ func TestLoadSettings_DeduplicatesHistoricalUpstreamCredentialCopies(t *testing.
 		t.Fatalf("KeyRing SlotCount = %d, want 3", got)
 	}
 }
-

@@ -133,8 +133,6 @@ func TestRecorderRetentionIsBoundedNewestFirst(t *testing.T) {
 	}
 }
 
-
-
 func TestRecorderSlowSubscriberNeverBlocks(t *testing.T) {
 	rec := New(Config{})
 	// Deliberately never read from this channel.

@@ -10,8 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tidwall/gjson"
-
 	"github.com/dickymuliafiqri/firefly/internal/textx"
 )
 
@@ -39,7 +37,7 @@ const (
 	// googleAPIClient / clientMetadata are the two identity headers the Cloud
 	// Code unified gateway documents besides Authorization and User-Agent.
 	googleAPIClient = "google-cloud-sdk vscode_cloudshelleditor/0.1"
-	clientMetadata = `{"ideType":"ANTIGRAVITY","platform":"MACOS","pluginType":"GEMINI"}`
+	clientMetadata  = `{"ideType":"ANTIGRAVITY","platform":"MACOS","pluginType":"GEMINI"}`
 )
 
 // curatedModels is the built-in Antigravity catalog served by Fetch models.
@@ -222,20 +220,12 @@ func ProbeModel(
 	return result
 }
 
-
 // UpstreamErrorMessage extracts a human-readable reason from a Cloud Code error
 // payload, falling back to the raw payload and then the HTTP status text. The
 // result is single-line and bounded — it is surfaced to the dashboard and to
 // clients, so it must never echo a whole error document.
 func UpstreamErrorMessage(statusCode int, body []byte) string {
-	if gjson.ValidBytes(body) {
-		for _, path := range []string{"error.message", "error.status", "message"} {
-			if msg := strings.TrimSpace(gjson.GetBytes(body, path).String()); msg != "" {
-				return textx.Excerpt([]byte(msg), maxErrorMessageChars)
-			}
-		}
-	}
-	if msg := textx.Excerpt(body, maxErrorMessageChars); msg != "" {
+	if msg := textx.ExtractErrorMessage(body, maxErrorMessageChars); msg != "" {
 		return msg
 	}
 	return http.StatusText(statusCode)

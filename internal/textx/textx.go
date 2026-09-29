@@ -10,6 +10,8 @@ package textx
 import (
 	"strings"
 	"unicode/utf8"
+
+	"github.com/tidwall/gjson"
 )
 
 // Head returns the first n bytes of s without splitting a UTF-8 rune.
@@ -56,4 +58,56 @@ func Excerpt(b []byte, max int) string {
 		return s
 	}
 	return Head(s, max) + "..."
+}
+
+// MaskSecret redacts sensitive credentials for frontend safe display.
+func MaskSecret(s string) string {
+	if s == "" {
+		return ""
+	}
+	if len(s) <= 8 {
+		return "[REDACTED]"
+	}
+	return s[:3] + "..." + s[len(s)-4:]
+}
+
+// IsMasked checks if a submitted secret string is a placeholder from a previous GET.
+func IsMasked(s string) bool {
+	return strings.Contains(s, "...") || s == "[REDACTED]"
+}
+
+// MaskRef redacts a credential reference, keeping just enough of it to tell two
+// keys apart without leaking secrets.
+func MaskRef(ref string) string {
+	if ref == "" {
+		return ""
+	}
+	if len(ref) <= 8 {
+		return ref[:2] + "***"
+	}
+	return ref[:4] + "***" + ref[len(ref)-4:]
+}
+
+// ExtractErrorMessage extracts a human-readable reason from a JSON error payload
+// (looking at error.message, error.status, message, detail, error), falling back
+// to a single-line excerpt of non-HTML text.
+func ExtractErrorMessage(body []byte, maxChars int) string {
+	if len(body) == 0 {
+		return ""
+	}
+	if maxChars <= 0 {
+		maxChars = 256
+	}
+	if gjson.ValidBytes(body) {
+		for _, path := range []string{"error.message", "error.status", "message", "detail", "error"} {
+			if msg := strings.TrimSpace(gjson.GetBytes(body, path).String()); msg != "" {
+				return Excerpt([]byte(msg), maxChars)
+			}
+		}
+	}
+	trimmed := strings.TrimSpace(string(body))
+	if len(trimmed) > 0 && !strings.HasPrefix(trimmed, "<") {
+		return Excerpt([]byte(trimmed), maxChars)
+	}
+	return ""
 }

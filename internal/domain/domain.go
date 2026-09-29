@@ -4,6 +4,8 @@
 package domain
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -650,6 +652,12 @@ const (
 	TenantStatusExhausted TenantStatus = "exhausted"
 	TenantStatusExpired   TenantStatus = "expired"
 )
+
+// HashKey returns the canonical `sha256:<hex>` hash for a plaintext key.
+func HashKey(plaintext string) string {
+	sum := sha256.Sum256([]byte(plaintext))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
 
 // Tenant is a resolved tenant with its policy. APIKey is the primary plaintext lookup key.
 // KeyHash is retained for backward-compatibility.

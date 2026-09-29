@@ -356,18 +356,18 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 			}
 		}
 		var quotaResetAt time.Time
-	quotaNow := time.Now()
-	canUseCandidate := func(c domain.TargetCandidate) bool {
-		reset, blocked := deps.quotaBlockedCandidate(c, quotaNow)
-		if blocked {
-			if quotaResetAt.IsZero() {
-				quotaResetAt = reset
+		quotaNow := time.Now()
+		canUseCandidate := func(c domain.TargetCandidate) bool {
+			reset, blocked := deps.quotaBlockedCandidate(c, quotaNow)
+			if blocked {
+				if quotaResetAt.IsZero() {
+					quotaResetAt = reset
+				}
+				return false
 			}
-			return false
+			return true
 		}
-		return true
-	}
-	target, fallbackUsed, err := snap.ResolveTargetWithCandidates(tenant, model, canUseUpstream, canUseCandidate)
+		target, fallbackUsed, err := snap.ResolveTargetWithCandidates(tenant, model, canUseUpstream, canUseCandidate)
 		if err != nil {
 			if errors.Is(err, domain.ErrProviderQuotaExhausted) {
 				// Every candidate was vetoed for quota and nothing else: answer
@@ -719,7 +719,7 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 			// If nothing was written yet we can still emit an error envelope;
 			// if streaming already started, the only honest action is to stop
 			// (the client sees a truncated stream).
-			if !headerCommitted(w) {
+			if !httpx.HeaderCommitted(w) {
 				writeUpstreamFailure(w, fwdErr)
 			}
 		}
@@ -748,17 +748,6 @@ func (deps RouterDeps) recordLog(log LiveLog) {
 	if deps.Analytics != nil {
 		_ = deps.Analytics.Record(context.Background(), log)
 	}
-}
-
-// headerCommitted reports whether a status line has already been sent, using the
-// responseController probe when the writer exposes it (the logging middleware's
-// statusRecorder does). Absent that, we assume uncommitted and let the writer
-// ignore a redundant WriteHeader.
-func headerCommitted(w http.ResponseWriter) bool {
-	if rec, ok := w.(interface{ Committed() bool }); ok {
-		return rec.Committed()
-	}
-	return false
 }
 
 // writeResolveError maps a domain.ResolveError to the correct OpenAI status.

@@ -113,6 +113,7 @@ func TestBuildAndStoreCarriesTokenSaver(t *testing.T) {
 }
 
 var _ = config.FileSetFromMap
+
 // TestBuildAndStoreCarriesVisualizer guards the reload path for the private
 // visualizer: the recorder bounds must reach the snapshot, otherwise the
 // recorder silently falls back to defaults after every config reload.
@@ -130,4 +131,3 @@ func TestBuildAndStoreCarriesVisualizer(t *testing.T) {
 		t.Fatalf("visualizer config missing from the built snapshot: %+v", viz)
 	}
 }
-

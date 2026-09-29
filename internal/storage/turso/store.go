@@ -2,9 +2,7 @@ package turso
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -1271,8 +1269,7 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 
 		keyHash := t.KeyHash
 		if keyHash == "" && strings.HasPrefix(key, "sk-gw-") {
-			sum := sha256.Sum256([]byte(key))
-			keyHash = "sha256:" + hex.EncodeToString(sum[:])
+			keyHash = domain.HashKey(key)
 		}
 
 		// Register every identity this row is indexed under in existingTenants —

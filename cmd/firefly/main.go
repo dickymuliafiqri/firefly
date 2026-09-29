@@ -101,7 +101,7 @@ func run() error {
 		tursoSyncInterval    = flag.Duration("turso-sync-interval", turso.DefaultSyncInterval, "interval to pull changes from Turso cloud after an observed change (defaults to $FIREFLY_TURSO_SYNC_INTERVAL)")
 		tursoSyncMaxInterval = flag.Duration("turso-sync-max-interval", turso.DefaultSyncMaxInterval, "upper bound for the idle pull backoff; consecutive change-free pulls double the delay until it reaches this (defaults to $FIREFLY_TURSO_SYNC_MAX_INTERVAL)")
 		warpRotateInterval   = flag.Duration("warp-rotate-interval", warp.DefaultAutoRotateInterval, "interval between automatic periodic Cloudflare WARP IP rotations (0 disables; defaults to $FIREFLY_WARP_ROTATE_INTERVAL or 5m)")
-	quotaPollInterval    = flag.Duration("quota-poll-interval", server.DefaultQuotaPollInterval, "interval between background provider-quota refreshes for OAuth connections (0 disables; quota stays on-demand only)")
+		quotaPollInterval    = flag.Duration("quota-poll-interval", server.DefaultQuotaPollInterval, "interval between background provider-quota refreshes for OAuth connections (0 disables; quota stays on-demand only)")
 		tunnelMode           = flag.String("tunnel", "", "Cloudflare Tunnel mode: quick|named (empty disables; defaults to $FIREFLY_TUNNEL)")
 		tunnelToken          = flag.String("tunnel-token", "", "Cloudflare Tunnel token for named tunnels (defaults to $FIREFLY_TUNNEL_TOKEN)")
 		tunnelBinDir         = flag.String("tunnel-bin-dir", "", "directory to store or find cloudflared binary (defaults to ~/.firefly/bin or $FIREFLY_TUNNEL_BIN_DIR)")

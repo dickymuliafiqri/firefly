@@ -102,7 +102,6 @@ func RelaySSE(ctx context.Context, w http.ResponseWriter, body io.ReadCloser, id
 	capture := trace.FromContext(ctx)
 	capture.Stage(trace.StageTTFB, "")
 
-
 	// Stream watchdog: monitors both idle silence and client context cancellation.
 	// When client disconnects or upstream stalls, the watchdog closes the body immediately
 	// to unblock any pending Read() on the wire and free resources promptly.
@@ -183,11 +182,6 @@ func newStreamWatchdog(ctx context.Context, body io.ReadCloser, idleTimeout time
 	w.last.Store(time.Now())
 	go w.watch()
 	return w, w.stop
-}
-
-// newIdleWatchdog is kept for backward compatibility and delegates to newStreamWatchdog with Background context.
-func newIdleWatchdog(body io.ReadCloser, idleTimeout time.Duration) (io.ReadCloser, func()) {
-	return newStreamWatchdog(context.Background(), body, idleTimeout)
 }
 
 // idleBody is an io.ReadCloser that closes the underlying body if no Read
