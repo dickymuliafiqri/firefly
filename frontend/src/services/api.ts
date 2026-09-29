@@ -687,6 +687,17 @@ export function useDeleteProviderMutation() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['providers'] }),
   });
 }
+
+export function useDeleteOAuthConnectionMutation() {
+  return useMutation({
+    mutationFn: (id: string) => deleteOAuthConnection(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['quota', 'providers'] });
+      queryClient.invalidateQueries({ queryKey: ['oauth', 'connections'] });
+    },
+  });
+}
+
 export function useCheckUpstreamMutation() {
   return useMutation({
     mutationFn: (req: UpstreamCheckRequest) => checkUpstreamHealth(req),

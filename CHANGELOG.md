@@ -5,6 +5,16 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.42.1] - 2026-09-29
+
+### Fixed
+
+- **Harmonize Quota Page with Upstream Fleet & OAuth Account Disconnection (`frontend/src/pages/QuotaPage.tsx`, `frontend/src/services/api.ts`, `internal/server/oauth_handlers.go`)**:
+  - The Quota page now defaults to displaying **only accounts configured in the active Upstream fleet** (`providerScopeFilter = 'upstream'`), preventing unconfigured or orphaned OAuth accounts in the database vault from causing discrepancies between Upstreams and Quota counts.
+  - Added a scope filter selector (`In Upstream Fleet`, `All OAuth Accounts`, and `Unassigned / Orphan`) along with an unassigned account notification banner.
+  - Added a direct **Disconnect & Delete** action (`Trash2`) on provider quota cards, allowing operators to permanently delete unneeded or stale OAuth credentials from the vault via `DELETE /api/oauth/connections/{id}`.
+  - `handleDeleteOAuthConnection` immediately evicts the deleted connection from `quotaCache` to avoid stale reads.
+
 ## [1.42.0] - 2026-09-29
 
 ### Added

@@ -5,6 +5,7 @@ import {
   ChevronRight,
   ChevronUp,
   RefreshCw,
+  Trash2,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/Badge';
 import { Segmented } from '@/components/ui/Controls';
@@ -13,12 +14,13 @@ import { ProviderIcon } from '@/components/ui/ProviderIcon';
 import { QueryGate } from '@/components/ui/QueryGate';
 import { cn } from '@/lib/utils';
 import {
+  useDeleteOAuthConnectionMutation,
   useProviderQuotaQuery,
   useProviderQuotaRefreshMutation,
   useSettingsQuery,
   useTopupTenantMutation,
 } from '@/services/api';
-import type { ProviderQuotaDTO } from '@/services/schema';
+import type { ProviderQuotaDTO, UpstreamDTO } from '@/services/schema';
 import { useUiStore } from '@/state/store';
 
 const STATUS_TONE: Record<string, 'ok' | 'warn' | 'danger' | 'neutral'> = {
@@ -65,7 +67,51 @@ function resetIn(iso?: string): string {
   return `in ${Math.round(hours / 24)}d`;
 }
 
-function ProviderQuotaCard({ quota }: { quota: ProviderQuotaDTO }) {
+/**
+ * Extract all OAuth connection IDs referenced by configured upstreams in the gateway.
+ */
+function extractUpstreamOAuthRefs(upstreams: UpstreamDTO[]): Set<string> {
+  const refs = new Set<string>();
+  for (const u of upstreams) {
+    const candidates: (string | undefined | null)[] = [
+      u.credential_ref,
+      u.api_key,
+      ...(u.api_keys ?? []),
+      ...(u.credential_pool ?? []).flatMap((c) => [c.ref, c.secret, c.api_key]),
+    ];
+    for (const c of candidates) {
+      if (!c) continue;
+      const trimmed = c.trim().toLowerCase();
+      if (trimmed.startsWith('oauth:')) {
+        refs.add(trimmed.slice(6));
+      } else {
+        refs.add(trimmed);
+      }
+    }
+  }
+  return refs;
+}
+
+function isConnectionInUpstreams(quota: ProviderQuotaDTO, upstreamRefs: Set<string>): boolean {
+  if (upstreamRefs.size === 0) return false;
+  const connId = quota.connection_id.trim().toLowerCase();
+  const email = (quota.email ?? '').trim().toLowerCase();
+  return (
+    upstreamRefs.has(connId) ||
+    (email !== '' && upstreamRefs.has(email)) ||
+    (email !== '' && upstreamRefs.has(`oauth:${email}`)) ||
+    upstreamRefs.has(`oauth:${connId}`)
+  );
+}
+
+interface ProviderQuotaCardProps {
+  quota: ProviderQuotaDTO;
+  inUpstream: boolean;
+  isDeleting?: boolean;
+  onDelete?: () => void;
+}
+
+function ProviderQuotaCard({ quota, inUpstream, isDeleting, onDelete }: ProviderQuotaCardProps) {
   const [expanded, setExpanded] = useState(false);
   const models = quota.models ?? [];
   const windows = quota.windows ?? [];
@@ -106,6 +152,9 @@ function ProviderQuotaCard({ quota }: { quota: ProviderQuotaDTO }) {
 
           <div className="flex flex-col items-end gap-1 shrink-0">
             <div className="flex items-center gap-1">
+              <Badge tone={inUpstream ? 'info' : 'neutral'} title={inUpstream ? 'Configured in Upstream fleet' : 'Unassigned from Upstreams'}>
+                {inUpstream ? 'UPSTREAM' : 'UNASSIGNED'}
+              </Badge>
               <Badge tone={quota.free_tier ? 'neutral' : 'info'}>{quota.plan}</Badge>
               {quota.token_expired ? (
                 <Badge tone="danger">EXPIRED</Badge>
@@ -114,6 +163,17 @@ function ProviderQuotaCard({ quota }: { quota: ProviderQuotaDTO }) {
               ) : (
                 <Badge tone="ok">ACTIVE</Badge>
               )}
+              {onDelete ? (
+                <button
+                  type="button"
+                  className="btn btn-ghost text-xs p-1 text-faint hover:text-danger cursor-pointer transition-colors ml-0.5"
+                  title="Disconnect and delete account from OAuth vault"
+                  disabled={isDeleting}
+                  onClick={onDelete}
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              ) : null}
             </div>
           </div>
         </div>
@@ -241,12 +301,14 @@ export function QuotaPage() {
   const topup = useTopupTenantMutation();
   const quota = useProviderQuotaQuery();
   const refreshQuota = useProviderQuotaRefreshMutation();
+  const deleteOAuth = useDeleteOAuthConnectionMutation();
   const pushToast = useUiStore((s) => s.pushToast);
 
   // Tab State
   const [activeTab, setActiveTab] = useState<'providers' | 'tenants'>('providers');
 
-  // Provider Accounts State
+  // Provider Scope Filter ('upstream' by default for consistency with Upstreams page)
+  const [providerScopeFilter, setProviderScopeFilter] = useState<'upstream' | 'all' | 'unassigned'>('upstream');
   const [providerSearch, setProviderSearch] = useState('');
   const [providerStatusFilter, setProviderStatusFilter] = useState('all');
   const [providerPage, setProviderPage] = useState(1);
@@ -269,18 +331,41 @@ export function QuotaPage() {
   const expiring = tenants.filter((t) => t.expires_at != null && t.expires_at < week).length;
   const suspended = tenants.filter((t) => String(t.status) !== 'active').length;
 
-  // Provider Computations
+  // Provider Accounts from Vault
   const providerQuotas = quota.data?.providers ?? [];
-  const exhaustedModels = providerQuotas.reduce(
+
+  // Extract OAuth credentials referenced by configured upstreams
+  const upstreamOAuthRefs = useMemo(() => {
+    return extractUpstreamOAuthRefs(settings.data?.upstreams ?? []);
+  }, [settings.data?.upstreams]);
+
+  // Categorize accounts: active in upstream fleet vs unassigned
+  const upstreamProviders = useMemo(() => {
+    return providerQuotas.filter((p) => isConnectionInUpstreams(p, upstreamOAuthRefs));
+  }, [providerQuotas, upstreamOAuthRefs]);
+
+  const unassignedProviders = useMemo(() => {
+    return providerQuotas.filter((p) => !isConnectionInUpstreams(p, upstreamOAuthRefs));
+  }, [providerQuotas, upstreamOAuthRefs]);
+
+  // Base list of providers depending on providerScopeFilter
+  const baseProviders = useMemo(() => {
+    if (providerScopeFilter === 'upstream') return upstreamProviders;
+    if (providerScopeFilter === 'unassigned') return unassignedProviders;
+    return providerQuotas;
+  }, [providerScopeFilter, upstreamProviders, unassignedProviders, providerQuotas]);
+
+  // Provider Computations based on current scope
+  const exhaustedModels = baseProviders.reduce(
     (n, p) => n + (p.models ?? []).filter((m) => m.exhausted).length,
     0,
   );
-  const needsReconnect = providerQuotas.filter((p) => p.token_expired).length;
-  const liveCount = providerQuotas.filter((p) => !p.from_cache).length;
+  const needsReconnect = baseProviders.filter((p) => p.token_expired).length;
+  const liveCount = baseProviders.filter((p) => !p.from_cache).length;
 
   // Filtered Providers
   const filteredProviders = useMemo(() => {
-    return providerQuotas.filter((p) => {
+    return baseProviders.filter((p) => {
       if (providerSearch.trim()) {
         const q = providerSearch.toLowerCase().trim();
         const matchEmail = (p.email ?? '').toLowerCase().includes(q);
@@ -311,7 +396,7 @@ export function QuotaPage() {
 
       return true;
     });
-  }, [providerQuotas, providerSearch, providerStatusFilter]);
+  }, [baseProviders, providerSearch, providerStatusFilter]);
 
   const totalProviderPages = Math.max(1, Math.ceil(filteredProviders.length / providerPageSize));
   const safeProviderPage = Math.min(providerPage, totalProviderPages);
@@ -373,7 +458,10 @@ export function QuotaPage() {
       {/* KPI Summary — exactly 4 cards per tab view */}
       {activeTab === 'providers' ? (
         <KpiGrid>
-          <KpiCard label="Provider accounts" value={String(providerQuotas.length)} />
+          <KpiCard
+            label={providerScopeFilter === 'upstream' ? 'Accounts in upstream' : 'Provider accounts'}
+            value={String(baseProviders.length)}
+          />
           <KpiCard
             label="Models out of quota"
             value={String(exhaustedModels)}
@@ -387,7 +475,7 @@ export function QuotaPage() {
           <KpiCard
             label="Live accounts"
             value={String(liveCount)}
-            unit={`/ ${providerQuotas.length} total`}
+            unit={`/ ${baseProviders.length} total`}
             tone="plain"
           />
         </KpiGrid>
@@ -419,7 +507,14 @@ export function QuotaPage() {
       <div style={{ marginBottom: 16 }}>
         <Segmented
           items={[
-            { id: 'providers', label: `Provider Accounts (${providerQuotas.length})` },
+            {
+              id: 'providers',
+              label: `Provider Accounts (${upstreamProviders.length}${
+                unassignedProviders.length > 0 && providerScopeFilter !== 'upstream'
+                  ? ` / ${providerQuotas.length}`
+                  : ''
+              })`,
+            },
             { id: 'tenants', label: `Tenant Quotas (${tenants.length})` },
           ]}
           value={activeTab}
@@ -432,6 +527,22 @@ export function QuotaPage() {
       {activeTab === 'providers' ? (
         <>
           <div className="filter-bar">
+            {/* Scope Selector: Upstream Fleet vs All vs Unassigned */}
+            <select
+              aria-label="Filter by upstream association"
+              value={providerScopeFilter}
+              onChange={(e) => {
+                setProviderScopeFilter(e.target.value as 'upstream' | 'all' | 'unassigned');
+                setProviderPage(1);
+              }}
+            >
+              <option value="upstream">In Upstream Fleet ({upstreamProviders.length})</option>
+              <option value="all">All OAuth Accounts ({providerQuotas.length})</option>
+              {unassignedProviders.length > 0 ? (
+                <option value="unassigned">Unassigned ({unassignedProviders.length})</option>
+              ) : null}
+            </select>
+
             <input
               type="search"
               placeholder="Search email, ID, provider…"
@@ -442,6 +553,7 @@ export function QuotaPage() {
                 setProviderPage(1);
               }}
             />
+
             <select
               aria-label="Filter by provider status"
               value={providerStatusFilter}
@@ -488,28 +600,88 @@ export function QuotaPage() {
             </button>
           </div>
 
-          <QueryGate isLoading={quota.isLoading} error={quota.error}>
+          {/* Unassigned Accounts Notice */}
+          {providerScopeFilter === 'upstream' && unassignedProviders.length > 0 ? (
+            <div className="flex flex-wrap items-center justify-between gap-3 px-3.5 py-2.5 rounded-lg bg-[var(--surface-raised)] border border-[var(--line)] text-xs text-muted mb-4">
+              <div className="flex items-center gap-2">
+                <span className="text-warn">ℹ</span>
+                <span>
+                  Showing <strong>{upstreamProviders.length}</strong> account(s) active in Upstream fleet.{' '}
+                  <span className="text-faint">
+                    ({unassignedProviders.length} unassigned OAuth account(s) exist in vault)
+                  </span>
+                </span>
+              </div>
+              <button
+                type="button"
+                className="btn btn-ghost text-xs text-ink hover:text-biolum font-medium p-0"
+                onClick={() => {
+                  setProviderScopeFilter('unassigned');
+                  setProviderPage(1);
+                }}
+              >
+                Manage Unassigned ({unassignedProviders.length}) &rarr;
+              </button>
+            </div>
+          ) : null}
+
+          <QueryGate isLoading={quota.isLoading || settings.isLoading} error={quota.error || settings.error}>
             {filteredProviders.length === 0 ? (
               <div className="card">
                 <div className="card-body text-center" style={{ padding: '48px 24px' }}>
                   <p className="text-sm text-faint" style={{ margin: 0 }}>
                     {providerSearch || providerStatusFilter !== 'all'
                       ? 'No provider accounts match your search or filter.'
-                      : providerQuotas.length === 0
-                        ? `No connected account exposes a quota endpoint yet${
-                            quota.data?.supported?.length
-                              ? ` (supported: ${quota.data.supported.join(', ')})`
-                              : ''
-                          }. Connect one on the Providers page to see its allowance here.`
-                        : 'No provider accounts found.'}
+                      : providerScopeFilter === 'upstream' && upstreamProviders.length === 0
+                        ? 'No OAuth provider accounts are currently registered in your Upstreams fleet. Connect an account in Upstreams → Keys tab to view its quota here.'
+                        : providerScopeFilter === 'unassigned' && unassignedProviders.length === 0
+                          ? 'No unassigned OAuth accounts found in vault.'
+                          : providerQuotas.length === 0
+                            ? `No connected account exposes a quota endpoint yet${
+                                quota.data?.supported?.length
+                                  ? ` (supported: ${quota.data.supported.join(', ')})`
+                                  : ''
+                              }. Connect one on the Providers page to see its allowance here.`
+                            : 'No provider accounts found.'}
                   </p>
                 </div>
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                {pagedProviders.map((p) => (
-                  <ProviderQuotaCard key={p.connection_id} quota={p} />
-                ))}
+                {pagedProviders.map((p) => {
+                  const inUpstream = isConnectionInUpstreams(p, upstreamOAuthRefs);
+                  return (
+                    <ProviderQuotaCard
+                      key={p.connection_id}
+                      quota={p}
+                      inUpstream={inUpstream}
+                      isDeleting={deleteOAuth.isPending}
+                      onDelete={() => {
+                        const label = p.email || p.connection_id;
+                        if (
+                          window.confirm(
+                            `Disconnect and permanently delete OAuth account "${label}" from Firefly?\n\nThis will remove its stored token from the database vault.`
+                          )
+                        ) {
+                          deleteOAuth.mutate(p.connection_id, {
+                            onSuccess: () =>
+                              pushToast({
+                                type: 'success',
+                                title: 'Account removed',
+                                message: `${label} was removed from the OAuth vault.`,
+                              }),
+                            onError: (err) =>
+                              pushToast({
+                                type: 'error',
+                                title: 'Failed to delete',
+                                message: err instanceof Error ? err.message : 'Unknown error',
+                              }),
+                          });
+                        }
+                      }}
+                    />
+                  );
+                })}
               </div>
             )}
           </QueryGate>

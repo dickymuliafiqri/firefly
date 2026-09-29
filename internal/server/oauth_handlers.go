@@ -378,5 +378,9 @@ func (deps RouterDeps) handleDeleteOAuthConnection(w http.ResponseWriter, r *htt
 		return
 	}
 
+	quotaCache.mu.Lock()
+	delete(quotaCache.entries, id)
+	quotaCache.mu.Unlock()
+
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
