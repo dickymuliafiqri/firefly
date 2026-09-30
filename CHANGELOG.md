@@ -5,6 +5,18 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.42.7] - 2026-09-30
+
+### Fixed
+
+- **OpenCode Free Tier Coding Agent (Cline) Compatibility (`internal/adapter/opencode/free_template.go`)**:
+  - OpenCode Console strictly validates that `bash` and `read` tool functions exist in `tools` when authorizing requests on the keyless free tier. When coding agents like Cline or Roo Code send requests with custom tools (e.g. `execute_command`), Firefly now automatically appends minimal `bash` and `read` verification placeholders (`[SYSTEM VERIFICATION ONLY - DO NOT CALL. Prefer client tools]`), eliminating `403 FreeTierError` ("OpenCode's free tier can only be used from within OpenCode") on `mimo-v2.6-flash-free` during active coding agent workflows.
+  - Added unit and live integration tests verifying that requests with custom client tools succeed end-to-end against OpenCode edge with `200 OK` and complete streaming chunks.
+
+### Changed
+
+- **Version bump**: `frontend/package.json` and `AppShell.tsx` bumped to `v1.42.7`.
+
 ## [1.42.6] - 2026-09-30
 
 ### Fixed

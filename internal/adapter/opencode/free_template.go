@@ -97,6 +97,48 @@ func EnforceFreeSessionPayload(body []byte) []byte {
 			out, _ = sjson.SetBytes(out, "tools", parsedFreeTools)
 			out, _ = sjson.SetBytes(out, "tool_choice", "auto")
 		}
+	} else {
+		// Existing tools provided by client (e.g. Cline, Roo Code, etc.)
+		// OpenCode Console strictly validates that 'bash' and 'read' exist in tools on free tier.
+		// Append verification placeholders if they are not already in the client tools.
+		hasBash := false
+		hasRead := false
+		for _, t := range toolsRes.Array() {
+			name := t.Get("function.name").String()
+			if name == "" {
+				name = t.Get("name").String()
+			}
+			if name == "bash" {
+				hasBash = true
+			} else if name == "read" {
+				hasRead = true
+			}
+		}
+		if !hasBash || !hasRead {
+			var existingTools []any
+			_ = json.Unmarshal([]byte(toolsRes.Raw), &existingTools)
+			if !hasBash {
+				existingTools = append(existingTools, map[string]any{
+					"type": "function",
+					"function": map[string]any{
+						"name":        "bash",
+						"description": "[SYSTEM VERIFICATION ONLY - DO NOT CALL. Prefer client tools]",
+						"parameters":  map[string]any{"type": "object", "properties": map[string]any{}},
+					},
+				})
+			}
+			if !hasRead {
+				existingTools = append(existingTools, map[string]any{
+					"type": "function",
+					"function": map[string]any{
+						"name":        "read",
+						"description": "[SYSTEM VERIFICATION ONLY - DO NOT CALL. Prefer client tools]",
+						"parameters":  map[string]any{"type": "object", "properties": map[string]any{}},
+					},
+				})
+			}
+			out, _ = sjson.SetBytes(out, "tools", existingTools)
+		}
 	}
 
 	return out

@@ -573,6 +573,30 @@ func TestEnforceFreeSessionPayload(t *testing.T) {
 		assert.Contains(t, content, "You are opencode")
 		assert.Contains(t, content, "Be very brief.")
 	})
+
+	t.Run("appends bash and read verification tools when client provides custom tools", func(t *testing.T) {
+		input := []byte(`{
+			"model": "mimo-v2.6-flash-free",
+			"messages": [{"role": "user", "content": "hi"}],
+			"tools": [
+				{
+					"type": "function",
+					"function": {
+						"name": "execute_command",
+						"description": "Run bash command",
+						"parameters": {"type": "object", "properties": {"command": {"type": "string"}}}
+					}
+				}
+			]
+		}`)
+		out := EnforceFreeSessionPayload(input)
+
+		tools := gjson.GetBytes(out, "tools").Array()
+		require.Len(t, tools, 3)
+		assert.Equal(t, "execute_command", tools[0].Get("function.name").String())
+		assert.Equal(t, "bash", tools[1].Get("function.name").String())
+		assert.Equal(t, "read", tools[2].Get("function.name").String())
+	})
 }
 
 func TestAdapter_LiveMuseSparkForward(t *testing.T) {
@@ -645,6 +669,50 @@ func TestAdapter_LiveMuseSparkForward(t *testing.T) {
 		body := rec.Body.String()
 		assert.Contains(t, body, "chat.completion.chunk")
 		assert.Contains(t, body, "data: [DONE]")
+	})
+
+	t.Run("mimo with real Cline request (headers + system prompt + custom tools)", func(t *testing.T) {
+		mimoTarget := &domain.Target{
+			Upstream:      u,
+			UpstreamModel: "mimo-v2.6-flash-free",
+		}
+		clineHeaders := make(http.Header)
+		clineHeaders.Set("User-Agent", "Cline/3.5.0")
+		clineHeaders.Set("HTTP-Referer", "https://github.com/cline/cline")
+		clineHeaders.Set("X-Title", "Cline")
+
+		req := ports.ForwardRequest{
+			Method:  http.MethodPost,
+			Path:    "/chat/completions",
+			Stream:  true,
+			Headers: clineHeaders,
+			BodyBytes: []byte(`{
+				"model": "mimo-v2.6-flash-free",
+				"messages": [
+					{"role": "system", "content": "You are Cline, a highly skilled software engineer."},
+					{"role": "user", "content": "Hello, write a simple python print statement."}
+				],
+				"tools": [
+					{
+						"type": "function",
+						"function": {
+							"name": "execute_command",
+							"description": "Run bash command",
+							"parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}
+						}
+					}
+				],
+				"stream": true
+			}`),
+		}
+
+		rec := httptest.NewRecorder()
+		err := adapter.Forward(context.Background(), mimoTarget, req, rec)
+		t.Logf("3. Real Cline request -> Code: %d, Err: %v", rec.Code, err)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, rec.Code)
+		assert.Contains(t, rec.Body.String(), "chat.completion.chunk")
+		assert.Contains(t, rec.Body.String(), "data: [DONE]")
 	})
 
 	t.Run("cline simulation", func(t *testing.T) {
