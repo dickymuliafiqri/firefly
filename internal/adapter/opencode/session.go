@@ -46,6 +46,40 @@ func GenerateRequestID() string {
 	return upstream.GenerateOpenCodeRequestID()
 }
 
+// IsValidRequestID reports whether s matches the OpenCode canonical request format:
+// ^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$ (30 characters total).
+func IsValidRequestID(s string) bool {
+	if len(s) != 30 || !strings.HasPrefix(s, "msg_") {
+		return false
+	}
+	for i := 4; i < 16; i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	for i := 16; i < 30; i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+			return false
+		}
+	}
+	return true
+}
+
+// ResolveRequestID extracts the incoming x-opencode-request if canonical, or generates a new one.
+func ResolveRequestID(h http.Header) string {
+	if h != nil {
+		if raw := h.Get(HeaderRequest); raw != "" {
+			trimmed := strings.TrimSpace(raw)
+			if IsValidRequestID(trimmed) {
+				return trimmed
+			}
+		}
+	}
+	return GenerateRequestID()
+}
+
 var (
 	sessionMu    sync.RWMutex
 	sessionCache = make(map[string]string)

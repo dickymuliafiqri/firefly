@@ -1379,8 +1379,8 @@ func TestUpstreamCheck_OpenCode(t *testing.T) {
 		if receivedUAHeader != opencode.OpenCodeUserAgent {
 			t.Errorf("expected %s, got %s", opencode.OpenCodeUserAgent, receivedUAHeader)
 		}
-		if receivedClientHeader != "cli" {
-			t.Errorf("expected x-opencode-client: cli, got %s", receivedClientHeader)
+		if receivedClientHeader != "desktop" {
+			t.Errorf("expected x-opencode-client: desktop, got %s", receivedClientHeader)
 		}
 		if !opencode.IsValidSessionID(receivedSessionHeader) {
 			t.Errorf("expected valid canonical session header, got %s", receivedSessionHeader)
@@ -1456,7 +1456,7 @@ func TestUpstreamCheck_OpenCodeLive(t *testing.T) {
 	deps := RouterDeps{}
 	s := New(Config{Addr: "0.0.0.0:8080"}, deps, context.Background(), nil)
 
-	testModels := []string{"big-pickle", "mimo-v2.5-free", "muse-spark-1.3-contributor-free"}
+	testModels := []string{"mimo-v2.6-flash-free", "muse-spark-1.3-contributor-free"}
 	for _, model := range testModels {
 		t.Run(model, func(t *testing.T) {
 			payload := UpstreamCheckRequest{

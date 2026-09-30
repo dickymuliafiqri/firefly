@@ -5,6 +5,21 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.42.6] - 2026-09-30
+
+### Fixed
+
+- **OpenCode Free Tier Client Fingerprint & Request Isolation (`internal/adapter/opencode`, `internal/transport/upstream`, `internal/server`)**:
+  - Enforced official OpenCode desktop client fingerprint headers (`x-opencode-client: desktop`, `anthropic-version: 2023-06-01`, and `User-Agent: opencode/1.18.30`), eliminating `403 FreeTierError` ("OpenCode's free tier can only be used from within OpenCode") on `mimo-v2.6-flash-free` and OpenCode Zen free-tier models.
+  - Implemented canonical 30-character Base62 request ID generation (`x-opencode-request: msg_<id>`) and validation (`IsValidRequestID`, `ResolveRequestID`) in `internal/adapter/opencode/session.go`, complementing existing session ID descending formats.
+  - Added Anthropic Messages route support (`/zen/v1/messages`) with bidirectional schema translation (`anthropic.TranslateOpenAIToAnthropic`, `relayAnthropicSSE`, and `anthropic.TranslateAnthropicToOpenAI`) for `union-alpha` and Claude Messages family models.
+  - Added reasoning effort normalization in `NormalizeReasoning` (`internal/adapter/opencode/transform.go`), mapping `"ultra"` to `"max"` and ensuring `reasoning.summary: "auto"`.
+  - Updated upstream health checker (`probeOpenCode`) and test suite to support `/messages` endpoints, authentic desktop headers, and live probe verification for `mimo-v2.6-flash-free`.
+
+### Changed
+
+- **Version bump**: `frontend/package.json` and `AppShell.tsx` bumped to `v1.42.6`.
+
 ## [1.42.5] - 2026-09-29
 
 ### Added

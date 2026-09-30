@@ -319,6 +319,23 @@ func (h *HealthChecker) probeOne(ctx context.Context, u *domain.Upstream) {
 						"store":             false,
 					})
 				}
+			} else if IsOpenCodeMessagesModel(u.ProbeModel) {
+				probePath := "/messages"
+				if !strings.HasSuffix(trimmedBase, "/v1") {
+					probePath = "/v1/messages"
+				}
+				probeURL = trimmedBase + probePath
+				modelID := u.ProbeModel
+				if isFreeOpenCode {
+					modelID = MapOpenCodeFreeModel(modelID)
+				}
+				probeBody, _ = json.Marshal(map[string]any{
+					"model": modelID,
+					"messages": []map[string]string{
+						{"role": "user", "content": "ping"},
+					},
+					"max_tokens": 16,
+				})
 			} else {
 				probePath := "/chat/completions"
 				if !strings.HasSuffix(trimmedBase, "/v1") {

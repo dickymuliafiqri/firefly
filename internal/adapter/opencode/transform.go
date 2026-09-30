@@ -33,6 +33,12 @@ func IsResponsesModel(model string) bool {
 	return upstream.IsOpenCodeResponsesModel(model)
 }
 
+// IsMessagesModel returns true if the model is served exclusively by the Anthropic Messages API
+// (/v1/messages) on OpenCode backends.
+func IsMessagesModel(model string) bool {
+	return upstream.IsOpenCodeMessagesModel(model)
+}
+
 // SanitizeTools ensures tool parameters and function names adhere to OpenCode's strict schemas.
 // Specifically:
 // 1. Clamps tool function names to 128 characters.
@@ -73,19 +79,43 @@ func SanitizeTools(body []byte) ([]byte, bool) {
 }
 
 // NormalizeReasoning ensures reasoning/thinking parameters match OpenCode expectations.
-// If reasoning_effort is a string and reasoning is absent, wraps it into reasoning: { effort, summary: "auto" }.
+// If reasoning_effort is provided or reasoning.effort exists:
+// 1. Normalizes "ultra" effort to "max".
+// 2. Wraps into reasoning: { effort, summary: "auto" }.
+// 3. Deletes top-level reasoning_effort.
 func NormalizeReasoning(body []byte) ([]byte, bool) {
 	effort := gjson.GetBytes(body, "reasoning_effort")
 	reasoning := gjson.GetBytes(body, "reasoning")
 
-	if effort.Exists() && !reasoning.Exists() {
-		rObj := map[string]string{
-			"effort":  effort.String(),
-			"summary": "auto",
+	var effortStr string
+	if effort.Exists() {
+		effortStr = strings.ToLower(strings.TrimSpace(effort.String()))
+	} else if reasoning.Exists() && reasoning.IsObject() && reasoning.Get("effort").Exists() {
+		effortStr = strings.ToLower(strings.TrimSpace(reasoning.Get("effort").String()))
+	}
+
+	if effortStr == "ultra" {
+		effortStr = "max"
+	}
+
+	if effortStr != "" {
+		out := body
+		if effort.Exists() {
+			out, _ = sjson.DeleteBytes(out, "reasoning_effort")
 		}
-		raw, _ := json.Marshal(rObj)
-		out, _ := sjson.SetRawBytes(body, "reasoning", raw)
-		out, _ = sjson.DeleteBytes(out, "reasoning_effort")
+		if reasoning.Exists() && reasoning.IsObject() {
+			out, _ = sjson.SetBytes(out, "reasoning.effort", effortStr)
+			if !reasoning.Get("summary").Exists() {
+				out, _ = sjson.SetBytes(out, "reasoning.summary", "auto")
+			}
+		} else {
+			rObj := map[string]string{
+				"effort":  effortStr,
+				"summary": "auto",
+			}
+			raw, _ := json.Marshal(rObj)
+			out, _ = sjson.SetRawBytes(out, "reasoning", raw)
+		}
 		return out, true
 	}
 

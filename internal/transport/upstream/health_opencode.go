@@ -45,6 +45,16 @@ func IsOpenCodeResponsesModel(model string) bool {
 	return false
 }
 
+// IsOpenCodeMessagesModel checks if model is served exclusively via Anthropic Messages API (/messages).
+func IsOpenCodeMessagesModel(model string) bool {
+	base := stripModelBase(model)
+	switch base {
+	case "union-alpha", "union-alpha-free":
+		return true
+	}
+	return false
+}
+
 // MapOpenCodeFreeModel maps public/standard model identifiers to their official
 // OpenCode contributor free tier aliases when authenticating keylessly (Bearer public).
 func MapOpenCodeFreeModel(model string) string {
@@ -54,6 +64,8 @@ func MapOpenCodeFreeModel(model string) string {
 		return "muse-spark-1.3-contributor-free"
 	case "muse-spark-1.2":
 		return "muse-spark-1.2-contributor-free"
+	case "union-alpha-free":
+		return "union-alpha"
 	default:
 		return model
 	}

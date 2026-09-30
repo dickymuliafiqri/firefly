@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dickymuliafiqri/firefly/internal/adapter/anthropic"
 	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
@@ -230,8 +231,8 @@ func (a *Adapter) resolveSecret(u *domain.Upstream, t *domain.Target) string {
 }
 
 // buildEndpointURL calculates the full target URL based on whether it's free vs go,
-// and whether the target model requires the Responses API.
-func buildEndpointURL(u *domain.Upstream, isResponses, isFree bool) string {
+// and whether the target model requires the Responses API or Anthropic Messages API.
+func buildEndpointURL(u *domain.Upstream, isResponses, isMessages, isFree bool) string {
 	base := u.BaseURL
 	if base == "" && len(u.BaseURLs) > 0 {
 		base = u.BaseURLs[0]
@@ -260,7 +261,23 @@ func buildEndpointURL(u *domain.Upstream, isResponses, isFree bool) string {
 		if strings.HasSuffix(base, "/chat/completions") {
 			return strings.TrimSuffix(base, "/chat/completions") + "/responses"
 		}
+		if strings.HasSuffix(base, "/messages") {
+			return strings.TrimSuffix(base, "/messages") + "/responses"
+		}
 		return base + "/responses"
+	}
+
+	if isMessages {
+		if strings.HasSuffix(base, "/messages") {
+			return base
+		}
+		if strings.HasSuffix(base, "/chat/completions") {
+			return strings.TrimSuffix(base, "/chat/completions") + "/messages"
+		}
+		if strings.HasSuffix(base, "/responses") {
+			return strings.TrimSuffix(base, "/responses") + "/messages"
+		}
+		return base + "/messages"
 	}
 
 	// Standard chat completions
@@ -269,6 +286,9 @@ func buildEndpointURL(u *domain.Upstream, isResponses, isFree bool) string {
 	}
 	if strings.HasSuffix(base, "/responses") {
 		return strings.TrimSuffix(base, "/responses") + "/chat/completions"
+	}
+	if strings.HasSuffix(base, "/messages") {
+		return strings.TrimSuffix(base, "/messages") + "/chat/completions"
 	}
 	return base + "/chat/completions"
 }
@@ -290,13 +310,20 @@ func (a *Adapter) attempt(ctx context.Context, u *domain.Upstream, req ports.For
 	}
 
 	isResponses := IsResponsesModel(targetModel)
-	endpoint := buildEndpointURL(u, isResponses, isFree)
+	isMessages := IsMessagesModel(targetModel)
+	endpoint := buildEndpointURL(u, isResponses, isMessages, isFree)
 
 	var outboundBody []byte
 	if isResponses {
 		transformed, err := TransformChatToResponses(body, targetModel, isFree)
 		if err != nil {
 			return attemptResult{err: fmt.Errorf("opencode: transform to responses: %w", err)}
+		}
+		outboundBody = transformed
+	} else if isMessages {
+		transformed, err := anthropic.TranslateOpenAIToAnthropic(body, targetModel)
+		if err != nil {
+			return attemptResult{err: fmt.Errorf("opencode: transform to messages: %w", err)}
 		}
 		outboundBody = transformed
 	} else {
@@ -334,13 +361,16 @@ func (a *Adapter) attempt(ctx context.Context, u *domain.Upstream, req ports.For
 	sessionID := ResolveSessionID(clientHeaders, tenant, reqID)
 
 	httpReq.Header.Set("Content-Type", "application/json")
-	if req.Stream || isFree {
+	if req.Stream || (isFree && !isMessages) {
 		httpReq.Header.Set("Accept", "text/event-stream")
 	} else {
-		httpReq.Header.Set("Accept", "application/json")
+		httpReq.Header.Set("Accept", "*/*")
 	}
 
+	httpReq.Header.Set("anthropic-version", "2023-06-01")
 	httpReq.Header.Set(HeaderSession, sessionID)
+	httpReq.Header.Set(HeaderRequest, ResolveRequestID(clientHeaders))
+
 	projVal := clientHeaders.Get(HeaderProject)
 	if projVal == "" {
 		projVal = "global"
@@ -355,8 +385,6 @@ func (a *Adapter) attempt(ctx context.Context, u *domain.Upstream, req ports.For
 
 	if isFree {
 		httpReq.Header.Set("Authorization", "Bearer public")
-		httpReq.Header.Set(HeaderRequest, GenerateRequestID())
-		httpReq.Header.Set("anthropic-version", "2023-06-01")
 	} else {
 		httpReq.Header.Set("Authorization", "Bearer "+secret)
 	}
@@ -384,6 +412,15 @@ func (a *Adapter) attempt(ctx context.Context, u *domain.Upstream, req ports.For
 
 	if resp.StatusCode >= 400 {
 		buf, _ := openai.RelayBuffered(resp.Body, a.maxBytes())
+		if isMessages {
+			outStatus, outBody := anthropic.TranslateAnthropicError(resp.StatusCode, buf)
+			return attemptResult{
+				status:  outStatus,
+				headers: resp.Header.Clone(),
+				body:    outBody,
+				err:     &openai.ErrUpstream{Status: outStatus, Body: outBody, Header: resp.Header.Clone()},
+			}
+		}
 		return attemptResult{
 			status:  resp.StatusCode,
 			headers: resp.Header.Clone(),
@@ -418,6 +455,35 @@ func (a *Adapter) attempt(ctx context.Context, u *domain.Upstream, req ports.For
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(aggregated)
+		return attemptResult{
+			status:   http.StatusOK,
+			headers:  resp.Header.Clone(),
+			streamed: true,
+		}
+	}
+
+	if isMessages {
+		if req.Stream {
+			written, rErr := a.relayAnthropicSSE(ctx, w, reader, publicModel)
+			return attemptResult{
+				status:   resp.StatusCode,
+				headers:  resp.Header.Clone(),
+				streamed: written > 0,
+				err:      rErr,
+			}
+		}
+
+		buf, rErr := io.ReadAll(reader)
+		if rErr != nil {
+			return attemptResult{status: http.StatusInternalServerError, err: rErr}
+		}
+		openAIResp, tErr := anthropic.TranslateAnthropicToOpenAI(buf, publicModel)
+		if tErr != nil {
+			return attemptResult{status: http.StatusInternalServerError, err: tErr}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(openAIResp)
 		return attemptResult{
 			status:   http.StatusOK,
 			headers:  resp.Header.Clone(),
@@ -1059,3 +1125,68 @@ func (a *Adapter) aggregateChatSSE(ctx context.Context, body io.Reader, publicMo
 
 	return json.Marshal(respObj)
 }
+
+func (a *Adapter) relayAnthropicSSE(ctx context.Context, w http.ResponseWriter, body io.Reader, publicModel string) (int64, error) {
+	f, _ := w.(flusher)
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream")
+	h.Set("Cache-Control", "no-cache")
+	h.Set("Connection", "keep-alive")
+	h.Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	if f != nil {
+		f.Flush()
+	}
+
+	scanner := bufio.NewScanner(body)
+	var written int64
+	var currentEvent string
+	var msgID string
+
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			return written, ctx.Err()
+		default:
+		}
+
+		line := scanner.Text()
+		if strings.HasPrefix(line, "event:") {
+			currentEvent = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			continue
+		}
+		if strings.HasPrefix(line, "data:") {
+			dataStr := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			chunk, isDone, err := anthropic.TranslateAnthropicChunkToOpenAI(currentEvent, []byte(dataStr), publicModel, &msgID)
+			if err != nil {
+				if a.logger != nil {
+					a.logger.Warn("opencode anthropic chunk translation error", "event", currentEvent, "err", err)
+				}
+				continue
+			}
+			if isDone {
+				n, werr := io.WriteString(w, "data: [DONE]\n\n")
+				written += int64(n)
+				if werr != nil {
+					return written, werr
+				}
+				if f != nil {
+					f.Flush()
+				}
+				continue
+			}
+			if len(chunk) > 0 {
+				n, werr := io.WriteString(w, "data: "+string(chunk)+"\n\n")
+				written += int64(n)
+				if werr != nil {
+					return written, werr
+				}
+				if f != nil {
+					f.Flush()
+				}
+			}
+		}
+	}
+	return written, scanner.Err()
+}
+

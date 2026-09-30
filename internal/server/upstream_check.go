@@ -572,7 +572,24 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 			})
 		} else if protocol == "opencode" || protocol == "opencode-go" {
 			isFree := apiKey == "" || strings.EqualFold(apiKey, "public")
-			if isFree && !opencode.IsResponsesModel(reqModel) {
+			if opencode.IsMessagesModel(reqModel) {
+				probePath := "/messages"
+				if !strings.HasSuffix(trimmedBase, "/v1") {
+					probePath = "/v1/messages"
+				}
+				probeURL = trimmedBase + probePath
+				modelID := reqModel
+				if isFree {
+					modelID = opencode.MapFreeModel(modelID)
+				}
+				probeBody, _ = json.Marshal(map[string]any{
+					"model": modelID,
+					"messages": []map[string]string{
+						{"role": "user", "content": "ping"},
+					},
+					"max_tokens": 10,
+				})
+			} else if isFree && !opencode.IsResponsesModel(reqModel) {
 				probePath := "/chat/completions"
 				if !strings.HasSuffix(trimmedBase, "/v1") {
 					probePath = "/v1/chat/completions"
@@ -710,10 +727,11 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 		}
 		httpReq.Header.Set("Authorization", "Bearer "+effectiveKey)
 		httpReq.Header.Set("User-Agent", opencode.OpenCodeUserAgent)
-		httpReq.Header.Set("x-opencode-client", "cli")
+		httpReq.Header.Set("x-opencode-client", "desktop")
 		httpReq.Header.Set("x-opencode-project", "global")
 		httpReq.Header.Set("x-opencode-request", opencode.GenerateRequestID())
 		httpReq.Header.Set("x-opencode-session", opencode.GenerateSessionID())
+		httpReq.Header.Set("anthropic-version", "2023-06-01")
 		if effectiveKey == "public" {
 			httpReq.Header.Set("Accept", "text/event-stream")
 		}

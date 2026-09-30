@@ -626,6 +626,27 @@ func TestAdapter_LiveMuseSparkForward(t *testing.T) {
 		assert.Contains(t, body, `"content":`)
 	})
 
+	t.Run("mimo forward", func(t *testing.T) {
+		mimoTarget := &domain.Target{
+			Upstream:      u,
+			UpstreamModel: "mimo-v2.6-flash-free",
+		}
+		req := ports.ForwardRequest{
+			Method:    http.MethodPost,
+			Path:      "/chat/completions",
+			Stream:    true,
+			BodyBytes: []byte(`{"model": "mimo-v2.6-flash-free", "messages": [{"role": "user", "content": "Say hello in one word."}], "stream": true}`),
+		}
+
+		rec := httptest.NewRecorder()
+		err := adapter.Forward(context.Background(), mimoTarget, req, rec)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, rec.Code)
+		body := rec.Body.String()
+		assert.Contains(t, body, "chat.completion.chunk")
+		assert.Contains(t, body, "data: [DONE]")
+	})
+
 	t.Run("cline simulation", func(t *testing.T) {
 		clineHeaders := make(http.Header)
 		clineHeaders.Set("User-Agent", "Cline/3.5.0")
@@ -748,5 +769,106 @@ func TestAdapter_LiveMuseSparkForward(t *testing.T) {
 		assert.Contains(t, body3, "data: [DONE]")
 		// Ensure it never leaks /private/tmp/opencode-x64 into the response
 		assert.NotContains(t, body3, "/private/tmp/opencode-x64")
+	})
+
+	t.Run("Union Alpha routes to /messages and translates to/from Anthropic", func(t *testing.T) {
+		var receivedPath string
+		var receivedAnthropicVersion string
+		var receivedAccept string
+		var receivedReqID string
+		var receivedBody []byte
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			receivedPath = r.URL.Path
+			receivedAnthropicVersion = r.Header.Get("anthropic-version")
+			receivedAccept = r.Header.Get("Accept")
+			receivedReqID = r.Header.Get("x-opencode-request")
+			receivedBody, _ = io.ReadAll(r.Body)
+
+			if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"role\":\"assistant\",\"model\":\"union-alpha\"}}\n\n"))
+				_, _ = w.Write([]byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello from Union Alpha!\"}}\n\n"))
+				_, _ = w.Write([]byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
+			} else {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{
+					"id": "msg_123",
+					"type": "message",
+					"role": "assistant",
+					"model": "union-alpha",
+					"content": [{"type": "text", "text": "Hello non-streaming!"}],
+					"stop_reason": "end_turn",
+					"usage": {"input_tokens": 10, "output_tokens": 5}
+				}`))
+			}
+		}))
+		defer server.Close()
+
+		pool := &mockClientPool{client: server.Client()}
+		breaker := &mockBreaker{allowed: true}
+		adapter := NewAdapter(pool, breaker, Config{})
+
+		target := &domain.Target{
+			Upstream: &domain.Upstream{
+				Name:    "test-oc",
+				BaseURL: server.URL + "/zen/v1",
+			},
+			UpstreamModel: "union-alpha",
+		}
+
+		// 1. Streaming test
+		streamReq := ports.ForwardRequest{
+			Method: http.MethodPost,
+			Path:   "/chat/completions",
+			Stream: true,
+			BodyBytes: []byte(`{
+				"model": "union-alpha",
+				"messages": [{"role": "user", "content": "hello"}],
+				"stream": true
+			}`),
+		}
+
+		rec := httptest.NewRecorder()
+		err := adapter.Forward(context.Background(), target, streamReq, rec)
+		require.NoError(t, err)
+		assert.Equal(t, "/zen/v1/messages", receivedPath)
+		assert.Equal(t, "2023-06-01", receivedAnthropicVersion)
+		assert.Equal(t, "text/event-stream", receivedAccept)
+		assert.True(t, IsValidRequestID(receivedReqID))
+		assert.Contains(t, string(receivedBody), `"messages"`)
+		assert.Contains(t, rec.Body.String(), "Hello from Union Alpha!")
+		assert.Contains(t, rec.Body.String(), "data: [DONE]")
+
+		// 2. Non-streaming test
+		nonStreamReq := ports.ForwardRequest{
+			Method: http.MethodPost,
+			Path:   "/chat/completions",
+			Stream: false,
+			BodyBytes: []byte(`{
+				"model": "union-alpha",
+				"messages": [{"role": "user", "content": "hello"}],
+				"stream": false
+			}`),
+		}
+
+		recNonStream := httptest.NewRecorder()
+		errNonStream := adapter.Forward(context.Background(), target, nonStreamReq, recNonStream)
+		require.NoError(t, errNonStream)
+		assert.Equal(t, "*/*", receivedAccept)
+		assert.Equal(t, http.StatusOK, recNonStream.Code)
+		assert.Contains(t, recNonStream.Body.String(), "Hello non-streaming!")
+		assert.Contains(t, recNonStream.Body.String(), "chat.completion")
+	})
+
+	t.Run("NormalizeReasoning handles ultra effort", func(t *testing.T) {
+		body := []byte(`{"model": "test", "reasoning_effort": "ultra"}`)
+		out, modified := NormalizeReasoning(body)
+		assert.True(t, modified)
+		assert.Equal(t, "max", gjson.GetBytes(out, "reasoning.effort").String())
+		assert.Equal(t, "auto", gjson.GetBytes(out, "reasoning.summary").String())
+		assert.False(t, gjson.GetBytes(out, "reasoning_effort").Exists())
 	})
 }
