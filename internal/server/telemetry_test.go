@@ -143,6 +143,56 @@ func TestTelemetry_GlobalAdmissionFallbackUsesAdmissionGauge(t *testing.T) {
 	}
 }
 
+// TestTelemetry_ResourceMonitorAdminOnly verifies the htop-style resource
+// monitor is part of the telemetry payload only for authorized callers: host
+// CPU/memory/network signals must not leak to anonymous public consumers.
+func TestTelemetry_ResourceMonitorAdminOnly(t *testing.T) {
+	deps := RouterDeps{
+		AdminToken: "secret-token",
+	}
+	s := New(Config{Addr: "0.0.0.0:8080"}, deps, context.Background(), nil)
+
+	// Unauthenticated: resource_monitor must be absent entirely.
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/telemetry", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("unauthenticated status = %d, want 200", w.Code)
+	}
+	if strings.Contains(w.Body.String(), "resource_monitor") {
+		t.Fatalf("public telemetry leaked resource_monitor:\n%s", w.Body.String())
+	}
+
+	// Authorized: resource monitor present with live host values.
+	req := httptest.NewRequest(http.MethodGet, "/api/telemetry", nil)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	w = httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("authorized status = %d, want 200", w.Code)
+	}
+
+	var res TelemetryDTO
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if res.ResourceMonitor == nil {
+		t.Fatalf("authorized telemetry missing resource_monitor")
+	}
+	rm := res.ResourceMonitor
+	if rm.Goroutines <= 0 {
+		t.Errorf("resource_monitor.goroutines = %d, want > 0", rm.Goroutines)
+	}
+	if rm.MemTotal <= 0 {
+		t.Errorf("resource_monitor.mem_total_bytes = %d, want > 0", rm.MemTotal)
+	}
+	if rm.CPUCores <= 0 {
+		t.Errorf("resource_monitor.cpu_cores = %d, want > 0", rm.CPUCores)
+	}
+	if rm.CPUPerCore == nil {
+		t.Errorf("resource_monitor.cpu_per_core is null, want []")
+	}
+}
+
 func TestTelemetry_AuthGuarded(t *testing.T) {
 	deps := RouterDeps{
 		AdminToken: "secret-token",

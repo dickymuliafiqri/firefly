@@ -1,7 +1,7 @@
 {
   "name": "firefly-frontend",
   "private": true,
-  "version": "1.42.7",
+  "version": "1.42.8",
   "type": "module",
   "scripts": {
     "dev": "vite",

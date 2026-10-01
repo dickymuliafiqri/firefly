@@ -1,6 +1,7 @@
 import { Badge } from '@/components/ui/Badge';
 import { KpiCard, KpiGrid } from '@/components/ui/PageHeader';
 import { QueryGate } from '@/components/ui/QueryGate';
+import { ResourceMonitor } from '@/components/ui/ResourceMonitor';
 import { SceneryStrip } from '@/components/shell/SceneryStrip';
 import { useTelemetryQuery } from '@/services/api';
 
@@ -30,6 +31,8 @@ export function OverviewPage() {
         </KpiGrid>
 
         <QueryGate isLoading={telemetry.isLoading} error={telemetry.error}>
+          <ResourceMonitor stats={telemetry.data?.resource_monitor} />
+
           <div className="card">
             <div className="card-header">
               <h2>Live request history</h2>

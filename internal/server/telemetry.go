@@ -21,6 +21,37 @@ type TelemetryDTO struct {
 	TenantsUsage    []TenantUsageDTO       `json:"tenants_usage"`
 	Generation      uint64                 `json:"generation"`
 	RecentLogs      []LiveLog              `json:"recent_logs"`
+	// ResourceMonitor carries host/process resource stats for the dashboard
+	// htop-style monitor. Nil for unauthenticated callers: host CPU/memory and
+	// network volumes are infrastructure signals that must not leak publicly.
+	ResourceMonitor *ResourceMonitorDTO `json:"resource_monitor,omitempty"`
+}
+
+// ResourceMonitorDTO mirrors resmon.Stats for the wire. See that package for
+// sampling semantics (lazy deltas, zero rates on the first/stale sample).
+type ResourceMonitorDTO struct {
+	Timestamp int64 `json:"timestamp"`
+
+	CPUPercent float64   `json:"cpu_percent"`
+	CPUPerCore []float64 `json:"cpu_per_core"`
+	CPUCores   int       `json:"cpu_cores"`
+
+	MemTotal   uint64  `json:"mem_total_bytes"`
+	MemUsed    uint64  `json:"mem_used_bytes"`
+	MemPercent float64 `json:"mem_percent"`
+	SwapTotal  uint64  `json:"swap_total_bytes"`
+	SwapUsed   uint64  `json:"swap_used_bytes"`
+
+	NetRxRate  float64 `json:"net_rx_bps"`
+	NetTxRate  float64 `json:"net_tx_bps"`
+	NetRxTotal uint64  `json:"net_rx_total_bytes"`
+	NetTxTotal uint64  `json:"net_tx_total_bytes"`
+
+	Goroutines     int     `json:"goroutines"`
+	GoHeapBytes    uint64  `json:"go_heap_bytes"`
+	GoSysBytes     uint64  `json:"go_sys_bytes"`
+	ProcRSSBytes   uint64  `json:"proc_rss_bytes"`
+	ProcCPUPercent float64 `json:"proc_cpu_percent"`
 }
 
 // wire arrays, never null. A Go nil slice marshals to JSON null, and every
@@ -337,6 +368,33 @@ func (deps RouterDeps) handleGetTelemetry(w http.ResponseWriter, r *http.Request
 		recentLogs = []LiveLog{}
 	}
 
+	// Resource monitor: sampled lazily here so the delta window equals the
+	// dashboard polling interval (~2s). Admin only — see TelemetryDTO comment.
+	var resmonDTO *ResourceMonitorDTO
+	if isAdmin && deps.ResMon != nil {
+		st := deps.ResMon.Sample()
+		resmonDTO = &ResourceMonitorDTO{
+			Timestamp:      st.Timestamp,
+			CPUPercent:     st.CPUPercent,
+			CPUPerCore:     st.CPUPerCore,
+			CPUCores:       st.CPUCores,
+			MemTotal:       st.MemTotal,
+			MemUsed:        st.MemUsed,
+			MemPercent:     st.MemPercent,
+			SwapTotal:      st.SwapTotal,
+			SwapUsed:       st.SwapUsed,
+			NetRxRate:      st.NetRxRate,
+			NetTxRate:      st.NetTxRate,
+			NetRxTotal:     st.NetRxTotal,
+			NetTxTotal:     st.NetTxTotal,
+			Goroutines:     st.Goroutines,
+			GoHeapBytes:    st.GoHeapBytes,
+			GoSysBytes:     st.GoSysBytes,
+			ProcRSSBytes:   st.ProcRSSBytes,
+			ProcCPUPercent: st.ProcCPUPercent,
+		}
+	}
+
 	if !isAdmin {
 		usageDTO = []TenantUsageDTO{}
 		sanitizedLogs := make([]LiveLog, len(recentLogs))
@@ -362,6 +420,7 @@ func (deps RouterDeps) handleGetTelemetry(w http.ResponseWriter, r *http.Request
 		TenantsUsage:    nonNilTenantUsage(usageDTO),
 		Generation:      gen,
 		RecentLogs:      recentLogs,
+		ResourceMonitor: resmonDTO,
 	}
 
 	_ = json.NewEncoder(w).Encode(out)

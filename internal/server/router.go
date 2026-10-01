@@ -13,6 +13,7 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/limits"
 	"github.com/dickymuliafiqri/firefly/internal/observability/metrics"
+	"github.com/dickymuliafiqri/firefly/internal/observability/resmon"
 	"github.com/dickymuliafiqri/firefly/internal/observability/trace"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
 
@@ -51,6 +52,11 @@ type RouterDeps struct {
 	TursoManager  *TursoManager
 	WarpManager   *warp.Manager
 	TunnelManager *tunnel.Manager
+
+	// ResMon samples host/process resources (CPU, memory, network, goroutines)
+	// for the dashboard resource monitor. If nil, a default sampler is created
+	// in New(); sampling happens lazily inside GET /api/telemetry (admin only).
+	ResMon *resmon.Sampler
 
 	// GlobalLimiter manages server-wide in-flight concurrency with a bounded wait queue.
 	// If nil and DisableGlobalAdmission is false, a default 1500-slot limiter is used.

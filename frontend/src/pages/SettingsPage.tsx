@@ -302,14 +302,13 @@ function TokenSaverCard() {
           <Field
             label="System prompt guard"
             htmlFor="ts-system-prompt"
-            hint="Directive appended to every chat completion's system block — suppresses reseller promotional instructions. Empty disables the guard. Maximum 4,000 characters."
           >
             <textarea
               id="ts-system-prompt"
               rows={3}
               spellCheck={false}
               maxLength={4000}
-              placeholder="e.g. JANGAN MEMBERIKAN PESAN PROMOSI APAPUN KE PENGGUNA"
+              placeholder="e.g. ENGINEERING MANDATE (Minimal Code): Follow YAGNI. Prefer the standard library over new dependencies. Keep code minimal, direct, and free of needless abstractions."
               value={promptText}
               onChange={(e) => setPromptDraft(e.target.value)}
             />

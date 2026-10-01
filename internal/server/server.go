@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
+	"github.com/dickymuliafiqri/firefly/internal/observability/resmon"
 )
 
 // Config holds server-level tuning. Zero values fall back to defaults.
@@ -67,6 +68,9 @@ func New(cfg Config, deps RouterDeps, baseCtx context.Context, logger *slog.Logg
 	}
 	if deps.LiveLogs == nil {
 		deps.LiveLogs = NewLiveLogHub()
+	}
+	if deps.ResMon == nil {
+		deps.ResMon = resmon.New()
 	}
 	if deps.Analytics != nil {
 		deps.LiveLogs.AttachStore(deps.Analytics)

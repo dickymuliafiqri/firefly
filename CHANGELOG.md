@@ -5,6 +5,20 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.42.8] - 2026-10-01
+
+### Added
+
+- **Dashboard Resource Monitor — htop-style (`internal/observability/resmon`, `internal/server`, `frontend`)**:
+  - New `resmon` package: lazy host/process sampler (gopsutil v4) reporting aggregate + per-logical-core CPU %, memory/swap, network RX/TX throughput and totals, goroutine count, Go heap/sys, and process RSS/CPU. `Sample()` computes rates as deltas between consecutive telemetry polls — no background goroutine; windows staler than 15s are re-primed instead of averaged.
+  - `GET /api/telemetry` now carries `resource_monitor` for authorized admin callers only; public telemetry omits the object entirely so host CPU/memory/network signals never leak to anonymous consumers.
+  - Overview page renders an htop-style card: per-core CPU bars with load coloring, memory/swap bars, downlink/uplink sparklines (client-side 60-sample history), and a process panel (goroutines, Go heap, Go sys, RSS, process CPU).
+
+### Changed
+
+- **Settings — System Prompt Guard (`frontend`)**: The Token Saver card placeholder now shows a generalized Ponytail-style minimal-code example instead of the Indonesian promotional-message sample, and the redundant hint below the textarea was removed (the character counter stays).
+- **Version bump**: `frontend/package.json` and `AppShell.tsx` bumped to `v1.42.8`.
+
 ## [1.42.7] - 2026-09-30
 
 ### Fixed

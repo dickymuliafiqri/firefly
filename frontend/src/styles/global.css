@@ -2097,3 +2097,132 @@ input:disabled {
         opacity: 0.5;
     }
 }
+
+/* ============================================================
+   RESOURCE MONITOR — htop-style host/process snapshot (Overview)
+   ============================================================ */
+.resmon {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+.resmon-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.resmon .k {
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+.resmon .v {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+    font-size: 13px;
+}
+.resmon .mono {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+}
+.resmon-rowhead {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+}
+.resmon-rowhead.sub {
+    margin-top: 4px;
+}
+.resmon-rowhead .v .net-arrow.down {
+    color: var(--info);
+}
+.resmon-rowhead .v .net-arrow.up {
+    color: var(--biolum);
+    margin-left: 10px;
+}
+/* Bars */
+.resmon-bar {
+    height: 8px;
+    background: var(--surface-input);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    overflow: hidden;
+}
+.resmon-bar.tall {
+    height: 14px;
+    border-radius: 6px;
+}
+.resmon-bar > i {
+    display: block;
+    height: 100%;
+    background: var(--biolum);
+    border-radius: inherit;
+    transition: width 0.6s ease;
+}
+.resmon-bar > i.ok {
+    background: var(--ok);
+}
+.resmon-bar > i.warn {
+    background: var(--warn);
+}
+.resmon-bar > i.danger {
+    background: var(--danger);
+}
+/* Per-core grid (htop style) */
+.resmon-cores {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+    gap: 6px 10px;
+}
+.resmon-core {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.resmon-core .resmon-bar {
+    flex: 1;
+    min-width: 0;
+}
+.resmon-core .lbl {
+    width: 18px;
+    text-align: right;
+    font-size: 10px;
+    color: var(--faint);
+}
+/* Sparklines */
+.resmon-spark {
+    width: 100%;
+    height: 28px;
+    display: block;
+}
+.resmon-spark .line {
+    fill: none;
+    stroke: var(--biolum);
+    stroke-width: 1.4;
+}
+.resmon-spark .area {
+    fill: var(--biolum);
+    opacity: 0.08;
+    stroke: none;
+}
+/* Process key/values */
+.resmon-kv {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 8px 16px;
+}
+.resmon-kv > div {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 10px;
+    background: var(--surface-raised);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+}
+.resmon-kv .v {
+    font-size: 13px;
+}

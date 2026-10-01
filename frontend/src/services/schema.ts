@@ -598,6 +598,36 @@ export interface TelemetryDTO {
   tenants_usage: TenantUsageDTO[];
   generation: number;
   recent_logs?: LiveConnectionLog[];
+  /**
+   * Host/process resource monitor (htop-style). Present only for authorized
+   * admin callers — the backend omits it for anonymous public telemetry.
+   */
+  resource_monitor?: ResourceMonitorDTO | null;
+}
+
+export interface ResourceMonitorDTO {
+  timestamp: number;
+  /** Aggregate host CPU utilization, 0..100. */
+  cpu_percent: number;
+  /** Per logical core CPU utilization, 0..100 each. */
+  cpu_per_core: number[];
+  cpu_cores: number;
+  mem_total_bytes: number;
+  mem_used_bytes: number;
+  mem_percent: number;
+  swap_total_bytes: number;
+  swap_used_bytes: number;
+  /** Network throughput in bytes per second. */
+  net_rx_bps: number;
+  net_tx_bps: number;
+  net_rx_total_bytes: number;
+  net_tx_total_bytes: number;
+  goroutines: number;
+  go_heap_bytes: number;
+  go_sys_bytes: number;
+  proc_rss_bytes: number;
+  /** Firefly process CPU, 0..100 across all cores. */
+  proc_cpu_percent: number;
 }
 
 export interface OpenAIErrorResponse {
