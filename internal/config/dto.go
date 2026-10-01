@@ -72,7 +72,7 @@ type UpstreamDTO struct {
 	ProxyURL   string `json:"proxy_url,omitempty"`
 	// WarpAutoRotateOn429 is deprecated and ignored. WARP rotation is now
 	// purely time-based (see -warp-rotate-interval / FIREFLY_WARP_ROTATE_INTERVAL,
-	// default 5m). Kept so old configs with this key still decode.
+	// default 2m). Kept so old configs with this key still decode.
 	WarpAutoRotateOn429 *bool `json:"warp_auto_rotate_on_429,omitempty"`
 }
 

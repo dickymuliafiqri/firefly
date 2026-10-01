@@ -335,7 +335,7 @@ func TestManager_WarmUpIsNoopAfterClose(t *testing.T) {
 }
 
 // The dashboard must not advertise a rotation schedule that is switched off: the
-// constructor default (5m) has to be overwritten by an explicit 0, which is what
+// constructor default (2m) has to be overwritten by an explicit 0, which is what
 // `-warp-rotate-interval=0` does.
 func TestManager_StatusReportsDisabledScheduleWhenIntervalIsZero(t *testing.T) {
 	mgr := NewManager(quietLogger(), "")

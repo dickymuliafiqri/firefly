@@ -39,7 +39,10 @@ const (
 	// 429-driven trigger, which proved unreliable in production (e.g. behind
 	// 9router the 429 never reached the rotation path), while a steady timer
 	// keeps the egress IP fresh regardless of upstream response shape.
-	DefaultAutoRotateInterval = 5 * time.Minute
+	// Two minutes stays well above the observed per-IP rate limits of the
+	// Cloudflare registration endpoint, which start answering 429 to sustained
+	// bursts faster than about one registration per minute.
+	DefaultAutoRotateInterval = 2 * time.Minute
 
 	// DefaultMinRotateInterval throttles asynchronous manual/fallback background rotations.
 	DefaultMinRotateInterval = 60 * time.Second

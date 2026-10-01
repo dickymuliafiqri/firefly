@@ -19,7 +19,7 @@ Written in pure Go, Firefly handles thousands of simultaneous streaming connecti
 - **System Prompt Guard**: Automatically attaches your custom instructions (like blocking unwanted promotional ads from API account sellers) to every chat request.
 - **Smart Load Balancing**: Combine multiple models across different providers into a single "Virtual Combo" to distribute traffic smoothly.
 - **Client Keys & Monetization**: Create and sell your own API keys with token budgets, rate limits, and expiration dates.
-- **Built-in Web Dashboard**: Manage models, upstreams, API keys, and monitor real-time traffic from a clean web interface - no external tools required. The **Visualizer** page animates every request as a routed line on a zoomable canvas with a locked three-column topology - the Firefly root (it states the ingress call), one node per active upstream (it states the model that upstream served, or why it was skipped) and a fixed terminal column (Thinking, Tool, Writing, Usage, Error) - so untouched rows stay dashed and dimmed until a request lights them, every connector is permanent (the root and *every* upstream row fan out to the whole phase column) and only the state changes: the path the request actually took is bright and flowing, a traversed phase keeps a settled trail, the rest stay dim. Credentials and the Token Saver hop are deliberately not nodes here (a request spends one key out of a ring that may hold a thousand, and the rewrite is only visible when it changed the body); the rewrite is reported in the legend instead. The canvas opens auto-fitted to the viewport (drag to pan, wheel to zoom, double-click to snap back). A second **Town** view renders the same fleet as a pixel-art office powered by `agent-town`: one crew member per upstream lounges while idle and hurries to a desk when a stream arrives, with a persisted camera (zoom + follow) in the corner.
+- **Built-in Web Dashboard**: Manage models, upstreams, API keys, and monitor real-time traffic from a clean web interface - no external tools required. The **Visualizer** page animates every request as a routed line on a zoomable canvas with a locked three-column topology - the Firefly root (it states the ingress call), one node per active upstream (it states the model that upstream served, or why it was skipped) and a fixed terminal column (Thinking, Tool, Writing, Usage, Error) - so untouched rows stay dashed and dimmed until a request lights them, every connector is permanent (the root and _every_ upstream row fan out to the whole phase column) and only the state changes: the path the request actually took is bright and flowing, a traversed phase keeps a settled trail, the rest stay dim. Credentials and the Token Saver hop are deliberately not nodes here (a request spends one key out of a ring that may hold a thousand, and the rewrite is only visible when it changed the body); the rewrite is reported in the legend instead. The canvas opens auto-fitted to the viewport (drag to pan, wheel to zoom, double-click to snap back). A second **Town** view renders the same fleet as a pixel-art office powered by `agent-town`: one crew member per upstream lounges while idle and hurries to a desk when a stream arrives, with a persisted camera (zoom + follow) in the corner.
 - **Connect Page**: A single screen (**Services → Connect**) that tells any AI agent how to reach Firefly - the **base URL** (defaults to your dashboard's own origin, editable for tunnel or reverse-proxy setups) with copy buttons, a **tenant key dropdown** with a masked key and its own copy button, the model id, and copy-ready configuration for **Cline**, **Roo Code**, **Kilo Code**, **Cursor**, **Continue**, **OpenCode**, **Aider**, the **OpenAI Python/Node SDKs** and plain `curl`. A **Test connection** button verifies the key against `GET /v1/models`, and **Copy everything** hands a teammate the whole bundle. All presets use the OpenAI wire surface (`/v1/chat/completions`, `/v1/embeddings`, ...) - Firefly exposes no inbound Anthropic (`/v1/messages`) or Responses (`/v1/responses`) route, so point agents at their "OpenAI Compatible" provider.
 - **Single Binary, Easy Setup**: Runs as a single lightweight file with an embedded web UI and auto-generated configs.
 
@@ -84,11 +84,13 @@ curl -fsSL https://raw.githubusercontent.com/dickymuliafiqri/firefly/main/instal
 ```
 
 Once installed, Firefly starts automatically:
+
 - **Web Dashboard**: `http://<SERVER_IP>:8080` (Default password: `12345678`)
 - **OpenAI API Endpoint**: `http://<SERVER_IP>:8080/v1/chat/completions`
 - **Config Directory**: `/etc/firefly/`
 
 Manage the service:
+
 ```bash
 sudo systemctl status firefly    # Check status
 sudo systemctl restart firefly   # Restart gateway
@@ -140,7 +142,7 @@ Firefly includes built-in tools to shrink token usage without losing answer qual
 - **Caveman (Concise Output)**: Tells the model to skip filler phrases, greetings, and conversational fluff, cutting output tokens by up to 65%.
 - **Ponytail (Minimal Code)**: Encourages the model to write clean, direct code using standard libraries rather than over-engineered solutions.
 - **Headroom (Context Pruning)**: Automatically trims older middle messages in long conversations when approaching context limits.
-- **System Prompt Guard**: Adds your own custom rules to every chat request (for example: *"Do not send any promotional messages to the user"*). Great for blocking ads or group invites injected by third-party account sellers.
+- **System Prompt Guard**: Adds your own custom rules to every chat request (for example: _"Do not send any promotional messages to the user"_). Great for blocking ads or group invites injected by third-party account sellers.
 - **Direct Compression Endpoint (`POST /v1/compress`)**: Standalone API to clean and compress text or tool outputs on demand.
 
 All Token Saver features can be toggled on or off individually from the **Settings** page.
@@ -191,6 +193,7 @@ Firefly protects your service from both account-level issues and provider outage
 ## Configuration & CLI Options
 
 Configuration files are stored in `configs/` as simple JSON files:
+
 - `upstreams.json`: Provider endpoints, protocols, and API keys.
 - `models.json`: Public model routes and upstream mappings.
 - `combos.json`: Virtual load-balancing combos.
@@ -201,23 +204,23 @@ All settings can be updated live from the web dashboard with **zero server resta
 
 ### Common Command Flags
 
-| Flag | Environment Variable | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `-addr` | `FIREFLY_ADDR` | `0.0.0.0:8080` | Address for incoming AI traffic and web dashboard |
-| `-admin-addr` | `FIREFLY_ADMIN_ADDR` | `""` | Address for admin plane (`/metrics`, `/api/*`); disabled if empty |
-| `-config-dir` | `FIREFLY_CONFIG_DIR` | `configs` | Directory for JSON configuration files |
-| `-admin-token` | `FIREFLY_ADMIN_TOKEN` | `""` | Secret token protecting administrative endpoints |
-| — | `FIREFLY_SESSION_SECRET` | auto | HMAC key for stateless dashboard sessions; set it on serverless/multi-instance hosts so sessions survive restarts |
-| `-log-level` | `FIREFLY_LOG_LEVEL` | `info` | Log detail level (`debug`, `info`, `warn`, `error`) |
-| `-health-check-interval` | `FIREFLY_HEALTH_CHECK_INTERVAL` | `15s` | Background health probe interval (`0` to disable) |
-| `-quota-poll-interval` | — | `2m` | Background provider-quota refresh for OAuth connections (`0` keeps quota reads on demand only) |
-| `-tunnel` | `FIREFLY_TUNNEL` | `disabled` | Cloudflare Tunnel mode (`disabled`, `quick`, `named`) |
-| `-tunnel-token` | `FIREFLY_TUNNEL_TOKEN` | `""` | Secret token for named Cloudflare Tunnels |
-| `-tunnel-bin-dir` | `FIREFLY_TUNNEL_BIN_DIR` | auto | Custom folder to find or download the `cloudflared` binary |
-| `-tunnel-url` | `FIREFLY_TUNNEL_URL` | auto | Local service address to expose through the tunnel |
-| `-warp-rotate-interval` | `FIREFLY_WARP_ROTATE_INTERVAL` | `5m` | Interval for automatic WARP IP rotation (`0` to disable) |
-| `-shutdown-grace-seconds` | `FIREFLY_SHUTDOWN_GRACE_SECONDS` | `30` | Seconds to let active streams finish before shutting down |
-| `-version` | — | — | Print version and build information, then exit |
+| Flag                      | Environment Variable             | Default        | Description                                                                                                       |
+| :------------------------ | :------------------------------- | :------------- | :---------------------------------------------------------------------------------------------------------------- |
+| `-addr`                   | `FIREFLY_ADDR`                   | `0.0.0.0:8080` | Address for incoming AI traffic and web dashboard                                                                 |
+| `-admin-addr`             | `FIREFLY_ADMIN_ADDR`             | `""`           | Address for admin plane (`/metrics`, `/api/*`); disabled if empty                                                 |
+| `-config-dir`             | `FIREFLY_CONFIG_DIR`             | `configs`      | Directory for JSON configuration files                                                                            |
+| `-admin-token`            | `FIREFLY_ADMIN_TOKEN`            | `""`           | Secret token protecting administrative endpoints                                                                  |
+| —                         | `FIREFLY_SESSION_SECRET`         | auto           | HMAC key for stateless dashboard sessions; set it on serverless/multi-instance hosts so sessions survive restarts |
+| `-log-level`              | `FIREFLY_LOG_LEVEL`              | `info`         | Log detail level (`debug`, `info`, `warn`, `error`)                                                               |
+| `-health-check-interval`  | `FIREFLY_HEALTH_CHECK_INTERVAL`  | `15s`          | Background health probe interval (`0` to disable)                                                                 |
+| `-quota-poll-interval`    | —                                | `2m`           | Background provider-quota refresh for OAuth connections (`0` keeps quota reads on demand only)                    |
+| `-tunnel`                 | `FIREFLY_TUNNEL`                 | `disabled`     | Cloudflare Tunnel mode (`disabled`, `quick`, `named`)                                                             |
+| `-tunnel-token`           | `FIREFLY_TUNNEL_TOKEN`           | `""`           | Secret token for named Cloudflare Tunnels                                                                         |
+| `-tunnel-bin-dir`         | `FIREFLY_TUNNEL_BIN_DIR`         | auto           | Custom folder to find or download the `cloudflared` binary                                                        |
+| `-tunnel-url`             | `FIREFLY_TUNNEL_URL`             | auto           | Local service address to expose through the tunnel                                                                |
+| `-warp-rotate-interval`   | `FIREFLY_WARP_ROTATE_INTERVAL`   | `2m`           | Interval for automatic WARP IP rotation (`0` to disable)                                                          |
+| `-shutdown-grace-seconds` | `FIREFLY_SHUTDOWN_GRACE_SECONDS` | `30`           | Seconds to let active streams finish before shutting down                                                         |
+| `-version`                | —                                | —              | Print version and build information, then exit                                                                    |
 
 ---
 
