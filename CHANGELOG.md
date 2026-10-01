@@ -5,6 +5,15 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.42.9] - 2026-10-01
+
+### Changed
+
+- **Overview — Resource Monitor Layout (`frontend`)**: The htop-style resource monitor card now arranges its four sections in a responsive two-column grid (CPU | Memory, Network | Firefly process; single column on narrow screens) instead of one tall stack. Network sparklines are labeled with RX/TX legend chips and color-coded (`--info` for RX, `--biolum` for TX) so the two unlabeled stacked graphs are instantly distinguishable; per-session totals moved into the legend row. The Firefly process section gained a load-toned CPU bar, and per-core bars always render their rounded percentage for even alignment.
+- **Overview — Card Header Cleanup (`frontend`)**: Removed the redundant `LIVE` badge from the Resource monitor header and the `STREAMING`/`IDLE` badge from the Live request history header (the status column in the table already conveys request state).
+- **Overview — Vertical Rhythm (`frontend`)**: Cards under the telemetry gate (Resource monitor, Live request history) previously sat flush against each other; a scoped `.overview-stack` rule now keeps a consistent 24px gap between sibling cards.
+- **Version bump**: `frontend/package.json` and `AppShell.tsx` bumped to `v1.42.9`.
+
 ## [1.42.8] - 2026-10-01
 
 ### Added

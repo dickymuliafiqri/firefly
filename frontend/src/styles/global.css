@@ -1082,6 +1082,9 @@ input:disabled {
    ============================================================ */
 
 /* ---------- Overview hero ---------- */
+.overview-stack > .card + .card {
+    margin-top: 24px;
+}
 .overview-hero {
     padding: 40px 0 8px;
 }
@@ -2102,9 +2105,10 @@ input:disabled {
    RESOURCE MONITOR — htop-style host/process snapshot (Overview)
    ============================================================ */
 .resmon {
-    display: flex;
-    flex-direction: column;
-    gap: 20px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+    gap: 24px 32px;
+    align-items: start;
 }
 .resmon-section {
     display: flex;
@@ -2136,12 +2140,36 @@ input:disabled {
 .resmon-rowhead.sub {
     margin-top: 4px;
 }
-.resmon-rowhead .v .net-arrow.down {
-    color: var(--info);
+.resmon-legend-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 20px;
 }
-.resmon-rowhead .v .net-arrow.up {
-    color: var(--biolum);
-    margin-left: 10px;
+.resmon-legend-row .totals {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--faint);
+}
+.resmon-legend {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+}
+.resmon-legend .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+}
+.resmon-legend.rx .dot {
+    background: var(--info);
+}
+.resmon-legend.tx .dot {
+    background: var(--biolum);
 }
 /* Bars */
 .resmon-bar {
@@ -2207,6 +2235,12 @@ input:disabled {
     fill: var(--biolum);
     opacity: 0.08;
     stroke: none;
+}
+.resmon-spark.rx .line {
+    stroke: var(--info);
+}
+.resmon-spark.rx .area {
+    fill: var(--info);
 }
 /* Process key/values */
 .resmon-kv {

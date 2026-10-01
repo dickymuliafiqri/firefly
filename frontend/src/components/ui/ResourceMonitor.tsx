@@ -46,11 +46,12 @@ function loadTone(pct: number): 'ok' | 'warn' | 'danger' {
 }
 
 /** Tiny dependency-free sparkline. Baseline at the bottom, flat when idle. */
-function Sparkline({ points, max }: { points: number[]; max: number }) {
+function Sparkline({ points, max, variant }: { points: number[]; max: number; variant?: 'rx' | 'tx' }) {
   const w = 100;
   const h = 28;
+  const cls = variant ? ` ${variant}` : '';
   if (points.length < 2) {
-    return <svg className="resmon-spark" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" />;
+    return <svg className={`resmon-spark${cls}`} viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" />;
   }
   const step = w / (HISTORY - 1);
   const startIdx = HISTORY - points.length;
@@ -62,10 +63,19 @@ function Sparkline({ points, max }: { points: number[]; max: number }) {
     })
     .join(' ');
   return (
-    <svg className="resmon-spark" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none">
+    <svg className={`resmon-spark${cls}`} viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none">
       <path d={`${path} L${w},${h} L0,${h} Z`} className="area" />
       <path d={path} className="line" />
     </svg>
+  );
+}
+
+function LegendChip({ kind }: { kind: 'rx' | 'tx' }) {
+  return (
+    <span className={`resmon-legend ${kind}`}>
+      <i className="dot" />
+      {kind === 'rx' ? 'RX ↓' : 'TX ↑'}
+    </span>
   );
 }
 
@@ -102,6 +112,7 @@ export function ResourceMonitor({ stats }: { stats?: ResourceMonitorDTO | null }
 
   const memPct = Math.min(100, Math.max(0, stats.mem_percent));
   const swapPct = stats.swap_total_bytes > 0 ? (stats.swap_used_bytes / stats.swap_total_bytes) * 100 : 0;
+  const procPct = Math.min(100, Math.max(0, stats.proc_cpu_percent));
   const netMax = Math.max(1, ...history.rx, ...history.tx);
   const cpuMax = 100;
 
@@ -109,9 +120,6 @@ export function ResourceMonitor({ stats }: { stats?: ResourceMonitorDTO | null }
     <div className="card">
       <div className="card-header">
         <h2>Resource monitor</h2>
-        <Badge tone={stats.goroutines > 500 ? 'warn' : 'ok'}>
-          {stats.goroutines} GOROUTINES
-        </Badge>
       </div>
       <div className="card-body resmon">
         {/* CPU */}
@@ -126,11 +134,11 @@ export function ResourceMonitor({ stats }: { stats?: ResourceMonitorDTO | null }
                 <div className="resmon-bar">
                   <i className={loadTone(pct)} style={{ width: `${Math.min(100, Math.max(0, pct))}%` }} />
                 </div>
-                <span className="lbl mono">{pct >= 10 ? Math.round(pct) : ''}</span>
+                <span className="lbl mono">{Math.round(pct)}</span>
               </div>
             ))}
           </div>
-          <Sparkline points={history.cpu} max={cpuMax} />
+          <Sparkline points={history.cpu} max={cpuMax} variant="tx" />
         </section>
 
         {/* Memory */}
@@ -145,17 +153,17 @@ export function ResourceMonitor({ stats }: { stats?: ResourceMonitorDTO | null }
             <i className={loadTone(memPct)} style={{ width: `${memPct}%` }} />
           </div>
           {stats.swap_total_bytes > 0 ? (
-            <div className="resmon-rowhead sub">
-              <span className="k">Swap</span>
-              <span className="v mono">
-                {fmtBytes(stats.swap_used_bytes)} / {fmtBytes(stats.swap_total_bytes)}
-              </span>
-            </div>
-          ) : null}
-          {stats.swap_total_bytes > 0 ? (
-            <div className="resmon-bar">
-              <i className={loadTone(swapPct)} style={{ width: `${Math.min(100, swapPct)}%` }} />
-            </div>
+            <>
+              <div className="resmon-rowhead sub">
+                <span className="k">Swap</span>
+                <span className="v mono">
+                  {fmtBytes(stats.swap_used_bytes)} / {fmtBytes(stats.swap_total_bytes)}
+                </span>
+              </div>
+              <div className="resmon-bar">
+                <i className={loadTone(swapPct)} style={{ width: `${Math.min(100, swapPct)}%` }} />
+              </div>
+            </>
           ) : null}
         </section>
 
@@ -164,18 +172,18 @@ export function ResourceMonitor({ stats }: { stats?: ResourceMonitorDTO | null }
           <div className="resmon-rowhead">
             <span className="k">Network</span>
             <span className="v mono">
-              <span className="net-arrow down">↓</span> {fmtRate(stats.net_rx_bps)}
-              <span className="net-arrow up">↑</span> {fmtRate(stats.net_tx_bps)}
+              {fmtRate(stats.net_rx_bps)} · {fmtRate(stats.net_tx_bps)}
             </span>
           </div>
-          <Sparkline points={history.rx} max={netMax} />
-          <Sparkline points={history.tx} max={netMax} />
-          <div className="resmon-rowhead sub">
-            <span className="k">Totals</span>
-            <span className="v mono">
+          <div className="resmon-legend-row">
+            <LegendChip kind="rx" />
+            <LegendChip kind="tx" />
+            <span className="v mono totals">
               ↓ {fmtBytes(stats.net_rx_total_bytes)} · ↑ {fmtBytes(stats.net_tx_total_bytes)}
             </span>
           </div>
+          <Sparkline points={history.rx} max={netMax} variant="rx" />
+          <Sparkline points={history.tx} max={netMax} variant="tx" />
         </section>
 
         {/* Process */}
@@ -183,6 +191,9 @@ export function ResourceMonitor({ stats }: { stats?: ResourceMonitorDTO | null }
           <div className="resmon-rowhead">
             <span className="k">Firefly process</span>
             <span className="v mono">{stats.proc_cpu_percent.toFixed(1)}% CPU</span>
+          </div>
+          <div className="resmon-bar">
+            <i className={loadTone(procPct)} style={{ width: `${procPct}%` }} />
           </div>
           <div className="resmon-kv">
             <div>

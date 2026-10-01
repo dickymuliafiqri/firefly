@@ -12,7 +12,7 @@ export function OverviewPage() {
 
   return (
     <div className="has-decor">
-      <div className="page-col">
+      <div className="page-col overview-stack">
         <div className="overview-hero">
           <p className="eyebrow">AI gateway &middot; pure Go &middot; single binary</p>
           <h1>A thousand streams of light, one gateway.</h1>
@@ -36,9 +36,6 @@ export function OverviewPage() {
           <div className="card">
             <div className="card-header">
               <h2>Live request history</h2>
-              <Badge tone={s && s.active_streams > 0 ? 'ok' : 'neutral'}>
-                {s && s.active_streams > 0 ? 'STREAMING' : 'IDLE'}
-              </Badge>
             </div>
             <div className="card-body tight table-wrap">
               <table>
