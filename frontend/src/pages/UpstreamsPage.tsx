@@ -1,39 +1,35 @@
-import { useState, useMemo } from 'react';
-import { KpiCard, KpiGrid, PageHeader } from '@/components/ui/PageHeader';
-import { QueryGate } from '@/components/ui/QueryGate';
-import { ProviderIcon } from '@/components/ui/ProviderIcon';
-import { UpstreamDrawer } from '@/components/upstream/UpstreamDrawer';
-import { useUiStore } from '@/state/store';
-import {
-  useSettingsQuery,
-  useTelemetryQuery,
-  useSaveSettingsSmart,
-  withSettings,
-} from '@/services/api';
-import type { UpstreamTelemetryDTO } from '@/services/schema';
-import { canonicalProtocol } from '@/services/schema';
-import { navigate } from '@/lib/router';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { useState, useMemo } from "react";
+import { KpiCard, KpiGrid, PageHeader } from "@/components/ui/PageHeader";
+import { QueryGate } from "@/components/ui/QueryGate";
+import { ProviderIcon } from "@/components/ui/ProviderIcon";
+import { UpstreamDrawer } from "@/components/upstream/UpstreamDrawer";
+import { useUiStore } from "@/state/store";
+import { useTelemetryQuery } from "@/services/api";
+import { useDraftStore, useSettingsView } from "@/state/draftStore";
+import type { UpstreamTelemetryDTO } from "@/services/schema";
+import { canonicalProtocol } from "@/services/schema";
+import { navigate } from "@/lib/router";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 
 function formatEndpoint(url: string): string {
   try {
     const u = new URL(url);
-    const path = u.pathname === '/' ? '' : u.pathname;
+    const path = u.pathname === "/" ? "" : u.pathname;
     return `${u.host}${path}`;
   } catch {
-    return url.replace(/^https?:\/\//, '');
+    return url.replace(/^https?:\/\//, "");
   }
 }
 
 export function UpstreamsPage() {
   const telemetry = useTelemetryQuery();
-  const settings = useSettingsQuery();
-  const save = useSaveSettingsSmart();
+  const settings = useSettingsView();
+  const stage = useDraftStore((s) => s.stage);
   const pushToast = useUiStore((s) => s.pushToast);
   const [selected, setSelected] = useState<UpstreamTelemetryDTO | null>(null);
-  const [search, setSearch] = useState('');
-  const [protocolFilter, setProtocolFilter] = useState('all');
-  const [statusFilter, setStatusFilter] = useState('all');
+  const [search, setSearch] = useState("");
+  const [protocolFilter, setProtocolFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(12);
 
@@ -41,7 +37,10 @@ export function UpstreamsPage() {
   const entries = settings.data?.upstreams ?? [];
 
   const keyStats = useMemo(() => {
-    const map = new Map<string, { active: number; cooldown: number; revoked: number }>();
+    const map = new Map<
+      string,
+      { active: number; cooldown: number; revoked: number }
+    >();
     for (const u of ups) {
       // An upstream created without credentials (name + base_url only) has no
       // key slots, and an unnormalized backend serializes that as `slots: null`
@@ -71,7 +70,7 @@ export function UpstreamsPage() {
     [keyStats],
   );
   const openBreakers = useMemo(
-    () => ups.filter((u) => u.breaker_state === 'OPEN').length,
+    () => ups.filter((u) => u.breaker_state === "OPEN").length,
     [ups],
   );
   const totalIssues = totalCooldown + totalRevoked;
@@ -79,9 +78,10 @@ export function UpstreamsPage() {
     // The KPI renders `value` (the total) followed by `unit`, so the unit must
     // never repeat the number it qualifies. Only the mixed case carries a
     // breakdown, which explains the sum rather than duplicating it.
-    if (totalCooldown > 0 && totalRevoked > 0) return `${totalCooldown} cd · ${totalRevoked} rev`;
-    if (totalCooldown > 0) return 'cooldown';
-    if (totalRevoked > 0) return 'revoked';
+    if (totalCooldown > 0 && totalRevoked > 0)
+      return `${totalCooldown} cd · ${totalRevoked} rev`;
+    if (totalCooldown > 0) return "cooldown";
+    if (totalRevoked > 0) return "revoked";
     return undefined;
   }, [totalCooldown, totalRevoked]);
 
@@ -97,26 +97,37 @@ export function UpstreamsPage() {
     const q = search.trim().toLowerCase();
     return ups.filter((u) => {
       // Protocol filter
-      if (protocolFilter !== 'all' && canonicalProtocol(u.protocol).toLowerCase() !== protocolFilter.toLowerCase()) {
+      if (
+        protocolFilter !== "all" &&
+        canonicalProtocol(u.protocol).toLowerCase() !==
+          protocolFilter.toLowerCase()
+      ) {
         return false;
       }
 
       // Status filter
-      if (statusFilter !== 'all') {
+      if (statusFilter !== "all") {
         const entry = entries.find((e) => e.name === u.name);
         const isDisabled = entry?.enabled === false;
-        const stat = keyStats.get(u.name) ?? { active: 0, cooldown: 0, revoked: 0 };
+        const stat = keyStats.get(u.name) ?? {
+          active: 0,
+          cooldown: 0,
+          revoked: 0,
+        };
 
-        if (statusFilter === 'active' && (isDisabled || u.breaker_state === 'OPEN')) {
+        if (
+          statusFilter === "active" &&
+          (isDisabled || u.breaker_state === "OPEN")
+        ) {
           return false;
         }
-        if (statusFilter === 'disabled' && !isDisabled) {
+        if (statusFilter === "disabled" && !isDisabled) {
           return false;
         }
-        if (statusFilter === 'breaker_open' && u.breaker_state !== 'OPEN') {
+        if (statusFilter === "breaker_open" && u.breaker_state !== "OPEN") {
           return false;
         }
-        if (statusFilter === 'cooldown' && stat.cooldown === 0) {
+        if (statusFilter === "cooldown" && stat.cooldown === 0) {
           return false;
         }
       }
@@ -145,48 +156,39 @@ export function UpstreamsPage() {
     const current = settings.data.upstreams.find((u) => u.name === name);
     if (!current) return;
     const nextState = current.enabled === false;
-    const updated = settings.data.upstreams.map((u) =>
-      u.name === name ? { ...u, enabled: nextState } : u,
-    );
-    save.mutate(withSettings(settings.data, { upstreams: updated }), {
-      onSuccess: (d) =>
-        pushToast({
-          type: 'success',
-          title: nextState ? 'Upstream enabled' : 'Upstream disabled',
-          message: d.local ? 'Demo mode: changes are local to browser only.' : 'Catalog synchronized.',
-        }),
-      onError: (e) =>
-        pushToast({ type: 'error', title: 'Failed', message: e instanceof Error ? e.message : 'Unknown' }),
+    stage({
+      upstreams: settings.data.upstreams.map((u) =>
+        u.name === name ? { ...u, enabled: nextState } : u,
+      ),
     });
   }
 
   function deleteUpstream(name: string) {
     if (!settings.data) return;
-    const referencing = (settings.data.models ?? []).filter((m) => m.upstream === name);
+    const referencing = (settings.data.models ?? []).filter(
+      (m) => m.upstream === name,
+    );
     if (referencing.length > 0) {
       pushToast({
-        type: 'error',
-        title: 'Cannot delete',
-        message: `This upstream is still referenced by ${referencing.length} model(s): ${referencing.map((m) => m.public_name).join(', ')}. Please update or remove those model routes first.`,
+        type: "error",
+        title: "Cannot delete",
+        message: `This upstream is still referenced by ${referencing.length} model(s): ${referencing.map((m) => m.public_name).join(", ")}. Please update or remove those model routes first.`,
       });
       return;
     }
 
-    if (!window.confirm(`Are you sure you want to delete upstream "${name}"?`)) return;
+    if (
+      !window.confirm(
+        `Mark upstream "${name}" for deletion? It will be removed when pending changes are committed.`,
+      )
+    )
+      return;
 
-    const nextUpstreams = (settings.data.upstreams ?? []).filter((u) => u.name !== name);
-    save.mutate(withSettings(settings.data, { upstreams: nextUpstreams }), {
-      onSuccess: () => {
-        pushToast({
-          type: 'success',
-          title: 'Upstream deleted',
-          message: `Upstream '${name}' successfully deleted.`,
-        });
-        setSelected(null);
-      },
-      onError: (e) =>
-        pushToast({ type: 'error', title: 'Failed', message: e instanceof Error ? e.message : 'Unknown' }),
-    });
+    const nextUpstreams = (settings.data.upstreams ?? []).filter(
+      (u) => u.name !== name,
+    );
+    stage({ upstreams: nextUpstreams });
+    setSelected(null);
   }
 
   return (
@@ -195,7 +197,10 @@ export function UpstreamsPage() {
         title="Upstreams"
         description="Provider fleet, circuit breakers, and KeyRing rotation."
         actions={
-          <button className="btn btn-primary" onClick={() => navigate('upstream/new')}>
+          <button
+            className="btn btn-primary"
+            onClick={() => navigate("upstream/new")}
+          >
             Add Upstream
           </button>
         }
@@ -207,13 +212,15 @@ export function UpstreamsPage() {
         <KpiCard
           label="Breaker open"
           value={String(openBreakers)}
-          tone={openBreakers > 0 ? 'danger' : 'plain'}
+          tone={openBreakers > 0 ? "danger" : "plain"}
         />
         <KpiCard
           label="Key issues"
           value={String(totalIssues)}
           unit={issueUnit}
-          tone={totalRevoked > 0 ? 'danger' : totalCooldown > 0 ? 'warn' : 'plain'}
+          tone={
+            totalRevoked > 0 ? "danger" : totalCooldown > 0 ? "warn" : "plain"
+          }
         />
       </KpiGrid>
 
@@ -263,7 +270,7 @@ export function UpstreamsPage() {
         />
 
         <span className="text-xs text-faint">
-          {filtered.length} {filtered.length === 1 ? 'upstream' : 'upstreams'}
+          {filtered.length} {filtered.length === 1 ? "upstream" : "upstreams"}
         </span>
       </div>
 
@@ -271,19 +278,24 @@ export function UpstreamsPage() {
         <div className="upstream-grid">
           {paged.map((u) => {
             const entry = entries.find((e) => e.name === u.name);
-            const stat = keyStats.get(u.name) ?? { active: 0, cooldown: 0, revoked: 0 };
+            const stat = keyStats.get(u.name) ?? {
+              active: 0,
+              cooldown: 0,
+              revoked: 0,
+            };
             const isDisabled = entry?.enabled === false;
-            const poolCount = (entry?.credential_pool ?? []).length || stat.active;
+            const poolCount =
+              (entry?.credential_pool ?? []).length || stat.active;
 
             return (
               <div
                 key={u.name}
-                className={`upstream-card ${isDisabled ? 'is-disabled' : ''}`}
+                className={`upstream-card ${isDisabled ? "is-disabled" : ""}`}
                 onClick={() => setSelected(u)}
                 role="button"
                 tabIndex={0}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
+                  if (e.key === "Enter" || e.key === " ") {
                     e.preventDefault();
                     setSelected(u);
                   }
@@ -293,8 +305,16 @@ export function UpstreamsPage() {
                 <div className="pb-2.5 border-b border-[var(--line)]">
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex items-center gap-2.5 min-w-0">
-                      <ProviderIcon protocol={u.protocol} name={u.name} size={20} className="shrink-0" />
-                      <span className="font-semibold text-ink text-sm truncate" title={u.name}>
+                      <ProviderIcon
+                        protocol={u.protocol}
+                        name={u.name}
+                        size={20}
+                        className="shrink-0"
+                      />
+                      <span
+                        className="font-semibold text-ink text-sm truncate"
+                        title={u.name}
+                      >
                         {u.name}
                       </span>
                     </div>
@@ -302,15 +322,16 @@ export function UpstreamsPage() {
                     <div className="shrink-0 text-xs font-medium whitespace-nowrap">
                       {isDisabled ? (
                         <span className="text-faint">Disabled</span>
-                      ) : u.breaker_state === 'OPEN' ? (
+                      ) : u.breaker_state === "OPEN" ? (
                         <span className="text-danger">Breaker Open</span>
-                      ) : u.breaker_state === 'HALF-OPEN' ? (
+                      ) : u.breaker_state === "HALF-OPEN" ? (
                         <span className="text-warn">Half-Open</span>
                       ) : stat.active === 0 ? (
                         <span className="text-warn">0 Keys</span>
                       ) : (
                         <span className="text-ok">
-                          {stat.active} {stat.active === 1 ? 'key' : 'keys'} active
+                          {stat.active} {stat.active === 1 ? "key" : "keys"}{" "}
+                          active
                         </span>
                       )}
                     </div>
@@ -321,20 +342,27 @@ export function UpstreamsPage() {
                     <span className="uppercase font-mono text-[10px] tracking-wide text-ink/70">
                       {u.protocol}
                     </span>
-                    {entry?.egress_mode === 'warp' ? (
+                    {entry?.egress_mode === "warp" ? (
                       <>
                         <span>&middot;</span>
-                        <span className="text-cyan-400 font-mono text-[10px] font-medium" title="Cloudflare WARP Egress">
+                        <span
+                          className="text-cyan-400 font-mono text-[10px] font-medium"
+                          title="Cloudflare WARP Egress"
+                        >
                           WARP
                         </span>
                       </>
                     ) : null}
-                    {entry?.egress_mode === 'proxy' ? (
+                    {entry?.egress_mode === "proxy" ? (
                       <>
                         <span>&middot;</span>
                         <span
                           className="text-amber-400 font-mono text-[10px] font-medium"
-                          title={entry.proxy_url ? `Proxy: ${entry.proxy_url}` : 'Egress Proxy'}
+                          title={
+                            entry.proxy_url
+                              ? `Proxy: ${entry.proxy_url}`
+                              : "Egress Proxy"
+                          }
                         >
                           PROXY
                         </span>
@@ -345,7 +373,9 @@ export function UpstreamsPage() {
 
                 {/* Row 2: Host Endpoint */}
                 <div className="upstream-endpoint-strip" title={u.base_url}>
-                  <span className="endpoint-text">{formatEndpoint(u.base_url)}</span>
+                  <span className="endpoint-text">
+                    {formatEndpoint(u.base_url)}
+                  </span>
                 </div>
 
                 {/* Row 3: Pool refs and Total requests */}
@@ -353,13 +383,17 @@ export function UpstreamsPage() {
                   <div className="flex items-center gap-1.5">
                     <span>Pool:</span>
                     <span className="text-ink font-mono font-medium">
-                      {poolCount} {poolCount === 1 ? 'ref' : 'refs'}
+                      {poolCount} {poolCount === 1 ? "ref" : "refs"}
                     </span>
                     {stat.cooldown > 0 ? (
-                      <span className="text-warn font-mono">({stat.cooldown} cd)</span>
+                      <span className="text-warn font-mono">
+                        ({stat.cooldown} cd)
+                      </span>
                     ) : null}
                     {stat.revoked > 0 ? (
-                      <span className="text-danger font-mono">({stat.revoked} rev)</span>
+                      <span className="text-danger font-mono">
+                        ({stat.revoked} rev)
+                      </span>
                     ) : null}
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
@@ -376,11 +410,14 @@ export function UpstreamsPage() {
 
         {filtered.length === 0 ? (
           <div className="card">
-            <div className="card-body text-center" style={{ padding: '48px 24px' }}>
+            <div
+              className="card-body text-center"
+              style={{ padding: "48px 24px" }}
+            >
               <span className="text-faint text-sm">
-                {search || protocolFilter !== 'all' || statusFilter !== 'all'
-                  ? 'No upstreams match the filter or search.'
-                  : 'No upstreams registered yet.'}
+                {search || protocolFilter !== "all" || statusFilter !== "all"
+                  ? "No upstreams match the filter or search."
+                  : "No upstreams registered yet."}
               </span>
             </div>
           </div>
@@ -389,8 +426,12 @@ export function UpstreamsPage() {
         {filtered.length > 0 ? (
           <div className="pagination-bar">
             <span className="tabular-nums">
-              Showing <span className="text-ink font-medium">{startIdx}–{endIdx}</span> of{' '}
-              <span className="text-ink font-medium">{filtered.length}</span> upstreams
+              Showing{" "}
+              <span className="text-ink font-medium">
+                {startIdx}–{endIdx}
+              </span>{" "}
+              of <span className="text-ink font-medium">{filtered.length}</span>{" "}
+              upstreams
             </span>
 
             <div className="pagination-controls">
@@ -445,7 +486,6 @@ export function UpstreamsPage() {
         entry={entries.find((e) => e.name === selected?.name)}
         onClose={() => setSelected(null)}
         onToggleEnabled={toggleEnabled}
-        isToggling={save.isPending}
         onDelete={deleteUpstream}
       />
     </div>

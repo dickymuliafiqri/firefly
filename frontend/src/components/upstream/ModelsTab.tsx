@@ -1,19 +1,22 @@
-import { useEffect, useRef, useState } from 'react';
-import { Activity, Plus, RefreshCw, Square, X } from 'lucide-react';
-import { Badge } from '@/components/ui/Badge';
-import { Field } from '@/components/ui/Controls';
-import { isValidModelName, MODEL_NAME_HINT } from '@/services/schema';
+import { useEffect, useRef, useState } from "react";
+import { Activity, Plus, RefreshCw, Square, X } from "lucide-react";
+import { Badge } from "@/components/ui/Badge";
+import { Field } from "@/components/ui/Controls";
+import { isValidModelName, MODEL_NAME_HINT } from "@/services/schema";
 import {
   useCheckUpstreamMutation,
-  useSettingsQuery,
   useUpstreamModelsMutation,
   type UpstreamCheckRequest,
   type UpstreamCheckResponse,
   type UpstreamModelsRequest,
-} from '@/services/api';
-import { useUiStore } from '@/state/store';
-import { useModelCacheStore, pickOptimalProbeModel } from '@/services/modelCache';
-import { resolveBaseUrl } from './GeneralTab';
+} from "@/services/api";
+import { useSettingsView } from "@/state/draftStore";
+import { useUiStore } from "@/state/store";
+import {
+  useModelCacheStore,
+  pickOptimalProbeModel,
+} from "@/services/modelCache";
+import { resolveBaseUrl } from "./GeneralTab";
 
 interface ModelsTabProps {
   upstreamName: string;
@@ -26,7 +29,11 @@ interface ModelsTabProps {
   discoveredModels: string[];
   latencyMs: number | null;
   catalogNames?: string[];
-  catalogModels?: Array<{ public_name: string; upstream: string; upstream_model?: string }>;
+  catalogModels?: Array<{
+    public_name: string;
+    upstream: string;
+    upstream_model?: string;
+  }>;
   onProbeModelChange: (model: string) => void;
   onDiscover: (models: string[], latencyMs: number) => void;
   onCreateRoute: (modelName: string) => void;
@@ -34,7 +41,7 @@ interface ModelsTabProps {
 }
 
 interface ModelCheckState {
-  status: 'checking' | 'ok' | 'fail';
+  status: "checking" | "ok" | "fail";
   code?: number;
   message?: string;
   latency?: number;
@@ -61,12 +68,14 @@ export function ModelsTab({
   const pushToast = useUiStore((s) => s.pushToast);
   const modelsMutation = useUpstreamModelsMutation();
   const checkMutation = useCheckUpstreamMutation();
-  const settings = useSettingsQuery();
+  const settings = useSettingsView();
 
   const cache = useModelCacheStore((s) => s.cache);
   const setCachedModels = useModelCacheStore((s) => s.setModels);
 
-  const [modelChecks, setModelChecks] = useState<Record<string, ModelCheckState>>({});
+  const [modelChecks, setModelChecks] = useState<
+    Record<string, ModelCheckState>
+  >({});
   // Candidates a protocol reported as unusable (a live sweep or a filtered
   // upstream list). Kept separate so they are never offered as routes.
   const [unavailableModels, setUnavailableModels] = useState<string[]>([]);
@@ -74,7 +83,7 @@ export function ModelsTab({
   // ones (so they can be probed and routed) but are marked, because nothing has
   // verified them yet.
   const [manualModels, setManualModels] = useState<string[]>([]);
-  const [manualDraft, setManualDraft] = useState('');
+  const [manualDraft, setManualDraft] = useState("");
   const [checkingAll, setCheckingAll] = useState(false);
   const [concurrency, setConcurrency] = useState(5);
   const [checkProgress, setCheckProgress] = useState<{
@@ -100,7 +109,14 @@ export function ModelsTab({
         if (optimal) onProbeModelChange(optimal);
       }
     }
-  }, [upstreamName, cache, discoveredModels.length, probeModel, onDiscover, onProbeModelChange]);
+  }, [
+    upstreamName,
+    cache,
+    discoveredModels.length,
+    probeModel,
+    onDiscover,
+    onProbeModelChange,
+  ]);
 
   // Reset stale per-model health results when the editor switches upstream.
   useEffect(() => {
@@ -110,7 +126,7 @@ export function ModelsTab({
     setModelChecks({});
     setUnavailableModels([]);
     setManualModels([]);
-    setManualDraft('');
+    setManualDraft("");
   }, [upstreamName]);
 
   // A saved upstream resolves to a KeyRing in the gateway snapshot; probing it
@@ -118,14 +134,20 @@ export function ModelsTab({
   // upstream's load-balancing strategy (round_robin / least_inflight) and report
   // which key_ref served the probe. Unsaved (new) upstreams have no KeyRing yet,
   // so the first pool key entered in the form is used as a fallback.
-  const isSavedUpstream = (settings.data?.upstreams ?? []).some((u) => u.name === upstreamName);
+  const isSavedUpstream = (settings.data?.upstreams ?? []).some(
+    (u) => u.name === upstreamName,
+  );
   // An OAuth-managed protocol resolves to its provider endpoint; the backend pins
   // the same value, so discovery can never be aimed at another host.
   const effectiveBaseUrl = resolveBaseUrl(protocol, baseUrl);
 
   async function handleFetch() {
     if (!effectiveBaseUrl) {
-      pushToast({ type: 'error', title: 'Empty Base URL', message: 'Specify a Base URL to fetch model list.' });
+      pushToast({
+        type: "error",
+        title: "Empty Base URL",
+        message: "Specify a Base URL to fetch model list.",
+      });
       return;
     }
     try {
@@ -153,18 +175,20 @@ export function ModelsTab({
       }
       setModelChecks({});
       pushToast({
-        type: 'success',
-        title: 'Models discovered',
+        type: "success",
+        title: "Models discovered",
         message:
           res.message ||
           `${res.model_count} models available from upstream host.` +
-            (refused.length > 0 ? ` ${refused.length} refused by the upstream.` : ''),
+            (refused.length > 0
+              ? ` ${refused.length} refused by the upstream.`
+              : ""),
       });
     } catch (err) {
       pushToast({
-        type: 'error',
-        title: 'Failed to fetch models',
-        message: err instanceof Error ? err.message : 'Unknown error',
+        type: "error",
+        title: "Failed to fetch models",
+        message: err instanceof Error ? err.message : "Unknown error",
       });
     }
   }
@@ -179,26 +203,37 @@ export function ModelsTab({
     const id = manualDraft.trim();
     if (!id) return;
     if (!isValidModelName(id)) {
-      pushToast({ type: 'error', title: 'Invalid model id', message: MODEL_NAME_HINT });
+      pushToast({
+        type: "error",
+        title: "Invalid model id",
+        message: MODEL_NAME_HINT,
+      });
       return;
     }
     if (discoveredModels.some((m) => m.toLowerCase() === id.toLowerCase())) {
-      pushToast({ type: 'info', title: 'Already listed', message: `${id} is already in the list.` });
-      setManualDraft('');
+      pushToast({
+        type: "info",
+        title: "Already listed",
+        message: `${id} is already in the list.`,
+      });
+      setManualDraft("");
       return;
     }
     onDiscover([...discoveredModels, id], latencyMs ?? 0);
     setManualModels((prev) => [...prev, id]);
-    setManualDraft('');
+    setManualDraft("");
     pushToast({
-      type: 'success',
-      title: 'Model added',
+      type: "success",
+      title: "Model added",
       message: `${id} — run Check to verify it against the upstream.`,
     });
   }
 
   function removeManualModel(id: string) {
-    onDiscover(discoveredModels.filter((m) => m !== id), latencyMs ?? 0);
+    onDiscover(
+      discoveredModels.filter((m) => m !== id),
+      latencyMs ?? 0,
+    );
     setManualModels((prev) => prev.filter((m) => m !== id));
   }
 
@@ -216,18 +251,24 @@ export function ModelsTab({
     };
   }
 
-  async function checkModel(model: string): Promise<UpstreamCheckResponse | null> {
+  async function checkModel(
+    model: string,
+  ): Promise<UpstreamCheckResponse | null> {
     if (!effectiveBaseUrl) {
-      pushToast({ type: 'error', title: 'Empty Base URL', message: 'Specify a Base URL before checking health.' });
+      pushToast({
+        type: "error",
+        title: "Empty Base URL",
+        message: "Specify a Base URL before checking health.",
+      });
       return null;
     }
-    setModelChecks((prev) => ({ ...prev, [model]: { status: 'checking' } }));
+    setModelChecks((prev) => ({ ...prev, [model]: { status: "checking" } }));
     try {
       const res = await checkMutation.mutateAsync(buildCheckRequest(model));
       setModelChecks((prev) => ({
         ...prev,
         [model]: {
-          status: res.healthy ? 'ok' : 'fail',
+          status: res.healthy ? "ok" : "fail",
           code: res.status_code,
           message: res.message,
           latency: res.latency_ms,
@@ -236,8 +277,12 @@ export function ModelsTab({
       }));
       return res;
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Health check failed';
-      setModelChecks((prev) => ({ ...prev, [model]: { status: 'fail', message } }));
+      const message =
+        err instanceof Error ? err.message : "Health check failed";
+      setModelChecks((prev) => ({
+        ...prev,
+        [model]: { status: "fail", message },
+      }));
       return null;
     }
   }
@@ -283,14 +328,17 @@ export function ModelsTab({
       }
     };
 
-    const workers = Array.from({ length: Math.min(poolSize, discoveredModels.length) }, () => worker());
+    const workers = Array.from(
+      { length: Math.min(poolSize, discoveredModels.length) },
+      () => worker(),
+    );
     await Promise.all(workers);
 
     if (bulkGenRef.current === gen) {
       setCheckingAll(false);
       pushToast({
-        type: failed > 0 ? 'error' : 'success',
-        title: 'Model health check finished',
+        type: failed > 0 ? "error" : "success",
+        title: "Model health check finished",
         message: `${healthy} healthy · ${failed} failed (pool concurrency: ${poolSize}).`,
       });
     }
@@ -310,8 +358,9 @@ export function ModelsTab({
         </div>
         <div className="card-body">
           <p className="hint" style={{ marginBottom: 14 }}>
-            Select the designated probe model used for active inference testing and background health probes.
-            Must be populated from discovered models.
+            Select the designated probe model used for active inference testing
+            and background health probes. Must be populated from discovered
+            models.
           </p>
 
           <div className="form-grid">
@@ -320,8 +369,8 @@ export function ModelsTab({
               htmlFor="u-probe-select"
               hint={
                 discoveredModels.length === 0
-                  ? 'Fetch models below to enable probe model selection.'
-                  : 'Designated model for health checks and account balance verification.'
+                  ? "Fetch models below to enable probe model selection."
+                  : "Designated model for health checks and account balance verification."
               }
             >
               {discoveredModels.length > 0 ? (
@@ -331,7 +380,10 @@ export function ModelsTab({
                   onChange={(e) => onProbeModelChange(e.target.value)}
                   className="mono"
                 >
-                  <option value="">-- Select Probe Model ({discoveredModels.length} available) --</option>
+                  <option value="">
+                    -- Select Probe Model ({discoveredModels.length} available)
+                    --
+                  </option>
                   {discoveredModels.map((m) => (
                     <option key={m} value={m}>
                       {m}
@@ -364,7 +416,9 @@ export function ModelsTab({
                 disabled={checkingAll}
                 onChange={(e) => {
                   const val = Number(e.target.value);
-                  setConcurrency(Number.isNaN(val) ? 5 : Math.max(1, Math.min(20, val)));
+                  setConcurrency(
+                    Number.isNaN(val) ? 5 : Math.max(1, Math.min(20, val)),
+                  );
                 }}
               />
             </Field>
@@ -375,24 +429,39 @@ export function ModelsTab({
       <div className="card">
         <div className="card-header">
           <h2>Upstream Model Discovery</h2>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <div
+            style={{
+              display: "flex",
+              gap: 8,
+              flexWrap: "wrap",
+              alignItems: "center",
+            }}
+          >
             <button
               type="button"
               className="btn btn-primary"
-              disabled={modelsMutation.isPending || checkingAll || !effectiveBaseUrl}
+              disabled={
+                modelsMutation.isPending || checkingAll || !effectiveBaseUrl
+              }
               onClick={() => void handleFetch()}
             >
               <RefreshCw
                 style={{
                   width: 14,
                   height: 14,
-                  animation: modelsMutation.isPending ? 'spin 1s linear infinite' : 'none',
+                  animation: modelsMutation.isPending
+                    ? "spin 1s linear infinite"
+                    : "none",
                 }}
               />
-              {modelsMutation.isPending ? 'Fetching…' : 'Fetch Models'}
+              {modelsMutation.isPending ? "Fetching…" : "Fetch Models"}
             </button>
             {checkingAll ? (
-              <button type="button" className="btn btn-secondary" onClick={stopChecking}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={stopChecking}
+              >
                 <Square style={{ width: 14, height: 14 }} />
                 Stop check
               </button>
@@ -421,15 +490,29 @@ export function ModelsTab({
         </div>
         <div className="card-body">
           <p className="hint" style={{ marginBottom: 14 }}>
-            Populate the model list, then create gateway routes in the catalog with one click. Each model can be
-            probed with a minimal inference request; saved upstreams pick the credential through the KeyRing&apos;s
-            load-balancing strategy (the key used is reported with the result). Protocols without a model-list
-            endpoint (Antigravity) return their built-in catalog — type any extra id below.
+            Populate the model list, then create gateway routes in the catalog
+            with one click. Each model can be probed with a minimal inference
+            request; saved upstreams pick the credential through the
+            KeyRing&apos;s load-balancing strategy (the key used is reported
+            with the result). Protocols without a model-list endpoint
+            (Antigravity) return their built-in catalog — type any extra id
+            below.
           </p>
 
-          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 16, marginBottom: 12 }}>
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              alignItems: "center",
+              gap: 16,
+              marginBottom: 12,
+            }}
+          >
             {latencyMs !== null && latencyMs > 0 && (
-              <span className="mono" style={{ fontSize: 12, color: 'var(--ok)' }}>
+              <span
+                className="mono"
+                style={{ fontSize: 12, color: "var(--ok)" }}
+              >
                 Response time: {latencyMs}ms
               </span>
             )}
@@ -439,19 +522,26 @@ export function ModelsTab({
                 className="badge warn"
                 title="These ids are not available on this upstream, so they are not routed and not offered as probe models."
               >
-                {unavailableModels.length} refused live: {unavailableModels.join(', ')}
+                {unavailableModels.length} refused live:{" "}
+                {unavailableModels.join(", ")}
               </span>
             )}
 
             {checkProgress && (
-              <span className="mono" style={{ fontSize: 12, color: 'var(--muted)' }}>
-                Progress: {checkProgress.completed} / {checkProgress.total} ({checkProgress.healthy} healthy,{' '}
-                {checkProgress.failed} failed)
+              <span
+                className="mono"
+                style={{ fontSize: 12, color: "var(--muted)" }}
+              >
+                Progress: {checkProgress.completed} / {checkProgress.total} (
+                {checkProgress.healthy} healthy, {checkProgress.failed} failed)
               </span>
             )}
           </div>
 
-          <div className="form-row" style={{ marginTop: 4, marginBottom: 14, alignItems: 'flex-end' }}>
+          <div
+            className="form-row"
+            style={{ marginTop: 4, marginBottom: 14, alignItems: "flex-end" }}
+          >
             <div style={{ flex: 1 }}>
               <Field
                 label="Add a model id manually"
@@ -467,7 +557,7 @@ export function ModelsTab({
                   placeholder="e.g. gemini-3.1-pro-high"
                   onChange={(e) => setManualDraft(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
+                    if (e.key === "Enter") {
                       e.preventDefault();
                       addManualModel();
                     }
@@ -501,24 +591,33 @@ export function ModelsTab({
                 {discoveredModels.length === 0 ? (
                   <tr>
                     <td colSpan={4} className="faint">
-                      No models yet. Click &quot;Fetch Models&quot; to populate the list, or type a model id above.
+                      No models yet. Click &quot;Fetch Models&quot; to populate
+                      the list, or type a model id above.
                     </td>
                   </tr>
                 ) : (
                   discoveredModels.map((m) => {
                     const existingMapping = catalogModels.find(
-                      (cm) => cm.upstream === upstreamName && (cm.upstream_model === m || cm.public_name === m),
+                      (cm) =>
+                        cm.upstream === upstreamName &&
+                        (cm.upstream_model === m || cm.public_name === m),
                     );
-                    const inCatalog = Boolean(existingMapping) || catalogNames.includes(m);
+                    const inCatalog =
+                      Boolean(existingMapping) || catalogNames.includes(m);
                     const check = modelChecks[m];
                     const isProbe = probeModel === m;
                     return (
                       <tr key={m}>
                         <td>
                           <div className="flex items-center gap-2">
-                            <span className="mono font-medium text-ink">{m}</span>
+                            <span className="mono font-medium text-ink">
+                              {m}
+                            </span>
                             {isProbe && (
-                              <Badge tone="info" className="text-[10px] py-0 px-1.5">
+                              <Badge
+                                tone="info"
+                                className="text-[10px] py-0 px-1.5"
+                              >
                                 PROBE
                               </Badge>
                             )}
@@ -532,51 +631,70 @@ export function ModelsTab({
                               </Badge>
                             )}
                           </div>
-                          {existingMapping && existingMapping.public_name !== m ? (
+                          {existingMapping &&
+                          existingMapping.public_name !== m ? (
                             <div className="text-[11px] text-muted font-mono mt-0.5">
                               Mapped as: {existingMapping.public_name}
                             </div>
                           ) : null}
                         </td>
                         <td>
-                          <Badge tone={inCatalog ? 'ok' : 'neutral'}>
-                            {inCatalog ? 'REGISTERED' : 'UNMAPPED'}
+                          <Badge tone={inCatalog ? "ok" : "neutral"}>
+                            {inCatalog ? "REGISTERED" : "UNMAPPED"}
                           </Badge>
                         </td>
                         <td>
-                          {check?.status === 'checking' ? (
+                          {check?.status === "checking" ? (
                             <Badge tone="warn">CHECKING…</Badge>
-                          ) : check?.status === 'ok' ? (
+                          ) : check?.status === "ok" ? (
                             <div className="flex flex-col gap-0.5">
                               <div className="flex items-center gap-1.5">
-                                <Badge tone="ok">HEALTHY{check.code ? ` (${check.code})` : ''}</Badge>
+                                <Badge tone="ok">
+                                  HEALTHY{check.code ? ` (${check.code})` : ""}
+                                </Badge>
                                 {check.latency != null ? (
-                                  <span className="mono text-[11px]" style={{ color: 'var(--ok)' }}>
+                                  <span
+                                    className="mono text-[11px]"
+                                    style={{ color: "var(--ok)" }}
+                                  >
                                     {check.latency}ms
                                   </span>
                                 ) : null}
                               </div>
                               {check.keyRef ? (
-                                <span className="text-[10px] text-faint font-mono truncate" title={check.message}>
+                                <span
+                                  className="text-[10px] text-faint font-mono truncate"
+                                  title={check.message}
+                                >
                                   via {check.keyRef}
                                 </span>
                               ) : check.message ? (
-                                <span className="text-[10px] text-faint truncate max-w-[180px]" title={check.message}>
+                                <span
+                                  className="text-[10px] text-faint truncate max-w-[180px]"
+                                  title={check.message}
+                                >
                                   {check.message}
                                 </span>
                               ) : null}
                             </div>
-                          ) : check?.status === 'fail' ? (
+                          ) : check?.status === "fail" ? (
                             <div className="flex flex-col gap-0.5">
-                              <Badge tone="danger">FAILED{check.code ? ` (${check.code})` : ''}</Badge>
+                              <Badge tone="danger">
+                                FAILED{check.code ? ` (${check.code})` : ""}
+                              </Badge>
                               {check.message ? (
-                                <span className="text-[10px] text-faint truncate max-w-[180px]" title={check.message}>
+                                <span
+                                  className="text-[10px] text-faint truncate max-w-[180px]"
+                                  title={check.message}
+                                >
                                   {check.message}
                                 </span>
                               ) : null}
                             </div>
                           ) : (
-                            <span className="text-faint text-xs">Not checked</span>
+                            <span className="text-faint text-xs">
+                              Not checked
+                            </span>
                           )}
                         </td>
                         <td>
@@ -584,7 +702,11 @@ export function ModelsTab({
                             <button
                               type="button"
                               className="btn btn-secondary"
-                              disabled={checkingAll || check?.status === 'checking' || !effectiveBaseUrl}
+                              disabled={
+                                checkingAll ||
+                                check?.status === "checking" ||
+                                !effectiveBaseUrl
+                              }
                               title="Probe this model with a key picked by the load-balancing strategy"
                               onClick={() => void checkModel(m)}
                             >
@@ -592,7 +714,10 @@ export function ModelsTab({
                                 style={{
                                   width: 13,
                                   height: 13,
-                                  animation: check?.status === 'checking' ? 'spin 1s linear infinite' : 'none',
+                                  animation:
+                                    check?.status === "checking"
+                                      ? "spin 1s linear infinite"
+                                      : "none",
                                 }}
                               />
                               Check
@@ -603,7 +728,7 @@ export function ModelsTab({
                               disabled={inCatalog}
                               onClick={() => onCreateRoute(m)}
                             >
-                              {inCatalog ? 'Registered' : 'Add route'}
+                              {inCatalog ? "Registered" : "Add route"}
                             </button>
                             {manualModels.includes(m) && (
                               <button

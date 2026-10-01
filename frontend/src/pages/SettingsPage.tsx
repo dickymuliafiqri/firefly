@@ -1,34 +1,32 @@
-import { useMemo, useState, useEffect, type FormEvent } from 'react';
-import { Badge } from '@/components/ui/Badge';
-import { Field, Segmented, SwitchRow } from '@/components/ui/Controls';
-import { useAuthStore } from '@/state/auth';
-import { useUiStore } from '@/state/store';
-import { navigate } from '@/lib/router';
+import { useMemo, useState, useEffect, type FormEvent } from "react";
+import { Badge } from "@/components/ui/Badge";
+import { Field, Segmented, SwitchRow } from "@/components/ui/Controls";
+import { useAuthStore } from "@/state/auth";
+import { useUiStore } from "@/state/store";
+import { navigate } from "@/lib/router";
 import {
   useSettingsQuery,
   useWarpStatusQuery,
   useTunnelStatusQuery,
   useToggleTunnelMutation,
-
-
-  useSaveSettingsMutation,
   useRotateWarpMutation,
   logoutApi,
   verifyAuthApi,
   updatePasswordApi,
   useTestTursoMutation,
   ApiError,
-} from '@/services/api';
-import { handleSessionInvalid } from '@/lib/session';
+} from "@/services/api";
+import { useDraftStore, useSettingsView } from "@/state/draftStore";
+import { handleSessionInvalid } from "@/lib/session";
 
 interface DiffRow {
-  kind: 'same' | 'add' | 'del';
+  kind: "same" | "add" | "del";
   text: string;
 }
 
 function buildDiff(a: string, b: string): DiffRow[] {
-  const linesA = a.split('\n');
-  const linesB = b.split('\n');
+  const linesA = a.split("\n");
+  const linesB = b.split("\n");
   const max = Math.max(linesA.length, linesB.length);
   const out: DiffRow[] = [];
 
@@ -36,10 +34,10 @@ function buildDiff(a: string, b: string): DiffRow[] {
     const la = linesA[i];
     const lb = linesB[i];
     if (la === lb) {
-      if (la !== undefined) out.push({ kind: 'same', text: la });
+      if (la !== undefined) out.push({ kind: "same", text: la });
     } else {
-      if (la !== undefined) out.push({ kind: 'del', text: la });
-      if (lb !== undefined) out.push({ kind: 'add', text: lb });
+      if (la !== undefined) out.push({ kind: "del", text: la });
+      if (lb !== undefined) out.push({ kind: "add", text: lb });
     }
   }
   return out;
@@ -78,9 +76,20 @@ function AccessCard() {
     };
   }, [token]);
 
-  const statusTone = authenticated === true ? 'ok' : authenticated === false && token ? 'warn' : 'neutral';
+  const statusTone =
+    authenticated === true
+      ? "ok"
+      : authenticated === false && token
+        ? "warn"
+        : "neutral";
   const statusText =
-    token === '' ? 'NO SESSION' : authenticated === null ? 'CHECKING' : authenticated ? 'AUTHENTICATED' : 'SESSION INVALID';
+    token === ""
+      ? "NO SESSION"
+      : authenticated === null
+        ? "CHECKING"
+        : authenticated
+          ? "AUTHENTICATED"
+          : "SESSION INVALID";
 
   return (
     <div className="card">
@@ -92,10 +101,10 @@ function AccessCard() {
         <div className="form-row form-row-end">
           <span className="hint">
             {authenticated === true
-              ? 'Dashboard session active in this browser.'
+              ? "Dashboard session active in this browser."
               : authenticated === null && token
-                ? 'Checking dashboard session…'
-                : 'No active session. Log in to manage the gateway.'}
+                ? "Checking dashboard session…"
+                : "No active session. Log in to manage the gateway."}
           </span>
           {authenticated ? (
             <button
@@ -106,15 +115,22 @@ function AccessCard() {
                 } finally {
                   clearToken();
                   setAuthenticated(false);
-                  pushToast({ type: 'success', title: 'Logout', message: 'Dashboard session revoked.' });
-                  navigate('login');
+                  pushToast({
+                    type: "success",
+                    title: "Logout",
+                    message: "Dashboard session revoked.",
+                  });
+                  navigate("login");
                 }
               }}
             >
               Logout
             </button>
           ) : (
-            <button className="btn btn-primary" onClick={() => navigate('login')}>
+            <button
+              className="btn btn-primary"
+              onClick={() => navigate("login")}
+            >
               Sign in
             </button>
           )}
@@ -127,8 +143,8 @@ function AccessCard() {
 function PasswordCard() {
   const token = useAuthStore((s) => s.token);
   const pushToast = useUiStore((s) => s.pushToast);
-  const [currentPass, setCurrentPass] = useState('');
-  const [newPass, setNewPass] = useState('');
+  const [currentPass, setCurrentPass] = useState("");
+  const [newPass, setNewPass] = useState("");
   const [saving, setSaving] = useState(false);
 
   async function handleUpdate(e: FormEvent) {
@@ -137,19 +153,27 @@ function PasswordCard() {
     setSaving(true);
     try {
       await updatePasswordApi(currentPass, newPass, token);
-      setCurrentPass('');
-      setNewPass('');
-      pushToast({ type: 'success', title: 'Password updated', message: 'Master password successfully changed.' });
+      setCurrentPass("");
+      setNewPass("");
+      pushToast({
+        type: "success",
+        title: "Password updated",
+        message: "Master password successfully changed.",
+      });
     } catch (err) {
       // 401 dead session is handled by handleSessionInvalid (redirects to login).
       // 401 "incorrect current password" remains displayed here.
-      if (err instanceof ApiError && err.status === 401 && !/incorrect current password/i.test(err.message)) {
+      if (
+        err instanceof ApiError &&
+        err.status === 401 &&
+        !/incorrect current password/i.test(err.message)
+      ) {
         return;
       }
       pushToast({
-        type: 'error',
-        title: 'Failed to change password',
-        message: err instanceof Error ? err.message : 'Unknown error',
+        type: "error",
+        title: "Failed to change password",
+        message: err instanceof Error ? err.message : "Unknown error",
       });
     } finally {
       setSaving(false);
@@ -163,7 +187,11 @@ function PasswordCard() {
         <span className="hint">Change dashboard master password</span>
       </div>
       <div className="card-body">
-        <form onSubmit={handleUpdate} className="stack" style={{ marginTop: 0 }}>
+        <form
+          onSubmit={handleUpdate}
+          className="stack"
+          style={{ marginTop: 0 }}
+        >
           <div className="form-grid">
             <Field label="Current password" htmlFor="curr-pass">
               <input
@@ -187,9 +215,15 @@ function PasswordCard() {
             </Field>
           </div>
           <div className="form-row form-row-end">
-            <span className="hint">Changes are saved directly to the backend.</span>
-            <button type="submit" className="btn btn-primary" disabled={!currentPass || !newPass || saving || !token}>
-              {saving ? 'Saving…' : 'Save'}
+            <span className="hint">
+              Changes are saved directly to the backend.
+            </span>
+            <button
+              type="submit"
+              className="btn btn-primary"
+              disabled={!currentPass || !newPass || saving || !token}
+            >
+              {saving ? "Saving…" : "Save"}
             </button>
           </div>
         </form>
@@ -199,12 +233,11 @@ function PasswordCard() {
 }
 
 function TokenSaverCard() {
-  const settings = useSettingsQuery();
-  const save = useSaveSettingsMutation();
-  const pushToast = useUiStore((s) => s.pushToast);
+  const settings = useSettingsView();
+  const stage = useDraftStore((s) => s.stage);
   const ts = settings.data?.token_saver;
 
-  const savedPrompt = ts?.system_prompt ?? '';
+  const savedPrompt = ts?.system_prompt ?? "";
   const [promptDraft, setPromptDraft] = useState<string | null>(null);
   const promptText = promptDraft ?? savedPrompt;
   const promptDirty = promptDraft !== null && promptText !== savedPrompt;
@@ -213,7 +246,9 @@ function TokenSaverCard() {
     <div className="card">
       <div className="card-header">
         <h2>Token Saver</h2>
-        <Badge tone={ts?.enabled ? 'ok' : 'neutral'}>{ts?.enabled ? 'ENABLED' : 'DISABLED'}</Badge>
+        <Badge tone={ts?.enabled ? "ok" : "neutral"}>
+          {ts?.enabled ? "ENABLED" : "DISABLED"}
+        </Badge>
       </div>
       <div className="card-body">
         <SwitchRow
@@ -221,15 +256,7 @@ function TokenSaverCard() {
           description="Token optimization suite: tool output compression, concise responses, minimal code, and context pruning."
           checked={ts?.enabled ?? false}
           onChange={(v) =>
-            settings.data &&
-            save.mutate(
-              { ...settings.data, token_saver: { ...ts!, enabled: v } },
-              {
-                onSuccess: () =>
-                  pushToast({ type: 'success', title: 'Token Saver', message: `Master switch ${v ? 'enabled' : 'disabled'}.` }),
-                onError: (e) => pushToast({ type: 'error', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown' }),
-              },
-            )
+            settings.data && stage({ token_saver: { ...ts!, enabled: v } })
           }
           ariaLabel="Enable Token Saver"
         />
@@ -239,13 +266,7 @@ function TokenSaverCard() {
           checked={ts?.compress_tool_output ?? false}
           onChange={(v) =>
             settings.data &&
-            save.mutate(
-              { ...settings.data, token_saver: { ...ts!, compress_tool_output: v } },
-              {
-                onSuccess: () => pushToast({ type: 'success', title: 'Token Saver', message: 'RTK synchronized.' }),
-                onError: (e) => pushToast({ type: 'error', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown' }),
-              },
-            )
+            stage({ token_saver: { ...ts!, compress_tool_output: v } })
           }
           ariaLabel="Enable RTK"
         />
@@ -254,14 +275,7 @@ function TokenSaverCard() {
           description="Forces terse assistant responses to save output tokens."
           checked={ts?.terse_output ?? false}
           onChange={(v) =>
-            settings.data &&
-            save.mutate(
-              { ...settings.data, token_saver: { ...ts!, terse_output: v } },
-              {
-                onSuccess: () => pushToast({ type: 'success', title: 'Token Saver', message: 'Caveman synchronized.' }),
-                onError: (e) => pushToast({ type: 'error', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown' }),
-              },
-            )
+            settings.data && stage({ token_saver: { ...ts!, terse_output: v } })
           }
           ariaLabel="Enable Caveman"
         />
@@ -270,14 +284,7 @@ function TokenSaverCard() {
           description="Biases responses toward minimal, patch-style code output."
           checked={ts?.minimal_code ?? false}
           onChange={(v) =>
-            settings.data &&
-            save.mutate(
-              { ...settings.data, token_saver: { ...ts!, minimal_code: v } },
-              {
-                onSuccess: () => pushToast({ type: 'success', title: 'Token Saver', message: 'Ponytail synchronized.' }),
-                onError: (e) => pushToast({ type: 'error', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown' }),
-              },
-            )
+            settings.data && stage({ token_saver: { ...ts!, minimal_code: v } })
           }
           ariaLabel="Enable Ponytail"
         />
@@ -287,22 +294,19 @@ function TokenSaverCard() {
           checked={ts?.compress_context ?? false}
           onChange={(v) =>
             settings.data &&
-            save.mutate(
-              { ...settings.data, token_saver: { ...ts!, compress_context: v } },
-              {
-                onSuccess: () => pushToast({ type: 'success', title: 'Token Saver', message: 'Headroom synchronized.' }),
-                onError: (e) => pushToast({ type: 'error', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown' }),
-              },
-            )
+            stage({ token_saver: { ...ts!, compress_context: v } })
           }
           ariaLabel="Enable Headroom"
         />
 
-        <div style={{ marginTop: 16, borderTop: '1px solid var(--border-subtle, rgba(255,255,255,0.06))', paddingTop: 14 }}>
-          <Field
-            label="System prompt guard"
-            htmlFor="ts-system-prompt"
-          >
+        <div
+          style={{
+            marginTop: 16,
+            borderTop: "1px solid var(--border-subtle, rgba(255,255,255,0.06))",
+            paddingTop: 14,
+          }}
+        >
+          <Field label="System prompt guard" htmlFor="ts-system-prompt">
             <textarea
               id="ts-system-prompt"
               rows={3}
@@ -313,8 +317,16 @@ function TokenSaverCard() {
               onChange={(e) => setPromptDraft(e.target.value)}
             />
           </Field>
-          <div style={{ display: 'flex', gap: 8, marginTop: 10, justifyContent: 'flex-end', alignItems: 'center' }}>
-            <span className="hint" style={{ marginRight: 'auto' }}>
+          <div
+            style={{
+              display: "flex",
+              gap: 8,
+              marginTop: 10,
+              justifyContent: "flex-end",
+              alignItems: "center",
+            }}
+          >
+            <span className="hint" style={{ marginRight: "auto" }}>
               {promptText.length} / 4,000
             </span>
             <button
@@ -328,23 +340,19 @@ function TokenSaverCard() {
             <button
               type="button"
               className="btn btn-primary"
-              disabled={!promptDirty || save.isPending || !settings.data}
+              disabled={!promptDirty || !settings.data}
               onClick={() => {
                 if (!settings.data) return;
-                save.mutate(
-                  { ...settings.data, token_saver: { ...ts!, system_prompt: promptText.trim() } },
-                  {
-                    onSuccess: () => {
-                      setPromptDraft(null);
-                      pushToast({ type: 'success', title: 'System prompt', message: 'Guard directive synchronized.' });
-                    },
-                    onError: (e) =>
-                      pushToast({ type: 'error', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown' }),
+                stage({
+                  token_saver: {
+                    ...ts!,
+                    system_prompt: promptText.trim(),
                   },
-                );
+                });
+                setPromptDraft(null);
               }}
             >
-              {save.isPending ? 'Saving…' : 'Save prompt'}
+              Save prompt
             </button>
           </div>
         </div>
@@ -363,19 +371,21 @@ function WarpCard() {
   // Three states, not two: a warm-up that could not reach Cloudflare is neither a
   // live tunnel nor a healthy idle engine, so it is reported as UNAVAILABLE with
   // the recorded reason instead of the neutral DISABLED badge.
-  const badgeTone = live ? 'ok' : d?.error ? 'warn' : 'neutral';
-  const badgeText = live ? 'ROTATING' : d?.error ? 'UNAVAILABLE' : 'DISABLED';
+  const badgeTone = live ? "ok" : d?.error ? "warn" : "neutral";
+  const badgeText = live ? "ROTATING" : d?.error ? "UNAVAILABLE" : "DISABLED";
 
   const copyIp = (ip: string) => {
     navigator.clipboard.writeText(ip);
-    pushToast({ type: 'success', title: 'IP Copied', message: ip });
+    pushToast({ type: "success", title: "IP Copied", message: ip });
   };
 
   return (
     <div className="card">
       <div className="card-header">
         <h2>Warp Engine</h2>
-        <Badge tone={badgeTone} title={d?.error || undefined}>{badgeText}</Badge>
+        <Badge tone={badgeTone} title={d?.error || undefined}>
+          {badgeText}
+        </Badge>
       </div>
       <div className="card-body">
         <div className="kv-list">
@@ -383,33 +393,71 @@ function WarpCard() {
             <span className="k">Public IP (egress)</span>
             <span className="v">
               {d?.public_ip ? (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ fontFamily: 'var(--font-mono, monospace)', fontWeight: 500 }}>{d.public_ip}</span>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span
+                    style={{
+                      fontFamily: "var(--font-mono, monospace)",
+                      fontWeight: 500,
+                    }}
+                  >
+                    {d.public_ip}
+                  </span>
                   <button
                     type="button"
                     className="btn btn-ghost"
-                    style={{ padding: '2px 8px', fontSize: '0.75rem', height: 'auto' }}
+                    style={{
+                      padding: "2px 8px",
+                      fontSize: "0.75rem",
+                      height: "auto",
+                    }}
                     onClick={() => copyIp(d.public_ip!)}
                   >
                     Copy
                   </button>
                 </div>
               ) : (
-                '—'
+                "—"
               )}
             </span>
           </div>
-          <div><span className="k">Internal IP (tunnel)</span><span className="v">{d?.internal_ip || '—'}</span></div>
-          <div><span className="k">Colo</span><span className="v">{d?.colo || '—'}</span></div>
-          <div><span className="k">Latency</span><span className="v">{d?.latency_ms ? `${d.latency_ms.toFixed(1)}ms` : '—'}</span></div>
-          <div><span className="k">Active connections</span><span className="v">{d?.active_connections ?? '—'}</span></div>
-          <div><span className="k">Auto-rotate interval</span><span className="v">{d?.auto_rotate_interval_seconds ? `${Math.round(d.auto_rotate_interval_seconds / 60)}m` : 'disabled'}</span></div>
+          <div>
+            <span className="k">Internal IP (tunnel)</span>
+            <span className="v">{d?.internal_ip || "—"}</span>
+          </div>
+          <div>
+            <span className="k">Colo</span>
+            <span className="v">{d?.colo || "—"}</span>
+          </div>
+          <div>
+            <span className="k">Latency</span>
+            <span className="v">
+              {d?.latency_ms ? `${d.latency_ms.toFixed(1)}ms` : "—"}
+            </span>
+          </div>
+          <div>
+            <span className="k">Active connections</span>
+            <span className="v">{d?.active_connections ?? "—"}</span>
+          </div>
+          <div>
+            <span className="k">Auto-rotate interval</span>
+            <span className="v">
+              {d?.auto_rotate_interval_seconds
+                ? `${Math.round(d.auto_rotate_interval_seconds / 60)}m`
+                : "disabled"}
+            </span>
+          </div>
           <div>
             <span className="k">Next rotation</span>
-            <span className="v">{d?.next_rotation_at ? new Date(d.next_rotation_at).toLocaleTimeString() : '—'}</span>
+            <span className="v">
+              {d?.next_rotation_at
+                ? new Date(d.next_rotation_at).toLocaleTimeString()
+                : "—"}
+            </span>
           </div>
         </div>
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14 }}>
+        <div
+          style={{ display: "flex", justifyContent: "flex-end", marginTop: 14 }}
+        >
           <button
             className="btn btn-secondary"
             disabled={rotate.isPending}
@@ -417,17 +465,22 @@ function WarpCard() {
               rotate.mutate(undefined, {
                 onSuccess: () =>
                   pushToast({
-                    type: 'success',
-                    title: 'WARP rotate',
+                    type: "success",
+                    title: "WARP rotate",
                     message: live
-                      ? 'New egress session created; old session is draining.'
-                      : 'WARP tunnel established on the first available egress.',
+                      ? "New egress session created; old session is draining."
+                      : "WARP tunnel established on the first available egress.",
                   }),
-                onError: (e) => pushToast({ type: 'error', title: 'Rotate failed', message: e instanceof Error ? e.message : 'Unknown' }),
+                onError: (e) =>
+                  pushToast({
+                    type: "error",
+                    title: "Rotate failed",
+                    message: e instanceof Error ? e.message : "Unknown",
+                  }),
               })
             }
           >
-            {live ? 'Rotate now' : 'Start tunnel'}
+            {live ? "Rotate now" : "Start tunnel"}
           </button>
         </div>
 
@@ -435,19 +488,27 @@ function WarpCard() {
           <div
             style={{
               marginTop: 12,
-              padding: '10px 14px',
-              borderRadius: 'var(--radius, 6px)',
-              background: 'rgba(239, 68, 68, 0.1)',
-              border: '1px solid rgba(239, 68, 68, 0.3)',
-              color: 'var(--color-error, #ef4444)',
-              fontSize: '0.85rem',
-              display: 'flex',
-              flexDirection: 'column',
+              padding: "10px 14px",
+              borderRadius: "var(--radius, 6px)",
+              background: "rgba(239, 68, 68, 0.1)",
+              border: "1px solid rgba(239, 68, 68, 0.3)",
+              color: "var(--color-error, #ef4444)",
+              fontSize: "0.85rem",
+              display: "flex",
+              flexDirection: "column",
               gap: 4,
             }}
           >
             <strong>WARP error:</strong>
-            <span style={{ wordBreak: 'break-word', fontFamily: 'var(--font-mono, monospace)', fontSize: '0.8rem' }}>{d.error}</span>
+            <span
+              style={{
+                wordBreak: "break-word",
+                fontFamily: "var(--font-mono, monospace)",
+                fontSize: "0.8rem",
+              }}
+            >
+              {d.error}
+            </span>
           </div>
         )}
       </div>
@@ -461,68 +522,75 @@ function TunnelCard() {
   const pushToast = useUiStore((s) => s.pushToast);
   const d = tunnel.data;
 
-  const [mode, setMode] = useState<'quick' | 'named'>('quick');
-  const [token, setToken] = useState('');
+  const [mode, setMode] = useState<"quick" | "named">("quick");
+  const [token, setToken] = useState("");
   const [showConfig, setShowConfig] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   useEffect(() => {
-    if (d?.mode === 'named') {
-      setMode('named');
+    if (d?.mode === "named") {
+      setMode("named");
     }
   }, [d?.mode]);
 
   const isOnline = d?.running && !!d?.public_url;
   const isStarting = d?.running && !d?.public_url;
   const isDownloading = !!d?.downloading;
-  const statusTone = isOnline ? 'ok' : (isDownloading || isStarting) ? 'warn' : 'neutral';
+  const statusTone = isOnline
+    ? "ok"
+    : isDownloading || isStarting
+      ? "warn"
+      : "neutral";
   const statusLabel = isOnline
-    ? 'ONLINE'
+    ? "ONLINE"
     : isDownloading
-    ? 'DOWNLOADING'
-    : isStarting
-    ? 'STARTING'
-    : d?.running
-    ? 'RUNNING'
-    : 'STOPPED';
+      ? "DOWNLOADING"
+      : isStarting
+        ? "STARTING"
+        : d?.running
+          ? "RUNNING"
+          : "STOPPED";
 
   const copyUrl = () => {
     if (!d?.public_url) return;
     navigator.clipboard.writeText(d.public_url);
-    pushToast({ type: 'success', title: 'URL Copied', message: d.public_url });
+    pushToast({ type: "success", title: "URL Copied", message: d.public_url });
   };
 
   const handleToggle = (enabled: boolean) => {
     setErrorMessage(null);
     toggle.mutate(
-      { enabled, mode, token: mode === 'named' ? token : undefined },
+      { enabled, mode, token: mode === "named" ? token : undefined },
       {
         onSuccess: (res) => {
           setErrorMessage(null);
           if (res.running) {
             pushToast({
-              type: 'success',
-              title: 'Tunnel Enabled',
-              message: res.mode === 'quick' ? 'Starting quick tunnel (trycloudflare.com)...' : 'Starting named tunnel...',
+              type: "success",
+              title: "Tunnel Enabled",
+              message:
+                res.mode === "quick"
+                  ? "Starting quick tunnel (trycloudflare.com)..."
+                  : "Starting named tunnel...",
             });
           } else {
             pushToast({
-              type: 'info',
-              title: 'Tunnel Disabled',
-              message: 'Tunnel ingress successfully disabled.',
+              type: "info",
+              title: "Tunnel Disabled",
+              message: "Tunnel ingress successfully disabled.",
             });
           }
         },
         onError: (err) => {
-          const msg = err instanceof Error ? err.message : 'Unknown error';
+          const msg = err instanceof Error ? err.message : "Unknown error";
           setErrorMessage(msg);
           pushToast({
-            type: 'error',
-            title: 'Failed to Change Tunnel Status',
+            type: "error",
+            title: "Failed to Change Tunnel Status",
             message: msg,
           });
         },
-      }
+      },
     );
   };
 
@@ -531,7 +599,9 @@ function TunnelCard() {
       <div className="card-header">
         <div>
           <h2>Cloudflare Tunnel</h2>
-          <span className="hint">Native Ingress Engine (remote public access)</span>
+          <span className="hint">
+            Native Ingress Engine (remote public access)
+          </span>
         </div>
         <Badge tone={statusTone}>{statusLabel}</Badge>
       </div>
@@ -547,42 +617,62 @@ function TunnelCard() {
         <div className="kv-list" style={{ marginTop: 14 }}>
           <div>
             <span className="k">Operation mode</span>
-            <span className="v">{d?.mode ? d.mode.toUpperCase() : 'DISABLED'}</span>
+            <span className="v">
+              {d?.mode ? d.mode.toUpperCase() : "DISABLED"}
+            </span>
           </div>
           <div>
             <span className="k">Process status</span>
-            <span className="v">{d?.downloading ? 'Downloading binary…' : d?.running ? (isStarting ? 'Starting…' : 'Running') : 'Stopped'}</span>
+            <span className="v">
+              {d?.downloading
+                ? "Downloading binary…"
+                : d?.running
+                  ? isStarting
+                    ? "Starting…"
+                    : "Running"
+                  : "Stopped"}
+            </span>
           </div>
           <div>
             <span className="k">Target local URL</span>
-            <span className="v">{d?.local_url || '—'}</span>
+            <span className="v">{d?.local_url || "—"}</span>
           </div>
           <div>
             <span className="k">Public tunnel URL</span>
             <span className="v">
               {d?.public_url ? (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <a
                     href={d.public_url}
                     target="_blank"
                     rel="noreferrer"
-                    style={{ color: 'var(--color-primary, #3b82f6)', textDecoration: 'underline', wordBreak: 'break-all' }}
+                    style={{
+                      color: "var(--color-primary, #3b82f6)",
+                      textDecoration: "underline",
+                      wordBreak: "break-all",
+                    }}
                   >
                     {d.public_url}
                   </a>
                   <button
                     type="button"
                     className="btn btn-ghost"
-                    style={{ padding: '2px 8px', fontSize: '0.75rem', height: 'auto' }}
+                    style={{
+                      padding: "2px 8px",
+                      fontSize: "0.75rem",
+                      height: "auto",
+                    }}
                     onClick={copyUrl}
                   >
                     Copy
                   </button>
                 </div>
               ) : isStarting ? (
-                <span style={{ color: 'var(--color-text-muted, #888)' }}>Generating public URL…</span>
+                <span style={{ color: "var(--color-text-muted, #888)" }}>
+                  Generating public URL…
+                </span>
               ) : (
-                '—'
+                "—"
               )}
             </span>
           </div>
@@ -592,27 +682,41 @@ function TunnelCard() {
           <div
             style={{
               marginTop: 12,
-              padding: '10px 14px',
-              borderRadius: 'var(--radius, 6px)',
-              background: 'rgba(59, 130, 246, 0.08)',
-              border: '1px solid rgba(59, 130, 246, 0.25)',
-              color: 'var(--color-primary, #3b82f6)',
-              fontSize: '0.85rem',
+              padding: "10px 14px",
+              borderRadius: "var(--radius, 6px)",
+              background: "rgba(59, 130, 246, 0.08)",
+              border: "1px solid rgba(59, 130, 246, 0.25)",
+              color: "var(--color-primary, #3b82f6)",
+              fontSize: "0.85rem",
             }}
           >
-            Automatically downloading official <code>cloudflared</code> binary to the Firefly directory... Please wait a moment.
+            Automatically downloading official <code>cloudflared</code> binary
+            to the Firefly directory... Please wait a moment.
           </div>
         )}
 
         {/* Configuration drawer / collapse */}
-        <div style={{ marginTop: 14, borderTop: '1px solid var(--border-subtle, rgba(255,255,255,0.06))', paddingTop: 10 }}>
+        <div
+          style={{
+            marginTop: 14,
+            borderTop: "1px solid var(--border-subtle, rgba(255,255,255,0.06))",
+            paddingTop: 10,
+          }}
+        >
           <button
             type="button"
             className="btn btn-ghost"
-            style={{ fontSize: '0.8rem', padding: '3px 8px', height: 'auto', marginBottom: 6 }}
+            style={{
+              fontSize: "0.8rem",
+              padding: "3px 8px",
+              height: "auto",
+              marginBottom: 6,
+            }}
             onClick={() => setShowConfig(!showConfig)}
           >
-            {showConfig ? 'Hide Mode & Token Settings' : 'Configure Mode & Token…'}
+            {showConfig
+              ? "Hide Mode & Token Settings"
+              : "Configure Mode & Token…"}
           </button>
 
           {showConfig && (
@@ -622,15 +726,19 @@ function TunnelCard() {
                   id="tunnel-mode"
                   value={mode}
                   disabled={d?.running}
-                  onChange={(e) => setMode(e.target.value as 'quick' | 'named')}
-                  style={{ width: '100%' }}
+                  onChange={(e) => setMode(e.target.value as "quick" | "named")}
+                  style={{ width: "100%" }}
                 >
-                  <option value="quick">Quick Tunnel (Zero config trycloudflare.com)</option>
-                  <option value="named">Named Tunnel (Production Cloudflare Token)</option>
+                  <option value="quick">
+                    Quick Tunnel (Zero config trycloudflare.com)
+                  </option>
+                  <option value="named">
+                    Named Tunnel (Production Cloudflare Token)
+                  </option>
                 </select>
               </Field>
 
-              {mode === 'named' && (
+              {mode === "named" && (
                 <Field label="Cloudflare Tunnel Token" htmlFor="tunnel-token">
                   <input
                     id="tunnel-token"
@@ -650,22 +758,40 @@ function TunnelCard() {
           <div
             style={{
               marginTop: 12,
-              padding: '10px 14px',
-              borderRadius: 'var(--radius, 6px)',
-              background: 'rgba(239, 68, 68, 0.1)',
-              border: '1px solid rgba(239, 68, 68, 0.3)',
-              color: 'var(--color-error, #ef4444)',
-              fontSize: '0.85rem',
-              display: 'flex',
-              flexDirection: 'column',
+              padding: "10px 14px",
+              borderRadius: "var(--radius, 6px)",
+              background: "rgba(239, 68, 68, 0.1)",
+              border: "1px solid rgba(239, 68, 68, 0.3)",
+              color: "var(--color-error, #ef4444)",
+              fontSize: "0.85rem",
+              display: "flex",
+              flexDirection: "column",
               gap: 4,
             }}
           >
             <strong>Error:</strong>
-            <span style={{ wordBreak: 'break-word', fontFamily: 'var(--font-mono, monospace)', fontSize: '0.8rem' }}>{errorMessage}</span>
-            {errorMessage.toLowerCase().includes('cloudflared') && (
-              <span style={{ color: 'var(--color-text-muted, #888)', fontSize: '0.8rem', marginTop: 4 }}>
-                Ensure the <code>cloudflared</code> binary is installed on the host server and registered in the system PATH (e.g. download from Cloudflare, or via <code>winget install Cloudflare.cloudflared</code> / <code>brew install cloudflared</code>).
+            <span
+              style={{
+                wordBreak: "break-word",
+                fontFamily: "var(--font-mono, monospace)",
+                fontSize: "0.8rem",
+              }}
+            >
+              {errorMessage}
+            </span>
+            {errorMessage.toLowerCase().includes("cloudflared") && (
+              <span
+                style={{
+                  color: "var(--color-text-muted, #888)",
+                  fontSize: "0.8rem",
+                  marginTop: 4,
+                }}
+              >
+                Ensure the <code>cloudflared</code> binary is installed on the
+                host server and registered in the system PATH (e.g. download
+                from Cloudflare, or via{" "}
+                <code>winget install Cloudflare.cloudflared</code> /{" "}
+                <code>brew install cloudflared</code>).
               </span>
             )}
           </div>
@@ -677,13 +803,16 @@ function TunnelCard() {
 
 function GatewayCard() {
   const settings = useSettingsQuery();
-  const save = useSaveSettingsMutation();
+  const replaceAll = useDraftStore((s) => s.replaceAll);
   const pushToast = useUiStore((s) => s.pushToast);
-  const [panel, setPanel] = useState('gw-form');
+  const [panel, setPanel] = useState("gw-form");
   const [draft, setDraft] = useState<string | null>(null);
   const [diffOpen, setDiffOpen] = useState(false);
 
-  const original = useMemo(() => JSON.stringify(settings.data, null, 2), [settings.data]);
+  const original = useMemo(
+    () => JSON.stringify(settings.data, null, 2),
+    [settings.data],
+  );
   const text = draft ?? original;
 
   return (
@@ -692,8 +821,8 @@ function GatewayCard() {
         <h2>Gateway configuration</h2>
         <Segmented
           items={[
-            { id: 'gw-form', label: 'Overview' },
-            { id: 'gw-raw', label: 'Raw JSON' },
+            { id: "gw-form", label: "Overview" },
+            { id: "gw-raw", label: "Raw JSON" },
           ]}
           value={panel}
           onChange={setPanel}
@@ -701,29 +830,45 @@ function GatewayCard() {
         />
       </div>
 
-      {panel === 'gw-form' ? (
+      {panel === "gw-form" ? (
         <div className="card-body">
           <div className="kv-list">
-            <div><span className="k">Upstreams</span><span className="v">{settings.data?.upstreams.length ?? '—'}</span></div>
-            <div><span className="k">Models</span><span className="v">{settings.data?.models.length ?? '—'}</span></div>
-            <div><span className="k">Combos</span><span className="v">{settings.data?.combos?.length ?? '—'}</span></div>
-            <div><span className="k">Tenants</span><span className="v">{settings.data?.tenants.length ?? '—'}</span></div>
+            <div>
+              <span className="k">Upstreams</span>
+              <span className="v">
+                {settings.data?.upstreams.length ?? "—"}
+              </span>
+            </div>
+            <div>
+              <span className="k">Models</span>
+              <span className="v">{settings.data?.models.length ?? "—"}</span>
+            </div>
+            <div>
+              <span className="k">Combos</span>
+              <span className="v">{settings.data?.combos?.length ?? "—"}</span>
+            </div>
+            <div>
+              <span className="k">Tenants</span>
+              <span className="v">{settings.data?.tenants.length ?? "—"}</span>
+            </div>
             <div>
               <span className="k">Authoritative lists</span>
               <span className="v">
                 {[
-                  settings.data?.manage_upstreams && 'upstreams',
-                  settings.data?.manage_models && 'models',
-                  settings.data?.manage_combos && 'combos',
-                  settings.data?.manage_tenants && 'tenants',
+                  settings.data?.manage_upstreams && "upstreams",
+                  settings.data?.manage_models && "models",
+                  settings.data?.manage_combos && "combos",
+                  settings.data?.manage_tenants && "tenants",
                 ]
                   .filter(Boolean)
-                  .join(', ') || '—'}
+                  .join(", ") || "—"}
               </span>
             </div>
             <div>
               <span className="k">Storage engine</span>
-              <span className="v">{settings.data?.storage_engine || 'file'}</span>
+              <span className="v">
+                {settings.data?.storage_engine || "file"}
+              </span>
             </div>
           </div>
         </div>
@@ -738,7 +883,14 @@ function GatewayCard() {
               onChange={(e) => setDraft(e.target.value)}
             />
           </Field>
-          <div style={{ display: 'flex', gap: 8, marginTop: 14, justifyContent: 'flex-end' }}>
+          <div
+            style={{
+              display: "flex",
+              gap: 8,
+              marginTop: 14,
+              justifyContent: "flex-end",
+            }}
+          >
             <button
               className="btn btn-ghost"
               disabled={draft === null}
@@ -755,41 +907,57 @@ function GatewayCard() {
             </button>
             <button
               className="btn btn-primary"
-              disabled={draft === null || save.isPending}
+              disabled={draft === null}
               onClick={() => {
                 try {
-                  const parsed = JSON.parse(text) as Parameters<typeof save.mutate>[0];
-                  save.mutate(parsed, {
-                    onSuccess: () => {
-                      setDraft(null);
-                      pushToast({ type: 'success', title: 'Settings saved', message: 'Configuration synchronized.' });
-                    },
-                    onError: (e) =>
-                      pushToast({
-                        type: 'error',
-                        title: e instanceof Error && 'status' in e && (e as { status?: number }).status === 409 ? 'Conflict (409)' : 'Save failed',
-                        message: e instanceof Error ? e.message : 'Unknown',
-                      }),
+                  const parsed = JSON.parse(text) as Parameters<
+                    typeof replaceAll
+                  >[0];
+                  replaceAll(parsed);
+                  setDraft(null);
+                  pushToast({
+                    type: "success",
+                    title: "Changes staged",
+                    message:
+                      "Working copy replaced. Commit from the pending-changes bar.",
                   });
                 } catch {
-                  pushToast({ type: 'error', title: 'Invalid JSON', message: 'Fix syntax errors before saving.' });
+                  pushToast({
+                    type: "error",
+                    title: "Invalid JSON",
+                    message: "Fix syntax errors before saving.",
+                  });
                 }
               }}
             >
-              Save
+              Apply
             </button>
           </div>
         </div>
       )}
 
-      {diffOpen ? <DiffModal original={original} draft={text} onClose={() => setDiffOpen(false)} /> : null}
+      {diffOpen ? (
+        <DiffModal
+          original={original}
+          draft={text}
+          onClose={() => setDiffOpen(false)}
+        />
+      ) : null}
     </div>
   );
 }
 
-function DiffModal({ original, draft, onClose }: { original: string; draft: string; onClose: () => void }) {
+function DiffModal({
+  original,
+  draft,
+  onClose,
+}: {
+  original: string;
+  draft: string;
+  onClose: () => void;
+}) {
   const rows = useMemo(() => buildDiff(original, draft), [original, draft]);
-  const changed = rows.filter((r) => r.kind !== 'same').length;
+  const changed = rows.filter((r) => r.kind !== "same").length;
 
   return (
     <div className="modal-backdrop" onClick={onClose} role="presentation">
@@ -802,16 +970,18 @@ function DiffModal({ original, draft, onClose }: { original: string; draft: stri
       >
         <div className="modal-header">
           <h2>Configuration diff</h2>
-          <Badge tone={changed === 0 ? 'ok' : 'warn'}>
-            {changed === 0 ? 'IDENTICAL' : `${changed} CHANGED LINES`}
+          <Badge tone={changed === 0 ? "ok" : "warn"}>
+            {changed === 0 ? "IDENTICAL" : `${changed} CHANGED LINES`}
           </Badge>
         </div>
         <div className="modal-body">
           <pre className="diff-view">
             {rows.map((r, i) => (
               <div key={i} className={`diff-line ${r.kind}`}>
-                <span className="diff-mark">{r.kind === 'add' ? '+' : r.kind === 'del' ? '-' : ' '}</span>
-                <span>{r.text || ' '}</span>
+                <span className="diff-mark">
+                  {r.kind === "add" ? "+" : r.kind === "del" ? "-" : " "}
+                </span>
+                <span>{r.text || " "}</span>
               </div>
             ))}
           </pre>
@@ -827,56 +997,59 @@ function DiffModal({ original, draft, onClose }: { original: string; draft: stri
 }
 
 function TursoCard() {
-  const settings = useSettingsQuery();
-  const save = useSaveSettingsMutation();
+  const settings = useSettingsView();
+  const stage = useDraftStore((s) => s.stage);
   const test = useTestTursoMutation();
   const pushToast = useUiStore((s) => s.pushToast);
 
   const turso = settings.data?.turso;
-  const [url, setUrl] = useState(turso?.database_url ?? '');
-  const [token, setToken] = useState(turso?.auth_token ?? '');
+  const [url, setUrl] = useState(turso?.database_url ?? "");
+  const [token, setToken] = useState(turso?.auth_token ?? "");
 
   useEffect(() => {
     if (turso) {
-      setUrl(turso.database_url ?? '');
-      setToken(turso.auth_token ?? '');
+      setUrl(turso.database_url ?? "");
+      setToken(turso.auth_token ?? "");
     }
   }, [turso]);
 
   async function handleTest() {
     try {
-      const res = await test.mutateAsync({ database_url: url, auth_token: token });
+      const res = await test.mutateAsync({
+        database_url: url,
+        auth_token: token,
+      });
       pushToast({
-        type: res.ok ? 'success' : 'error',
-        title: res.ok ? 'Connection successful' : 'Connection failed',
-        message: res.message || (res.ok ? 'Turso database is accessible.' : 'Failed to connect to Turso.'),
+        type: res.ok ? "success" : "error",
+        title: res.ok ? "Connection successful" : "Connection failed",
+        message:
+          res.message ||
+          (res.ok
+            ? "Turso database is accessible."
+            : "Failed to connect to Turso."),
       });
     } catch (err) {
       pushToast({
-        type: 'error',
-        title: 'Test failed',
-        message: err instanceof Error ? err.message : 'Unknown error',
+        type: "error",
+        title: "Test failed",
+        message: err instanceof Error ? err.message : "Unknown error",
       });
     }
   }
 
   function handleSave() {
     if (!settings.data) return;
-    save.mutate(
-      { ...settings.data, turso: { ...turso, database_url: url, auth_token: token } },
-      {
-        onSuccess: () => pushToast({ type: 'success', title: 'Turso saved', message: 'Database configuration updated.' }),
-        onError: (e) => pushToast({ type: 'error', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown' }),
-      },
-    );
+    stage({
+      turso: { ...turso, database_url: url, auth_token: token },
+    });
   }
 
   return (
     <div className="card">
       <div className="card-header">
         <h2>Turso Database</h2>
-        <Badge tone={turso?.database_url ? 'ok' : 'neutral'}>
-          {turso?.database_url ? 'CONFIGURED' : 'NOT SET'}
+        <Badge tone={turso?.database_url ? "ok" : "neutral"}>
+          {turso?.database_url ? "CONFIGURED" : "NOT SET"}
         </Badge>
       </div>
       <div className="card-body">
@@ -901,22 +1074,22 @@ function TursoCard() {
         </div>
         <div className="form-row form-row-end" style={{ marginTop: 14 }}>
           <span className="hint">Test connection before saving.</span>
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: "flex", gap: 8 }}>
             <button
               type="button"
               className="btn btn-secondary"
               disabled={!url.trim() || test.isPending}
               onClick={() => void handleTest()}
             >
-              {test.isPending ? 'Testing…' : 'Test'}
+              {test.isPending ? "Testing…" : "Test"}
             </button>
             <button
               type="button"
               className="btn btn-primary"
-              disabled={!url.trim() || save.isPending}
+              disabled={!url.trim()}
               onClick={handleSave}
             >
-              {save.isPending ? 'Saving…' : 'Save'}
+              Save
             </button>
           </div>
         </div>
@@ -926,39 +1099,33 @@ function TursoCard() {
 }
 
 function AutoTLSCard() {
-  const settings = useSettingsQuery();
-  const save = useSaveSettingsMutation();
-  const pushToast = useUiStore((s) => s.pushToast);
-
+  const settings = useSettingsView();
+  const stage = useDraftStore((s) => s.stage);
   const tls = settings.data?.auto_tls;
-  const [domain, setDomain] = useState(tls?.domain ?? '');
-  const [email, setEmail] = useState(tls?.email ?? '');
+  const [domain, setDomain] = useState(tls?.domain ?? "");
+  const [email, setEmail] = useState(tls?.email ?? "");
   const [enabled, setEnabled] = useState(tls?.enabled ?? false);
 
   useEffect(() => {
     if (tls) {
-      setDomain(tls.domain ?? '');
-      setEmail(tls.email ?? '');
+      setDomain(tls.domain ?? "");
+      setEmail(tls.email ?? "");
       setEnabled(tls.enabled);
     }
   }, [tls]);
 
   function handleSave() {
     if (!settings.data) return;
-    save.mutate(
-      { ...settings.data, auto_tls: { enabled, domain, email } },
-      {
-        onSuccess: () => pushToast({ type: 'success', title: 'AutoTLS saved', message: 'Certificate configuration updated.' }),
-        onError: (e) => pushToast({ type: 'error', title: 'Save failed', message: e instanceof Error ? e.message : 'Unknown' }),
-      },
-    );
+    stage({ auto_tls: { enabled, domain, email } });
   }
 
   return (
     <div className="card">
       <div className="card-header">
         <h2>AutoTLS</h2>
-        <Badge tone={enabled ? 'ok' : 'neutral'}>{enabled ? 'ENABLED' : 'DISABLED'}</Badge>
+        <Badge tone={enabled ? "ok" : "neutral"}>
+          {enabled ? "ENABLED" : "DISABLED"}
+        </Badge>
       </div>
       <div className="card-body">
         <div className="form-grid">
@@ -981,7 +1148,14 @@ function AutoTLSCard() {
           </Field>
         </div>
         <div className="form-row form-row-end" style={{ marginTop: 14 }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              cursor: "pointer",
+            }}
+          >
             <input
               type="checkbox"
               checked={enabled}
@@ -992,10 +1166,9 @@ function AutoTLSCard() {
           <button
             type="button"
             className="btn btn-primary"
-            disabled={save.isPending}
             onClick={handleSave}
           >
-            {save.isPending ? 'Saving…' : 'Save'}
+            Save
           </button>
         </div>
       </div>

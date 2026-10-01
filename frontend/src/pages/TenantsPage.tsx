@@ -3,13 +3,9 @@ import { Badge } from "@/components/ui/Badge";
 import { Drawer } from "@/components/ui/Drawer";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { QueryGate } from "@/components/ui/QueryGate";
-import {
-  useSettingsQuery,
-  useSaveSettingsSmart,
-  withSettings,
-  useTopupTenantMutation,
-} from "@/services/api";
+import { useTopupTenantMutation } from "@/services/api";
 import type { TenantDTO } from "@/services/schema";
+import { useDraftStore, useSettingsView } from "@/state/draftStore";
 import { useUiStore } from "@/state/store";
 
 const STATUS_TONE: Record<string, "ok" | "warn" | "danger" | "neutral"> = {
@@ -149,9 +145,8 @@ interface TenantFormProps {
 }
 
 function TenantForm({ editing, onClose }: TenantFormProps) {
-  const settings = useSettingsQuery();
-  const save = useSaveSettingsSmart();
-  const pushToast = useUiStore((s) => s.pushToast);
+  const settings = useSettingsView();
+  const stage = useDraftStore((s) => s.stage);
 
   const [name, setName] = useState("");
   const [apiKey, setApiKey] = useState("");
@@ -210,23 +205,7 @@ function TenantForm({ editing, onClose }: TenantFormProps) {
         : {}),
     };
     const others = settings.data.tenants.filter((t) => t.name !== entry.name);
-    const next = withSettings(settings.data, { tenants: [...others, entry] });
-    save.mutate(next, {
-      onSuccess: (d) =>
-        pushToast({
-          type: "success",
-          title: editing ? "Tenant updated" : "Tenant created",
-          message: d.local
-            ? "Demo mode: changes are local to browser only."
-            : "Catalog synchronized.",
-        }),
-      onError: (e) =>
-        pushToast({
-          type: "error",
-          title: "Save failed",
-          message: e instanceof Error ? e.message : "Unknown",
-        }),
-    });
+    stage({ tenants: [...others, entry] });
     onClose();
   }
 
@@ -342,7 +321,7 @@ function TenantForm({ editing, onClose }: TenantFormProps) {
         </button>
         <button
           className="btn btn-primary"
-          disabled={!name.trim() || save.isPending}
+          disabled={!name.trim()}
           onClick={submit}
         >
           {editing ? "Save changes" : "Create tenant"}
@@ -353,8 +332,8 @@ function TenantForm({ editing, onClose }: TenantFormProps) {
 }
 
 export function TenantsPage() {
-  const settings = useSettingsQuery();
-  const save = useSaveSettingsSmart();
+  const settings = useSettingsView();
+  const stage = useDraftStore((s) => s.stage);
   const pushToast = useUiStore((s) => s.pushToast);
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<TenantDTO | null>(null);
@@ -398,48 +377,17 @@ export function TenantsPage() {
   function toggleStatus(t: TenantDTO) {
     if (!settings.data) return;
     const nextStatus = String(t.status) === "active" ? "suspended" : "active";
-    const next = withSettings(settings.data, {
+    stage({
       tenants: settings.data.tenants.map((x) =>
         x.name === t.name ? { ...x, status: nextStatus } : x,
       ),
-    });
-    save.mutate(next, {
-      onSuccess: () =>
-        pushToast({
-          type: "success",
-          title:
-            nextStatus === "active" ? "Tenant activated" : "Tenant suspended",
-          message: `${t.name} → ${nextStatus}.`,
-        }),
-      onError: (e) =>
-        pushToast({
-          type: "error",
-          title: "Failed",
-          message: e instanceof Error ? e.message : "Unknown",
-        }),
     });
   }
 
   function deleteTenant(name: string) {
     if (!settings.data) return;
-    const next = withSettings(settings.data, {
+    stage({
       tenants: settings.data.tenants.filter((t) => t.name !== name),
-    });
-    save.mutate(next, {
-      onSuccess: (d) =>
-        pushToast({
-          type: "success",
-          title: "Tenant deleted",
-          message: d.local
-            ? "Demo mode: changes are local to browser only."
-            : "Catalog synchronized.",
-        }),
-      onError: (e) =>
-        pushToast({
-          type: "error",
-          title: "Save failed",
-          message: e instanceof Error ? e.message : "Unknown",
-        }),
     });
   }
 

@@ -8,6 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "check:connect": "esbuild scripts/connect-check.ts --bundle --platform=node --format=cjs --outfile=node_modules/.cache/connect-check.cjs --alias:@=./src --jsx=automatic --loader:.css=empty --log-level=warning && node node_modules/.cache/connect-check.cjs",
     "check:line-view": "esbuild scripts/line-view-check.tsx --bundle --platform=node --format=cjs --outfile=node_modules/.cache/line-view-check.cjs --alias:@=./src --jsx=automatic --loader:.css=empty --log-level=warning && node node_modules/.cache/line-view-check.cjs"
   },
@@ -29,9 +30,11 @@
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^4.7.0",
     "autoprefixer": "^10.4.19",
+    "jsdom": "^30.1.1",
     "postcss": "^8.4.38",
     "tailwindcss": "^3.4.1",
     "typescript": "^5.4.3",
-    "vite": "^6.4.3"
+    "vite": "^6.4.3",
+    "vitest": "^5.0.3"
   }
 }

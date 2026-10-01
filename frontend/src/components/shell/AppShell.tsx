@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { SkyBackground } from "@/components/shell/SkyBackground";
 import { Sidebar } from "@/components/shell/Sidebar";
 import { Topbar } from "@/components/shell/Topbar";
+import { PendingChangesBar } from "@/components/shell/PendingChangesBar";
 import { ToastHost } from "@/components/ui/ToastHost";
 import { SIDEBAR_GROUPS } from "@/registry";
 
@@ -30,6 +31,7 @@ export function AppShell({ page, children }: AppShellProps) {
       </div>
 
       <ToastHost />
+      <PendingChangesBar />
     </div>
   );
 }

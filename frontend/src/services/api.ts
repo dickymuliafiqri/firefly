@@ -7,7 +7,12 @@
  * MOCK PAYLOADS defined at the bottom of this module so the UI can still be reviewed;
  * real ApiErrors (401/409/5xx) are still forwarded to the UI.
  */
-import { QueryClient, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import {
+  QueryClient,
+  useQuery,
+  useMutation,
+  useQueryClient,
+} from "@tanstack/react-query";
 import type {
   SettingsDTO,
   HealthStatus,
@@ -36,10 +41,10 @@ import type {
   TursoDTO,
   ProviderRecordDTO,
   ProviderQuotaResponseDTO,
-} from './schema';
+} from "./schema";
 
-import { getAdminToken } from '@/state/auth';
-import { handleSessionInvalid } from '@/lib/session';
+import { getAdminToken } from "@/state/auth";
+import { handleSessionInvalid } from "@/lib/session";
 
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -52,7 +57,7 @@ export const queryClient = new QueryClient({
   },
 });
 
-const BASE_URL = '';
+const BASE_URL = "";
 
 export class ApiError extends Error {
   status: number;
@@ -60,7 +65,7 @@ export class ApiError extends Error {
 
   constructor(status: number, message: string, type?: string) {
     super(message);
-    this.name = 'ApiError';
+    this.name = "ApiError";
     this.status = status;
     this.type = type;
   }
@@ -80,7 +85,7 @@ let gatewayProbe: Promise<boolean> | null = null;
 
 export function hasGateway(): Promise<boolean> {
   if (!gatewayProbe) {
-    gatewayProbe = fetch(`${BASE_URL}/healthz`, { method: 'GET' }).then(
+    gatewayProbe = fetch(`${BASE_URL}/healthz`, { method: "GET" }).then(
       (res) => res.status === 200 || res.status === 503,
       () => false,
     );
@@ -93,15 +98,22 @@ async function request<T>(
   init?: RequestInit & { token?: string; tolerateUnauthorized?: boolean },
 ): Promise<T> {
   if (!(await hasGateway())) {
-    throw new ApiError(503, 'Demo mode: Firefly gateway is unreachable from this origin.');
+    throw new ApiError(
+      503,
+      "Demo mode: Firefly gateway is unreachable from this origin.",
+    );
   }
-  const { token = getAdminToken(), tolerateUnauthorized = false, ...rest } = init ?? {};
+  const {
+    token = getAdminToken(),
+    tolerateUnauthorized = false,
+    ...rest
+  } = init ?? {};
   const headers: Record<string, string> = {
-    Accept: 'application/json',
-    ...(rest.body ? { 'Content-Type': 'application/json' } : {}),
+    Accept: "application/json",
+    ...(rest.body ? { "Content-Type": "application/json" } : {}),
     ...((rest.headers as Record<string, string>) ?? {}),
   };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
+  if (token) headers["Authorization"] = `Bearer ${token}`;
 
   const res = await fetch(`${BASE_URL}${path}`, { ...rest, headers });
 
@@ -109,24 +121,27 @@ async function request<T>(
     const body = await res.json().catch(() => ({}));
     const rawError = (body as { error?: unknown })?.error;
     const message =
-      typeof rawError === 'string'
+      typeof rawError === "string"
         ? rawError
-        : (rawError as { message?: string })?.message ??
-          'Unauthorized: Valid Admin Token required';
+        : ((rawError as { message?: string })?.message ??
+          "Unauthorized: Valid Admin Token required");
     // 401 from a password change = wrong current password, not a dead session.
     const credentialMismatch = /incorrect current password/i.test(message);
     if (!credentialMismatch && !tolerateUnauthorized) handleSessionInvalid();
-    throw new ApiError(401, credentialMismatch ? message : 'Unauthorized: Valid Admin Token required');
+    throw new ApiError(
+      401,
+      credentialMismatch ? message : "Unauthorized: Valid Admin Token required",
+    );
   }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     const rawError = (body as { error?: unknown; message?: string })?.error;
     const message =
-      typeof rawError === 'string'
+      typeof rawError === "string"
         ? rawError
-        : (rawError as { message?: string })?.message ??
+        : ((rawError as { message?: string })?.message ??
           (body as { message?: string })?.message ??
-          `Request failed: ${res.statusText || res.status}`;
+          `Request failed: ${res.statusText || res.status}`);
     throw new ApiError(res.status, message);
   }
   return res.json() as Promise<T>;
@@ -135,42 +150,63 @@ async function request<T>(
 // ================= RAW ENDPOINTS (contracts identical to the legacy app) =================
 
 export async function fetchSettings(): Promise<SettingsDTO> {
-  return request<SettingsDTO>('/api/settings');
+  return request<SettingsDTO>("/api/settings");
 }
 
-export async function saveSettings(settings: SettingsDTO): Promise<{ status: string; message?: string }> {
-  return request('/api/settings', { method: 'PUT', body: JSON.stringify(settings) });
+export async function saveSettings(
+  settings: SettingsDTO,
+): Promise<{ status: string; message?: string }> {
+  return request("/api/settings", {
+    method: "PUT",
+    body: JSON.stringify(settings),
+  });
 }
 
 export async function fetchHealth(): Promise<HealthStatus> {
   const res = await fetch(`${BASE_URL}/healthz`);
-  if (res.status === 404) return { status: 'error', timestamp: Date.now() };
-  if (!res.ok) return { status: 'error', timestamp: Date.now() };
+  if (res.status === 404) return { status: "error", timestamp: Date.now() };
+  if (!res.ok) return { status: "error", timestamp: Date.now() };
   const text = await res.text();
-  return { status: text.includes('ok') ? 'ok' : 'degraded', timestamp: Date.now() };
+  return {
+    status: text.includes("ok") ? "ok" : "degraded",
+    timestamp: Date.now(),
+  };
 }
 
-export async function loginApi(password: string): Promise<{ status: string; token: string; expires_at: string }> {
+export async function loginApi(
+  password: string,
+): Promise<{ status: string; token: string; expires_at: string }> {
   const res = await fetch(`${BASE_URL}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({ password }),
   });
-  if (res.status === 401) throw new ApiError(401, 'Incorrect dashboard access password');
+  if (res.status === 401)
+    throw new ApiError(401, "Incorrect dashboard access password");
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new ApiError(res.status, (body as { error?: { message?: string } })?.error?.message ?? 'Authentication failed');
+    throw new ApiError(
+      res.status,
+      (body as { error?: { message?: string } })?.error?.message ??
+        "Authentication failed",
+    );
   }
   return res.json();
 }
 
-export async function verifyAuthApi(token: string): Promise<{ status: string; authenticated: boolean }> {
-  if (!token) return { status: 'unauthenticated', authenticated: false };
-  return request('/api/auth/verify', { token });
+export async function verifyAuthApi(
+  token: string,
+): Promise<{ status: string; authenticated: boolean }> {
+  if (!token) return { status: "unauthenticated", authenticated: false };
+  return request("/api/auth/verify", { token });
 }
 
 export async function logoutApi(token: string): Promise<{ status: string }> {
-  return request('/api/auth/logout', { method: 'POST', token, tolerateUnauthorized: true });
+  return request("/api/auth/logout", {
+    method: "POST",
+    token,
+    tolerateUnauthorized: true,
+  });
 }
 
 export async function updatePasswordApi(
@@ -178,35 +214,49 @@ export async function updatePasswordApi(
   newPassword: string,
   token: string,
 ): Promise<{ status: string; message?: string }> {
-  return request('/api/auth/password', {
-    method: 'PUT',
+  return request("/api/auth/password", {
+    method: "PUT",
     token,
-    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    body: JSON.stringify({
+      current_password: currentPassword,
+      new_password: newPassword,
+    }),
   });
 }
 
-export async function updateBreakerApi(name: string, state: 'OPEN' | 'CLOSED' | 'HALF-OPEN') {
-  return request('/api/breakers', { method: 'PUT', body: JSON.stringify({ name, state }) });
+export async function updateBreakerApi(
+  name: string,
+  state: "OPEN" | "CLOSED" | "HALF-OPEN",
+) {
+  return request("/api/breakers", {
+    method: "PUT",
+    body: JSON.stringify({ name, state }),
+  });
 }
 
 export async function deleteHistoryApi() {
-  return request<{ status: string }>('/api/history', { method: 'DELETE' });
+  return request<{ status: string }>("/api/history", { method: "DELETE" });
 }
 
-export async function topupTenant(req: TenantTopupRequestDTO): Promise<TenantTopupResponseDTO> {
-  return request('/api/tenants/topup', { method: 'POST', body: JSON.stringify(req) });
+export async function topupTenant(
+  req: TenantTopupRequestDTO,
+): Promise<TenantTopupResponseDTO> {
+  return request("/api/tenants/topup", {
+    method: "POST",
+    body: JSON.stringify(req),
+  });
 }
 
 export async function fetchTelemetry(): Promise<TelemetryDTO> {
-  return request<TelemetryDTO>('/api/telemetry');
+  return request<TelemetryDTO>("/api/telemetry");
 }
 
 export async function fetchWarpStatus(): Promise<WarpStatusDTO> {
-  return request<WarpStatusDTO>('/api/warp/status');
+  return request<WarpStatusDTO>("/api/warp/status");
 }
 
 export async function rotateWarp() {
-  return request<{ status: string }>('/api/warp/rotate', { method: 'POST' });
+  return request<{ status: string }>("/api/warp/rotate", { method: "POST" });
 }
 export interface TunnelStatusDTO {
   enabled: boolean;
@@ -219,37 +269,48 @@ export interface TunnelStatusDTO {
 }
 
 export async function fetchTunnelStatus(): Promise<TunnelStatusDTO> {
-  return request<TunnelStatusDTO>('/api/tunnel/status');
+  return request<TunnelStatusDTO>("/api/tunnel/status");
 }
 
 export interface ToggleTunnelParams {
   enabled?: boolean;
-  mode?: 'quick' | 'named';
+  mode?: "quick" | "named";
   token?: string;
 }
 
-export async function toggleTunnel(params?: ToggleTunnelParams): Promise<TunnelStatusDTO> {
-  return request<TunnelStatusDTO>('/api/tunnel/toggle', {
-    method: 'POST',
+export async function toggleTunnel(
+  params?: ToggleTunnelParams,
+): Promise<TunnelStatusDTO> {
+  return request<TunnelStatusDTO>("/api/tunnel/toggle", {
+    method: "POST",
     body: JSON.stringify(params ?? {}),
   });
 }
 
-
 export async function fetchOAuthProviders(): Promise<ProviderInfoDTO[]> {
-  return request<ProviderInfoDTO[]>('/api/oauth/providers');
+  return request<ProviderInfoDTO[]>("/api/oauth/providers");
 }
 
 export async function fetchOAuthConnections(): Promise<ConnectionDTO[]> {
-  return request<ConnectionDTO[]>('/api/oauth/connections');
+  return request<ConnectionDTO[]>("/api/oauth/connections");
 }
 
-export async function initiateOAuthAuthorize(payload: AuthorizeRequestDTO): Promise<AuthorizeResponseDTO> {
-  return request('/api/oauth/authorize', { method: 'POST', body: JSON.stringify(payload) });
+export async function initiateOAuthAuthorize(
+  payload: AuthorizeRequestDTO,
+): Promise<AuthorizeResponseDTO> {
+  return request("/api/oauth/authorize", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
-export async function pollOAuthStatus(payload: PollRequestDTO): Promise<PollResponseDTO> {
-  return request('/api/oauth/poll', { method: 'POST', body: JSON.stringify(payload) });
+export async function pollOAuthStatus(
+  payload: PollRequestDTO,
+): Promise<PollResponseDTO> {
+  return request("/api/oauth/poll", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 /**
@@ -258,12 +319,19 @@ export async function pollOAuthStatus(payload: PollRequestDTO): Promise<PollResp
  * browser to a host this server cannot reach (e.g. localhost on a deployed
  * instance), so the automatic browser callback never arrived.
  */
-export async function verifyOAuthCallback(payload: CallbackRequestDTO): Promise<CallbackResponseDTO> {
-  return request('/api/oauth/callback', { method: 'POST', body: JSON.stringify(payload) });
+export async function verifyOAuthCallback(
+  payload: CallbackRequestDTO,
+): Promise<CallbackResponseDTO> {
+  return request("/api/oauth/callback", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function deleteOAuthConnection(id: string) {
-  return request(`/api/oauth/connections/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  return request(`/api/oauth/connections/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
 }
 
 // ---- Provider-side quota (`/api/quota/providers*`) ----
@@ -271,8 +339,12 @@ export async function deleteOAuthConnection(id: string) {
 // window). Distinct from the tenant token ledger on the Quota page. Reads are
 // cached server-side for 60s; pass refresh=true to force a real fetch.
 
-export async function fetchProviderQuota(refresh = false): Promise<ProviderQuotaResponseDTO> {
-  return request<ProviderQuotaResponseDTO>(`/api/quota/providers${refresh ? '?refresh=1' : ''}`);
+export async function fetchProviderQuota(
+  refresh = false,
+): Promise<ProviderQuotaResponseDTO> {
+  return request<ProviderQuotaResponseDTO>(
+    `/api/quota/providers${refresh ? "?refresh=1" : ""}`,
+  );
 }
 
 /**
@@ -283,7 +355,7 @@ export async function fetchProviderQuota(refresh = false): Promise<ProviderQuota
 export function useProviderQuotaQuery() {
   // 60s: the server cache TTL, so polling cannot outrun the data.
   return useQuery({
-    queryKey: ['quota', 'providers'],
+    queryKey: ["quota", "providers"],
     queryFn: () => fetchProviderQuota(false),
     refetchInterval: 60000,
   });
@@ -294,7 +366,7 @@ export function useProviderQuotaRefreshMutation() {
   return useMutation({
     mutationFn: () => fetchProviderQuota(true),
     onSuccess: (data) => {
-      client.setQueryData(['quota', 'providers'], data);
+      client.setQueryData(["quota", "providers"], data);
     },
   });
 }
@@ -302,35 +374,64 @@ export function useProviderQuotaRefreshMutation() {
 // ---- Operator provider CRUD (`/api/providers*`, machine surface) ----
 
 export async function fetchProviders(): Promise<ProviderListResponse> {
-  return request<ProviderListResponse>('/api/providers');
+  return request<ProviderListResponse>("/api/providers");
 }
-export async function createProvider(payload: { name: string; base_url: string; description?: string; is_active?: boolean }): Promise<ProviderRecordDTO> {
-  return request<ProviderRecordDTO>('/api/providers', { method: 'POST', body: JSON.stringify(payload) });
+export async function createProvider(payload: {
+  name: string;
+  base_url: string;
+  description?: string;
+  is_active?: boolean;
+}): Promise<ProviderRecordDTO> {
+  return request<ProviderRecordDTO>("/api/providers", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
-export async function updateProvider(id: number, payload: { base_url?: string; description?: string; is_active?: boolean }): Promise<ProviderRecordDTO> {
-  return request<ProviderRecordDTO>(`/api/providers/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+export async function updateProvider(
+  id: number,
+  payload: { base_url?: string; description?: string; is_active?: boolean },
+): Promise<ProviderRecordDTO> {
+  return request<ProviderRecordDTO>(`/api/providers/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function deleteProvider(id: number): Promise<{ ok: boolean }> {
-  return request<{ ok: boolean }>(`/api/providers/${id}`, { method: 'DELETE' });
+  return request<{ ok: boolean }>(`/api/providers/${id}`, { method: "DELETE" });
 }
 
-
-export async function fetchProviderKeys(providerId: number): Promise<ProviderKeyListResponse> {
+export async function fetchProviderKeys(
+  providerId: number,
+): Promise<ProviderKeyListResponse> {
   return request<ProviderKeyListResponse>(`/api/providers/${providerId}/keys`);
 }
 
-export async function upsertProviderKeys(providerId: number, entries: ProviderKeyUpsertEntry[]): Promise<ProviderKeyUpsertResponse> {
-  return request(`/api/providers/${providerId}/keys`, { method: 'POST', body: JSON.stringify({ entries }) });
+export async function upsertProviderKeys(
+  providerId: number,
+  entries: ProviderKeyUpsertEntry[],
+): Promise<ProviderKeyUpsertResponse> {
+  return request(`/api/providers/${providerId}/keys`, {
+    method: "POST",
+    body: JSON.stringify({ entries }),
+  });
 }
 
-export async function patchProviderKey(keyId: number, patch: KeyPatchRequest): Promise<KeyPatchResponse> {
-  return request(`/api/keys/${keyId}`, { method: 'PATCH', body: JSON.stringify(patch) });
+export async function patchProviderKey(
+  keyId: number,
+  patch: KeyPatchRequest,
+): Promise<KeyPatchResponse> {
+  return request(`/api/keys/${keyId}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
 }
 
-export async function deleteProviderKey(keyId: number): Promise<KeyDeleteResponse> {
-  return request(`/api/keys/${keyId}`, { method: 'DELETE' });
+export async function deleteProviderKey(
+  keyId: number,
+): Promise<KeyDeleteResponse> {
+  return request(`/api/keys/${keyId}`, { method: "DELETE" });
 }
 
 // ---- Upstream probe & model discovery ----
@@ -387,29 +488,46 @@ export async function checkUpstreamHealth(
   req: UpstreamCheckRequest,
   signal?: AbortSignal,
 ): Promise<UpstreamCheckResponse> {
-  return request('/api/upstreams/check', { method: 'POST', body: JSON.stringify(req), signal });
+  return request("/api/upstreams/check", {
+    method: "POST",
+    body: JSON.stringify(req),
+    signal,
+  });
 }
 
 export async function fetchUpstreamModels(
   req: UpstreamModelsRequest,
   signal?: AbortSignal,
 ): Promise<UpstreamModelsResponse> {
-  return request('/api/upstreams/models', { method: 'POST', body: JSON.stringify(req), signal });
+  return request("/api/upstreams/models", {
+    method: "POST",
+    body: JSON.stringify(req),
+    signal,
+  });
 }
 
 // ---- Turso reads (hint-only, secrets never reach the browser) ----
 
 export async function fetchTursoProviders(): Promise<TursoProvidersResponse> {
-  return request<TursoProvidersResponse>('/api/turso/providers');
+  return request<TursoProvidersResponse>("/api/turso/providers");
 }
 
-export async function fetchTursoProviderKeyHints(providerId?: number): Promise<TursoKeyHintsResponse> {
-  const path = providerId ? `/api/turso/providers/${providerId}/keys` : '/api/turso/keys';
+export async function fetchTursoProviderKeyHints(
+  providerId?: number,
+): Promise<TursoKeyHintsResponse> {
+  const path = providerId
+    ? `/api/turso/providers/${providerId}/keys`
+    : "/api/turso/keys";
   return request<TursoKeyHintsResponse>(path);
 }
 
-export async function testTursoConnection(payload: TursoDTO): Promise<{ ok: boolean; message?: string }> {
-  return request('/api/turso/test', { method: 'POST', body: JSON.stringify(payload) });
+export async function testTursoConnection(
+  payload: TursoDTO,
+): Promise<{ ok: boolean; message?: string }> {
+  return request("/api/turso/test", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 // ---- Chat SSE tester (data plane, not admin) ----
@@ -430,20 +548,22 @@ export async function streamChat(
   opts?: { apiKey?: string; temperature?: number; maxTokens?: number },
 ): Promise<void> {
   const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    Accept: 'text/event-stream',
+    "Content-Type": "application/json",
+    Accept: "text/event-stream",
   };
-  if (opts?.apiKey) headers['Authorization'] = `Bearer ${opts.apiKey}`;
+  if (opts?.apiKey) headers["Authorization"] = `Bearer ${opts.apiKey}`;
 
   const res = await fetch(`${BASE_URL}/v1/chat/completions`, {
-    method: 'POST',
+    method: "POST",
     headers,
-    cache: 'no-store',
+    cache: "no-store",
     body: JSON.stringify({
       model,
       messages,
       stream: true,
-      ...(opts?.temperature !== undefined ? { temperature: opts.temperature } : {}),
+      ...(opts?.temperature !== undefined
+        ? { temperature: opts.temperature }
+        : {}),
       ...(opts?.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
     }),
     signal,
@@ -451,7 +571,8 @@ export async function streamChat(
   if (!res.ok || !res.body) {
     const errBody = await res.json().catch(() => null);
     const message =
-      (errBody as { error?: { message?: string }; message?: string })?.error?.message ??
+      (errBody as { error?: { message?: string }; message?: string })?.error
+        ?.message ??
       (errBody as { message?: string })?.message ??
       `Chat failed: HTTP ${res.status} ${res.statusText}`;
     throw new ApiError(res.status, message);
@@ -459,26 +580,26 @@ export async function streamChat(
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
-  let buffer = '';
+  let buffer = "";
   let last = performance.now();
 
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() ?? '';
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
     for (const line of lines) {
       const trimmed = line.trim();
-      if (!trimmed.startsWith('data:')) continue;
+      if (!trimmed.startsWith("data:")) continue;
       const payload = trimmed.slice(5).trim();
       onEvent(payload);
-      if (payload === '[DONE]') return;
+      if (payload === "[DONE]") return;
       try {
         const parsed = JSON.parse(payload) as {
           choices?: Array<{ delta?: { content?: string } }>;
         };
-        const text = parsed.choices?.[0]?.delta?.content ?? '';
+        const text = parsed.choices?.[0]?.delta?.content ?? "";
         if (text) {
           const now = performance.now();
           onChunk({ text, deltaMs: now - last });
@@ -522,44 +643,71 @@ function fallbackQuery<T extends object>(
 }
 
 export function useHealthQuery() {
-  return fallbackQuery(['healthz'], fetchHealth, { status: 'ok', timestamp: Date.now() }, 3000);
+  return fallbackQuery(
+    ["healthz"],
+    fetchHealth,
+    { status: "ok", timestamp: Date.now() },
+    3000,
+  );
 }
 
 export function useTelemetryQuery() {
   const { telemetryMock } = mocks();
-  return fallbackQuery(['telemetry'], fetchTelemetry, telemetryMock, 2000, 1000);
+  return fallbackQuery(
+    ["telemetry"],
+    fetchTelemetry,
+    telemetryMock,
+    2000,
+    1000,
+  );
 }
 
 export function useSettingsQuery() {
   const { settingsMock } = mocks();
-  return fallbackQuery(['settings'], fetchSettings, settingsMock, 5000);
+  return fallbackQuery(["settings"], fetchSettings, settingsMock, 5000);
 }
 
 export function useWarpStatusQuery() {
   const { warpMock } = mocks();
-  return fallbackQuery(['warp'], fetchWarpStatus, warpMock, 5000);
+  return fallbackQuery(["warp"], fetchWarpStatus, warpMock, 5000);
 }
 
 export function useTunnelStatusQuery() {
   const { tunnelMock } = mocks();
-  return fallbackQuery(['tunnel'], fetchTunnelStatus, tunnelMock, 5000);
+  return fallbackQuery(["tunnel"], fetchTunnelStatus, tunnelMock, 5000);
 }
 
 export function useOAuthProvidersQuery() {
-  return fallbackQuery(['oauth', 'providers'], fetchOAuthProviders, [], undefined, 60000);
+  return fallbackQuery(
+    ["oauth", "providers"],
+    fetchOAuthProviders,
+    [],
+    undefined,
+    60000,
+  );
 }
 
 export function useOAuthConnectionsQuery() {
-  return fallbackQuery(['oauth', 'connections'], fetchOAuthConnections, [], 15000);
+  return fallbackQuery(
+    ["oauth", "connections"],
+    fetchOAuthConnections,
+    [],
+    15000,
+  );
 }
 
 export function useProvidersQuery() {
-  return fallbackQuery(['providers'], fetchProviders, mocks().providersMock, 5000);
+  return fallbackQuery(
+    ["providers"],
+    fetchProviders,
+    mocks().providersMock,
+    5000,
+  );
 }
 
 export function useProviderKeysQuery(providerId: number | null) {
   return fallbackQuery(
-    ['providers', providerId, 'keys'],
+    ["providers", providerId, "keys"],
     () => fetchProviderKeys(providerId as number),
     mocks().keysMock,
     undefined,
@@ -568,66 +716,17 @@ export function useProviderKeysQuery(providerId: number | null) {
 }
 
 // Mutations
-export function useSaveSettingsMutation() {
-  return useMutation({
-    mutationFn: saveSettings,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['settings'] });
-    },
-  });
-}
-
-/**
- * Save settings with honest behavior across two modes:
- * - Real mode: real PUT /api/settings + invalidate.
- * - Demo mode (origin without gateway): applies to the local cache ONLY, labeled
- *   `local: true` so the UI can show a "local changes only" toast.
- */
-export function useSaveSettingsSmart() {
-  return useMutation({
-    mutationFn: async (next: SettingsDTO) => {
-      if (!(await hasGateway())) {
-        queryClient.setQueryData(['settings'], next);
-        return { local: true as const };
-      }
-      await saveSettings(next);
-      return { local: false as const };
-    },
-    onSuccess: (d) => {
-      if (!d.local) void queryClient.invalidateQueries({ queryKey: ['settings'] });
-    },
-  });
-}
-
-/** Helper for pages: builds next SettingsDTO from modified list.
- * Automatically marks patched collections as authoritative (manage_* = true)
- * so the backend store (Turso/libSQL) knows deletions — including deleting
- * the last remaining entry of a collection — are intentional rather than
- * partial/stale payloads.
- */
-export function withSettings(
-  current: SettingsDTO,
-  patch: Partial<SettingsDTO>,
-): SettingsDTO {
-  const next: SettingsDTO = { ...current, ...patch };
-  if (patch.models !== undefined) next.manage_models = true;
-  if (patch.combos !== undefined) next.manage_combos = true;
-  if (patch.tenants !== undefined) next.manage_tenants = true;
-  if (patch.upstreams !== undefined) next.manage_upstreams = true;
-  return next;
-}
-
 export function useTopupTenantMutation() {
   return useMutation({
     mutationFn: topupTenant,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['settings'] }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["settings"] }),
   });
 }
 
 export function useRotateWarpMutation() {
   return useMutation({
     mutationFn: rotateWarp,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['warp'] }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["warp"] }),
   });
 }
 
@@ -635,56 +734,61 @@ export function useToggleTunnelMutation() {
   return useMutation({
     mutationFn: toggleTunnel,
     onSuccess: (data) => {
-      queryClient.setQueryData(['tunnel'], data);
-      queryClient.invalidateQueries({ queryKey: ['tunnel'] });
+      queryClient.setQueryData(["tunnel"], data);
+      queryClient.invalidateQueries({ queryKey: ["tunnel"] });
     },
   });
 }
 
 export function usePatchProviderKeyMutation() {
   return useMutation({
-    mutationFn: (req: { keyId: number; patch: KeyPatchRequest }) => patchProviderKey(req.keyId, req.patch),
+    mutationFn: (req: { keyId: number; patch: KeyPatchRequest }) =>
+      patchProviderKey(req.keyId, req.patch),
     onSuccess: (_d, req) => {
       void req;
-      queryClient.invalidateQueries({ queryKey: ['providers'] });
+      queryClient.invalidateQueries({ queryKey: ["providers"] });
     },
   });
 }
 
 export function useUpsertProviderKeysMutation() {
   return useMutation({
-    mutationFn: (req: { providerId: number; entries: ProviderKeyUpsertEntry[] }) =>
-      upsertProviderKeys(req.providerId, req.entries),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['providers'] }),
+    mutationFn: (req: {
+      providerId: number;
+      entries: ProviderKeyUpsertEntry[];
+    }) => upsertProviderKeys(req.providerId, req.entries),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["providers"] }),
   });
 }
 
 export function useDeleteProviderKeyMutation() {
   return useMutation({
     mutationFn: deleteProviderKey,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['providers'] }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["providers"] }),
   });
 }
 
 export function useCreateProviderMutation() {
   return useMutation({
     mutationFn: createProvider,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['providers'] }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["providers"] }),
   });
 }
 
 export function useUpdateProviderMutation() {
   return useMutation({
-    mutationFn: (req: { id: number; payload: Parameters<typeof updateProvider>[1] }) =>
-      updateProvider(req.id, req.payload),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['providers'] }),
+    mutationFn: (req: {
+      id: number;
+      payload: Parameters<typeof updateProvider>[1];
+    }) => updateProvider(req.id, req.payload),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["providers"] }),
   });
 }
 
 export function useDeleteProviderMutation() {
   return useMutation({
     mutationFn: deleteProvider,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['providers'] }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["providers"] }),
   });
 }
 
@@ -692,8 +796,8 @@ export function useDeleteOAuthConnectionMutation() {
   return useMutation({
     mutationFn: (id: string) => deleteOAuthConnection(id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['quota', 'providers'] });
-      queryClient.invalidateQueries({ queryKey: ['oauth', 'connections'] });
+      queryClient.invalidateQueries({ queryKey: ["quota", "providers"] });
+      queryClient.invalidateQueries({ queryKey: ["oauth", "connections"] });
     },
   });
 }
@@ -712,7 +816,7 @@ export function useUpstreamModelsMutation() {
 
 export function useTursoProvidersQuery() {
   return useQuery({
-    queryKey: ['turso', 'providers'],
+    queryKey: ["turso", "providers"],
     queryFn: fetchTursoProviders,
     staleTime: 30000,
   });
@@ -720,7 +824,7 @@ export function useTursoProvidersQuery() {
 
 export function useTursoProviderKeyHintsQuery(providerId?: number) {
   return useQuery({
-    queryKey: ['turso', 'keys', providerId],
+    queryKey: ["turso", "keys", providerId],
     queryFn: () => fetchTursoProviderKeyHints(providerId),
     enabled: providerId !== undefined && providerId > 0,
     staleTime: 10000,
@@ -733,7 +837,6 @@ export function useTestTursoMutation() {
   });
 }
 
-
 // ================= MOCK PAYLOADS (real DTO shapes) =================
 
 function mocks() {
@@ -742,70 +845,119 @@ function mocks() {
   const settingsMock: SettingsDTO = {
     upstreams: [
       {
-        name: 'openai-main',
-        protocol: 'openai',
-        base_url: 'https://api.openai.com',
-        key_strategy: 'least_inflight',
-        credential_pool: Array.from({ length: 12 }, (_, i) => ({ ref: `openai-cred-${i + 1}` })),
+        name: "openai-main",
+        protocol: "openai",
+        base_url: "https://api.openai.com",
+        key_strategy: "least_inflight",
+        credential_pool: Array.from({ length: 12 }, (_, i) => ({
+          ref: `openai-cred-${i + 1}`,
+        })),
         enabled: true,
       },
       {
-        name: 'anthropic-prod',
-        protocol: 'anthropic',
-        base_url: 'https://api.anthropic.com',
-        key_strategy: 'least_inflight',
-        credential_pool: Array.from({ length: 4 }, (_, i) => ({ ref: `anthropic-cred-${i + 1}` })),
+        name: "anthropic-prod",
+        protocol: "anthropic",
+        base_url: "https://api.anthropic.com",
+        key_strategy: "least_inflight",
+        credential_pool: Array.from({ length: 4 }, (_, i) => ({
+          ref: `anthropic-cred-${i + 1}`,
+        })),
         enabled: true,
       },
       {
-        name: 'grok-build',
-        protocol: 'grok-cli',
-        base_url: 'https://cli-chat-proxy.grok.com',
-        key_strategy: 'round_robin',
-        credential_pool: [{ ref: 'grok-cred-1' }, { ref: 'grok-cred-2' }],
+        name: "grok-build",
+        protocol: "grok-cli",
+        base_url: "https://cli-chat-proxy.grok.com",
+        key_strategy: "round_robin",
+        credential_pool: [{ ref: "grok-cred-1" }, { ref: "grok-cred-2" }],
         enabled: true,
       },
     ],
     models: [
-      { public_name: 'gpt-4o', upstream: 'openai-main', upstream_model: 'gpt-4o-2024-11-20', enabled: true },
-      { public_name: 'gpt-4o-mini', upstream: 'openai-main', upstream_model: 'gpt-4o-mini-2024-07-18', enabled: true },
-      { public_name: 'claude-sonnet-4-5', upstream: 'antigravity-prod', upstream_model: 'claude-sonnet-4-5', enabled: true },
-      { public_name: 'claude-opus-4-1', upstream: 'anthropic-prod', upstream_model: 'claude-opus-4-1-20250805', enabled: true },
-      { public_name: 'grok-4', upstream: 'grok-build', upstream_model: 'grok-4-latest', enabled: true },
-      { public_name: 'text-embedding-3-small', upstream: 'openai-main', upstream_model: 'text-embedding-3-small', enabled: true },
+      {
+        public_name: "gpt-4o",
+        upstream: "openai-main",
+        upstream_model: "gpt-4o-2024-11-20",
+        enabled: true,
+      },
+      {
+        public_name: "gpt-4o-mini",
+        upstream: "openai-main",
+        upstream_model: "gpt-4o-mini-2024-07-18",
+        enabled: true,
+      },
+      {
+        public_name: "claude-sonnet-4-5",
+        upstream: "antigravity-prod",
+        upstream_model: "claude-sonnet-4-5",
+        enabled: true,
+      },
+      {
+        public_name: "claude-opus-4-1",
+        upstream: "anthropic-prod",
+        upstream_model: "claude-opus-4-1-20250805",
+        enabled: true,
+      },
+      {
+        public_name: "grok-4",
+        upstream: "grok-build",
+        upstream_model: "grok-4-latest",
+        enabled: true,
+      },
+      {
+        public_name: "text-embedding-3-small",
+        upstream: "openai-main",
+        upstream_model: "text-embedding-3-small",
+        enabled: true,
+      },
     ],
     combos: [
-      { name: 'coding-stack', strategy: 'failover', models: ['claude-sonnet-4-5', 'gpt-4o', 'gemini-2.5-pro'], enabled: true },
-      { name: 'cheap-batch', strategy: 'least_inflight', models: ['gpt-4o-mini', 'gemini-2.0-flash'], enabled: true },
-      { name: 'reasoner', strategy: 'round_robin', models: ['claude-opus-4-1', 'grok-4'], enabled: true },
+      {
+        name: "coding-stack",
+        strategy: "failover",
+        models: ["claude-sonnet-4-5", "gpt-4o", "gemini-2.5-pro"],
+        enabled: true,
+      },
+      {
+        name: "cheap-batch",
+        strategy: "least_inflight",
+        models: ["gpt-4o-mini", "gemini-2.0-flash"],
+        enabled: true,
+      },
+      {
+        name: "reasoner",
+        strategy: "round_robin",
+        models: ["claude-opus-4-1", "grok-4"],
+        enabled: true,
+      },
     ],
     tenants: [
       {
-        name: 'personal',
-        api_key: 'sk-gw-000000000000000000000000000000000000e410',
-        status: 'active',
+        name: "personal",
+        api_key: "sk-gw-000000000000000000000000000000000000e410",
+        status: "active",
         allowed_models: Array.from({ length: 12 }, (_, i) => `m${i}`),
         rate_limit: { rps: 10, max_concurrent: 8 },
       },
       {
-        name: 'work',
-        api_key: 'sk-gw-00000000000000000000000000000000000077ba',
-        status: 'active',
+        name: "work",
+        api_key: "sk-gw-00000000000000000000000000000000000077ba",
+        status: "active",
         allowed_models: Array.from({ length: 21 }, (_, i) => `m${i}`),
         rate_limit: { rps: 30, max_concurrent: 24 },
       },
       {
-        name: 'agent-ops',
-        api_key: 'sk-gw-000000000000000000000000000000000000192c',
-        status: 'active',
+        name: "agent-ops",
+        api_key: "sk-gw-000000000000000000000000000000000000192c",
+        status: "active",
         allowed_models: Array.from({ length: 21 }, (_, i) => `m${i}`),
         rate_limit: { rps: 60, max_concurrent: 48 },
       },
       {
-        name: 'guest-demo',
-        api_key: 'sk-gw-00000000000000000000000000000000000002af',
-        status: 'suspended',
-        allowed_models: ['gpt-4o-mini', 'text-embedding-3-small'],
+        name: "guest-demo",
+        api_key: "sk-gw-00000000000000000000000000000000000002af",
+        status: "suspended",
+        allowed_models: ["gpt-4o-mini", "text-embedding-3-small"],
         rate_limit: { rps: 2, max_concurrent: 2 },
       },
     ],
@@ -819,7 +971,7 @@ function mocks() {
       terse_output: false,
       minimal_code: false,
       compress_context: true,
-      system_prompt: '',
+      system_prompt: "",
     },
   };
 
@@ -863,71 +1015,283 @@ function mocks() {
       estimated_cost_usd: 61.25,
     },
     models: [
-      { model: 'claude-sonnet-4-5', upstream: 'antigravity-prod', enabled: true, requests: 9625, errors: 12, p50_ms: 204, p90_ms: 388, p99_ms: 712 },
-      { model: 'gpt-4o', upstream: 'openai-main', enabled: true, requests: 3872, errors: 22, p50_ms: 168, p90_ms: 340, p99_ms: 620 },
-      { model: 'grok-4', upstream: 'grok-build', enabled: true, requests: 912, errors: 30, p50_ms: 312, p90_ms: 610, p99_ms: 924 },
-      { model: 'gpt-4o-mini', upstream: 'openai-main', enabled: true, requests: 587, errors: 2, p50_ms: 122, p90_ms: 200, p99_ms: 380 },
-      { model: 'text-embedding-3-small', upstream: 'openai-main', enabled: true, requests: 2140, errors: 2, p50_ms: 38, p90_ms: 60, p99_ms: 96 },
+      {
+        model: "claude-sonnet-4-5",
+        upstream: "antigravity-prod",
+        enabled: true,
+        requests: 9625,
+        errors: 12,
+        p50_ms: 204,
+        p90_ms: 388,
+        p99_ms: 712,
+      },
+      {
+        model: "gpt-4o",
+        upstream: "openai-main",
+        enabled: true,
+        requests: 3872,
+        errors: 22,
+        p50_ms: 168,
+        p90_ms: 340,
+        p99_ms: 620,
+      },
+      {
+        model: "grok-4",
+        upstream: "grok-build",
+        enabled: true,
+        requests: 912,
+        errors: 30,
+        p50_ms: 312,
+        p90_ms: 610,
+        p99_ms: 924,
+      },
+      {
+        model: "gpt-4o-mini",
+        upstream: "openai-main",
+        enabled: true,
+        requests: 587,
+        errors: 2,
+        p50_ms: 122,
+        p90_ms: 200,
+        p99_ms: 380,
+      },
+      {
+        model: "text-embedding-3-small",
+        upstream: "openai-main",
+        enabled: true,
+        requests: 2140,
+        errors: 2,
+        p50_ms: 38,
+        p90_ms: 60,
+        p99_ms: 96,
+      },
     ],
     upstreams: [
       {
-        name: 'openai-main',
-        protocol: 'openai',
-        base_url: 'https://api.openai.com',
-        breaker_state: 'CLOSED',
+        name: "openai-main",
+        protocol: "openai",
+        base_url: "https://api.openai.com",
+        breaker_state: "CLOSED",
         total_requests: 6599,
         slots: [
-          { ref: 'openai-key-1', inflight: 2, is_cooldown: false, cooldown_remaining_sec: 0, is_revoked: false, total_cooldown_events: 3, requests_total: 2100 },
-          { ref: 'openai-key-2', inflight: 0, is_cooldown: true, cooldown_remaining_sec: 22, is_revoked: false, total_cooldown_events: 11, requests_total: 1840 },
+          {
+            ref: "openai-key-1",
+            inflight: 2,
+            is_cooldown: false,
+            cooldown_remaining_sec: 0,
+            is_revoked: false,
+            total_cooldown_events: 3,
+            requests_total: 2100,
+          },
+          {
+            ref: "openai-key-2",
+            inflight: 0,
+            is_cooldown: true,
+            cooldown_remaining_sec: 22,
+            is_revoked: false,
+            total_cooldown_events: 11,
+            requests_total: 1840,
+          },
         ],
       },
       {
-        name: 'anthropic-prod',
-        protocol: 'anthropic',
-        base_url: 'https://api.anthropic.com',
-        breaker_state: 'CLOSED',
+        name: "anthropic-prod",
+        protocol: "anthropic",
+        base_url: "https://api.anthropic.com",
+        breaker_state: "CLOSED",
         total_requests: 10829,
         slots: [
-          { ref: 'anthropic-key-1', inflight: 4, is_cooldown: false, cooldown_remaining_sec: 0, is_revoked: false, total_cooldown_events: 1, requests_total: 6100 },
+          {
+            ref: "anthropic-key-1",
+            inflight: 4,
+            is_cooldown: false,
+            cooldown_remaining_sec: 0,
+            is_revoked: false,
+            total_cooldown_events: 1,
+            requests_total: 6100,
+          },
         ],
       },
       {
-        name: 'grok-build',
-        protocol: 'grok-cli',
-        base_url: 'https://cli-chat-proxy.grok.com',
-        breaker_state: 'HALF-OPEN',
+        name: "grok-build",
+        protocol: "grok-cli",
+        base_url: "https://cli-chat-proxy.grok.com",
+        breaker_state: "HALF-OPEN",
         total_requests: 912,
         slots: [
-          { ref: 'grok-key-1', inflight: 0, is_cooldown: true, cooldown_remaining_sec: 47, is_revoked: false, total_cooldown_events: 8, requests_total: 700 },
-          { ref: 'grok-key-2', inflight: 0, is_cooldown: false, cooldown_remaining_sec: 0, is_revoked: true, total_cooldown_events: 0, requests_total: 0 },
+          {
+            ref: "grok-key-1",
+            inflight: 0,
+            is_cooldown: true,
+            cooldown_remaining_sec: 47,
+            is_revoked: false,
+            total_cooldown_events: 8,
+            requests_total: 700,
+          },
+          {
+            ref: "grok-key-2",
+            inflight: 0,
+            is_cooldown: false,
+            cooldown_remaining_sec: 0,
+            is_revoked: true,
+            total_cooldown_events: 0,
+            requests_total: 0,
+          },
         ],
       },
     ],
     tenants_usage: [
-      { tenant: 'agent-ops', model: 'claude-sonnet-4-5', credential_ref: 'openai-key-1', total_requests: 8421 },
-      { tenant: 'work', model: 'gpt-4o', credential_ref: 'openai-key-1', total_requests: 3872 },
-      { tenant: 'personal', model: 'claude-sonnet-4-5', credential_ref: 'anthropic-key-1', total_requests: 1204 },
-      { tenant: 'agent-ops', model: 'grok-4', credential_ref: 'grok-key-1', total_requests: 912 },
-      { tenant: 'guest-demo', model: 'gpt-4o-mini', credential_ref: 'openai-key-2', total_requests: 87 },
+      {
+        tenant: "agent-ops",
+        model: "claude-sonnet-4-5",
+        credential_ref: "openai-key-1",
+        total_requests: 8421,
+      },
+      {
+        tenant: "work",
+        model: "gpt-4o",
+        credential_ref: "openai-key-1",
+        total_requests: 3872,
+      },
+      {
+        tenant: "personal",
+        model: "claude-sonnet-4-5",
+        credential_ref: "anthropic-key-1",
+        total_requests: 1204,
+      },
+      {
+        tenant: "agent-ops",
+        model: "grok-4",
+        credential_ref: "grok-key-1",
+        total_requests: 912,
+      },
+      {
+        tenant: "guest-demo",
+        model: "gpt-4o-mini",
+        credential_ref: "openai-key-2",
+        total_requests: 87,
+      },
     ],
     recent_logs: [
-      { id: 'a1', timestamp: now - 12_000, method: 'POST', path: '/v1/chat/completions', status: 200, durationMs: 412, model: 'claude-sonnet-4-5', upstream: 'antigravity-prod', tenant: 'agent-ops', stream: true, tokensIn: 1204, tokensOut: 890 },
-      { id: 'a2', timestamp: now - 15_000, method: 'POST', path: '/v1/chat/completions', status: 200, durationMs: 287, model: 'gpt-4o', upstream: 'openai-main', tenant: 'work', stream: true, tokensIn: 512, tokensOut: 340 },
-      { id: 'a3', timestamp: now - 26_000, method: 'POST', path: '/v1/messages', status: 200, durationMs: 1200, model: 'claude-opus-4-1', upstream: 'anthropic-prod', tenant: 'personal', stream: true, tokensIn: 2210, tokensOut: 1120 },
-      { id: 'a4', timestamp: now - 40_000, method: 'POST', path: '/v1/embeddings', status: 200, durationMs: 43, model: 'text-embedding-3-small', upstream: 'openai-main', tenant: 'work', stream: false, tokensIn: 88 },
-      { id: 'a5', timestamp: now - 53_000, method: 'POST', path: '/v1/chat/completions', status: 200, durationMs: 640, model: 'grok-4', upstream: 'grok-build', tenant: 'agent-ops', stream: true, tokensIn: 640, tokensOut: 410 },
-      { id: 'a6', timestamp: now - 61_000, method: 'POST', path: '/v1/chat/completions', status: 429, durationMs: 38, model: 'gpt-4o', upstream: 'openai-main', tenant: 'work', stream: false, error: 'rate limited' },
-      { id: 'a7', timestamp: now - 68_000, method: 'POST', path: '/v1/chat/completions', status: 200, durationMs: 508, model: 'claude-sonnet-4-5', upstream: 'antigravity-prod', tenant: 'personal', stream: true, tokensIn: 320, tokensOut: 260 },
-      { id: 'a8', timestamp: now - 84_000, method: 'POST', path: '/v1/chat/completions', status: 200, durationMs: 210, model: 'gpt-4o-mini', upstream: 'openai-main', tenant: 'guest-demo', stream: true, tokensIn: 90, tokensOut: 60 },
+      {
+        id: "a1",
+        timestamp: now - 12_000,
+        method: "POST",
+        path: "/v1/chat/completions",
+        status: 200,
+        durationMs: 412,
+        model: "claude-sonnet-4-5",
+        upstream: "antigravity-prod",
+        tenant: "agent-ops",
+        stream: true,
+        tokensIn: 1204,
+        tokensOut: 890,
+      },
+      {
+        id: "a2",
+        timestamp: now - 15_000,
+        method: "POST",
+        path: "/v1/chat/completions",
+        status: 200,
+        durationMs: 287,
+        model: "gpt-4o",
+        upstream: "openai-main",
+        tenant: "work",
+        stream: true,
+        tokensIn: 512,
+        tokensOut: 340,
+      },
+      {
+        id: "a3",
+        timestamp: now - 26_000,
+        method: "POST",
+        path: "/v1/messages",
+        status: 200,
+        durationMs: 1200,
+        model: "claude-opus-4-1",
+        upstream: "anthropic-prod",
+        tenant: "personal",
+        stream: true,
+        tokensIn: 2210,
+        tokensOut: 1120,
+      },
+      {
+        id: "a4",
+        timestamp: now - 40_000,
+        method: "POST",
+        path: "/v1/embeddings",
+        status: 200,
+        durationMs: 43,
+        model: "text-embedding-3-small",
+        upstream: "openai-main",
+        tenant: "work",
+        stream: false,
+        tokensIn: 88,
+      },
+      {
+        id: "a5",
+        timestamp: now - 53_000,
+        method: "POST",
+        path: "/v1/chat/completions",
+        status: 200,
+        durationMs: 640,
+        model: "grok-4",
+        upstream: "grok-build",
+        tenant: "agent-ops",
+        stream: true,
+        tokensIn: 640,
+        tokensOut: 410,
+      },
+      {
+        id: "a6",
+        timestamp: now - 61_000,
+        method: "POST",
+        path: "/v1/chat/completions",
+        status: 429,
+        durationMs: 38,
+        model: "gpt-4o",
+        upstream: "openai-main",
+        tenant: "work",
+        stream: false,
+        error: "rate limited",
+      },
+      {
+        id: "a7",
+        timestamp: now - 68_000,
+        method: "POST",
+        path: "/v1/chat/completions",
+        status: 200,
+        durationMs: 508,
+        model: "claude-sonnet-4-5",
+        upstream: "antigravity-prod",
+        tenant: "personal",
+        stream: true,
+        tokensIn: 320,
+        tokensOut: 260,
+      },
+      {
+        id: "a8",
+        timestamp: now - 84_000,
+        method: "POST",
+        path: "/v1/chat/completions",
+        status: 200,
+        durationMs: 210,
+        model: "gpt-4o-mini",
+        upstream: "openai-main",
+        tenant: "guest-demo",
+        stream: true,
+        tokensIn: 90,
+        tokensOut: 60,
+      },
     ],
   };
 
   const warpMock: WarpStatusDTO = {
     enabled: true,
-    public_ip: '',
-    internal_ip: '172.16.0.2',
-    colo: 'SIN',
-    endpoint: 'engage.cloudflareclient.com:2408',
+    public_ip: "",
+    internal_ip: "172.16.0.2",
+    colo: "SIN",
+    endpoint: "engage.cloudflareclient.com:2408",
     latency_ms: 8.4,
     active_connections: 3,
     draining_sessions: 0,
@@ -938,18 +1302,50 @@ function mocks() {
   const tunnelMock: TunnelStatusDTO = {
     enabled: false,
     running: false,
-    mode: 'disabled',
+    mode: "disabled",
   };
 
   const providersMock: ProviderListResponse = {
     count: 4,
-    storage: 'turso',
+    storage: "turso",
     read_only: false,
     providers: [
-      { id: 1, name: 'openai', base_url: 'https://api.openai.com', is_active: true, active_keys: 12, created_at: 0, updated_at: 0 },
-      { id: 2, name: 'anthropic', base_url: 'https://api.anthropic.com', is_active: true, active_keys: 4, created_at: 0, updated_at: 0 },
-      { id: 3, name: 'grok', base_url: 'https://cli-chat-proxy.grok.com', is_active: true, active_keys: 1, created_at: 0, updated_at: 0 },
-      { id: 4, name: 'opencode', base_url: 'https://opencode.ai/zen', is_active: true, active_keys: 2, created_at: 0, updated_at: 0 },
+      {
+        id: 1,
+        name: "openai",
+        base_url: "https://api.openai.com",
+        is_active: true,
+        active_keys: 12,
+        created_at: 0,
+        updated_at: 0,
+      },
+      {
+        id: 2,
+        name: "anthropic",
+        base_url: "https://api.anthropic.com",
+        is_active: true,
+        active_keys: 4,
+        created_at: 0,
+        updated_at: 0,
+      },
+      {
+        id: 3,
+        name: "grok",
+        base_url: "https://cli-chat-proxy.grok.com",
+        is_active: true,
+        active_keys: 1,
+        created_at: 0,
+        updated_at: 0,
+      },
+      {
+        id: 4,
+        name: "opencode",
+        base_url: "https://opencode.ai/zen",
+        is_active: true,
+        active_keys: 2,
+        created_at: 0,
+        updated_at: 0,
+      },
     ],
   };
 
@@ -957,12 +1353,39 @@ function mocks() {
     provider_id: 1,
     count: 2,
     keys: [
-      { id: 1, provider_id: 1, status: 'active', is_active: true, last_used_at: now - 120_000, total_requests: 2100, created_at: 0, updated_at: 0, api_key_hint: 'sk-••••7f2a' },
-      { id: 2, provider_id: 1, status: 'deactivated', is_active: false, last_used_at: now - 300_000, total_requests: 940, created_at: 0, updated_at: 0, api_key_hint: 'sk-••••a91c' },
+      {
+        id: 1,
+        provider_id: 1,
+        status: "active",
+        is_active: true,
+        last_used_at: now - 120_000,
+        total_requests: 2100,
+        created_at: 0,
+        updated_at: 0,
+        api_key_hint: "sk-••••7f2a",
+      },
+      {
+        id: 2,
+        provider_id: 1,
+        status: "deactivated",
+        is_active: false,
+        last_used_at: now - 300_000,
+        total_requests: 940,
+        created_at: 0,
+        updated_at: 0,
+        api_key_hint: "sk-••••a91c",
+      },
     ],
   };
 
-  return { settingsMock, telemetryMock, warpMock, tunnelMock, providersMock, keysMock };
+  return {
+    settingsMock,
+    telemetryMock,
+    warpMock,
+    tunnelMock,
+    providersMock,
+    keysMock,
+  };
 }
 
 export type { LiveConnectionLog };
