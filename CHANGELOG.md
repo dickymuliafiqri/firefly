@@ -5,7 +5,7 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.43.1] - 2026-10-04
 
 ### Added
 
@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The token field no longer shows the *"Used by named mode only. Write-only: stored owner-only (0600) in tunnel.json and never returned to this dashboard."* hint when no token is stored; the mode switch above it and the `eyJh...` placeholder already convey both facts, and the stored-token hint is untouched.
   - The Models tab no longer shows its "populate the list, probe each model, create routes with one click" paragraph; the **Fetch Models** / **Check all health** / **Add all routes** buttons, the *Health Check & Probe Configuration* card and the per-row **Check** action state those actions themselves.
 - **Tunnel token drawer layout (`frontend/src/pages/SettingsPage.tsx`, `frontend/src/styles/global.css`)**: The field no longer shares a two-column `form-grid` with its own apply button — which left the token input at half width with the button top-aligned in the second column — so the input now spans the drawer and the primary action sits in the standard `form-row form-row-end` action row. The drawer toggle traded four inline style overrides for a new compact `.btn-sm` variant (`padding: 4px 10px`, `12px` copy, `height: auto`), and the token input declares `spellCheck={false}` like the other credential fields.
+- **Version bump**: `frontend/package.json` and `AppShell.tsx` bumped to `v1.43.1`.
 
 ### Fixed
 
