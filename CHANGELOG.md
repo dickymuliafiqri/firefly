@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Cloudflare Tunnel mode switch (`frontend/src/pages/SettingsPage.tsx`, `frontend/src/styles/global.css`)**: The tunnel card now exposes the ingress mode as a **Quick | Named switch** in the card body — the shared `Segmented` control used by the other dashboard pages — instead of a `<select>` buried inside the collapsed token drawer, and the switch is **live**: choosing the other mode while the tunnel is running reconnects it in place, because `tunnel.Manager.Start` already stops the old `cloudflared` process, so the toggle-off → change mode → toggle-on dance is gone.
+  - Switching to **Named** with neither a stored token nor a pasted one reveals the token field, states that nothing has been changed yet, and fires **no** request — the avoidable `400 token is required` round-trip is gone. The same guard now covers the **Enable** switch, so neither entry point can submit a token-less named start. A failed reconnect reverts the switch to the mode the server actually accepted, so the control never claims a mode that is not running.
+  - The token field now lives in the always-reachable drawer with an explicit **Apply & Reconnect** (running) / **Save & Enable** (stopped) button, so a stored token can be rotated without stopping the tunnel first; the field is no longer disabled while the tunnel runs.
+  - The row's helper line reports the real state — *applied when the tunnel is enabled* (stopped), *switching reconnects the tunnel immediately* (running), or *selected, waiting for a tunnel token* (pending intent) — and the Quick/Named trade-offs (random hostname, no SSE) are spelled out next to the switch.
+  - Covered by `frontend/src/pages/SettingsPage.tunnel.test.tsx` (8 cases, jsdom + stubbed API): the switch renders as Quick | Named, keeps a selection pending while stopped, guards the token-less Named path on both the mode switch and the Enable switch, reconnects in place, delivers a rotated token, and reverts to the server's mode when a reconnect fails.
+
 ### Fixed
 
 - **Documentation — phantom `-tunnel-url` flag (`README.md`)**: The common-flags table advertised `-tunnel-url` / `FIREFLY_TUNNEL_URL` for choosing the local service exposed through the tunnel. No such flag ever existed in the code (`git log -S'tunnel-url' -- cmd/ internal/` is empty); the tunnel target is always derived from `-addr` (`0.0.0.0:<port>` is tunnelled as `http://127.0.0.1:<port>`). The row is gone and the derivation is documented under the table instead.

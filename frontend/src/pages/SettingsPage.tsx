@@ -541,6 +541,9 @@ function TunnelCard() {
   const isOnline = !!d?.running && (isNamed || !!d?.public_url);
   const isStarting = !!d?.running && !isNamed && !d?.public_url;
   const isDownloading = !!d?.downloading;
+  // The selection can lag the server's live mode only while a Named switch is
+  // waiting for its token; every other change reconnects the tunnel in place.
+  const modePending = !!d?.running && !!d?.mode && d.mode !== mode;
   const statusTone = isOnline
     ? "ok"
     : isDownloading || isStarting
@@ -562,8 +565,28 @@ function TunnelCard() {
     pushToast({ type: "success", title: "URL Copied", message: d.public_url });
   };
 
+  /**
+   * A named tunnel cannot start without a credential: either a token already
+   * stored on the server (reused automatically) or a freshly pasted one. Reveal
+   * the field instead of firing a request the server rejects with
+   * `400 token is required`. Shared by the enable switch and the mode switch so
+   * both entry points behave identically.
+   */
+  const namedTokenMissing = (target: "quick" | "named", notify: boolean) => {
+    if (target !== "named" || d?.token_configured || token.trim()) return false;
+    setShowConfig(true);
+    const msg =
+      "A named tunnel needs a Cloudflare Tunnel token. Paste it below and switch again — nothing has been changed yet.";
+    setErrorMessage(msg);
+    if (notify) {
+      pushToast({ type: "error", title: "Token Required", message: msg });
+    }
+    return true;
+  };
+
   const handleToggle = (enabled: boolean) => {
     setErrorMessage(null);
+    if (enabled && namedTokenMissing(mode, true)) return;
     toggle.mutate(
       { enabled, mode, token: mode === "named" ? token : undefined },
       {
@@ -602,6 +625,63 @@ function TunnelCard() {
     );
   };
 
+  /**
+   * The mode switch is live. Choosing the other mode while the tunnel is running
+   * reconnects it right away — `tunnel.Manager.Start` stops the old `cloudflared`
+   * process and launches the new one — so the operator never has to toggle the
+   * tunnel off, change the mode, and toggle it back on.
+   */
+  const applyTunnel = (next: "quick" | "named", opts?: { connect?: boolean }) => {
+    const previous = mode;
+    setMode(next);
+    setErrorMessage(null);
+
+    // A token-less Named switch keeps the selection (so the field stays visible)
+    // but changes nothing on the server. The toast is only raised on a real
+    // change of selection, never on a repeated click of the active mode.
+    if (namedTokenMissing(next, previous !== next)) return;
+
+    // While the tunnel is stopped the selection is simply the mode the enable
+    // switch (or the button below) will start, so there is nothing to reconnect.
+    if (!d?.running && !opts?.connect) return;
+
+    toggle.mutate(
+      {
+        enabled: true,
+        mode: next,
+        // Only forward a credential the operator actually typed. The server
+        // treats an empty token as "reuse the stored one", so sending it would
+        // be pointless noise; omitting it states that intent directly.
+        token: next === "named" && token.trim() ? token : undefined,
+      },
+      {
+        onSuccess: (res) => {
+          // Write-only credential: never keep the plaintext in component state.
+          setToken("");
+          pushToast({
+            type: "success",
+            title: opts?.connect ? "Tunnel Reconnected" : "Tunnel Mode Switched",
+            message:
+              res.mode === "named"
+                ? "Reconnected as a named tunnel."
+                : "Reconnected as a quick tunnel (trycloudflare.com)…",
+          });
+        },
+        onError: (err) => {
+          const msg = err instanceof Error ? err.message : "Unknown error";
+          // The switch must never claim a mode the server did not accept.
+          setMode(previous);
+          setErrorMessage(msg);
+          pushToast({
+            type: "error",
+            title: "Failed to Switch Tunnel Mode",
+            message: msg,
+          });
+        },
+      },
+    );
+  };
+
   return (
     <div className="card">
       <div className="card-header">
@@ -621,6 +701,38 @@ function TunnelCard() {
           onChange={handleToggle}
           ariaLabel="Toggle Cloudflare Tunnel"
         />
+
+        <div className="switch-row">
+          <div className="info">
+            <h3>Tunnel Mode</h3>
+            <p>
+              <strong>Quick</strong> — instant{" "}
+              <code>trycloudflare.com</code> hostname, no configuration needed;
+              the hostname is random, changes on every restart, and SSE
+              streaming is not supported. <strong>Named</strong> — a stable
+              hostname from your Cloudflare ingress rule with streaming enabled;
+              it needs a tunnel token.
+            </p>
+            <p>
+              {modePending
+                ? `Selected, waiting for a tunnel token — the tunnel is still running in ${(
+                    d?.mode ?? ""
+                  ).toUpperCase()} mode.`
+                : d?.running
+                  ? "Switching reconnects the tunnel immediately."
+                  : "Applied when the tunnel is enabled."}
+            </p>
+          </div>
+          <Segmented
+            items={[
+              { id: "quick", label: "Quick" },
+              { id: "named", label: "Named" },
+            ]}
+            value={mode}
+            onChange={(id) => applyTunnel(id as "quick" | "named")}
+            ariaLabel="Cloudflare Tunnel mode"
+          />
+        </div>
 
         {mode === "quick" && (
           <div
@@ -766,53 +878,56 @@ function TunnelCard() {
             }}
             onClick={() => setShowConfig(!showConfig)}
           >
-            {showConfig
-              ? "Hide Mode & Token Settings"
-              : "Configure Mode & Token…"}
+            {showConfig ? "Hide Token Settings" : "Tunnel Token Settings…"}
           </button>
 
           {showConfig && (
             <div className="form-grid" style={{ marginTop: 8 }}>
-              <Field label="Tunnel Mode" htmlFor="tunnel-mode">
-                <select
-                  id="tunnel-mode"
-                  value={mode}
-                  disabled={d?.running}
-                  onChange={(e) => setMode(e.target.value as "quick" | "named")}
-                  style={{ width: "100%" }}
-                >
-                  <option value="quick">
-                    Quick Tunnel (Zero config trycloudflare.com)
-                  </option>
-                  <option value="named">
-                    Named Tunnel (Production Cloudflare Token)
-                  </option>
-                </select>
+              <Field
+                label="Cloudflare Tunnel Token"
+                htmlFor="tunnel-token"
+                hint={
+                  d?.token_configured
+                    ? "Used by named mode only. A token is already stored on the server — leave this empty to reuse it, or paste a new token to replace it."
+                    : "Used by named mode only. Write-only: stored owner-only (0600) in tunnel.json and never returned to this dashboard."
+                }
+              >
+                <input
+                  id="tunnel-token"
+                  type="password"
+                  autoComplete="off"
+                  value={token}
+                  placeholder={d?.token_configured ? "•••• (stored)" : "eyJh..."}
+                  onChange={(e) => setToken(e.target.value)}
+                />
               </Field>
 
-              {mode === "named" && (
-                <Field
-                  label="Cloudflare Tunnel Token"
-                  htmlFor="tunnel-token"
-                  hint={
-                    d?.token_configured
-                      ? "A token is already stored on the server. Leave this empty to reuse it, or paste a new token to replace it."
-                      : "Write-only: stored owner-only (0600) in tunnel.json and never returned to this dashboard."
-                  }
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  flexWrap: "wrap",
+                }}
+              >
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={toggle.isPending}
+                  onClick={() => applyTunnel(mode, { connect: true })}
                 >
-                  <input
-                    id="tunnel-token"
-                    type="password"
-                    autoComplete="off"
-                    value={token}
-                    placeholder={
-                      d?.token_configured ? "•••• (stored)" : "eyJh..."
-                    }
-                    disabled={d?.running}
-                    onChange={(e) => setToken(e.target.value)}
-                  />
-                </Field>
-              )}
+                  {toggle.isPending
+                    ? "Applying…"
+                    : d?.running
+                      ? "Apply & Reconnect"
+                      : "Save & Enable"}
+                </button>
+                <span className="hint" style={{ marginTop: 0 }}>
+                  {mode === "named"
+                    ? "Saves the token and (re)starts the tunnel in named mode."
+                    : "Quick mode ignores the token — it is kept for the next named enable."}
+                </span>
+              </div>
             </div>
           )}
         </div>

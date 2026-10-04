@@ -935,6 +935,15 @@ input:disabled {
     color: var(--ink);
 }
 
+/* A mode switch that sits in a settings row keeps its label on one line and
+   gets a comfortable touch target instead of being squeezed by the copy. */
+.switch-row .segmented {
+    flex-shrink: 0;
+}
+.switch-row .segmented button {
+    padding: 9px 16px;
+}
+
 /* ---------- Filter bar ---------- */
 .filter-bar {
     display: flex;
