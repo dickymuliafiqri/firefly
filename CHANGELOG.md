@@ -5,6 +5,13 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Documentation — phantom `-tunnel-url` flag (`README.md`)**: The common-flags table advertised `-tunnel-url` / `FIREFLY_TUNNEL_URL` for choosing the local service exposed through the tunnel. No such flag ever existed in the code (`git log -S'tunnel-url' -- cmd/ internal/` is empty); the tunnel target is always derived from `-addr` (`0.0.0.0:<port>` is tunnelled as `http://127.0.0.1:<port>`). The row is gone and the derivation is documented under the table instead.
+- **Dashboard — a healthy named tunnel was reported as starting forever (`frontend/src/pages/SettingsPage.tsx`)**: `public_url` is only ever populated by the quick tunnel's stdout parser (a named tunnel's hostname lives in the Cloudflare ingress rule and is never printed by `cloudflared`), so a running named tunnel matched `running && !public_url` and the card sat on `STARTING` / "Process status: Starting…" indefinitely. A running named tunnel is now reported as `ONLINE`, and the **Public tunnel URL** row explains that the hostname comes from the ingress rule instead of showing a bare `—`.
+
 ## [1.43.0] - 2026-10-04
 
 ### Added

@@ -533,8 +533,13 @@ function TunnelCard() {
     }
   }, [d?.mode]);
 
-  const isOnline = d?.running && !!d?.public_url;
-  const isStarting = d?.running && !d?.public_url;
+  // A quick tunnel prints its random trycloudflare.com hostname on stdout, which
+  // is what `public_url` carries. A named tunnel never prints one — its hostname
+  // comes from the Cloudflare ingress rule — so `public_url` staying empty there
+  // is expected and must not be reported as "starting" forever.
+  const isNamed = d?.mode === "named";
+  const isOnline = !!d?.running && (isNamed || !!d?.public_url);
+  const isStarting = !!d?.running && !isNamed && !d?.public_url;
   const isDownloading = !!d?.downloading;
   const statusTone = isOnline
     ? "ok"
@@ -712,6 +717,11 @@ function TunnelCard() {
               ) : isStarting ? (
                 <span style={{ color: "var(--color-text-muted, #888)" }}>
                   Generating public URL…
+                </span>
+              ) : isNamed && d?.running ? (
+                <span style={{ color: "var(--color-text-muted, #888)" }}>
+                  Defined by your Cloudflare ingress rule — a named tunnel does
+                  not announce its hostname.
                 </span>
               ) : (
                 "—"

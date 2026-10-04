@@ -219,10 +219,11 @@ All settings can be updated live from the web dashboard with **zero server resta
 | `-tunnel`                 | `FIREFLY_TUNNEL`                 | `disabled`     | Cloudflare Tunnel mode (`disabled`, `quick`, `named`; falls back to `tunnel.json`)                                |
 | `-tunnel-token`           | `FIREFLY_TUNNEL_TOKEN`           | `""`           | Secret token for named Cloudflare Tunnels (falls back to `tunnel.json`, written `0600`)                           |
 | `-tunnel-bin-dir`         | `FIREFLY_TUNNEL_BIN_DIR`         | auto           | Custom folder to find or download the `cloudflared` binary (falls back to `tunnel.json`)                          |
-| `-tunnel-url`             | `FIREFLY_TUNNEL_URL`             | auto           | Local service address to expose through the tunnel                                                                |
 | `-warp-rotate-interval`   | `FIREFLY_WARP_ROTATE_INTERVAL`   | `2m`           | Interval for automatic WARP IP rotation (`0` to disable)                                                          |
 | `-shutdown-grace-seconds` | `FIREFLY_SHUTDOWN_GRACE_SECONDS` | `30`           | Seconds to let active streams finish before shutting down                                                         |
 | `-version`                | —                                | —              | Print version and build information, then exit                                                                    |
+
+The local service exposed through a Cloudflare tunnel is always derived from `-addr` (a listener on `0.0.0.0:<port>` is tunnelled as `http://127.0.0.1:<port>`); there is no separate tunnel-target flag.
 
 ---
 
