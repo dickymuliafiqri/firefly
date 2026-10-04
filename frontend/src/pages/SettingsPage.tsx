@@ -889,7 +889,7 @@ function TunnelCard() {
                 hint={
                   d?.token_configured
                     ? "Used by named mode only. A token is already stored on the server — leave this empty to reuse it, or paste a new token to replace it."
-                    : "Used by named mode only. Write-only: stored owner-only (0600) in tunnel.json and never returned to this dashboard."
+                    : undefined
                 }
               >
                 <input
@@ -922,11 +922,12 @@ function TunnelCard() {
                       ? "Apply & Reconnect"
                       : "Save & Enable"}
                 </button>
-                <span className="hint" style={{ marginTop: 0 }}>
-                  {mode === "named"
-                    ? "Saves the token and (re)starts the tunnel in named mode."
-                    : "Quick mode ignores the token — it is kept for the next named enable."}
-                </span>
+                {mode !== "named" && (
+                  <span className="hint" style={{ marginTop: 0 }}>
+                    Quick mode ignores the token — it is kept for the next named
+                    enable.
+                  </span>
+                )}
               </div>
             </div>
           )}

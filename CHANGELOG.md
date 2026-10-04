@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The row's helper line reports the real state — *applied when the tunnel is enabled* (stopped), *switching reconnects the tunnel immediately* (running), or *selected, waiting for a tunnel token* (pending intent) — and the Quick/Named trade-offs (random hostname, no SSE) are spelled out next to the switch.
   - Covered by `frontend/src/pages/SettingsPage.tunnel.test.tsx` (8 cases, jsdom + stubbed API): the switch renders as Quick | Named, keeps a selection pending while stopped, guards the token-less Named path on both the mode switch and the Enable switch, reconnects in place, delivers a rotated token, and reverts to the server's mode when a reconnect fails.
 
+### Changed
+
+- **Dashboard — redundant helper copy removed (`frontend/src/pages/SettingsPage.tsx`, `frontend/src/components/upstream/ModelsTab.tsx`)**: Three strings that restated what the surrounding controls already say are gone — the menu of stale toggle states is smaller and nothing is left describing a mode that is not selected.
+  - The tunnel token drawer no longer prints *"Saves the token and (re)starts the tunnel in named mode."*; the button next to it is already labelled **Apply & Reconnect** (running) or **Save & Enable** (stopped).
+  - The token field no longer shows the *"Used by named mode only. Write-only: stored owner-only (0600) in tunnel.json and never returned to this dashboard."* hint when no token is stored; the mode switch above it and the `eyJh...` placeholder already convey both facts, and the stored-token hint is untouched.
+  - The Models tab no longer shows its "populate the list, probe each model, create routes with one click" paragraph; the **Fetch Models** / **Check all health** / **Add all routes** buttons, the *Health Check & Probe Configuration* card and the per-row **Check** action state those actions themselves.
+  - The remaining Quick-mode note in the drawer is now rendered **only while Quick is selected**, so it can never describe a Named tunnel.
+
 ### Fixed
 
 - **Documentation — phantom `-tunnel-url` flag (`README.md`)**: The common-flags table advertised `-tunnel-url` / `FIREFLY_TUNNEL_URL` for choosing the local service exposed through the tunnel. No such flag ever existed in the code (`git log -S'tunnel-url' -- cmd/ internal/` is empty); the tunnel target is always derived from `-addr` (`0.0.0.0:<port>` is tunnelled as `http://127.0.0.1:<port>`). The row is gone and the derivation is documented under the table instead.

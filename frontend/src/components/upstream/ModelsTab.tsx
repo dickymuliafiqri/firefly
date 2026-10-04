@@ -489,16 +489,6 @@ export function ModelsTab({
           </div>
         </div>
         <div className="card-body">
-          <p className="hint" style={{ marginBottom: 14 }}>
-            Populate the model list, then create gateway routes in the catalog
-            with one click. Each model can be probed with a minimal inference
-            request; saved upstreams pick the credential through the
-            KeyRing&apos;s load-balancing strategy (the key used is reported
-            with the result). Protocols without a model-list endpoint
-            (Antigravity) return their built-in catalog — type any extra id
-            below.
-          </p>
-
           <div
             style={{
               display: "flex",
