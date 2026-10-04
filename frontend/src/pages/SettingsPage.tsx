@@ -869,20 +869,15 @@ function TunnelCard() {
         >
           <button
             type="button"
-            className="btn btn-ghost"
-            style={{
-              fontSize: "0.8rem",
-              padding: "3px 8px",
-              height: "auto",
-              marginBottom: 6,
-            }}
+            className="btn btn-ghost btn-sm"
+            style={{ marginBottom: 6 }}
             onClick={() => setShowConfig(!showConfig)}
           >
             {showConfig ? "Hide Token Settings" : "Tunnel Token Settings…"}
           </button>
 
           {showConfig && (
-            <div className="form-grid" style={{ marginTop: 8 }}>
+            <>
               <Field
                 label="Cloudflare Tunnel Token"
                 htmlFor="tunnel-token"
@@ -896,20 +891,14 @@ function TunnelCard() {
                   id="tunnel-token"
                   type="password"
                   autoComplete="off"
+                  spellCheck={false}
                   value={token}
                   placeholder={d?.token_configured ? "•••• (stored)" : "eyJh..."}
                   onChange={(e) => setToken(e.target.value)}
                 />
               </Field>
 
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  flexWrap: "wrap",
-                }}
-              >
+              <div className="form-row form-row-end" style={{ marginTop: 14 }}>
                 <button
                   type="button"
                   className="btn btn-primary"
@@ -922,14 +911,8 @@ function TunnelCard() {
                       ? "Apply & Reconnect"
                       : "Save & Enable"}
                 </button>
-                {mode !== "named" && (
-                  <span className="hint" style={{ marginTop: 0 }}>
-                    Quick mode ignores the token — it is kept for the next named
-                    enable.
-                  </span>
-                )}
               </div>
-            </div>
+            </>
           )}
         </div>
 

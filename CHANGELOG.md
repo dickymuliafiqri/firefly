@@ -17,11 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Dashboard — redundant helper copy removed (`frontend/src/pages/SettingsPage.tsx`, `frontend/src/components/upstream/ModelsTab.tsx`)**: Three strings that restated what the surrounding controls already say are gone — the menu of stale toggle states is smaller and nothing is left describing a mode that is not selected.
-  - The tunnel token drawer no longer prints *"Saves the token and (re)starts the tunnel in named mode."*; the button next to it is already labelled **Apply & Reconnect** (running) or **Save & Enable** (stopped).
+- **Dashboard — redundant helper copy removed (`frontend/src/pages/SettingsPage.tsx`, `frontend/src/components/upstream/ModelsTab.tsx`)**: Four strings that restated what the surrounding controls already say are gone, so nothing is left describing a mode that is not selected.
+  - The tunnel token drawer no longer prints *"Saves the token and (re)starts the tunnel in named mode."* — the button beside it is already labelled **Apply & Reconnect** (running) or **Save & Enable** (stopped) — nor *"Quick mode ignores the token — it is kept for the next named enable."*; whether a credential is stored is already reported by the **Saved configuration** row, which is the fact that matters when switching modes.
   - The token field no longer shows the *"Used by named mode only. Write-only: stored owner-only (0600) in tunnel.json and never returned to this dashboard."* hint when no token is stored; the mode switch above it and the `eyJh...` placeholder already convey both facts, and the stored-token hint is untouched.
   - The Models tab no longer shows its "populate the list, probe each model, create routes with one click" paragraph; the **Fetch Models** / **Check all health** / **Add all routes** buttons, the *Health Check & Probe Configuration* card and the per-row **Check** action state those actions themselves.
-  - The remaining Quick-mode note in the drawer is now rendered **only while Quick is selected**, so it can never describe a Named tunnel.
+- **Tunnel token drawer layout (`frontend/src/pages/SettingsPage.tsx`, `frontend/src/styles/global.css`)**: The field no longer shares a two-column `form-grid` with its own apply button — which left the token input at half width with the button top-aligned in the second column — so the input now spans the drawer and the primary action sits in the standard `form-row form-row-end` action row. The drawer toggle traded four inline style overrides for a new compact `.btn-sm` variant (`padding: 4px 10px`, `12px` copy, `height: auto`), and the token input declares `spellCheck={false}` like the other credential fields.
 
 ### Fixed
 

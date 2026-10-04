@@ -401,6 +401,13 @@ a:hover {
     color: var(--ink);
     background: var(--surface-raised);
 }
+/* Compact variant for inline toggles inside a card body (a drawer/expander
+   header), so the markup does not need four inline overrides. */
+.btn-sm {
+    padding: 4px 10px;
+    font-size: 12px;
+    height: auto;
+}
 .btn:disabled {
     opacity: 0.45;
     cursor: not-allowed;
