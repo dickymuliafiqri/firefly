@@ -564,6 +564,9 @@ function TunnelCard() {
       {
         onSuccess: (res) => {
           setErrorMessage(null);
+          // The dashboard is write-only for the tunnel token: never keep the
+          // plaintext in component state once the server has persisted it.
+          setToken("");
           if (res.running) {
             pushToast({
               type: "success",
@@ -614,11 +617,50 @@ function TunnelCard() {
           ariaLabel="Toggle Cloudflare Tunnel"
         />
 
+        {mode === "quick" && (
+          <div
+            style={{
+              marginTop: 12,
+              padding: "10px 14px",
+              borderRadius: "var(--radius, 6px)",
+              background: "rgba(245, 158, 11, 0.08)",
+              border: "1px solid rgba(245, 158, 11, 0.3)",
+              color: "var(--color-warning, #f59e0b)",
+              fontSize: "0.85rem",
+              display: "flex",
+              flexDirection: "column",
+              gap: 4,
+            }}
+          >
+            <strong>Quick tunnel limits</strong>
+            <span>
+              The <code>trycloudflare.com</code> hostname is random and will
+              change on every restart, and streaming (SSE) responses are not
+              supported — long-running AI completions will not stream. To pin a
+              stable hostname and enable streaming, save a Cloudflare Tunnel
+              token and switch to <strong>Named Tunnel</strong>; the saved
+              configuration is reused automatically after a restart.
+            </span>
+          </div>
+        )}
+
         <div className="kv-list" style={{ marginTop: 14 }}>
           <div>
             <span className="k">Operation mode</span>
             <span className="v">
               {d?.mode ? d.mode.toUpperCase() : "DISABLED"}
+            </span>
+          </div>
+          <div>
+            <span className="k">Saved configuration</span>
+            <span className="v">
+              {d?.token_configured
+                ? "Named token stored"
+                : d?.mode === "named"
+                  ? "Named mode, no token"
+                  : d?.mode === "quick"
+                    ? "Quick (hostname not pinned)"
+                    : "—"}
             </span>
           </div>
           <div>
@@ -739,12 +781,23 @@ function TunnelCard() {
               </Field>
 
               {mode === "named" && (
-                <Field label="Cloudflare Tunnel Token" htmlFor="tunnel-token">
+                <Field
+                  label="Cloudflare Tunnel Token"
+                  htmlFor="tunnel-token"
+                  hint={
+                    d?.token_configured
+                      ? "A token is already stored on the server. Leave this empty to reuse it, or paste a new token to replace it."
+                      : "Write-only: stored owner-only (0600) in tunnel.json and never returned to this dashboard."
+                  }
+                >
                   <input
                     id="tunnel-token"
                     type="password"
+                    autoComplete="off"
                     value={token}
-                    placeholder="eyJh..."
+                    placeholder={
+                      d?.token_configured ? "•••• (stored)" : "eyJh..."
+                    }
                     disabled={d?.running}
                     onChange={(e) => setToken(e.target.value)}
                   />

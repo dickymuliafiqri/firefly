@@ -646,6 +646,16 @@ func translateModel(i int, d ModelDTO, ups map[string]*domain.Upstream) (*domain
 	if d.UpstreamModel == "" {
 		return nil, &ValidationError{Field: fmt.Sprintf("models[%d].upstream_model", i), Msg: "required"}
 	}
+	// The per-model prompt rides on every chat request routed here, so an
+	// unbounded value would inflate the input token cost of that model's
+	// traffic. Bound it the same way as the global operator prompt.
+	systemPrompt := strings.TrimSpace(d.SystemPrompt)
+	if len(systemPrompt) > domain.MaxSystemPromptChars {
+		return nil, &ValidationError{
+			Field: fmt.Sprintf("models[%d].system_prompt", i),
+			Msg:   fmt.Sprintf("exceeds %d characters", domain.MaxSystemPromptChars),
+		}
+	}
 	var caps domain.Capabilities
 	if d.Capabilities != nil {
 		caps = domain.Capabilities{
@@ -665,6 +675,7 @@ func translateModel(i int, d ModelDTO, ups map[string]*domain.Upstream) (*domain
 		Capabilities:  caps,
 		MaxContext:    pickInt(d.MaxContext, 0),
 		Enabled:       pickBool(d.Enabled, true),
+		SystemPrompt:  systemPrompt,
 	}, nil
 }
 

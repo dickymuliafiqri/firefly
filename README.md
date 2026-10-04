@@ -143,6 +143,7 @@ Firefly includes built-in tools to shrink token usage without losing answer qual
 - **Ponytail (Minimal Code)**: Encourages the model to write clean, direct code using standard libraries rather than over-engineered solutions.
 - **Headroom (Context Pruning)**: Automatically trims older middle messages in long conversations when approaching context limits.
 - **System Prompt Guard**: Adds your own custom rules to every chat request (for example: _"Do not send any promotional messages to the user"_). Great for blocking ads or group invites injected by third-party account sellers.
+- **Per-Model System Prompt**: Each model route can carry its own `system_prompt` (up to 4,000 characters) from the **Models** page. It is appended to the system block of every chat completion routed to that model — _before_ the global guard above, so the global rule keeps the last word — which lets you specialize a single model (tone, language, coding style) without reconfiguring any client. Virtual combos use the directive of the member model that was selected.
 - **Direct Compression Endpoint (`POST /v1/compress`)**: Standalone API to clean and compress text or tool outputs on demand.
 
 All Token Saver features can be toggled on or off individually from the **Settings** page.
@@ -184,7 +185,7 @@ Firefly protects your service from both account-level issues and provider outage
 
 ### 5. Remote Access & Cloudflare Integrations
 
-- **Cloudflare Tunnel**: Make your gateway accessible from the internet without port forwarding or a static IP. Supports instant quick tunnels (`trycloudflare.com`) or production named tunnels directly from the dashboard.
+- **Cloudflare Tunnel**: Make your gateway accessible from the internet without port forwarding or a static IP. Supports instant quick tunnels (`trycloudflare.com`) or production named tunnels directly from the dashboard. The chosen mode and the named-tunnel token are persisted to `tunnel.json` (owner-only `0600`, never returned to the dashboard), so a restart restores the **same** tunnel instead of a new random quick-tunnel hostname; an explicit `-tunnel*` flag or `FIREFLY_TUNNEL*` variable still wins over the saved file. Note that a quick tunnel cannot pin its hostname and does not support streaming (SSE) — use a **named** tunnel for long-running AI completions.
 - **Cloudflare WARP Egress**: Route outbound calls to AI providers through Cloudflare WARP with automatic IP rotation to avoid IP-based rate limiting.
 - **Free HTTPS (Auto-TLS)**: Enable free Let's Encrypt certificates from **Settings → Native Let's Encrypt Auto-TLS**. You only need a real domain pointing to your server and TCP ports `80` and `443` open and unused. Firefly then serves your gateway over HTTPS automatically.
 
@@ -199,6 +200,7 @@ Configuration files are stored in `configs/` as simple JSON files:
 - `combos.json`: Virtual load-balancing combos.
 - `tenants.json`: Client API keys, quotas, and limits.
 - `tokensaver.json`: Token optimization and System Prompt Guard settings.
+- `tunnel.json`: Persisted Cloudflare Tunnel mode, named-tunnel token (`0600`), and `cloudflared` location.
 
 All settings can be updated live from the web dashboard with **zero server restarts** (hot-swapped immediately).
 
@@ -214,9 +216,9 @@ All settings can be updated live from the web dashboard with **zero server resta
 | `-log-level`              | `FIREFLY_LOG_LEVEL`              | `info`         | Log detail level (`debug`, `info`, `warn`, `error`)                                                               |
 | `-health-check-interval`  | `FIREFLY_HEALTH_CHECK_INTERVAL`  | `15s`          | Background health probe interval (`0` to disable)                                                                 |
 | `-quota-poll-interval`    | —                                | `2m`           | Background provider-quota refresh for OAuth connections (`0` keeps quota reads on demand only)                    |
-| `-tunnel`                 | `FIREFLY_TUNNEL`                 | `disabled`     | Cloudflare Tunnel mode (`disabled`, `quick`, `named`)                                                             |
-| `-tunnel-token`           | `FIREFLY_TUNNEL_TOKEN`           | `""`           | Secret token for named Cloudflare Tunnels                                                                         |
-| `-tunnel-bin-dir`         | `FIREFLY_TUNNEL_BIN_DIR`         | auto           | Custom folder to find or download the `cloudflared` binary                                                        |
+| `-tunnel`                 | `FIREFLY_TUNNEL`                 | `disabled`     | Cloudflare Tunnel mode (`disabled`, `quick`, `named`; falls back to `tunnel.json`)                                |
+| `-tunnel-token`           | `FIREFLY_TUNNEL_TOKEN`           | `""`           | Secret token for named Cloudflare Tunnels (falls back to `tunnel.json`, written `0600`)                           |
+| `-tunnel-bin-dir`         | `FIREFLY_TUNNEL_BIN_DIR`         | auto           | Custom folder to find or download the `cloudflared` binary (falls back to `tunnel.json`)                          |
 | `-tunnel-url`             | `FIREFLY_TUNNEL_URL`             | auto           | Local service address to expose through the tunnel                                                                |
 | `-warp-rotate-interval`   | `FIREFLY_WARP_ROTATE_INTERVAL`   | `2m`           | Interval for automatic WARP IP rotation (`0` to disable)                                                          |
 | `-shutdown-grace-seconds` | `FIREFLY_SHUTDOWN_GRACE_SECONDS` | `30`           | Seconds to let active streams finish before shutting down                                                         |

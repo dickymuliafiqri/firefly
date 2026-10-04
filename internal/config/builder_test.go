@@ -1164,3 +1164,40 @@ func TestBuildVisualizerConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildModelSystemPrompt(t *testing.T) {
+	t.Parallel()
+	models := `{"models":[{"public_name":"m1","upstream":"openai-main","upstream_model":"m1","system_prompt":"  You are concise.  "}]}`
+	res, err := Build(FileSet{
+		Upstreams: []byte(validUpstreams),
+		Models:    []byte(models),
+		Tenants:   []byte(`{"tenants":[]}`),
+	}, fakeEnv(map[string]string{"OPENAI_KEY": "sk"}))
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	got := res.Models["m1"]
+	if got == nil {
+		t.Fatal("model m1 missing")
+	}
+	if got.SystemPrompt != "You are concise." {
+		t.Fatalf("system_prompt = %q, want trimmed value", got.SystemPrompt)
+	}
+}
+
+func TestBuildRejectsOversizedModelSystemPrompt(t *testing.T) {
+	t.Parallel()
+	models := `{"models":[{"public_name":"m1","upstream":"openai-main","upstream_model":"m1","system_prompt":"` +
+		strings.Repeat("x", domain.MaxSystemPromptChars+1) + `"}]}`
+	_, err := Build(FileSet{
+		Upstreams: []byte(validUpstreams),
+		Models:    []byte(models),
+		Tenants:   []byte(`{"tenants":[]}`),
+	}, fakeEnv(map[string]string{"OPENAI_KEY": "sk"}))
+	if err == nil {
+		t.Fatal("expected validation error for oversized system prompt")
+	}
+	if _, ok := err.(*ValidationError); !ok {
+		t.Fatalf("want *ValidationError, got %T: %v", err, err)
+	}
+}

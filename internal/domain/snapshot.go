@@ -322,6 +322,7 @@ func (s *CatalogSnapshot) ResolveTargetWithCandidates(
 				UpstreamModel: entry.UpstreamModel,
 				CredentialRef: cred,
 				KeySlot:       slot,
+				SystemPrompt:  entry.SystemPrompt,
 			}
 			return target, false, true
 		}
@@ -449,6 +450,7 @@ func (s *CatalogSnapshot) ResolveTargetWithCandidates(
 		UpstreamModel: entry.UpstreamModel,
 		CredentialRef: cred,
 		KeySlot:       slot,
+		SystemPrompt:  entry.SystemPrompt,
 	}
 	return target, false, nil
 }

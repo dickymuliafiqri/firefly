@@ -107,6 +107,7 @@ CREATE TABLE IF NOT EXISTS models (
     capabilities       TEXT NOT NULL,
     max_context        INTEGER DEFAULT 128000,
     enabled            INTEGER NOT NULL DEFAULT 1,
+    system_prompt      TEXT DEFAULT '',
     version            INTEGER NOT NULL DEFAULT 1,
     created_at         BIGINT NOT NULL,
     updated_at         BIGINT NOT NULL
@@ -192,6 +193,9 @@ func MigrateSchema(ctx context.Context, db *sql.DB) error {
 	_, _ = db.ExecContext(ctx, "ALTER TABLE upstreams ADD COLUMN egress_mode VARCHAR(32) DEFAULT 'direct'")
 	_, _ = db.ExecContext(ctx, "ALTER TABLE upstreams ADD COLUMN proxy_url VARCHAR(255)")
 	_, _ = db.ExecContext(ctx, "ALTER TABLE upstreams ADD COLUMN warp_auto_rotate_on_429 INTEGER DEFAULT 0")
+
+	// Upgrade models table if columns are not present
+	_, _ = db.ExecContext(ctx, "ALTER TABLE models ADD COLUMN system_prompt TEXT DEFAULT ''")
 
 	// Upgrade tenants table if columns are not present
 	_, _ = db.ExecContext(ctx, "ALTER TABLE tenants ADD COLUMN api_key VARCHAR(128)")

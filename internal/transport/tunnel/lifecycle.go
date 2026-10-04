@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -41,6 +42,7 @@ func (m *Manager) Start(mode Mode, token string) error {
 	if token != "" {
 		m.cfg.Token = token
 	}
+	m.tokenConfigured.Store(strings.TrimSpace(m.cfg.Token) != "")
 	m.publicURL.Store("")
 
 	args := m.buildArgs()

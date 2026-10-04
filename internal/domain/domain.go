@@ -605,6 +605,9 @@ type ModelEntry struct {
 	Capabilities  Capabilities
 	MaxContext    int
 	Enabled       bool
+	// SystemPrompt is an optional per-model directive appended to the system
+	// block of every chat completion routed to this model.
+	SystemPrompt string
 }
 
 // Combo is a virtual model that distributes requests across a group of concrete models.
@@ -736,4 +739,8 @@ type Target struct {
 	UpstreamModel string
 	CredentialRef string
 	KeySlot       *KeySlot
+	// SystemPrompt is the resolved model's per-model system directive, carried
+	// here so the transport layer can inject it without a second catalog lookup
+	// (and so a combo contributes the directive of the member it selected).
+	SystemPrompt string
 }

@@ -598,7 +598,7 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 	// 3. Load Models
 	modRows, err := s.db.QueryContext(ctx, `
 		SELECT id, public_name, upstream_id, upstream_model, fallback_upstreams,
-		       capabilities, max_context, enabled
+		       capabilities, max_context, enabled, system_prompt
 		FROM models
 		ORDER BY id ASC
 	`)
@@ -616,9 +616,10 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 			fallbackUpstreamsJSON, capsJSON sql.NullString
 			maxContext                      sql.NullInt64
 			enabled                         int
+			systemPrompt                    sql.NullString
 		)
 
-		if err := modRows.Scan(&id, &publicName, &upstreamID, &upstreamModel, &fallbackUpstreamsJSON, &capsJSON, &maxContext, &enabled); err != nil {
+		if err := modRows.Scan(&id, &publicName, &upstreamID, &upstreamModel, &fallbackUpstreamsJSON, &capsJSON, &maxContext, &enabled, &systemPrompt); err != nil {
 			return nil, fmt.Errorf("scan model: %w", err)
 		}
 
@@ -652,6 +653,7 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 			Capabilities:      &caps,
 			MaxContext:        maxCtx,
 			Enabled:           &isEn,
+			SystemPrompt:      systemPrompt.String,
 		})
 	}
 
@@ -1104,10 +1106,10 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 			_, err = tx.ExecContext(ctx, `
 				UPDATE models SET
 					upstream_id = ?, upstream_model = ?, fallback_upstreams = ?,
-					capabilities = ?, max_context = ?, enabled = ?,
+					capabilities = ?, max_context = ?, enabled = ?, system_prompt = ?,
 					version = version + 1, updated_at = ?
 				WHERE id = ?
-			`, upID, m.UpstreamModel, fallbacksJSON, capsJSON, m.MaxContext, enabledInt, now, existingID)
+			`, upID, m.UpstreamModel, fallbacksJSON, capsJSON, m.MaxContext, enabledInt, m.SystemPrompt, now, existingID)
 			if err != nil {
 				return fmt.Errorf("update model %q: %w", m.PublicName, err)
 			}
@@ -1115,9 +1117,9 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 			_, err = tx.ExecContext(ctx, `
 				INSERT INTO models (
 					public_name, upstream_id, upstream_model, fallback_upstreams,
-					capabilities, max_context, enabled, version, created_at, updated_at
-				) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-			`, m.PublicName, upID, m.UpstreamModel, fallbacksJSON, capsJSON, m.MaxContext, enabledInt, now, now)
+					capabilities, max_context, enabled, system_prompt, version, created_at, updated_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+			`, m.PublicName, upID, m.UpstreamModel, fallbacksJSON, capsJSON, m.MaxContext, enabledInt, m.SystemPrompt, now, now)
 			if err != nil {
 				return fmt.Errorf("insert model %q: %w", m.PublicName, err)
 			}
@@ -1495,10 +1497,10 @@ func (s *Store) SaveModel(ctx context.Context, m *ModelRecord) error {
 		res, err := s.db.ExecContext(ctx, `
 			INSERT INTO models (
 				public_name, upstream_id, upstream_model, fallback_upstreams,
-				capabilities, max_context, enabled, version, created_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+				capabilities, max_context, enabled, system_prompt, version, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
 		`, m.PublicName, m.UpstreamID, m.UpstreamModel, string(fallbacksJSON),
-			string(capsJSON), m.MaxContext, enabledInt, now, now)
+			string(capsJSON), m.MaxContext, enabledInt, m.SystemPrompt, now, now)
 		if err != nil {
 			return fmt.Errorf("insert model: %w", err)
 		}
@@ -1511,11 +1513,11 @@ func (s *Store) SaveModel(ctx context.Context, m *ModelRecord) error {
 		res, err := s.db.ExecContext(ctx, `
 			UPDATE models SET
 				public_name = ?, upstream_id = ?, upstream_model = ?, fallback_upstreams = ?,
-				capabilities = ?, max_context = ?, enabled = ?,
+				capabilities = ?, max_context = ?, enabled = ?, system_prompt = ?,
 				version = version + 1, updated_at = ?
 			WHERE id = ? AND version = ?
 		`, m.PublicName, m.UpstreamID, m.UpstreamModel, string(fallbacksJSON),
-			string(capsJSON), m.MaxContext, enabledInt, now, m.ID, m.Version)
+			string(capsJSON), m.MaxContext, enabledInt, m.SystemPrompt, now, m.ID, m.Version)
 		if err != nil {
 			return fmt.Errorf("update model: %w", err)
 		}

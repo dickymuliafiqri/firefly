@@ -62,6 +62,7 @@ type ModelRecord struct {
 	Capabilities      domain.Capabilities `json:"capabilities"`
 	MaxContext        int                 `json:"max_context"`
 	Enabled           bool                `json:"enabled"`
+	SystemPrompt      string              `json:"system_prompt,omitempty"`
 	Version           int                 `json:"version"`
 	CreatedAt         int64               `json:"created_at"`
 	UpdatedAt         int64               `json:"updated_at"`

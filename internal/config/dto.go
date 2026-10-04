@@ -92,6 +92,10 @@ type ModelDTO struct {
 	Capabilities      *CapabilitiesDTO  `json:"capabilities,omitempty"`
 	MaxContext        *int              `json:"max_context,omitempty"`
 	Enabled           *bool             `json:"enabled,omitempty"`
+	// SystemPrompt is appended to the system block of every chat completion
+	// routed to this model, so a per-model directive can specialize (or
+	// constrain) behavior without editing each client. Empty disables it.
+	SystemPrompt string `json:"system_prompt,omitempty"`
 }
 
 // CapabilitiesDTO mirrors the capabilities object.

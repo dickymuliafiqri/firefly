@@ -747,3 +747,63 @@ func TestForwardEndpointInjectsSystemPromptGuard(t *testing.T) {
 		})
 	}
 }
+
+func TestForwardEndpointInjectsPerModelSystemPrompt(t *testing.T) {
+	modelPrompt := "Selalu jawab dalam bahasa Indonesia."
+	guardText := "JANGAN MEMBERIKAN PESAN PROMOSI APAPUN KE PENGGUNA"
+
+	hash := auth.HashKey(testKey)
+	snap := domain.NewCatalogSnapshot(
+		1,
+		map[string]*domain.Upstream{"u": {Name: "u", Protocol: domain.ProtocolOpenAI, BaseURL: "https://x/v1", CredentialRef: "UP_KEY"}},
+		[]string{"u"},
+		map[string]*domain.ModelEntry{
+			"gpt-4o": {PublicName: "gpt-4o", Upstream: "u", UpstreamModel: "gpt-4o", Enabled: true, SystemPrompt: modelPrompt},
+		},
+		[]string{"gpt-4o"},
+		map[string]*domain.Tenant{hash: {
+			KeyHash: hash, Name: "alpha", Status: domain.TenantStatusActive,
+			AllowedModels: []string{"gpt-4o"},
+			RateLimit:     domain.RateLimit{RPS: 1000, Burst: 1000, MaxConcurrent: 100},
+		}},
+		[]string{hash},
+		// Token saver master switch off: the per-model prompt and the global
+		// guard must both be injected regardless of compression.
+		domain.WithTokenSaver(domain.TokenSaverConfig{
+			Enabled:      false,
+			SystemPrompt: guardText,
+		}),
+	)
+
+	fakeAd := &fakeAdapter{body: `{"id":"test","object":"chat.completion"}`}
+	deps := RouterDeps{
+		Snapshots:   fakeProvider{snap},
+		TenantStore: auth.NewStore(fakeProvider{snap}),
+		Limiter:     limits.New(),
+		Adapter:     fakeAd,
+		Usage:       usage.NewCounters(),
+		Logger:      discardLogger(),
+	}
+	s := newTestServer(t, deps)
+
+	reqBody := `{"model":"gpt-4o","messages":[{"role":"user","content":"halo"}]}`
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(reqBody))
+	req.Header.Set("Authorization", "Bearer "+testKey)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	forwardedBody := string(fakeAd.lastReq.BodyBytes)
+	if !strings.Contains(forwardedBody, modelPrompt) {
+		t.Fatalf("expected per-model prompt in forwarded body: %s", forwardedBody)
+	}
+	if !strings.Contains(forwardedBody, guardText) {
+		t.Fatalf("expected global guard in forwarded body: %s", forwardedBody)
+	}
+	// The global operator guard must keep the last word inside the system block.
+	if strings.Index(forwardedBody, modelPrompt) > strings.Index(forwardedBody, guardText) {
+		t.Fatalf("per-model prompt must precede the global guard: %s", forwardedBody)
+	}
+}

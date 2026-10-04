@@ -231,6 +231,25 @@ func run() error {
 		logger.Warn("could not initialize config directory/files", "dir", *configDir, "err", err)
 	}
 
+	// tunnel.json persists the Cloudflare Tunnel ingress mode and (for named
+	// tunnels) the token, so a restart re-runs the same tunnel instead of a
+	// fresh quick tunnel with a new random trycloudflare.com hostname. An
+	// explicit flag or environment value always wins; the file is only a
+	// fallback for what the dashboard last saved.
+	if tCfg, err := config.LoadTunnel(*configDir); err != nil {
+		logger.Warn("could not read tunnel config", "err", err)
+	} else {
+		if *tunnelMode == "" {
+			*tunnelMode = tCfg.Mode
+		}
+		if *tunnelToken == "" {
+			*tunnelToken = tCfg.Token
+		}
+		if *tunnelBinDir == "" {
+			*tunnelBinDir = tCfg.BinDir
+		}
+	}
+
 	// Root context cancelled on SIGINT/SIGTERM; drives server + watcher shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

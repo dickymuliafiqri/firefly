@@ -848,8 +848,9 @@ func settingsDTOFromSnapshot(snap *domain.CatalogSnapshot) config.SettingsDTO {
 				Embeddings: m.Capabilities.Embeddings,
 				Audio:      m.Capabilities.Audio,
 			},
-			MaxContext: &maxCtx,
-			Enabled:    &en,
+			MaxContext:   &maxCtx,
+			Enabled:      &en,
+			SystemPrompt: m.SystemPrompt,
 		})
 	}
 

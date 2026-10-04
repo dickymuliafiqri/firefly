@@ -8,12 +8,14 @@
 - **Resilience Architecture**:
   - Layer 1 (`KeyRing` & `policy`): Manages multi-key quota limits on HTTP 429 (`Retry-After`), revocation on HTTP 401, failover across remaining keys, and granular per-status error rules (`KeyErrorRule`: cooldown, deactivate, delete per HTTP status).
   - Layer 2 (`Breaker`): Upstream host circuit breaker triggered strictly on 5xx and network failures. Client 4xx never trips breakers.
+- **Cloudflare Tunnel Ingress**: Quick (`trycloudflare.com`) or named tunnel from the dashboard with `cloudflared`. The chosen mode and the named-tunnel token are persisted to `configs/tunnel.json` (owner-only `0600` when it carries a token; `-tunnel*` / `FIREFLY_TUNNEL*` take precedence over the file), so a restart restores the same hostname. The dashboard is write-only for the token — `/api/tunnel/status` reports only `token_configured` — and a named tunnel is required to pin a hostname or relay SSE.
 - **Cloudflare WARP Egress Engine**: Zero-privilege WireGuard userspace egress tunnel, established eagerly at startup (`warp.Manager.WarmUp`, so `/api/warp/status` reports a live session from boot) with periodic background IP auto-rotation (`-warp-rotate-interval`, default 2m) keeping outbound addresses clean without dropping active streams.
 - **Three-Tier Admission**:
   - Layer 1: Server-wide in-flight semaphore (`httpx.GlobalLimiter`) capped at 1,500 slots.
   - Layer 2: Per-tenant token-bucket rate limiter and concurrency limit (`httpx.AdmissionMiddleware`).
   - Layer 3: Per-credential atomic CAS concurrency ticket gate (`Limiter.AcquireKeySlot`).
 - **Virtual Combos**: Model-level load balancing grouping multiple upstream models into a single public model route using `least_inflight`, `round_robin`, or `failover` chain strategies.
+- **Per-Model System Prompt**: An optional `system_prompt` on a model route (`models.json` / the Models page, capped at `domain.MaxSystemPromptChars` = 4,000 chars) is appended to the system block of every `/chat/completions` request routed to that model *before* the global Token Saver guard, so the operator's global directive keeps the last word; a combo contributes the directive of the member that was selected. It is omitted from `sanitizePublicSettings`, so non-admin callers never see it.
 - **Third-Party AI OAuth & Multi-Account Keyrings**: Native OAuth 2.0 and device code integrations for Google Antigravity Cloud Code, Cline, Codebuddy (CN & Intl), and Grok CLI / Grok Build (xAI device-code flow with proactive refresh-token rotation) with encrypted credential storage in `configs/oauth.json` and multi-account keyring rotation.
 - **Native Auto-TLS (Let's Encrypt)**: Built-in ACME HTTP-01 challenge support for zero-config HTTPS deployment, persisted in `configs/tls.json` with dedicated certificate caching.
 - **Model Route Connectivity Verification**: Active probe endpoint (`POST /api/upstreams/check` with `model` parameter) performing minimal inference pings (`max_tokens: 1`) to test and verify AI model connectivity, quotas, and permission before routing traffic.
@@ -42,6 +44,7 @@
 - `auth.json`: Runtime credential vault for dashboard access password and session tokens.
 - `oauth.json`: Encrypted storage for connected third-party AI provider OAuth tokens and refresh metadata.
 - `tls.json`: Operational configuration for native Let's Encrypt Auto-TLS domain and ACME email.
+- `tunnel.json`: Persisted Cloudflare Tunnel ingress mode and named-tunnel token (written owner-only `0600` whenever it carries one), so a restart resumes the same tunnel.
 
 ## Invariants
 - Never set `http.Server.WriteTimeout` on the data plane.
@@ -49,3 +52,5 @@
 - Always use `httpx.IsNil` at interface boundaries.
 - Recycle buffers with capacity `<= 512KB` to `sync.Pool`.
 - Redact secrets (`sk-gw-***`, `[REDACTED]`) in all logs and client errors.
+- Keep `frontend/dist/.gitkeep` committed: `//go:embed all:dist` (in `frontend/embed.go`) fails on an empty `dist/`, which is the state of a clean clone.
+- Persist tunnel state through `config.SaveTunnel` (`configs/tunnel.json`) with flag > env > file precedence; never return the named-tunnel token to the dashboard (only `token_configured`).

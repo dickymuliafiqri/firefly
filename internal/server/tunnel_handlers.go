@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/dickymuliafiqri/firefly/internal/config"
 	"github.com/dickymuliafiqri/firefly/internal/transport/tunnel"
 )
 
@@ -80,6 +81,9 @@ func (deps RouterDeps) handleToggleTunnel(w http.ResponseWriter, r *http.Request
 			})
 			return
 		}
+		// Persist the disabled intent so a restart does not surprise-start the
+		// ingress, while retaining any saved token for the next enable.
+		deps.persistTunnelConfig(tunnel.ModeDisabled, "")
 	} else {
 		mode := tunnel.ModeQuick
 		if req.Mode != "" {
@@ -102,8 +106,38 @@ func (deps RouterDeps) handleToggleTunnel(w http.ResponseWriter, r *http.Request
 			})
 			return
 		}
+		// Persist the effective mode and token so the next boot restores the
+		// same tunnel — a named tunnel keeps the same public hostname instead of
+		// a fresh random trycloudflare.com subdomain.
+		deps.persistTunnelConfig(mode, req.Token)
 	}
 
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(deps.TunnelManager.Status())
+}
+
+// persistTunnelConfig writes the effective tunnel configuration to tunnel.json so
+// a restart re-runs the same ingress. An empty token is never invented: the
+// previously saved token is retained so a named tunnel stays usable across a
+// disable/enable cycle without the operator re-entering it.
+func (deps RouterDeps) persistTunnelConfig(mode tunnel.Mode, token string) {
+	if deps.ConfigDir == "" {
+		return
+	}
+	prev, _ := config.LoadTunnel(deps.ConfigDir)
+	cfg := config.TunnelDTO{BinDir: prev.BinDir, Token: prev.Token}
+	switch mode {
+	case tunnel.ModeNamed:
+		cfg.Mode = "named"
+		if strings.TrimSpace(token) != "" {
+			cfg.Token = token
+		}
+	case tunnel.ModeQuick:
+		cfg.Mode = "quick"
+	default:
+		cfg.Mode = ""
+	}
+	if err := config.SaveTunnel(deps.ConfigDir, cfg); err != nil && deps.Logger != nil {
+		deps.Logger.Warn("could not persist tunnel configuration", "err", err)
+	}
 }

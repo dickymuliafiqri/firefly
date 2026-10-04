@@ -1189,4 +1189,3 @@ func (a *Adapter) relayAnthropicSSE(ctx context.Context, w http.ResponseWriter, 
 	}
 	return written, scanner.Err()
 }
-

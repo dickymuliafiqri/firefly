@@ -266,6 +266,9 @@ export interface TunnelStatusDTO {
   local_url?: string;
   downloading?: boolean;
   message?: string;
+  /** True when a named-tunnel token is held. The token itself is never
+   *  returned to the dashboard. */
+  token_configured?: boolean;
 }
 
 export async function fetchTunnelStatus(): Promise<TunnelStatusDTO> {
@@ -1303,6 +1306,7 @@ function mocks() {
     enabled: false,
     running: false,
     mode: "disabled",
+    token_configured: false,
   };
 
   const providersMock: ProviderListResponse = {

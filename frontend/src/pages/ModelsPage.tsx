@@ -40,6 +40,7 @@ function ModelForm({ editing, onClose }: ModelFormProps) {
   const [isManualModel, setIsManualModel] = useState(false);
   const [fallbacks, setFallbacks] = useState("");
   const [maxContext, setMaxContext] = useState("");
+  const [systemPrompt, setSystemPrompt] = useState("");
   const [caps, setCaps] = useState({
     stream: true,
     tools: false,
@@ -60,6 +61,7 @@ function ModelForm({ editing, onClose }: ModelFormProps) {
       setUpstreamModel(editing.upstream_model);
       setFallbacks((editing.fallback_upstreams ?? []).join(", "));
       setMaxContext(editing.max_context ? String(editing.max_context) : "");
+      setSystemPrompt(editing.system_prompt ?? "");
       setCaps({
         stream: editing.capabilities?.stream ?? true,
         tools: editing.capabilities?.tools ?? false,
@@ -75,6 +77,7 @@ function ModelForm({ editing, onClose }: ModelFormProps) {
       setUpstreamModel("");
       setFallbacks("");
       setMaxContext("");
+      setSystemPrompt("");
       setCaps({
         stream: true,
         tools: false,
@@ -194,6 +197,7 @@ function ModelForm({ editing, onClose }: ModelFormProps) {
       enabled: editing?.enabled ?? true,
       capabilities: caps,
       ...(maxContext.trim() ? { max_context: Number(maxContext) } : {}),
+      ...(systemPrompt.trim() ? { system_prompt: systemPrompt.trim() } : {}),
       ...(fallbacks.trim()
         ? {
             fallback_upstreams: fallbacks
@@ -365,6 +369,24 @@ function ModelForm({ editing, onClose }: ModelFormProps) {
           onChange={(e) => setMaxContext(e.target.value)}
         />
       </Field>
+      <Field
+        label="System prompt (optional)"
+        htmlFor="m-sysprompt"
+        hint="Appended to the system block of every chat completion routed to this model. The global Token Saver guard is injected afterwards, so it keeps the last word."
+      >
+        <textarea
+          id="m-sysprompt"
+          rows={3}
+          spellCheck={false}
+          maxLength={4000}
+          placeholder="e.g. You are a senior Go engineer. Prefer the standard library and keep answers terse."
+          value={systemPrompt}
+          onChange={(e) => setSystemPrompt(e.target.value)}
+        />
+      </Field>
+      <div style={{ marginTop: -6, textAlign: "right" }}>
+        <span className="hint">{systemPrompt.length} / 4,000</span>
+      </div>
       <div>
         <label
           style={{

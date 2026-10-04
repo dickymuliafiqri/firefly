@@ -556,6 +556,18 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 			ts := snap.TokenSaver()
 			bodyLenBefore := len(body)
 			guardApplied := false
+			// Per-model directive first: it specializes behavior for the routed
+			// model (for a combo, the member that was actually selected). The
+			// global operator guard is appended afterwards so it keeps the final
+			// word inside the system block. Both share InjectSystemPrompt, so the
+			// rewrite is idempotent and multimodal-safe.
+			if target.SystemPrompt != "" {
+				if transformed, modified := tokensaver.InjectSystemPrompt(body, target.SystemPrompt); modified {
+					body = transformed
+					bodyModified = true
+					guardApplied = true
+				}
+			}
 			if ts.SystemPrompt != "" {
 				if transformed, modified := tokensaver.InjectSystemPrompt(body, ts.SystemPrompt); modified {
 					body = transformed

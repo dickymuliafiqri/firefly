@@ -61,6 +61,9 @@ type Manager struct {
 	downloading atomic.Bool
 	statusMsg   atomic.Value
 	done        chan struct{}
+	// tokenConfigured reports whether a named-tunnel token is currently held.
+	// Stored atomically so Status never races with Start mutating cfg.Token.
+	tokenConfigured atomic.Bool
 }
 
 // Status describes the current state of the Cloudflare Tunnel ingress engine.
@@ -72,6 +75,10 @@ type Status struct {
 	LocalURL    string `json:"local_url,omitempty"`
 	Downloading bool   `json:"downloading,omitempty"`
 	Message     string `json:"message,omitempty"`
+	// TokenConfigured reports whether a named-tunnel token is held, without ever
+	// exposing the token itself. The dashboard uses it to show that the ingress
+	// will be restored on the next boot.
+	TokenConfigured bool `json:"token_configured,omitempty"`
 }
 
 var urlRegex = regexp.MustCompile(`https://[a-zA-Z0-9\-]+\.trycloudflare\.com`)
@@ -85,12 +92,14 @@ func NewManager(cfg Config) *Manager {
 	if appCtx == nil {
 		appCtx = context.Background()
 	}
-	return &Manager{
+	m := &Manager{
 		appCtx: appCtx,
 		cfg:    cfg,
 		logger: logger.With("component", "tunnel"),
 		done:   make(chan struct{}),
 	}
+	m.tokenConfigured.Store(strings.TrimSpace(cfg.Token) != "")
+	return m
 }
 func (m *Manager) PublicURL() string {
 	if v := m.publicURL.Load(); v != nil {
@@ -106,13 +115,14 @@ func (m *Manager) Status() Status {
 		msg = v.(string)
 	}
 	return Status{
-		Enabled:     m.cfg.Mode != ModeDisabled,
-		Running:     m.IsRunning(),
-		Mode:        m.modeString(),
-		PublicURL:   m.PublicURL(),
-		LocalURL:    m.cfg.LocalURL,
-		Downloading: m.downloading.Load(),
-		Message:     msg,
+		Enabled:         m.cfg.Mode != ModeDisabled,
+		Running:         m.IsRunning(),
+		Mode:            m.modeString(),
+		PublicURL:       m.PublicURL(),
+		LocalURL:        m.cfg.LocalURL,
+		Downloading:     m.downloading.Load(),
+		Message:         msg,
+		TokenConfigured: m.tokenConfigured.Load(),
 	}
 }
 

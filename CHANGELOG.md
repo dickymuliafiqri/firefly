@@ -5,6 +5,35 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.43.0] - 2026-10-04
+
+### Added
+
+- **Persisted Cloudflare Tunnel Configuration (`internal/config`, `internal/server`, `internal/transport/tunnel`, `cmd/firefly`, `frontend`)**: The tunnel mode and the named-tunnel token are now persisted to `configs/tunnel.json`, so a restart re-runs the same ingress instead of falling back to a fresh quick tunnel with a new random `trycloudflare.com` hostname.
+  - `-tunnel`, `-tunnel-token`, and `-tunnel-bin-dir` resolve with the precedence **flag > environment (`FIREFLY_TUNNEL*`) > file**, so an explicit deployment value still wins over whatever the dashboard last saved. A malformed `tunnel.json` is logged as a warning and ignored, never aborting startup.
+  - `config.SaveTunnel` writes the file atomically (temp file + `rename`) and switches to the owner-only `SecretFileMode` (`0600`) whenever the payload carries a token; a token-free configuration keeps the normal config permission. `config.LoadTunnel` strict-decodes the file and normalizes the mode via `TunnelDTO.NormalizeMode`.
+  - Disabling the tunnel or switching to quick **never wipes a saved token** — it stays on disk for the next named enable — and a named enable submitted with an empty token reuses the stored credential instead of failing with `token is required`.
+  - The dashboard stays write-only for the token: `GET /api/tunnel/status` now reports only `token_configured` (a new `Manager.tokenConfigured` atomic, populated from the boot config and refreshed by `Start`), the token input is cleared after a successful apply, and its hint/placeholder switch to "a token is already stored on the server" so an operator can re-enable a named tunnel without re-pasting the credential.
+  - `TunnelCard` gained a **Saved configuration** row (named token stored / named mode without token / quick without a pinned hostname) and an amber notice for quick tunnels, which cannot pin a hostname and do not support SSE streaming — a named tunnel is required for both.
+- **Per-Model System Prompt (`internal/domain`, `internal/config`, `internal/server`, `internal/storage/turso`, `frontend`)**: A model route can now carry an optional `system_prompt` directive.
+  - Injected into the system block of every `/v1/chat/completions` request routed to that model, **before** the global Token Saver System Prompt Guard, so the operator's global directive keeps the last word inside the system block. For a virtual combo the directive of the member model actually selected is used (`domain.Target.SystemPrompt` is resolved by `CatalogSnapshot.ResolveTargetWithCandidates` on both the direct and the combo path).
+  - Both injections share `tokensaver.InjectSystemPrompt`, so the rewrite is idempotent and multimodal-safe; the body is rewritten only on `/chat/completions`, `trace.StageTokenSaver` is recorded only when a pass actually changed the body, and `tokensIn` is re-estimated from the rewritten body.
+  - Bounded at `domain.MaxSystemPromptChars` (4,000 characters): the validator trims the value and rejects anything longer with `models[i].system_prompt: exceeds 4000 characters`.
+  - Persisted end-to-end: `models.json`, the new Turso `models.system_prompt` column (in `CREATE TABLE` plus an `ALTER TABLE` migration for existing databases), `SaveSettings`, and `SaveModel`.
+  - Deliberately **not** returned to non-admin callers — `sanitizePublicSettings` omits it, so a tenant-facing/`/v1/models` reader can never observe an operator prompt.
+  - The Models drawer exposes it as a labelled textarea with a `4,000` character counter that hydrates from the catalog and participates in the staged-config flow like every other model field.
+
+### Fixed
+
+- **Formatting (`internal/adapter/opencode/adapter.go`)**: Removed a stray trailing blank line at end of file so `gofmt -l` is clean across the tree again (the deviation dated back to 1.42.6).
+- **Build — `frontend/dist/.gitkeep` embed sentinel (`frontend/vite.config.ts`)**: `//go:embed all:dist` fails with `pattern all:dist: contains no embeddable files` when `dist/` holds no embeddable file, which is exactly the state of a clean clone (and of any checkout whose sentinel was collected by `vite build`). The `.gitkeep` sentinel is now re-emitted by a `keepDistGitkeep()` plugin that runs only for builds (`apply: 'build'`, `generateBundle` → `this.emitFile`), so `emptyOutDir` can no longer strip it while a local `vite build` still produces a clean `dist/`. The plugin deliberately uses Vite's own asset API instead of `node:fs` (`@types/node` is not a dependency) and is skipped in dev.
+
+### Changed
+
+- **Dashboard staged configuration (`frontend`)**: Every editing surface (Models, Upstreams, Tenants, Gateway/Token Saver settings) now writes into a persisted *draft* (`frontend/src/state/draftStore.ts`) instead of calling `PUT /api/settings` directly. The floating `PendingChangesBar` shows the pending collection deltas, commits them, and detects drift against the last known server payload so a change made behind the dashboard's back (key harvester, hot reload, second operator) surfaces as a conflict instead of being silently overwritten. The draft lives in `localStorage` and propagates to other tabs of the same origin through `storage` events.
+- **WARP auto-rotation default (`cmd/firefly`, `internal/config`, `internal/transport/warp`)**: `-warp-rotate-interval` now defaults to **2m** (was 5m). Cloudflare's device-registration endpoint began answering `429` to sustained bursts faster than roughly one registration per minute, so the new default keeps a 2× margin while still refreshing the egress IP regularly; the 60-second `DefaultMinRotateInterval` floor for manual rotations is unchanged.
+- **Version bump**: `frontend/package.json` and `AppShell.tsx` bumped to `v1.43.0`.
+
 ## [1.42.9] - 2026-10-01
 
 ### Changed

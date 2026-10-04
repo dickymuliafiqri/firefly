@@ -246,6 +246,10 @@ export interface ModelDTO {
   capabilities?: CapabilitiesDTO | null;
   max_context?: number | null;
   enabled?: boolean | null;
+  /** Optional per-model directive appended to the system block of every chat
+   *  completion routed to this model. Injected before the global Token Saver
+   *  guard, so the operator's global directive keeps the last word. */
+  system_prompt?: string | null;
 }
 
 export interface RateLimitDTO {
