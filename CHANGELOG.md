@@ -5,6 +5,23 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.43.2] - 2026-10-06
+
+### Added
+
+- **WARP multi-session egress pool (`internal/transport/warp`, `cmd/firefly`)**: WARP now runs a pool of concurrent sessions instead of a single tunnel. The pool grows one slot per rotation tick until it reaches `-warp-pool-size` (default **5**), then retires the oldest slot per tick — always one Cloudflare device registration per interval, so the fleet is never registered in a burst that trips `429`s — while new dials spread round-robin across the live slots. Values below 1 are clamped, so `1` reproduces the previous single-tunnel behaviour.
+  - New flag `-warp-pool-size` / `$FIREFLY_WARP_POOL_SIZE`, resolved only when it improves on the default (same precedence handling as the other env overrides).
+  - `warp.Manager.SetPoolSize` stores the ceiling on an `atomic.Int64`, so the pool is resizable without a lock and the growth/retire decision is read per rotation tick; a newly registered slot below the ceiling is appended, and at the ceiling the oldest active slot is swapped out and quiesced (kept draining for its live streams).
+  - `GET /api/warp/status` reports the pool next to the existing newest-slot fields: `pool_size`, `active_sessions`, and `egress_ips` (the public address of every active slot, duplicate-free) alongside `public_ip` / `colo` / `latency_ms` / `endpoint` (newest slot), `active_connections`, `draining_sessions`, `last_rotated_at`, `next_rotation_at`, and `enabled` (true only while a live session exists).
+  - Covered by `internal/transport/warp/manager_test.go`: the growth phase, steady-state retire-oldest, slot clamping, and the published status fields.
+- **Dashboard — Proxies → Warp page (`frontend/src/pages/WarpPage.tsx`, `frontend/src/registry.tsx`, `frontend/src/services/schema.ts`)**: WARP moved out of Settings into its own page under a new **PROXIES** sidebar group, inserted between SERVICES and CONFIGURATION. The page carries a KPI grid (pool size, active sessions, draining sessions, connections), the session-pool table (slot number, egress IP with a copy action, and a `primary` badge on the newest slot), a connection/rotation key-value list (last rotation, next rotation, auto-rotate interval, endpoint, colo, latency), a **Rotate now** / **Start** action with toasts, a three-state `ONLINE` / `STANDBY` / `UNAVAILABLE` badge (`enabled` is true only while a live session exists, so a stopped manager reads STANDBY rather than OFFLINE), and the WARP error banner when the last rotation failed.
+
+### Changed
+
+- **Settings — redundant Warp Engine card removed (`frontend/src/pages/SettingsPage.tsx`)**: The card duplicated the page above it, so WARP status is no longer shown twice; the now-unused `useWarpStatusQuery` / `useRotateWarpMutation` subscriptions went with it.
+- **Overview — resource charts never disappear and read cleanly (`frontend/src/components/ui/ResourceMonitor.tsx`, `frontend/src/styles/global.css`)**: The old sparkline returned an empty `<svg>` until it held two samples, so the network graphs were invisible on an idle gateway, and the RX and TX series were stacked in two cramped boxes. They are replaced by one minimalist chart per section — a gradient area with a crisp `non-scaling-stroke` line over faint top/bottom guide lines — that always renders: an empty or single-sample series is left-padded to the full window so the newest value sits at the right edge and zeros rest on the baseline as a flat line. RX and TX are now overlaid in a single chart (legend chips and per-session totals kept), and the CPU series uses the same component.
+- **Version bump**: `frontend/package.json` and `AppShell.tsx` bumped to `v1.43.2`.
+
 ## [1.43.1] - 2026-10-04
 
 ### Added

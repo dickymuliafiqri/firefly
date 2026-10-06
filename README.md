@@ -220,6 +220,7 @@ All settings can be updated live from the web dashboard with **zero server resta
 | `-tunnel-token`           | `FIREFLY_TUNNEL_TOKEN`           | `""`           | Secret token for named Cloudflare Tunnels (falls back to `tunnel.json`, written `0600`)                           |
 | `-tunnel-bin-dir`         | `FIREFLY_TUNNEL_BIN_DIR`         | auto           | Custom folder to find or download the `cloudflared` binary (falls back to `tunnel.json`)                          |
 | `-warp-rotate-interval`   | `FIREFLY_WARP_ROTATE_INTERVAL`   | `2m`           | Interval for automatic WARP IP rotation (`0` to disable)                                                          |
+| `-warp-pool-size`         | `FIREFLY_WARP_POOL_SIZE`        | `5`            | Concurrent WARP slots kept active; the pool grows one slot per rotation and then retires the oldest, spreading dials round-robin |
 | `-shutdown-grace-seconds` | `FIREFLY_SHUTDOWN_GRACE_SECONDS` | `30`           | Seconds to let active streams finish before shutting down                                                         |
 | `-version`                | —                                | —              | Print version and build information, then exit                                                                    |
 
