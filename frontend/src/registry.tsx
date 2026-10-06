@@ -5,6 +5,7 @@ import {
   Coins,
   Database,
   Gauge,
+  Globe,
   Layers,
   Lock,
   MessageCircle,
@@ -30,6 +31,7 @@ import { BenchmarkPage } from '@/pages/BenchmarkPage';
 import { QuotaPage } from '@/pages/QuotaPage';
 import { ConsolePage } from '@/pages/ConsolePage';
 import { VisualizerPage } from '@/pages/VisualizerPage';
+import { WarpPage } from '@/pages/WarpPage';
 
 import { LoginPage } from '@/pages/LoginPage';
 import { UpstreamEditorPage } from '@/pages/UpstreamEditorPage';
@@ -49,6 +51,7 @@ export type PageId =
   | 'quota'
   | 'console'
   | 'visualizer'
+  | 'warp'
   | 'login'
   | 'upstream-editor';
 
@@ -56,7 +59,7 @@ export interface PageDef {
   id: PageId;
   title: string;
   description: string;
-  group: 'MONITORING' | 'SERVICES' | 'CONFIGURATION' | 'TOOLS' | 'AUTH' | 'EDITOR';
+  group: 'MONITORING' | 'SERVICES' | 'PROXIES' | 'CONFIGURATION' | 'TOOLS' | 'AUTH' | 'EDITOR';
   icon: LucideIcon;
   element: () => ReactNode;
 }
@@ -71,6 +74,7 @@ export const PAGES: Record<PageId, PageDef> = {
   tenants:    { id: 'tenants',    title: 'Tenants',    description: 'Tenant auth, rate limits, and access.',           group: 'SERVICES',      icon: Users,         element: () => <TenantsPage /> },
   connect:    { id: 'connect',    title: 'Connect',    description: 'Wire AI agents to this gateway.',                 group: 'SERVICES',      icon: Plug,          element: () => <ConnectPage /> },
   settings:   { id: 'settings',   title: 'Settings',   description: 'Global gateway configuration.',                   group: 'CONFIGURATION', icon: Sliders,       element: () => <SettingsPage /> },
+  warp:      { id: 'warp',      title: 'Warp',      description: 'Cloudflare WARP egress pool & rotation.',           group: 'PROXIES',      icon: Globe,         element: () => <WarpPage /> },
   chat:       { id: 'chat',       title: 'Chat',       description: 'SSE chat tester with stream inspector.',          group: 'TOOLS',         icon: MessageCircle, element: () => <ChatPage /> },
   benchmark:  { id: 'benchmark',  title: 'Benchmark',  description: 'Gateway throughput benchmarking.',                group: 'TOOLS',         icon: Zap,           element: () => <BenchmarkPage /> },
   quota:      { id: 'quota',      title: 'Quota',      description: 'Tenant quota tracker with top-up.',               group: 'MONITORING',    icon: Coins,         element: () => <QuotaPage /> },
@@ -80,9 +84,9 @@ export const PAGES: Record<PageId, PageDef> = {
   'upstream-editor': { id: 'upstream-editor', title: 'Upstream Editor', description: 'Full-page upstream configuration.', group: 'EDITOR', icon: Server, element: () => <UpstreamEditorPage /> },
 };
 
-export const GROUP_ORDER: Array<PageDef['group']> = ['MONITORING', 'SERVICES', 'CONFIGURATION', 'TOOLS'];
+export const GROUP_ORDER: Array<PageDef['group']> = ['MONITORING', 'SERVICES', 'PROXIES', 'CONFIGURATION', 'TOOLS'];
 
-/** Sidebar groups — four active groups across all pages. */
+/** Sidebar groups — MONITORING/SERVICES/PROXIES/CONFIGURATION/TOOLS. AUTH & EDITOR are routable but intentionally unlisted. */
 export const SIDEBAR_GROUPS: Array<{ label: PageDef['group']; pages: PageDef[] }> = GROUP_ORDER.map(
   (label) => ({
     label,

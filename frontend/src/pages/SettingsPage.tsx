@@ -6,10 +6,8 @@ import { useUiStore } from "@/state/store";
 import { navigate } from "@/lib/router";
 import {
   useSettingsQuery,
-  useWarpStatusQuery,
   useTunnelStatusQuery,
   useToggleTunnelMutation,
-  useRotateWarpMutation,
   logoutApi,
   verifyAuthApi,
   updatePasswordApi,
@@ -356,161 +354,6 @@ function TokenSaverCard() {
             </button>
           </div>
         </div>
-      </div>
-    </div>
-  );
-}
-
-function WarpCard() {
-  const warp = useWarpStatusQuery();
-  const rotate = useRotateWarpMutation();
-  const pushToast = useUiStore((s) => s.pushToast);
-  const d = warp.data;
-  const live = Boolean(d?.enabled);
-
-  // Three states, not two: a warm-up that could not reach Cloudflare is neither a
-  // live tunnel nor a healthy idle engine, so it is reported as UNAVAILABLE with
-  // the recorded reason instead of the neutral DISABLED badge.
-  const badgeTone = live ? "ok" : d?.error ? "warn" : "neutral";
-  const badgeText = live ? "ROTATING" : d?.error ? "UNAVAILABLE" : "DISABLED";
-
-  const copyIp = (ip: string) => {
-    navigator.clipboard.writeText(ip);
-    pushToast({ type: "success", title: "IP Copied", message: ip });
-  };
-
-  return (
-    <div className="card">
-      <div className="card-header">
-        <h2>Warp Engine</h2>
-        <Badge tone={badgeTone} title={d?.error || undefined}>
-          {badgeText}
-        </Badge>
-      </div>
-      <div className="card-body">
-        <div className="kv-list">
-          <div>
-            <span className="k">Public IP (egress)</span>
-            <span className="v">
-              {d?.public_ip ? (
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span
-                    style={{
-                      fontFamily: "var(--font-mono, monospace)",
-                      fontWeight: 500,
-                    }}
-                  >
-                    {d.public_ip}
-                  </span>
-                  <button
-                    type="button"
-                    className="btn btn-ghost"
-                    style={{
-                      padding: "2px 8px",
-                      fontSize: "0.75rem",
-                      height: "auto",
-                    }}
-                    onClick={() => copyIp(d.public_ip!)}
-                  >
-                    Copy
-                  </button>
-                </div>
-              ) : (
-                "—"
-              )}
-            </span>
-          </div>
-          <div>
-            <span className="k">Internal IP (tunnel)</span>
-            <span className="v">{d?.internal_ip || "—"}</span>
-          </div>
-          <div>
-            <span className="k">Colo</span>
-            <span className="v">{d?.colo || "—"}</span>
-          </div>
-          <div>
-            <span className="k">Latency</span>
-            <span className="v">
-              {d?.latency_ms ? `${d.latency_ms.toFixed(1)}ms` : "—"}
-            </span>
-          </div>
-          <div>
-            <span className="k">Active connections</span>
-            <span className="v">{d?.active_connections ?? "—"}</span>
-          </div>
-          <div>
-            <span className="k">Auto-rotate interval</span>
-            <span className="v">
-              {d?.auto_rotate_interval_seconds
-                ? `${Math.round(d.auto_rotate_interval_seconds / 60)}m`
-                : "disabled"}
-            </span>
-          </div>
-          <div>
-            <span className="k">Next rotation</span>
-            <span className="v">
-              {d?.next_rotation_at
-                ? new Date(d.next_rotation_at).toLocaleTimeString()
-                : "—"}
-            </span>
-          </div>
-        </div>
-        <div
-          style={{ display: "flex", justifyContent: "flex-end", marginTop: 14 }}
-        >
-          <button
-            className="btn btn-secondary"
-            disabled={rotate.isPending}
-            onClick={() =>
-              rotate.mutate(undefined, {
-                onSuccess: () =>
-                  pushToast({
-                    type: "success",
-                    title: "WARP rotate",
-                    message: live
-                      ? "New egress session created; old session is draining."
-                      : "WARP tunnel established on the first available egress.",
-                  }),
-                onError: (e) =>
-                  pushToast({
-                    type: "error",
-                    title: "Rotate failed",
-                    message: e instanceof Error ? e.message : "Unknown",
-                  }),
-              })
-            }
-          >
-            {live ? "Rotate now" : "Start tunnel"}
-          </button>
-        </div>
-
-        {d?.error && (
-          <div
-            style={{
-              marginTop: 12,
-              padding: "10px 14px",
-              borderRadius: "var(--radius, 6px)",
-              background: "rgba(239, 68, 68, 0.1)",
-              border: "1px solid rgba(239, 68, 68, 0.3)",
-              color: "var(--color-error, #ef4444)",
-              fontSize: "0.85rem",
-              display: "flex",
-              flexDirection: "column",
-              gap: 4,
-            }}
-          >
-            <strong>WARP error:</strong>
-            <span
-              style={{
-                wordBreak: "break-word",
-                fontFamily: "var(--font-mono, monospace)",
-                fontSize: "0.8rem",
-              }}
-            >
-              {d.error}
-            </span>
-          </div>
-        )}
       </div>
     </div>
   );
@@ -1352,7 +1195,6 @@ export function SettingsPage() {
         <AccessCard />
         <PasswordCard />
         <TokenSaverCard />
-        <WarpCard />
         <TunnelCard />
 
         <TursoCard />

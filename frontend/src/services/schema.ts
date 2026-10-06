@@ -207,6 +207,12 @@ export interface WarpStatusDTO {
   auto_rotate_interval_seconds?: number;
   /** When the next scheduled auto-rotation is expected. */
   next_rotation_at?: string;
+  /** Configured number of concurrent WARP slots (0 until a pool exists). */
+  pool_size?: number;
+  /** Slots currently usable for new dials. */
+  active_sessions?: number;
+  /** Public egress address of each active slot, free of duplicates. */
+  egress_ips?: string[];
   error?: string;
 }
 
