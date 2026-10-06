@@ -6,7 +6,7 @@ import type { ResourceMonitorDTO } from '@/services/schema';
  * ResourceMonitor — htop-style host & process snapshot for the Overview page.
  * Data comes from `resource_monitor` on /api/telemetry (admin only), which the
  * dashboard already polls every 2s, so the monitor adds no extra connection.
- * Sparkline history is accumulated client-side from consecutive polls.
+ * Chart history is accumulated client-side from consecutive polls.
  */
 
 const HISTORY = 60; // ~2 minutes of samples at the 2s polling cadence
@@ -45,27 +45,82 @@ function loadTone(pct: number): 'ok' | 'warn' | 'danger' {
   return 'ok';
 }
 
-/** Tiny dependency-free sparkline. Baseline at the bottom, flat when idle. */
-function Sparkline({ points, max, variant }: { points: number[]; max: number; variant?: 'rx' | 'tx' }) {
-  const w = 100;
-  const h = 28;
-  const cls = variant ? ` ${variant}` : '';
-  if (points.length < 2) {
-    return <svg className={`resmon-spark${cls}`} viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" />;
-  }
-  const step = w / (HISTORY - 1);
-  const startIdx = HISTORY - points.length;
-  const path = points
-    .map((p, i) => {
-      const x = (startIdx + i) * step;
-      const y = h - (Math.max(0, Math.min(max, p)) / max) * (h - 2) - 1;
-      return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(' ');
+type ChartColor = 'cpu' | 'rx' | 'tx';
+interface ChartSeries {
+  points: number[];
+  color: ChartColor;
+}
+
+const CHART_W = 100;
+const CHART_H = 28;
+
+function colorVar(c: ChartColor): string {
+  if (c === 'rx') return 'var(--info)';
+  if (c === 'tx') return 'var(--biolum)';
+  return 'var(--ok)';
+}
+
+/**
+ * Left-pad a series to HISTORY samples so the newest value always sits at the
+ * right edge and the chart spans the full width. Empty or single-sample series
+ * become a flat line (zeros sit on the baseline) — the graph never disappears.
+ */
+function toWindow(points: number[]): number[] {
+  if (points.length >= HISTORY) return points.slice(points.length - HISTORY);
+  if (points.length === 0) return new Array<number>(HISTORY).fill(0);
+  const edge = points[0];
+  return [...new Array<number>(HISTORY - points.length).fill(edge), ...points];
+}
+
+/**
+ * Minimalist dependency-free chart: a soft gradient area + a crisp rounded line
+ * per series over a faint baseline grid. Always renders (flat when idle).
+ */
+function SparkChart({
+  series,
+  max,
+  className,
+}: {
+  series: ChartSeries[];
+  max: number;
+  className?: string;
+}) {
+  const top = 1.5;
+  const usable = CHART_H - top - 1;
+  const step = CHART_W / (HISTORY - 1);
+  const yFor = (v: number) => top + (1 - Math.min(max, Math.max(0, v)) / max) * usable;
+
+  const drawn = series.map(({ points, color }) => {
+    const seq = toWindow(points);
+    const line = seq
+      .map((p, i) => `${i === 0 ? 'M' : 'L'}${(i * step).toFixed(2)},${yFor(p).toFixed(2)}`)
+      .join(' ');
+    return { color, line, area: `${line} L${CHART_W},${CHART_H} L0,${CHART_H} Z` };
+  });
+
   return (
-    <svg className={`resmon-spark${cls}`} viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none">
-      <path d={`${path} L${w},${h} L0,${h} Z`} className="area" />
-      <path d={path} className="line" />
+    <svg
+      className={`resmon-chart${className ? ` ${className}` : ''}`}
+      viewBox={`0 0 ${CHART_W} ${CHART_H}`}
+      preserveAspectRatio="none"
+      role="img"
+    >
+      <defs>
+        {drawn.map((r) => (
+          <linearGradient key={r.color} id={`resmon-fill-${r.color}`} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={colorVar(r.color)} stopOpacity="0.3" />
+            <stop offset="100%" stopColor={colorVar(r.color)} stopOpacity="0" />
+          </linearGradient>
+        ))}
+      </defs>
+      <line className="grid top" x1="0" y1={top} x2={CHART_W} y2={top} />
+      <line className="grid base" x1="0" y1={top + usable} x2={CHART_W} y2={top + usable} />
+      {drawn.map((r) => (
+        <path key={`a-${r.color}`} d={r.area} fill={`url(#resmon-fill-${r.color})`} stroke="none" />
+      ))}
+      {drawn.map((r) => (
+        <path key={`l-${r.color}`} className={`line ${r.color}`} d={r.line} vectorEffect="non-scaling-stroke" />
+      ))}
     </svg>
   );
 }
@@ -138,7 +193,7 @@ export function ResourceMonitor({ stats }: { stats?: ResourceMonitorDTO | null }
               </div>
             ))}
           </div>
-          <Sparkline points={history.cpu} max={cpuMax} variant="tx" />
+          <SparkChart series={[{ points: history.cpu, color: 'cpu' }]} max={cpuMax} />
         </section>
 
         {/* Memory */}
@@ -182,8 +237,14 @@ export function ResourceMonitor({ stats }: { stats?: ResourceMonitorDTO | null }
               ↓ {fmtBytes(stats.net_rx_total_bytes)} · ↑ {fmtBytes(stats.net_tx_total_bytes)}
             </span>
           </div>
-          <Sparkline points={history.rx} max={netMax} variant="rx" />
-          <Sparkline points={history.tx} max={netMax} variant="tx" />
+          <SparkChart
+            className="dual"
+            series={[
+              { points: history.rx, color: 'rx' },
+              { points: history.tx, color: 'tx' },
+            ]}
+            max={netMax}
+          />
         </section>
 
         {/* Process */}
