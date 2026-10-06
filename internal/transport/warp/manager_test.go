@@ -52,6 +52,22 @@ func quietLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
+// seedActive installs a fixed pool into the manager without building real
+// devices, so pool publication, round-robin picking, and rotation bookkeeping
+// can be exercised in isolation.
+func seedActive(mgr *Manager, sessions ...*Session) {
+	cur := make([]*Session, len(sessions))
+	copy(cur, sessions)
+	mgr.active.Store(&cur)
+}
+
+func activeCount(mgr *Manager) int {
+	if p := mgr.active.Load(); p != nil {
+		return len(*p)
+	}
+	return 0
+}
+
 // harness wires a Manager to a local registration endpoint and a stubbed edge
 // probe, so lifecycle behaviour is observable without Cloudflare.
 type harness struct {
@@ -452,7 +468,7 @@ func TestManager_StatusKeepsPublicAndInternalIPApart(t *testing.T) {
 	mgr := NewManager(quietLogger(), "")
 	defer mgr.Close()
 
-	mgr.current.Store(&Session{InternalIPv4: "172.16.0.2"})
+	seedActive(mgr, &Session{InternalIPv4: "172.16.0.2"})
 
 	st := mgr.Status()
 	if st.PublicIP != "" {
@@ -634,33 +650,147 @@ func TestManager_StatusOmitsZeroRotationTime(t *testing.T) {
 	}
 }
 
-// A cold-start restore that finishes after a real rotation must not displace the
-// newer tunnel, and must not have its identity cached.
-func TestManager_InstallKeepsNewerSession(t *testing.T) {
+// The pool grows one slot per install until it reaches the configured size, then
+// retires the oldest slot per install so the size stays constant. Nothing is
+// retired while there is still room, and the retired oldest slot keeps serving
+// its live connections (it is drained, never force-closed) and is never handed
+// out for new dials again.
+func TestManager_PoolGrowsThenRotatesOldest(t *testing.T) {
+	mgr := NewManager(quietLogger(), "")
+	defer mgr.Close()
+	mgr.SetPoolSize(3)
+
+	a := &Session{PublicIP: "203.0.113.1", CreatedAt: time.Now()}
+	b := &Session{PublicIP: "203.0.113.2", CreatedAt: time.Now().Add(time.Second)}
+	c := &Session{PublicIP: "203.0.113.3", CreatedAt: time.Now().Add(2 * time.Second)}
+	for _, s := range []*Session{a, b, c} {
+		if got := mgr.installSession(s); got != s {
+			t.Fatalf("growth must publish the freshly built session, got %+v", got)
+		}
+	}
+	if got := activeCount(mgr); got != 3 {
+		t.Fatalf("expected the pool to hold 3 active sessions, got %d", got)
+	}
+	if a.Quiescing() || b.Quiescing() || c.Quiescing() {
+		t.Error("no slot should be retired while the pool is still growing")
+	}
+	if a.closed.Load() || b.closed.Load() || c.closed.Load() {
+		t.Error("a growing pool must not close any active session")
+	}
+
+	// Pool full: the next install rotates the oldest slot out, keeps the size
+	// constant, and never offers the retired slot to the picker again.
+	d := &Session{PublicIP: "203.0.113.4", CreatedAt: time.Now().Add(3 * time.Second)}
+	if got := mgr.installSession(d); got != d {
+		t.Fatalf("a full-pool install must publish the new session, got %+v", got)
+	}
+	if got := activeCount(mgr); got != 3 {
+		t.Fatalf("a full-pool rotation must keep the pool size constant, got %d", got)
+	}
+	if !a.Quiescing() {
+		t.Error("the oldest slot (a) should have been quiesced on rotation")
+	}
+	for i := 0; i < 12; i++ {
+		if mgr.pick() == a {
+			t.Fatal("a quiesced slot must no longer be handed out for new dials")
+		}
+	}
+	waitFor(t, 2*time.Second, func() bool { return a.closed.Load() },
+		"the quiesced oldest slot should be drained and closed once idle")
+	if b.closed.Load() || c.closed.Load() || d.closed.Load() {
+		t.Error("a rotation must not close the slots it keeps active")
+	}
+
+	st := mgr.Status()
+	if st.ActiveSessions != 3 {
+		t.Errorf("expected 3 active sessions in status, got %d", st.ActiveSessions)
+	}
+	if len(st.EgressIPs) != 3 {
+		t.Errorf("expected 3 egress ips in status, got %v", st.EgressIPs)
+	}
+}
+
+// A rotation that fails during registration must never touch the active pool:
+// the replacement is built and probed before publication, so a failed build is
+// an automatic rollback to the previous slot set.
+func TestManager_FailedRotationKeepsActivePool(t *testing.T) {
+	h := newHarness(t)
+
+	if _, err := h.mgr.Rotate(t.Context()); err != nil {
+		t.Fatalf("seed rotation: %v", err)
+	}
+	before := h.mgr.activeSessions()
+	if len(before) != 1 {
+		t.Fatalf("expected 1 active session after the seed rotation, got %d", len(before))
+	}
+
+	// Fail the registrator with a 404 so the next rotation errors before it can
+	// publish anything (no live traffic slot is disturbed).
+	h.mgr.registrationURL = h.server.URL + "/nonexistent"
+	if _, err := h.mgr.Rotate(t.Context()); err == nil {
+		t.Fatal("expected the rotation to fail against a broken registrator")
+	}
+
+	after := h.mgr.activeSessions()
+	if len(after) != 1 || after[0] != before[0] {
+		t.Fatalf("a failed rotation must keep the active pool intact, got %v", after)
+	}
+	if before[0].Quiescing() || before[0].closed.Load() {
+		t.Error("a failed rotation must not retire or close the active slot")
+	}
+	if got := h.regCalls.Load(); got != 1 {
+		t.Errorf("a failed rotation must not register a device, got %d registrations", got)
+	}
+}
+
+// Round-robin must spread dials across the active slots rather than pinning all
+// traffic to a single tunnel.
+func TestManager_PickRoundRobinsAcrossActive(t *testing.T) {
 	mgr := NewManager(quietLogger(), "")
 	defer mgr.Close()
 
-	newer := &Session{PublicIP: testPublicIP, CreatedAt: time.Now()}
-	mgr.current.Store(newer)
+	a := &Session{PublicIP: "203.0.113.1"}
+	b := &Session{PublicIP: "203.0.113.2"}
+	seedActive(mgr, a, b)
 
-	stale := &Session{PublicIP: "198.51.100.9", CreatedAt: time.Now().Add(-time.Minute)}
-	if got := mgr.installSession(stale); got != newer {
-		t.Errorf("expected the newer session to stay active, got %+v", got)
+	seen := map[*Session]int{}
+	for i := 0; i < 6; i++ {
+		seen[mgr.pick()]++
 	}
-	if !stale.closed.Load() {
-		t.Error("the discarded session must be closed, not orphaned")
+	if len(seen) != 2 || seen[a] == 0 || seen[b] == 0 {
+		t.Fatalf("expected round-robin over both slots, got %+v", seen)
 	}
-	if got := mgr.Status().PublicIP; got != testPublicIP {
-		t.Errorf("active public ip changed to %q", got)
+}
+
+// The grace period is a floor, never a guillotine: a retired slot that still
+// carries a connection must survive well past its grace instead of being severed
+// mid-stream (regression for the upstream 502s). It closes only once the last
+// connection is released.
+func TestManager_DrainGraceDoesNotSeverOpenStreams(t *testing.T) {
+	mgr := NewManager(quietLogger(), "")
+	defer mgr.Close()
+	mgr.sessionGrace = 200 * time.Millisecond
+
+	old := &Session{}
+	if !old.acquireConn() {
+		t.Fatal("fresh session refused a connection")
+	}
+	mgr.drainSession(old)
+
+	// Well past the grace: the stream must still be alive.
+	time.Sleep(700 * time.Millisecond)
+	if old.closed.Load() {
+		t.Fatal("drain force-closed a session that still carried a connection past its grace")
+	}
+	if got := mgr.Status().DrainingSessions; got != 1 {
+		t.Errorf("expected the slot to keep draining, got %d", got)
 	}
 
-	// Equal timestamps must not displace anything: the new build wins by CAS.
-	fresh := &Session{PublicIP: "198.51.100.10", CreatedAt: time.Now()}
-	if got := mgr.installSession(fresh); got != fresh {
-		t.Errorf("expected a genuinely newer session to be installed, got %+v", got)
-	}
-	waitFor(t, 5*time.Second, func() bool { return newer.closed.Load() },
-		"the superseded session was never drained")
+	old.releaseConn()
+	waitFor(t, 2*time.Second, func() bool { return old.closed.Load() },
+		"the slot must close once its last connection is released")
+	waitFor(t, 2*time.Second, func() bool { return mgr.Status().DrainingSessions == 0 },
+		"draining gauge must return to zero after the stream ends")
 }
 
 // Publish and shutdown are serialized. A publisher must therefore either finish
@@ -674,7 +804,7 @@ func TestManager_ConcurrentPublishAndClose(t *testing.T) {
 	for iter := 0; iter < 500; iter++ {
 		mgr := NewManager(quietLogger(), "")
 		mgr.sessionGrace = time.Millisecond
-		mgr.current.Store(&Session{CreatedAt: time.Now().Add(-time.Second)})
+		seedActive(mgr, &Session{CreatedAt: time.Now().Add(-time.Second)})
 
 		start := make(chan struct{})
 		var wg sync.WaitGroup
@@ -697,8 +827,8 @@ func TestManager_ConcurrentPublishAndClose(t *testing.T) {
 		if left := mgr.draining.Load(); left != 0 {
 			t.Fatalf("iteration %d: Close returned with %d drains still registered", iter, left)
 		}
-		if s := mgr.current.Load(); s != nil {
-			t.Fatalf("iteration %d: a publish resurrected the active session after shutdown", iter)
+		if n := activeCount(mgr); n != 0 {
+			t.Fatalf("iteration %d: a publish resurrected %d active sessions after shutdown", iter, n)
 		}
 	}
 }
@@ -707,7 +837,7 @@ func TestManager_ConcurrentPublishAndClose(t *testing.T) {
 // session that the caller would log as a successful rotation.
 func TestManager_InstallAfterCloseReturnsNil(t *testing.T) {
 	mgr := NewManager(quietLogger(), "")
-	mgr.current.Store(&Session{CreatedAt: time.Now()})
+	seedActive(mgr, &Session{CreatedAt: time.Now()})
 	mgr.Close()
 
 	s := &Session{}

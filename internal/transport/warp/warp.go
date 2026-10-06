@@ -23,6 +23,12 @@ type Status struct {
 	ActiveConnections int `json:"active_connections"`
 	// DrainingSessions counts superseded tunnels kept open for their connections.
 	DrainingSessions int `json:"draining_sessions,omitempty"`
+	// PoolSize is the configured number of concurrent WARP slots.
+	PoolSize int `json:"pool_size,omitempty"`
+	// ActiveSessions is the number of slots currently usable for new dials.
+	ActiveSessions int `json:"active_sessions,omitempty"`
+	// EgressIPs lists the public egress address of each active slot.
+	EgressIPs []string `json:"egress_ips,omitempty"`
 	// omitzero, not omitempty: a time.Time is a struct and omitempty never
 	// fires, which used to publish 0001-01-01 as the last rotation date.
 	RotatedAt time.Time `json:"last_rotated_at,omitzero"`

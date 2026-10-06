@@ -101,6 +101,7 @@ func run() error {
 		tursoSyncInterval    = flag.Duration("turso-sync-interval", turso.DefaultSyncInterval, "interval to pull changes from Turso cloud after an observed change (defaults to $FIREFLY_TURSO_SYNC_INTERVAL)")
 		tursoSyncMaxInterval = flag.Duration("turso-sync-max-interval", turso.DefaultSyncMaxInterval, "upper bound for the idle pull backoff; consecutive change-free pulls double the delay until it reaches this (defaults to $FIREFLY_TURSO_SYNC_MAX_INTERVAL)")
 		warpRotateInterval   = flag.Duration("warp-rotate-interval", warp.DefaultAutoRotateInterval, "interval between automatic periodic Cloudflare WARP IP rotations (0 disables; defaults to $FIREFLY_WARP_ROTATE_INTERVAL or 2m)")
+		warpPoolSize         = flag.Int("warp-pool-size", warp.DefaultPoolSize, "number of concurrent Cloudflare WARP slots kept active for round-robin egress; the pool grows one slot per rotation until it reaches this size (defaults to $FIREFLY_WARP_POOL_SIZE or 5)")
 		quotaPollInterval    = flag.Duration("quota-poll-interval", server.DefaultQuotaPollInterval, "interval between background provider-quota refreshes for OAuth connections (0 disables; quota stays on-demand only)")
 		tunnelMode           = flag.String("tunnel", "", "Cloudflare Tunnel mode: quick|named (empty disables; defaults to $FIREFLY_TUNNEL)")
 		tunnelToken          = flag.String("tunnel-token", "", "Cloudflare Tunnel token for named tunnels (defaults to $FIREFLY_TUNNEL_TOKEN)")
@@ -196,6 +197,11 @@ func run() error {
 	if envWarp := os.Getenv("FIREFLY_WARP_ROTATE_INTERVAL"); envWarp != "" {
 		if d, err := time.ParseDuration(envWarp); err == nil {
 			*warpRotateInterval = d
+		}
+	}
+	if envPool := os.Getenv("FIREFLY_WARP_POOL_SIZE"); envPool != "" {
+		if v, err := strconv.Atoi(envPool); err == nil && v > 0 && *warpPoolSize == warp.DefaultPoolSize {
+			*warpPoolSize = v
 		}
 	}
 	if *openaiDefaultMax == 0 {
@@ -390,6 +396,7 @@ func run() error {
 	// rotation that would never happen. `0` means no autonomous WARP work at all
 	// — neither the scheduler nor the cold-start warm-up below runs.
 	warpManager.SetAutoRotateInterval(*warpRotateInterval)
+	warpManager.SetPoolSize(*warpPoolSize)
 	if *warpRotateInterval > 0 {
 		warpManager.StartAutoRotation()
 	}

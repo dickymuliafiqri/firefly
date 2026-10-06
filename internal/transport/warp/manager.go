@@ -47,6 +47,13 @@ const (
 	// DefaultMinRotateInterval throttles asynchronous manual/fallback background rotations.
 	DefaultMinRotateInterval = 60 * time.Second
 
+	// DefaultPoolSize is the number of concurrent WARP slots kept active at once.
+	// The pool grows one slot per rotation tick until it reaches this size, then
+	// retires the oldest slot per tick — one Cloudflare registration per interval
+	// — so the fleet is never registered in a burst that trips 429s, while spread
+	// requests round-robin across the live slots.
+	DefaultPoolSize = 5
+
 	defaultRotateTimeout = 30 * time.Second
 	defaultProbeTimeout  = 5 * time.Second
 
@@ -73,8 +80,24 @@ type Session struct {
 	LatencyMs int64
 	CreatedAt time.Time
 
-	conns  atomic.Int64
-	closed atomic.Bool
+	conns    atomic.Int64
+	closed   atomic.Bool
+	quiesced atomic.Bool
+}
+
+// Quiesce marks the session as retired from the active pool: it stays open for
+// the connections it already carries but is no longer handed out for new dials.
+// Removal from the manager's active snapshot is what actually stops new work;
+// this flag is informational (drain bookkeeping and introspection).
+func (s *Session) Quiesce() {
+	if s != nil {
+		s.quiesced.Store(true)
+	}
+}
+
+// Quiescing reports whether the session has been retired from the active pool.
+func (s *Session) Quiescing() bool {
+	return s != nil && s.quiesced.Load()
 }
 
 // ActiveConnections reports how many dialed connections still pin this session.
@@ -131,7 +154,17 @@ type SavedIdentity struct {
 
 // Manager coordinates userspace WireGuard sessions, dynamic IP rotation, and status telemetry.
 type Manager struct {
-	current      atomic.Pointer[Session]
+	// active holds the current pool of usable sessions. It is an immutable
+	// snapshot replaced copy-on-write by installSession, so readers (the
+	// round-robin picker) traverse it lock-free while publication stays
+	// serialized under publishMu. Retiring a slot only swaps the slice; the
+	// retired *Session keeps serving the connections it already pinned.
+	active atomic.Pointer[[]*Session]
+	// rr is the monotonic round-robin cursor. It never resets, so distribution
+	// stays uniform across the pool and survives snapshot rebuilds.
+	rr atomic.Uint64
+	// poolSize caps the number of concurrently active sessions.
+	poolSize     atomic.Int64
 	sfg          singleflightx.Group[*Session]
 	logger       *slog.Logger
 	httpClient   *http.Client
@@ -204,6 +237,7 @@ func NewManager(logger *slog.Logger, licenseKey string, identityPath ...string) 
 		bgCancel:           cancel,
 		drainDone:          make(chan struct{}),
 	}
+	m.poolSize.Store(DefaultPoolSize)
 	m.edgeProbe = m.probeEdgeTrace
 	return m
 }
@@ -215,6 +249,20 @@ func (m *Manager) SetAutoRotateInterval(d time.Duration) {
 		return
 	}
 	m.autoRotateInterval = d
+}
+
+// SetPoolSize configures how many WARP slots stay active at once. Rotation grows
+// the pool one slot per tick until this size is reached, then retires the oldest
+// slot per tick, so the size is a steady-state ceiling. Values below 1 are
+// clamped to 1 (a single tunnel, the pre-pool behaviour).
+func (m *Manager) SetPoolSize(n int) {
+	if m == nil {
+		return
+	}
+	if n < 1 {
+		n = 1
+	}
+	m.poolSize.Store(int64(n))
 }
 
 // StartAutoRotation launches a background goroutine that periodically rotates
@@ -299,11 +347,13 @@ func (m *Manager) Close() {
 		// Tell draining goroutines to stop waiting for idle: the process is going
 		// away and the sockets die with it.
 		close(m.drainDone)
-		session := m.current.Swap(nil)
+		sessions := m.active.Swap(nil)
 		m.publishMu.Unlock()
 
-		if session != nil {
-			session.Close()
+		if sessions != nil {
+			for _, session := range *sessions {
+				session.Close()
+			}
 		}
 		m.drainWG.Wait()
 	})
@@ -505,36 +555,53 @@ func (m *Manager) DialContext(ctx context.Context, network, address string) (net
 		return nil, errClosed
 	}
 
-	session, err := m.ensureSession(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("initialize warp tunnel: %w", err)
-	}
-
-	// A session retired between selection and dial (drain deadline, concurrent
-	// rotation) must not accept new work: fall back to whatever is current once.
-	if !session.acquireConn() {
-		if session, err = m.ensureSession(ctx); err != nil {
+	// Cold start: establish the first slot before anything can be picked. This is
+	// coalesced under one flight so a burst of first requests cannot open several
+	// tunnels at once.
+	if len(m.activeSessions()) == 0 {
+		if _, err := m.ensureSession(ctx); err != nil {
 			return nil, fmt.Errorf("initialize warp tunnel: %w", err)
 		}
-		if !session.acquireConn() {
-			return nil, errors.New("warp tunnel is shutting down")
+	}
+
+	var lastErr error
+	// Two attempts spread across the pool. A slot retired between selection and
+	// dial (a drain, a concurrent rotation) must not accept new work, so a failed
+	// pick behind a live slot falls back to a fresh round-robin choice once
+	// instead of erroring the request.
+	for attempt := 0; attempt < 2; attempt++ {
+		session := m.pick()
+		if session == nil {
+			if lastErr != nil {
+				return nil, lastErr
+			}
+			return nil, errors.New("warp tunnel is not ready")
 		}
-	}
+		if !session.acquireConn() {
+			lastErr = errors.New("warp tunnel is shutting down")
+			continue
+		}
 
-	conn, err := session.TNet.DialContext(ctx, network, address)
-	if err != nil {
-		session.releaseConn()
-		return nil, err
-	}
-
-	m.connTotal.Add(1)
-	return &wrappedConn{
-		Conn: conn,
-		onClose: func() {
-			m.connTotal.Add(-1)
+		conn, err := session.TNet.DialContext(ctx, network, address)
+		if err != nil {
 			session.releaseConn()
-		},
-	}, nil
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
+			lastErr = err
+			continue
+		}
+
+		m.connTotal.Add(1)
+		return &wrappedConn{
+			Conn: conn,
+			onClose: func() {
+				m.connTotal.Add(-1)
+				session.releaseConn()
+			},
+		}, nil
+	}
+	return nil, lastErr
 }
 
 // WarmUp establishes the tunnel on a cold start so status surfaces report the
@@ -553,7 +620,7 @@ func (m *Manager) WarmUp(ctx context.Context) error {
 	if m == nil {
 		return nil
 	}
-	if s := m.current.Load(); s != nil {
+	if len(m.activeSessions()) > 0 {
 		return nil
 	}
 	if m.closed.Load() {
@@ -581,16 +648,16 @@ func (m *Manager) WarmUp(ctx context.Context) error {
 // callers share one in-flight cold start, so a burst of first requests cannot
 // register and start several tunnels at once.
 func (m *Manager) ensureSession(ctx context.Context) (*Session, error) {
-	if s := m.current.Load(); s != nil {
-		return s, nil
+	if cur := m.activeSessions(); len(cur) > 0 {
+		return newestSession(cur), nil
 	}
 	if m.closed.Load() {
 		return nil, errClosed
 	}
 
 	return m.runFlight(ctx, ensureFlightKey, func() (*Session, error) {
-		if s := m.current.Load(); s != nil {
-			return s, nil
+		if cur := m.activeSessions(); len(cur) > 0 {
+			return newestSession(cur), nil
 		}
 
 		// Restoring the cached identity avoids a fresh Cloudflare registration on
@@ -655,15 +722,22 @@ func (m *Manager) restoreSession() (*Session, error) {
 	return session, nil
 }
 
-// installSession publishes s as the active session and drains the one it
-// replaced. Publication is serialized with Close, which is what keeps a losing
-// build from being orphaned (a build that is older than what already won is
-// closed instead of published) and what keeps a drain from being registered
-// once shutdown is already waiting for the last one.
+// installSession publishes a freshly built session into the active pool. While
+// the pool still has room it grows by one slot; once it is full it retires the
+// oldest active slot to keep the size constant. Publication is serialized with
+// Close under publishMu, which keeps a drainSession registration (a WaitGroup
+// Add) from racing the Wait inside Close.
 //
-// It returns the session that is active now, which callers must use: the one
-// they built is not guaranteed to be it. nil means the manager is closed.
+// The retired slot is quiesced and drained, never force-closed: its live
+// connections run to completion. Because a build only ever reaches here after it
+// is fully registered and probed, a rotation that fails earlier never touches
+// the pool — which is what makes a failed rotation an automatic rollback to the
+// previous slot set. It returns s (now active) or nil if shutdown raced it.
 func (m *Manager) installSession(s *Session) *Session {
+	if s == nil {
+		return nil
+	}
+
 	m.publishMu.Lock()
 
 	if m.closed.Load() {
@@ -671,25 +745,91 @@ func (m *Manager) installSession(s *Session) *Session {
 		s.Close()
 		return nil
 	}
-	old := m.current.Load()
-	if old != nil && old.CreatedAt.After(s.CreatedAt) {
-		m.publishMu.Unlock()
-		s.Close()
-		return old
-	}
 
-	m.current.Store(s)
-	if old != nil && old != s {
+	var drained *Session
+	cur := cloneActive(&m.active)
+	if len(cur) < int(m.poolSize.Load()) {
+		// Growth phase: add a slot, retire nothing.
+		cur = append(cur, s)
+	} else {
+		// Pool full: rotate the oldest active slot out and drain it.
+		victim := oldestSession(cur)
+		for i := range cur {
+			if cur[i] == victim {
+				cur[i] = s
+				break
+			}
+		}
+		victim.Quiesce()
+		drained = victim
+	}
+	m.active.Store(&cur)
+
+	if drained != nil && drained != s {
 		// Registered under publishMu, so this Add cannot race the Wait in Close.
-		m.drainSession(old)
+		m.drainSession(drained)
 	}
 	m.publishMu.Unlock()
 
 	return s
 }
 
+// activeSessions returns the live pool snapshot without copying it. The snapshot
+// is replaced copy-on-write, so the returned slice is only ever read (never
+// mutated in place) and is safe for lock-free readers such as the dial picker.
+func (m *Manager) activeSessions() []*Session {
+	if p := m.active.Load(); p != nil {
+		return *p
+	}
+	return nil
+}
+
+// pick selects an active session for a new dial using the monotonic round-robin
+// cursor. Because the cursor never resets, distribution stays uniform across the
+// pool and survives snapshot rebuilds (which the old per-ring cursor would not).
+func (m *Manager) pick() *Session {
+	cur := m.activeSessions()
+	if len(cur) == 0 {
+		return nil
+	}
+	return cur[int(m.rr.Add(1)%uint64(len(cur)))]
+}
+
+func cloneActive(p *atomic.Pointer[[]*Session]) []*Session {
+	if ptr := p.Load(); ptr != nil {
+		out := make([]*Session, len(*ptr), len(*ptr)+1)
+		copy(out, *ptr)
+		return out
+	}
+	return nil
+}
+
+func oldestSession(cur []*Session) *Session {
+	var oldest *Session
+	for _, s := range cur {
+		if oldest == nil || s.CreatedAt.Before(oldest.CreatedAt) {
+			oldest = s
+		}
+	}
+	return oldest
+}
+
+func newestSession(cur []*Session) *Session {
+	var newest *Session
+	for _, s := range cur {
+		if newest == nil || s.CreatedAt.After(newest.CreatedAt) {
+			newest = s
+		}
+	}
+	return newest
+}
+
 // drainSession closes a superseded tunnel once its connections finish, bounded
-// by the session grace period and by shutdown.
+// by shutdown. The session grace period is a floor for how long a fully idle
+// retired slot is kept before teardown — never a guillotine: a retired slot may
+// still be carrying a long-lived SSE stream, and severing it mid-stream is what
+// used to surface to clients as an upstream 502. When the grace expires with
+// connections still open the drain logs and re-arms instead of closing.
 func (m *Manager) drainSession(old *Session) {
 	m.draining.Add(1)
 	m.drainWG.Add(1)
@@ -709,12 +849,15 @@ func (m *Manager) drainSession(old *Session) {
 		for {
 			select {
 			case <-m.drainDone:
+				// Shutdown: Close owns force-closing every session.
 				return
 			case <-deadline.C:
 				if open := old.ActiveConnections(); open > 0 {
-					m.logger.Warn("warp session drain grace expired with connections still open",
+					m.logger.Warn("warp session drain grace expired with connections still open; continuing to drain",
 						"open_connections", open,
 						"grace", m.sessionGrace.String())
+					deadline.Reset(m.sessionGrace)
+					continue
 				}
 				return
 			case <-ticker.C:
@@ -907,7 +1050,10 @@ func (m *Manager) probeEdgeTrace(tnet *netstack.Net) (string, string) {
 
 // Status returns a point-in-time snapshot of the WARP tunnel health.
 func (m *Manager) Status() Status {
-	session := m.current.Load()
+	pool := m.activeSessions()
+	// The newest slot is the representative tunnel for the single-IP fields; the
+	// full egress set is exposed separately as EgressIPs.
+	session := newestSession(pool)
 
 	lastRotated := m.lastRotated.Load()
 	var rotatedTime time.Time
@@ -935,10 +1081,18 @@ func (m *Manager) Status() Status {
 	st := Status{
 		ActiveConnections:         int(m.connTotal.Load()),
 		DrainingSessions:          int(m.draining.Load()),
+		PoolSize:                  int(m.poolSize.Load()),
+		ActiveSessions:            len(pool),
 		RotatedAt:                 rotatedTime,
 		AutoRotateIntervalSeconds: autoRotateSec,
 		NextRotationAt:            nextRotationTime,
 		Error:                     errMsg,
+	}
+
+	for _, slot := range pool {
+		if slot.PublicIP != "" {
+			st.EgressIPs = append(st.EgressIPs, slot.PublicIP)
+		}
 	}
 
 	if session == nil {
