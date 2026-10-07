@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { X } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { Drawer } from "@/components/ui/Drawer";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -41,6 +42,132 @@ function Field(props: {
       <label htmlFor={props.htmlFor}>{props.label}</label>
       {props.children}
       {props.hint ? <span className="hint">{props.hint}</span> : null}
+    </div>
+  );
+}
+
+/** One selectable catalog entry: a direct model or a virtual combo. */
+interface ModelOption {
+  name: string;
+  kind: "model" | "combo";
+}
+
+/**
+ * Normalizes a stored `allowed_models` list into picker state. The backend
+ * treats both an empty list and `["*"]` as "no restriction", so the picker
+ * renders the wildcard tag for either instead of an ambiguous empty box, and
+ * drops blanks/duplicates left behind by hand-edited config files.
+ */
+function normalizeAllowedModels(list: string[] | undefined): string[] {
+  if (!list || list.length === 0 || list.includes("*")) return ["*"];
+  return [...new Set(list.map((m) => m.trim()).filter(Boolean))];
+}
+
+/**
+ * Multi-tag picker for a tenant's allowed models. Every choice comes from the
+ * live catalog (models + combos) instead of a free-text field, so a typo can
+ * no longer reach the gateway as an "unknown model" validation failure at
+ * save time. `*` is a first-class tag because the backend normalizes an empty
+ * list to it anyway — showing it explicitly tells the operator what an empty
+ * selection used to mean.
+ */
+function ModelTagPicker({
+  id,
+  value,
+  onChange,
+  options,
+}: {
+  id: string;
+  value: string[];
+  onChange: (next: string[]) => void;
+  options: ModelOption[];
+}) {
+  const allowAll = value.includes("*");
+  const selected = value.filter((m) => m !== "*");
+  const pickable = options.filter((o) => !selected.includes(o.name));
+  const modelOptions = pickable.filter((o) => o.kind === "model");
+  const comboOptions = pickable.filter((o) => o.kind === "combo");
+
+  function pick(next: string) {
+    if (!next) return;
+    // Picking a concrete entry while the wildcard is active narrows the
+    // tenant to exactly that entry — the mental model every tag picker
+    // shares: what you add is what you get.
+    onChange(next === "*" ? ["*"] : [...selected, next]);
+  }
+
+  return (
+    <div className="tag-picker">
+      <div className="tag-picker-tags">
+        {allowAll ? (
+          <span className="tag tag-all">All models (*)</span>
+        ) : selected.length === 0 ? (
+          <span className="tag-picker-empty">
+            No restriction — every catalog model is allowed
+          </span>
+        ) : (
+          selected.map((name) => (
+            <span className="tag" key={name}>
+              {name}
+              <button
+                type="button"
+                aria-label={`Remove ${name}`}
+                onClick={() => onChange(selected.filter((m) => m !== name))}
+              >
+                <X aria-hidden="true" size={12} />
+              </button>
+            </span>
+          ))
+        )}
+      </div>
+      <div className="tag-picker-controls">
+        <select
+          id={id}
+          value=""
+          disabled={allowAll}
+          onChange={(e) => pick(e.target.value)}
+        >
+          <option value="">
+            {allowAll ? "Every model is allowed" : "Add model…"}
+          </option>
+          {allowAll ? null : <option value="*">All models (*)</option>}
+          {!allowAll && modelOptions.length > 0 ? (
+            <optgroup label="Models">
+              {modelOptions.map((o) => (
+                <option key={o.name} value={o.name}>
+                  {o.name}
+                </option>
+              ))}
+            </optgroup>
+          ) : null}
+          {!allowAll && comboOptions.length > 0 ? (
+            <optgroup label="Combos">
+              {comboOptions.map((o) => (
+                <option key={o.name} value={o.name}>
+                  {o.name}
+                </option>
+              ))}
+            </optgroup>
+          ) : null}
+        </select>
+        {allowAll ? (
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={() => onChange([])}
+          >
+            Restrict to list
+          </button>
+        ) : selected.length > 0 ? (
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={() => onChange([])}
+          >
+            Clear
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -153,9 +280,25 @@ function TenantForm({ editing, onClose }: TenantFormProps) {
   const [status, setStatus] = useState("active");
   const [rps, setRps] = useState("10");
   const [maxConc, setMaxConc] = useState("8");
-  const [models, setModels] = useState("");
+  const [models, setModels] = useState<string[]>(() => ["*"]);
   const [maxTokens, setMaxTokens] = useState("");
   const [expires, setExpires] = useState("");
+
+  // Every catalog entry the tenant may be granted access to. A name shared by
+  // a model and a combo is offered once (first wins), so the picker can never
+  // render duplicate option keys.
+  const catalogOptions: ModelOption[] = [];
+  const seenNames = new Set<string>();
+  for (const m of settings.data?.models ?? []) {
+    if (seenNames.has(m.public_name)) continue;
+    seenNames.add(m.public_name);
+    catalogOptions.push({ name: m.public_name, kind: "model" });
+  }
+  for (const c of settings.data?.combos ?? []) {
+    if (seenNames.has(c.name)) continue;
+    seenNames.add(c.name);
+    catalogOptions.push({ name: c.name, kind: "combo" });
+  }
 
   useEffect(() => {
     if (editing) {
@@ -164,7 +307,7 @@ function TenantForm({ editing, onClose }: TenantFormProps) {
       setStatus(String(editing.status ?? "active"));
       setRps(String(editing.rate_limit?.rps ?? 10));
       setMaxConc(String(editing.rate_limit?.max_concurrent ?? 8));
-      setModels((editing.allowed_models ?? []).join(", "));
+      setModels(normalizeAllowedModels(editing.allowed_models));
       setMaxTokens(
         editing.max_tokens !== undefined ? String(editing.max_tokens) : "",
       );
@@ -179,7 +322,7 @@ function TenantForm({ editing, onClose }: TenantFormProps) {
       setStatus("active");
       setRps("10");
       setMaxConc("8");
-      setModels("");
+      setModels(["*"]);
       setMaxTokens("");
       setExpires("");
     }
@@ -191,10 +334,7 @@ function TenantForm({ editing, onClose }: TenantFormProps) {
       name: name.trim(),
       api_key: apiKey.trim() || randomKey(),
       status: status as TenantDTO["status"],
-      allowed_models: models
-        .split(",")
-        .map((m) => m.trim())
-        .filter(Boolean),
+      allowed_models: models,
       rate_limit: {
         rps: Math.max(1, parseInt(rps, 10) || 10),
         max_concurrent: Math.max(1, parseInt(maxConc, 10) || 8),
@@ -281,14 +421,13 @@ function TenantForm({ editing, onClose }: TenantFormProps) {
       <Field
         label="Allowed models"
         htmlFor="t-models"
-        hint="Comma-separated. Leave empty to allow all catalog models."
+        hint="Pick from the catalog. No selection means every model is allowed."
       >
-        <input
+        <ModelTagPicker
           id="t-models"
-          type="text"
           value={models}
-          placeholder="gpt-4o, claude-sonnet-4-5"
-          onChange={(e) => setModels(e.target.value)}
+          onChange={setModels}
+          options={catalogOptions}
         />
       </Field>
       <div className="form-grid">

@@ -800,6 +800,75 @@ input:disabled {
     color: var(--faint);
 }
 
+/* ---------- Model tag picker (tenant allowed models) ---------- */
+.tag-picker {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.tag-picker-tags {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    min-height: 36px;
+    padding: 5px 8px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--surface-input);
+}
+.tag-picker-empty {
+    font-size: 12px;
+    color: var(--faint);
+}
+.tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 4px 3px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: rgba(147, 165, 196, 0.08);
+    color: var(--ink);
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 12px;
+    line-height: 1.5;
+}
+.tag-all {
+    color: var(--biolum);
+    border-color: rgba(190, 242, 100, 0.35);
+    background: rgba(190, 242, 100, 0.08);
+}
+.tag button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 17px;
+    height: 17px;
+    padding: 0;
+    border: none;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    transition:
+        color 140ms ease,
+        background 140ms ease;
+}
+.tag button:hover {
+    color: var(--ink);
+    background: rgba(147, 165, 196, 0.18);
+}
+.tag-picker-controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+.tag-picker-controls select {
+    flex: 1;
+    min-width: 0;
+}
+
 .form-grid {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
