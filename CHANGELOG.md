@@ -5,6 +5,16 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.43.3] - 2026-10-07
+
+### Changed
+
+- **Tenants — Allowed Models is a tag picker now (`frontend/src/pages/TenantsPage.tsx`, `frontend/src/styles/global.css`)**: The tenant drawer's Allowed Models field was a free-text input whose comma-separated value reached the gateway verbatim, so a single typo surfaced as an "unknown model" validation failure only at save time. It is now a multi-select tag picker sourced from the live catalog — every model and combo, grouped under **Models** / **Combos** optgroups — with each picked entry rendered as a removable tag and dropped from the dropdown so it cannot be added twice.
+  - The backend normalizes an empty `allowed_models` list to `["*"]`, so the wildcard is a first-class state rather than an empty box: a new tenant opens on an `All models (*)` tag, the picker is disabled with an "Every model is allowed" placeholder, and a **Restrict to list** button switches to manual picking. Picking a concrete entry while the wildcard is active replaces it, and the `All models (*)` option in the dropdown restores it.
+  - Editing a tenant hydrates its stored list into tags verbatim — including the legacy `["*"]` and empty-list forms, which both render as the wildcard tag — and the submit payload carries the array straight through, so existing tenants keep their restriction on the first save.
+  - Covered by `frontend/src/pages/TenantsPage.models.test.tsx`: the wildcard default, the pick/remove/stage round-trip, edit hydration, and both legacy wildcard forms.
+- **Version bump**: `frontend/package.json` and `AppShell.tsx` bumped to `v1.43.3`.
+
 ## [1.43.2] - 2026-10-06
 
 ### Added
