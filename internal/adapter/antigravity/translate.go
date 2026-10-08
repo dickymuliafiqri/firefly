@@ -107,6 +107,122 @@ type AntigravityEnvelope struct {
 	Request     CloudCodeRequest `json:"request"`
 }
 
+// geminiUnsupportedSchemaFields are JSON Schema fields that Google's Gemini
+// function declaration API rejects. These come from JSON Schema drafts
+// (2020-12, draft-07, etc.) that clients may include in tool parameters.
+var geminiUnsupportedSchemaFields = map[string]struct{}{
+	"$schema":               {},
+	"$id":                   {},
+	"$ref":                  {},
+	"$comment":              {},
+	"$defs":                 {},
+	"definitions":           {},
+	"additionalProperties":  {},
+	"patternProperties":     {},
+	"unevaluatedProperties": {},
+	"unevaluatedItems":      {},
+	"prefixItems":           {},
+	"default":               {},
+	"examples":              {},
+	"const":                 {},
+	"multipleOf":            {},
+	"deprecated":            {},
+	"readOnly":              {},
+	"writeOnly":             {},
+	"if":                    {},
+	"then":                  {},
+	"else":                  {},
+	"contentEncoding":       {},
+	"contentMediaType":      {},
+}
+
+// sanitizeGeminiSchema recursively strips JSON Schema fields unsupported by the
+// Gemini function declaration API and normalizes draft 2020-12 constructs:
+//   - Removes meta-schema fields ($schema, $ref, definitions, ...)
+//   - Converts exclusiveMinimum/exclusiveMaximum to minimum/maximum
+//   - Normalizes snake_case composition keywords (any_of -> anyOf, ...)
+//   - Recurses into properties, items, anyOf/oneOf/allOf, and not
+func sanitizeGeminiSchema(node map[string]any) {
+	if node == nil {
+		return
+	}
+
+	// Convert exclusiveMinimum/exclusiveMaximum to minimum/maximum.
+	// Gemini only supports inclusive minimum/maximum bounds.
+	if v, ok := node["exclusiveMinimum"]; ok {
+		if _, hasMin := node["minimum"]; !hasMin {
+			if f, ok := v.(float64); ok {
+				node["minimum"] = f
+			}
+		}
+		delete(node, "exclusiveMinimum")
+	}
+	if v, ok := node["exclusiveMaximum"]; ok {
+		if _, hasMax := node["maximum"]; !hasMax {
+			if f, ok := v.(float64); ok {
+				node["maximum"] = f
+			}
+		}
+		delete(node, "exclusiveMaximum")
+	}
+
+	// Remove unsupported meta-schema and validation fields.
+	for k := range geminiUnsupportedSchemaFields {
+		delete(node, k)
+	}
+
+	// Normalize snake_case composition keywords to camelCase.
+	for _, pair := range [][2]string{
+		{"any_of", "anyOf"},
+		{"one_of", "oneOf"},
+		{"all_of", "allOf"},
+	} {
+		if v, ok := node[pair[0]]; ok {
+			if _, exists := node[pair[1]]; !exists {
+				node[pair[1]] = v
+			}
+			delete(node, pair[0])
+		}
+	}
+
+	// Recurse into properties.
+	if props, ok := node["properties"].(map[string]any); ok {
+		for _, sub := range props {
+			if m, ok := sub.(map[string]any); ok {
+				sanitizeGeminiSchema(m)
+			}
+		}
+	}
+
+	// Recurse into items (single schema or array of schemas).
+	switch items := node["items"].(type) {
+	case map[string]any:
+		sanitizeGeminiSchema(items)
+	case []any:
+		for _, sub := range items {
+			if m, ok := sub.(map[string]any); ok {
+				sanitizeGeminiSchema(m)
+			}
+		}
+	}
+
+	// Recurse into composition keywords.
+	for _, key := range []string{"anyOf", "oneOf", "allOf"} {
+		if arr, ok := node[key].([]any); ok {
+			for _, sub := range arr {
+				if m, ok := sub.(map[string]any); ok {
+					sanitizeGeminiSchema(m)
+				}
+			}
+		}
+	}
+
+	// Recurse into not.
+	if not, ok := node["not"].(map[string]any); ok {
+		sanitizeGeminiSchema(not)
+	}
+}
+
 // SanitizeFunctionName ensures a function name matches Google Gemini's naming requirements:
 // starts with [a-zA-Z_], followed by [a-zA-Z0-9_.:\-], max 64 characters.
 func SanitizeFunctionName(name string) string {
@@ -320,6 +436,7 @@ func TranslateOpenAIToAntigravity(body []byte, upstreamModel, projectID string) 
 				var params map[string]any
 				if p := fn.Get("parameters"); p.Exists() {
 					_ = json.Unmarshal([]byte(p.Raw), &params)
+					sanitizeGeminiSchema(params)
 				}
 				decls = append(decls, GeminiToolDeclaration{
 					Name:        name,

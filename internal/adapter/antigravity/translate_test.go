@@ -80,6 +80,117 @@ func TestTranslateOpenAIToAntigravity(t *testing.T) {
 		assert.Equal(t, "Fetch weather", tools[0].Get("description").String())
 	})
 
+	t.Run("tools with unsupported JSON Schema fields", func(t *testing.T) {
+		t.Parallel()
+		inbound := []byte(`{
+			"model": "gemini-3.8-flash",
+			"messages": [
+				{"role": "user", "content": "Search for files"}
+			],
+			"tools": [
+				{
+					"type": "function",
+					"function": {
+						"name": "search_files",
+						"description": "Search files by criteria",
+						"parameters": {
+							"$schema": "https://json-schema.org/draft/2020-12/schema",
+							"type": "object",
+							"properties": {
+								"query": {
+									"type": "string",
+									"minLength": 1,
+									"maxLength": 500
+								},
+								"count": {
+									"type": "integer",
+									"exclusiveMinimum": 0,
+									"maximum": 100
+								},
+								"filters": {
+									"type": "array",
+									"items": {
+										"type": "object",
+										"properties": {
+											"field": {"type": "string"},
+											"value": {
+												"any_of": [
+													{"type": "string"},
+													{"type": "integer", "exclusiveMinimum": -1}
+												]
+											}
+										}
+									}
+								}
+							},
+							"required": ["query"],
+							"additionalProperties": false
+						}
+					}
+				},
+				{
+					"type": "function",
+					"function": {
+						"name": "no_params_tool",
+						"description": "A tool with schema-level meta",
+						"parameters": {
+							"$schema": "http://json-schema.org/draft-07/schema#",
+							"$id": "https://example.com/schema.json",
+							"type": "object",
+							"properties": {
+								"x": {"type": "number", "exclusiveMaximum": 10}
+							},
+							"default": {},
+							"examples": [{"x": 5}]
+						}
+					}
+				}
+			]
+		}`)
+
+		out, err := TranslateOpenAIToAntigravity(inbound, "gemini-3.8-flash", "proj-abc")
+		require.NoError(t, err)
+		require.True(t, gjson.ValidBytes(out))
+
+		tools := gjson.GetBytes(out, "request.tools.0.functionDeclarations").Array()
+		require.Len(t, tools, 2)
+
+		// Tool 0: verify $schema removed, exclusiveMinimum converted, any_of normalized
+		params0 := tools[0].Get("parameters")
+		assert.False(t, params0.Get("$schema").Exists(), "$schema should be stripped")
+		assert.False(t, params0.Get("additionalProperties").Exists(), "additionalProperties should be stripped")
+		assert.Equal(t, "object", params0.Get("type").String())
+
+		// exclusiveMinimum: 0 should become minimum: 0
+		countProp := params0.Get("properties.count")
+		assert.False(t, countProp.Get("exclusiveMinimum").Exists(), "exclusiveMinimum should be removed")
+		assert.Equal(t, float64(0), countProp.Get("minimum").Float(), "exclusiveMinimum should convert to minimum")
+		assert.Equal(t, float64(100), countProp.Get("maximum").Float())
+
+		// Nested: items.properties.value.any_of should be normalized to anyOf
+		// and exclusiveMinimum inside should be converted
+		valueSchema := params0.Get("properties.filters.items.properties.value")
+		assert.False(t, valueSchema.Get("any_of").Exists(), "any_of should be normalized to anyOf")
+		anyOfArr := valueSchema.Get("anyOf").Array()
+		require.Len(t, anyOfArr, 2)
+		assert.Equal(t, "string", anyOfArr[0].Get("type").String())
+		assert.Equal(t, "integer", anyOfArr[1].Get("type").String())
+		assert.False(t, anyOfArr[1].Get("exclusiveMinimum").Exists(), "nested exclusiveMinimum should be removed")
+		assert.Equal(t, float64(-1), anyOfArr[1].Get("minimum").Float(), "nested exclusiveMinimum should convert to minimum")
+
+		// Tool 1: verify $schema, $id, default, examples all stripped
+		params1 := tools[1].Get("parameters")
+		assert.False(t, params1.Get("$schema").Exists(), "$schema should be stripped")
+		assert.False(t, params1.Get("$id").Exists(), "$id should be stripped")
+		assert.False(t, params1.Get("default").Exists(), "default should be stripped")
+		assert.False(t, params1.Get("examples").Exists(), "examples should be stripped")
+
+		// exclusiveMaximum: 10 should become maximum: 10
+		xProp := params1.Get("properties.x")
+		assert.False(t, xProp.Get("exclusiveMaximum").Exists(), "exclusiveMaximum should be removed")
+		assert.Equal(t, float64(10), xProp.Get("maximum").Float(), "exclusiveMaximum should convert to maximum")
+	})
+
 	t.Run("empty messages error", func(t *testing.T) {
 		t.Parallel()
 		inbound := []byte(`{"model": "gemini-2.5-flash", "messages": []}`)
