@@ -58,8 +58,11 @@ func (p *Pool) CloseIdleWarpConnections() {
 	p.mu.RUnlock()
 
 	for _, entry := range entries {
-		if tr, ok := entry.client.Transport.(*http.Transport); ok {
-			tr.CloseIdleConnections()
+		// The transport may be wrapped (see warpRetryTransport), so match on
+		// the CloseIdleConnections capability rather than on the concrete
+		// *http.Transport type.
+		if ic, ok := entry.client.Transport.(idleConnCloser); ok {
+			ic.CloseIdleConnections()
 		}
 	}
 }
@@ -145,8 +148,18 @@ func buildClient(u *domain.Upstream, warpMgr *warp.Manager) *http.Client {
 		WarpDialer:  warpMgr,
 		DialTimeout: 30 * time.Second,
 	})
+
+	var rt http.RoundTripper = tr
+	// A 429 on a WARP egress is IP-bound, not key-bound. Wrap the transport so
+	// the request is replayed through another live WARP session before the
+	// adapter's key cooldown/failover logic ever sees it. Non-WARP egress and a
+	// nil manager keep the plain transport, so nothing else changes.
+	if warp.IsWarpEgress(u.EgressMode) && warpMgr != nil {
+		rt = &warpRetryTransport{base: tr, warp: warpMgr}
+	}
+
 	return &http.Client{
-		Transport: tr,
+		Transport: rt,
 		// No overall Timeout: see doc comment.
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			// Upstreams must not redirect API calls; a redirect is a

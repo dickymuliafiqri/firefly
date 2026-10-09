@@ -5,6 +5,25 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.44.2] - 2026-10-09
+
+### Added
+
+- **WARP egress retries a 429 through another live session instead of charging it to the key (`internal/transport/upstream/warp_retry.go`, `internal/transport/warp/manager.go`, `internal/transport/upstream/client.go`)**: An upstream whose egress is the embedded WARP tunnel was rate-limited by *IP*, not by credential — Cloudflare's free tier caps the tunnel's current public address. The gateway nevertheless treated that 429 as a key failure: `KeyRing` cooled the slot down for up to `MaxCooldownDuration` (measured 302s against a 300s cap in the e2e sandbox), advanced `ConsecutiveErrors` toward the `key_error_threshold` deactivate/delete action, and then failed over to the *next key on the same egress IP*, which is instantly limited again. A healthy identity sat idle while a perfectly good tunnel was thrown away.
+  - `warpRetryTransport` now wraps the real `*http.Transport` for WARP-egress upstreams only. The first 429 is intercepted **before** the adapter's key-failover logic ever sees it, the request is replayed through a different already-live session in the pool, and the successful response is handed back as if nothing happened. No new Cloudflare device registration occurs (that is slow and itself rate-limited), so this is safe to run inline on the request path.
+  - `Manager.RotateEgress()` penalizes the session that served the limited dial (`Session.limitedUntil`, self-healing after `DefaultEgressLimit` = 60s with no reaper), drops the idle keep-alive sockets pooled on that IP via the existing rotation observer, and reports whether a healthy alternate exists. `pick()` skips limited sessions but **falls back to the round-robin cursor when every slot is limited**, so an all-limited pool still serves rather than deadlocking.
+  - The retry is bounded by `warpEgressRetryBudget` (3) and is a no-op when the body is not replayable, when the client has already disconnected, or when no alternate exists — in that last case the 429 is returned **byte-for-byte** so the pre-existing key cooldown/failover path runs exactly as before. A single-session pool therefore behaves identically to 1.44.1.
+  - `Pool.CloseIdleWarpConnections` now matches on the `CloseIdleConnections` capability rather than on the concrete `*http.Transport` type, so a rotation can still drop sockets through the wrapper.
+  - Tests: `internal/transport/warp/egress_retry_test.go` covers `pick()` skip / all-limited fallback / penalty expiry, and `RotateEgress` penalize-and-report / no-alternate / all-others-limited / empty-pool / closed-manager / observer notification / `SetEgressLimit` reset. `internal/transport/upstream/warp_retry_test.go` covers 429→rotate→200, body replay integrity, 429 pass-through with the body intact, non-429 statuses untouched, non-replayable body, client cancellation, budget exhaustion, retry transport-error propagation, pool wiring across egress modes, and an end-to-end run against a live `httptest` server.
+
+### Fixed
+
+- **`RotateAsync` was accidentally dropped during the `RotateEgress` insertion**: restored verbatim so the background rotation entry point still compiles and behaves as before.
+
+### Changed
+
+- **Version bump**: `frontend/package.json` and `AppShell.tsx` bumped to `v1.44.2`.
+
 ## [1.44.1] - 2026-10-09
 
 ### Fixed

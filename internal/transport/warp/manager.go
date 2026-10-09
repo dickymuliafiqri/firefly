@@ -47,6 +47,13 @@ const (
 	// DefaultMinRotateInterval throttles asynchronous manual/fallback background rotations.
 	DefaultMinRotateInterval = 60 * time.Second
 
+	// DefaultEgressLimit bounds how long pick() skips a session whose egress IP
+	// answered 429, so the next WARP-egress request lands on a different live
+	// session. Long enough to outlast a provider's per-IP rate-limit window,
+	// short enough that a recovered IP rejoins rotation promptly. It self-heals
+	// by timestamp, so no reaper is needed.
+	DefaultEgressLimit = 60 * time.Second
+
 	// DefaultPoolSize is the number of concurrent WARP slots kept active at once.
 	// The pool grows one slot per rotation tick until it reaches this size, then
 	// retires the oldest slot per tick — one Cloudflare registration per interval
@@ -83,6 +90,18 @@ type Session struct {
 	conns    atomic.Int64
 	closed   atomic.Bool
 	quiesced atomic.Bool
+
+	// limitedUntil is the unix-nano instant until which pick() skips this
+	// session because its egress IP recently returned a 429. Zero means not
+	// limited. It self-heals: once the instant passes the session is selectable
+	// again with no separate reaper, so a transient IP rate limit never
+	// permanently removes a healthy tunnel from the pool.
+	limitedUntil atomic.Int64
+}
+
+// limited reports whether the session is under a recent egress-IP penalty at now.
+func (s *Session) limited(now int64) bool {
+	return s != nil && s.limitedUntil.Load() > now
 }
 
 // Quiesce marks the session as retired from the active pool: it stays open for
@@ -163,6 +182,12 @@ type Manager struct {
 	// rr is the monotonic round-robin cursor. It never resets, so distribution
 	// stays uniform across the pool and survives snapshot rebuilds.
 	rr atomic.Uint64
+	// lastPicked remembers the session the round-robin picker most recently
+	// handed out, so an egress-IP 429 can be attributed to the tunnel that
+	// actually served the request rather than guessed at. It is advisory: a
+	// stale value only mis-attributes a penalty to an already-healthy IP for
+	// one egressLimit window, which self-heals.
+	lastPicked atomic.Pointer[Session]
 	// poolSize caps the number of concurrently active sessions.
 	poolSize     atomic.Int64
 	sfg          singleflightx.Group[*Session]
@@ -170,6 +195,13 @@ type Manager struct {
 	httpClient   *http.Client
 	licenseKey   string
 	identityPath string
+
+	// egressLimit bounds how long pick() skips a session whose egress IP
+	// returned a 429. It is the on-demand counterpart to time-based rotation:
+	// instead of registering a new Cloudflare device (slow, and itself
+	// rate-limited), the next dial simply lands on a different already-live
+	// session in the pool. Defaults to DefaultEgressLimit.
+	egressLimit time.Duration
 
 	// registrationURL and edgeProbe are seams for offline tests; production keeps
 	// the Cloudflare defaults.
@@ -231,6 +263,7 @@ func NewManager(logger *slog.Logger, licenseKey string, identityPath ...string) 
 		sessionGrace:       DefaultSessionGrace,
 		autoRotateInterval: DefaultAutoRotateInterval,
 		minRotateInterval:  DefaultMinRotateInterval,
+		egressLimit:        DefaultEgressLimit,
 		rotateTimeout:      defaultRotateTimeout,
 		probeTimeout:       defaultProbeTimeout,
 		bgCtx:              ctx,
@@ -787,12 +820,42 @@ func (m *Manager) activeSessions() []*Session {
 // pick selects an active session for a new dial using the monotonic round-robin
 // cursor. Because the cursor never resets, distribution stays uniform across the
 // pool and survives snapshot rebuilds (which the old per-ring cursor would not).
+//
+// Sessions whose egress IP recently returned a 429 are skipped for egressLimit so
+// the request lands on a different live IP — the on-demand counterpart to the
+// periodic device rotation. The scan starts at the round-robin cursor and takes
+// the first non-limited slot, so fairness is preserved among healthy sessions. If
+// EVERY slot is limited (a full-pool rate-limit storm) it falls back to the plain
+// round-robin choice rather than refusing the dial: a request that would have
+// used a limited IP is strictly better served than one that is dropped, and the
+// next attempt still advances toward a slot whose penalty has expired.
 func (m *Manager) pick() *Session {
 	cur := m.activeSessions()
-	if len(cur) == 0 {
+	n := len(cur)
+	if n == 0 {
 		return nil
 	}
-	return cur[int(m.rr.Add(1)%uint64(len(cur)))]
+	start := int(m.rr.Add(1) % uint64(n))
+	now := time.Now().UnixNano()
+
+	var fallback *Session
+	for i := 0; i < n; i++ {
+		s := cur[(start+i)%n]
+		if s == nil {
+			continue
+		}
+		if !s.limited(now) {
+			m.lastPicked.Store(s)
+			return s
+		}
+		if fallback == nil {
+			fallback = s
+		}
+	}
+	// All slots limited: serve from the cursor anyway so the pool never
+	// deadlocks on its own penalties.
+	m.lastPicked.Store(fallback)
+	return fallback
 }
 
 func cloneActive(p *atomic.Pointer[[]*Session]) []*Session {
@@ -977,6 +1040,84 @@ func (m *Manager) RotateAsync(upstreamName string) {
 		}
 		m.notifyAutoRotation(upstreamName)
 	}()
+}
+
+// SetEgressLimit configures how long pick() skips a session whose egress IP
+// returned a 429. A non-positive value restores DefaultEgressLimit.
+func (m *Manager) SetEgressLimit(d time.Duration) {
+	if m == nil {
+		return
+	}
+	if d <= 0 {
+		d = DefaultEgressLimit
+	}
+	m.egressLimit = d
+}
+
+// RotateEgress moves egress off the IP that just answered 429 by penalizing the
+// session that served the last dial, so the next WARP-egress request lands on a
+// different already-live session in the pool. It is the on-demand counterpart to
+// the periodic device rotation: no new Cloudflare registration happens (which is
+// slow and itself rate-limited), so it is safe to call inline on the request path
+// right before a retry.
+//
+// It reports whether a different, currently-unpenalized session exists to retry
+// on. When false the pool has no healthy alternate (single-slot pool, or every
+// slot already limited), and the caller should surface the 429 as-is rather than
+// spin. Idle keep-alive sockets pooled on the penalized IP are dropped so the
+// retry actually dials the fresh egress.
+func (m *Manager) RotateEgress() bool {
+	if m == nil || m.closed.Load() {
+		return false
+	}
+	now := time.Now()
+	limit := m.egressLimit
+	if limit <= 0 {
+		limit = DefaultEgressLimit
+	}
+
+	// Attribute the 429 to the tunnel that served the last dial. lastPicked is
+	// advisory: if it is nil or already limited (a concurrent request rotated
+	// first), fall back to limiting the round-robin slot so the penalty still
+	// takes effect on some IP rather than being lost.
+	target := m.lastPicked.Load()
+	cur := m.activeSessions()
+	if target == nil && len(cur) > 0 {
+		target = cur[int(m.rr.Load()%uint64(len(cur)))]
+	}
+	if target != nil {
+		target.limitedUntil.Store(now.Add(limit).UnixNano())
+	}
+
+	// Is there a different session the retry can actually use? A slot that is
+	// nil, closed, or still limited does not count.
+	alternate := false
+	for _, s := range cur {
+		if s == nil || s == target || s.closed.Load() || s.limited(now.UnixNano()) {
+			continue
+		}
+		alternate = true
+		break
+	}
+
+	// Drop idle sockets pooled on the penalized IP so the next dial is fresh.
+	m.notifyRotation()
+
+	if m.logger != nil {
+		m.logger.Debug("warp egress rotated off a rate-limited IP",
+			"penalized_ip", publicIPOf(target),
+			"limit", limit.String(),
+			"alternate_available", alternate)
+	}
+	return alternate
+}
+
+// publicIPOf safely reads a session's public egress IP for logging.
+func publicIPOf(s *Session) string {
+	if s == nil {
+		return ""
+	}
+	return s.PublicIP
 }
 
 // rotationAllowed claims the current throttle window. Claiming before spawning
