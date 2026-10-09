@@ -5,6 +5,19 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.44.1] - 2026-10-09
+
+### Fixed
+
+- **Tenant budget columns missing from existing databases dropped the gateway into zero-config mode (`internal/storage/turso/schema.go`)**: The 1.44.0 tenant budget guard added `budget_micros` and `spent_micros` to the `tenants` table's `CREATE TABLE` DDL and to the `SELECT` / `INSERT` / `UPDATE` statements, but omitted them from `MigrateSchema`'s `ALTER TABLE` upgrade list. On a database created before 1.44.0, `CREATE TABLE IF NOT EXISTS` is a no-op, so the two columns never appeared — every `SELECT ... budget_micros, spent_micros` then failed with `no such column: budget_micros`, which made `loadSettingsInternal` (and therefore the whole catalog load) fail. `main` treats that failure as "no initial config" and falls back to zero-config mode with a nil snapshot, which surfaced on the dashboard as **every tenant API key being rejected**, an **empty Upstreams page**, and the **Pricing page reporting "snapshot not loaded"** (`GET /api/pricing` answers 503 while the snapshot is nil). `MigrateSchema` now also runs the two `ALTER TABLE tenants ADD COLUMN` statements, so an existing database converges to the live shape on the next boot and the catalog loads again.
+  - Covered by `TestMigrateSchema_AddsBudgetColumnsToLegacyTenantsTable` in `internal/storage/turso/schema_test.go`: a tenants table shaped like a pre-1.44.0 database (with the cached-token columns but none of the budget columns) gains `budget_micros` and `spent_micros` after migration, and its pre-existing row survives the round trip.
+- **Pricing — models.dev provider filter overflowed far to the right (`frontend/src/components/PricingCatalogPanel.tsx`)**: The "Browse & import" provider filter rendered the shared `Segmented` control, which lays out one button per provider. models.dev publishes dozens of providers, so the filter bar grew a very long single row that pushed far off-screen. It is now a `<select>` dropdown (matching the provider/status filters on the Upstreams and Usage pages), so the row stays a fixed width regardless of how many providers the catalog carries.
+- **Pricing — cramped padding/margins (`frontend/src/pages/PricingPage.tsx`, `frontend/src/components/PricingCatalogPanel.tsx`)**: In the models.dev catalog card the search/provider `filter-bar` sat flush against the card edges and hard against the header divider with no breathing room; it is now wrapped in a padded `card-body`. On the Pricing page the hint paragraph and the catalog card below it were bunched together with no section gap; the catalog panel now gets a 24px top margin and the hint spacing is normalized.
+
+### Changed
+
+- **Version bump**: `frontend/package.json` and `AppShell.tsx` bumped to `v1.44.1`.
+
 ## [1.44.0] - 2026-10-08
 
 ### Added

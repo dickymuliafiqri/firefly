@@ -205,6 +205,14 @@ func MigrateSchema(ctx context.Context, db *sql.DB) error {
 	_, _ = db.ExecContext(ctx, "ALTER TABLE tenants ADD COLUMN api_key VARCHAR(128)")
 	_, _ = db.ExecContext(ctx, "ALTER TABLE tenants ADD COLUMN max_tokens BIGINT DEFAULT 0")
 	_, _ = db.ExecContext(ctx, "ALTER TABLE tenants ADD COLUMN used_tokens BIGINT DEFAULT 0")
+	// The tenant budget guard added these two columns. They MUST be listed here
+	// as well as in the CREATE TABLE above: on a database created before 1.44.0
+	// the CREATE TABLE IF NOT EXISTS is a no-op, so without these ALTERs the
+	// columns never appear and every "SELECT ... budget_micros, spent_micros"
+	// fails with "no such column", which makes the whole catalog fail to load
+	// and drops the gateway into zero-config mode (empty snapshot).
+	_, _ = db.ExecContext(ctx, "ALTER TABLE tenants ADD COLUMN budget_micros BIGINT DEFAULT 0")
+	_, _ = db.ExecContext(ctx, "ALTER TABLE tenants ADD COLUMN spent_micros BIGINT DEFAULT 0")
 	_, _ = db.ExecContext(ctx, "ALTER TABLE tenants ADD COLUMN cached_read_tokens BIGINT DEFAULT 0")
 	_, _ = db.ExecContext(ctx, "ALTER TABLE tenants ADD COLUMN cached_write_tokens BIGINT DEFAULT 0")
 	_, _ = db.ExecContext(ctx, "ALTER TABLE tenants ADD COLUMN expires_at BIGINT")

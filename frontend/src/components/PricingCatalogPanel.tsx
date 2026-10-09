@@ -3,7 +3,6 @@ import { Download, RefreshCw } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
-import { Segmented } from '@/components/ui/Controls';
 import { fetchPricingCatalog, importPricing, refreshPricingCatalog } from '@/services/api';
 import { useUiStore } from '@/state/store';
 
@@ -110,23 +109,28 @@ export function PricingCatalogPanel() {
 
       {open ? (
         <>
-          <div className="filter-bar">
-            <input
-              type="search"
-              placeholder="Search catalog models…"
-              aria-label="Search catalog models"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-            <Segmented
-              ariaLabel="Filter by provider"
-              value={provider}
-              onChange={setProvider}
-              items={[
-                { id: 'all', label: 'All providers' },
-                ...providers.map((p) => ({ id: p, label: p })),
-              ]}
-            />
+          <div className="card-body" style={{ paddingBottom: 0 }}>
+            <div className="filter-bar" style={{ marginBottom: 12 }}>
+              <input
+                type="search"
+                placeholder="Search catalog models…"
+                aria-label="Search catalog models"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+              <select
+                aria-label="Filter by provider"
+                value={provider}
+                onChange={(e) => setProvider(e.target.value)}
+              >
+                <option value="all">All providers</option>
+                {providers.map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
 
           <div className="card-body tight table-wrap">

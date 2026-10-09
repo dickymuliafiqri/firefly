@@ -265,14 +265,19 @@ export function PricingPage() {
             </table>
           </div>
         </div>
-        <p className="hint" style={{ marginTop: 10, fontSize: 12, color: 'var(--faint)' }}>
+        <p
+          className="hint"
+          style={{ marginTop: 12, marginBottom: 0, fontSize: 12, color: 'var(--faint)' }}
+        >
           A model with no entry falls back to the legacy flat rate, so an unpriced model still bills
           something. Editing an entry marks it <strong>manual</strong>, which a later models.dev import
           never overwrites.
         </p>
       </QueryGate>
 
-      <PricingCatalogPanel />
+      <div style={{ marginTop: 24 }}>
+        <PricingCatalogPanel />
+      </div>
 
       <Drawer open={drafting} onClose={() => setDrafting(false)} title={editing ? `Edit ${editing.model}` : 'Set price'}>
         <div className="stack">

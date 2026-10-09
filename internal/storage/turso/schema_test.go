@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	_ "turso.tech/database/tursogo"
@@ -193,6 +194,66 @@ func TestMigrateSchema_IdempotentAndPreservesRows(t *testing.T) {
 	}
 	if keyID != 99 {
 		t.Fatalf("key id = %d, want 99 (adoption must never rewrite ids)", keyID)
+	}
+}
+
+// TestMigrateSchema_AddsBudgetColumnsToLegacyTenantsTable guards the 1.44.0
+// regression that dropped the gateway into zero-config mode on an existing
+// database. The budget guard added budget_micros and spent_micros to the
+// CREATE TABLE, but CREATE TABLE IF NOT EXISTS is a no-op on a pre-existing
+// tenants table, so the columns only ever appear if MigrateSchema also ALTERs
+// them in. Without the ALTERs every "SELECT ... budget_micros" fails with
+// "no such column", the whole catalog fails to load, and the snapshot stays
+// nil — which surfaces as every API key being rejected, an empty Upstreams
+// page, and Pricing reporting "snapshot not loaded".
+func TestMigrateSchema_AddsBudgetColumnsToLegacyTenantsTable(t *testing.T) {
+	ctx := context.Background()
+	db := openSchemaTestDB(t)
+
+	// A tenants table shaped exactly like a database created before 1.44.0:
+	// it already carries the cached-token columns from an earlier migration
+	// but none of the budget columns.
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE tenants (
+			id            INTEGER PRIMARY KEY AUTOINCREMENT,
+			name          VARCHAR(128) NOT NULL,
+			api_key       VARCHAR(128),
+			key_hash      VARCHAR(128),
+			status        VARCHAR(20) NOT NULL DEFAULT 'active',
+			max_tokens    BIGINT NOT NULL DEFAULT 0,
+			used_tokens   BIGINT NOT NULL DEFAULT 0,
+			cached_read_tokens  BIGINT NOT NULL DEFAULT 0,
+			cached_write_tokens BIGINT NOT NULL DEFAULT 0,
+			allowed_models TEXT,
+			created_at    BIGINT NOT NULL,
+			updated_at    BIGINT NOT NULL
+		);
+		INSERT INTO tenants (name, api_key, created_at, updated_at)
+		VALUES ('legacy', 'sk-gw-legacy', 1, 1);
+	`); err != nil {
+		t.Fatalf("create legacy tenants table: %v", err)
+	}
+
+	if err := MigrateSchema(ctx, db); err != nil {
+		t.Fatalf("migrate over legacy tenants table: %v", err)
+	}
+
+	got := columnNames(t, db, "tenants")
+	for _, want := range []string{"budget_micros", "spent_micros"} {
+		if !slices.Contains(got, want) {
+			t.Fatalf("tenants table missing %q after migration; columns = %v", want, got)
+		}
+	}
+
+	// The load query the store runs must succeed against the migrated table,
+	// and the pre-existing row must survive with its plaintext key intact.
+	var name, apiKey string
+	if err := db.QueryRowContext(ctx,
+		"SELECT name, api_key FROM tenants WHERE api_key = 'sk-gw-legacy'").Scan(&name, &apiKey); err != nil {
+		t.Fatalf("legacy tenant row lost or unreadable after migration: %v", err)
+	}
+	if name != "legacy" {
+		t.Fatalf("legacy tenant name = %q, want legacy", name)
 	}
 }
 
