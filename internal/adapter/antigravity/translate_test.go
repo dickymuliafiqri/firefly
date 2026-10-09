@@ -325,3 +325,216 @@ func TestBuildIdeRequestID(t *testing.T) {
 	reqID := BuildIdeRequestID("session-123", "gemini-2.5", 3)
 	assert.Regexp(t, `^agent/[a-f0-9\-]+/\d+/[a-f0-9\-]+/\d+$`, reqID)
 }
+
+// Gemini 3 rejects functionCall parts echoed back without the thoughtSignature
+// that was returned with the original call. This is the request-side half of
+// the round trip: the signature the client preserved must be replayed verbatim
+// onto the Gemini part.
+func TestTranslateOpenAIToAntigravity_ThoughtSignatureRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	inbound := []byte(`{
+		"model": "gemini-3.8-flash",
+		"messages": [
+			{"role": "user", "content": "Search for TODO"},
+			{
+				"role": "assistant",
+				"content": null,
+				"tool_calls": [
+					{
+						"id": "call_grep_1",
+						"type": "function",
+						"thought_signature": "CvwBAAdFCly7abc123",
+						"function": {"name": "grep", "arguments": "{\"pattern\": \"TODO\"}"}
+					}
+				]
+			},
+			{"role": "tool", "tool_call_id": "call_grep_1", "name": "grep", "content": "main.go:10: // TODO"}
+		]
+	}`)
+
+	out, err := TranslateOpenAIToAntigravity(inbound, "gemini-3.8-flash", "proj-1")
+	require.NoError(t, err)
+
+	// The model turn carries the functionCall part with its signature.
+	fc := gjson.GetBytes(out, "request.contents.1.parts.0.functionCall")
+	require.True(t, fc.Exists())
+	assert.Equal(t, "grep", fc.Get("name").String())
+	assert.Equal(t, "CvwBAAdFCly7abc123", gjson.GetBytes(out, "request.contents.1.parts.0.thoughtSignature").String())
+}
+
+func TestTranslateOpenAIToAntigravity_ThoughtSignatureFromFunctionObject(t *testing.T) {
+	t.Parallel()
+
+	// Some clients stash custom fields inside the function object instead.
+	inbound := []byte(`{
+		"model": "gemini-3.8-flash",
+		"messages": [
+			{"role": "user", "content": "hi"},
+			{
+				"role": "assistant",
+				"tool_calls": [
+					{
+						"id": "call_1",
+						"type": "function",
+						"function": {
+							"name": "bash",
+							"arguments": "{}",
+							"thought_signature": "sig-inside-function"
+						}
+					}
+				]
+			}
+		]
+	}`)
+
+	out, err := TranslateOpenAIToAntigravity(inbound, "gemini-3.8-flash", "proj-1")
+	require.NoError(t, err)
+	assert.Equal(t, "sig-inside-function", gjson.GetBytes(out, "request.contents.1.parts.0.thoughtSignature").String())
+}
+
+// gemini-2.5 clients never carry the field, and the translation must stay a
+// no-op (no empty key emitted).
+func TestTranslateOpenAIToAntigravity_NoThoughtSignature(t *testing.T) {
+	t.Parallel()
+
+	inbound := []byte(`{
+		"model": "gemini-2.5-flash",
+		"messages": [
+			{"role": "user", "content": "hi"},
+			{
+				"role": "assistant",
+				"tool_calls": [
+					{"id": "call_1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
+				]
+			}
+		]
+	}`)
+
+	out, err := TranslateOpenAIToAntigravity(inbound, "gemini-2.5-flash", "proj-1")
+	require.NoError(t, err)
+	assert.False(t, gjson.GetBytes(out, "request.contents.1.parts.0.thoughtSignature").Exists())
+}
+
+func TestTranslateAntigravityChunkToOpenAI_ThoughtSignatureOnFunctionCall(t *testing.T) {
+	t.Parallel()
+
+	state := &StreamState{Model: "gemini-3.8-flash"}
+
+	chunk := []byte(`{
+		"response": {
+			"candidates": [
+				{
+					"content": {
+						"role": "model",
+						"parts": [
+							{
+								"functionCall": {"id": "call_grep_1", "name": "grep", "args": {"pattern": "TODO"}},
+								"thoughtSignature": "CvwBAAdFCly7xyz789"
+							}
+						]
+					}
+				}
+			]
+		}
+	}`)
+
+	chunks, isDone, err := TranslateAntigravityChunkToOpenAI(chunk, "gemini-3.8-flash", state)
+	require.NoError(t, err)
+	assert.False(t, isDone)
+
+	// chunks[0] is the role chunk; chunks[1] is the tool call chunk.
+	require.Len(t, chunks, 2)
+	tc := gjson.GetBytes(chunks[1], "choices.0.delta.tool_calls.0")
+	assert.Equal(t, "call_grep_1", tc.Get("id").String())
+	assert.Equal(t, "CvwBAAdFCly7xyz789", tc.Get("thought_signature").String())
+
+	// The signature is queued for the adapter to drain into the store.
+	require.Len(t, state.ToolSignatures, 1)
+	assert.Equal(t, "call_grep_1", state.ToolSignatures[0].ID)
+	assert.Equal(t, "CvwBAAdFCly7xyz789", state.ToolSignatures[0].Sig)
+}
+
+// Gemini 3 usually puts the signature on a separate thought part that precedes
+// the functionCall; the pending signature must be replayed onto the call.
+func TestTranslateAntigravityChunkToOpenAI_PendingThoughtSignature(t *testing.T) {
+	t.Parallel()
+
+	state := &StreamState{Model: "gemini-3.8-flash"}
+
+	thought := []byte(`{
+		"response": {
+			"candidates": [
+				{
+					"content": {
+						"role": "model",
+						"parts": [
+							{"text": "planning...", "thought": true, "thoughtSignature": "pending-sig-42"}
+						]
+					}
+				}
+			]
+		}
+	}`)
+	chunks, _, err := TranslateAntigravityChunkToOpenAI(thought, "gemini-3.8-flash", state)
+	require.NoError(t, err)
+	require.Len(t, chunks, 2)
+	assert.Equal(t, "planning...", gjson.GetBytes(chunks[1], "choices.0.delta.reasoning_content").String())
+	assert.Equal(t, "pending-sig-42", state.PendingThoughtSig)
+
+	fnChunk := []byte(`{
+		"response": {
+			"candidates": [
+				{
+					"content": {
+						"role": "model",
+						"parts": [
+							{"functionCall": {"id": "call_bash_2", "name": "bash", "args": {"cmd": "ls"}}}
+						]
+					}
+				}
+			]
+		}
+	}`)
+	chunks, _, err = TranslateAntigravityChunkToOpenAI(fnChunk, "gemini-3.8-flash", state)
+	require.NoError(t, err)
+	require.Len(t, chunks, 1)
+	assert.Equal(t, "pending-sig-42", gjson.GetBytes(chunks[0], "choices.0.delta.tool_calls.0.thought_signature").String())
+
+	require.Len(t, state.ToolSignatures, 1)
+	assert.Equal(t, "call_bash_2", state.ToolSignatures[0].ID)
+	assert.Equal(t, "pending-sig-42", state.ToolSignatures[0].Sig)
+}
+
+func TestTranslateAntigravityToOpenAI_ThoughtSignature(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte(`{
+		"response": {
+			"candidates": [
+				{
+					"content": {
+						"role": "model",
+						"parts": [
+							{"text": "thinking", "thought": true, "thoughtSignature": "pending-sig-9"},
+							{"functionCall": {"id": "call_grep_9", "name": "grep", "args": {"pattern": "TODO"}}}
+						]
+					},
+					"finishReason": "STOP"
+				}
+			]
+		}
+	}`)
+
+	out, err := TranslateAntigravityToOpenAI(raw, "gemini-3.8-flash")
+	require.NoError(t, err)
+
+	assert.Equal(t, "call_grep_9", gjson.GetBytes(out, "choices.0.message.tool_calls.0.id").String())
+	assert.Equal(t, "pending-sig-9", gjson.GetBytes(out, "choices.0.message.tool_calls.0.thought_signature").String())
+	assert.Equal(t, "tool_calls", gjson.GetBytes(out, "choices.0.finish_reason").String())
+
+	// And the store helper picks the pair up from the translated body.
+	store := NewSignatureStore()
+	recordToolSignaturesFromOpenAI(store, out)
+	assert.Equal(t, "pending-sig-9", store.Lookup("call_grep_9"))
+}

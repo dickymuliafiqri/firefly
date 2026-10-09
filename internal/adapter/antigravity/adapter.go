@@ -19,6 +19,8 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/ports"
 	"github.com/dickymuliafiqri/firefly/internal/transport/httpx"
 	"github.com/dickymuliafiqri/firefly/internal/transport/upstream"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // ClientPool is the outbound client cache the adapter dials through.
@@ -55,6 +57,10 @@ type Config struct {
 	Metrics          KeyMetricsObserver
 	IdleTimeout      time.Duration
 	Notifier         ports.KeyActionNotifier
+	// Signatures is the Gemini 3 thought signature store. Nil creates a
+	// default bounded store; inject one to share state across adapters or
+	// observe it in tests.
+	Signatures *SignatureStore
 }
 
 // Adapter implements ports.UpstreamAdapter for the Google Antigravity Cloud Code protocol.
@@ -64,6 +70,10 @@ type Adapter struct {
 	cfg     Config
 	logger  *slog.Logger
 	metrics KeyMetricsObserver
+	// sigs remembers Gemini 3 thought signatures per tool call id so they can
+	// be replayed when a client echoes a tool call back without the field
+	// (OpenAI clients discard unknown fields).
+	sigs *SignatureStore
 }
 
 // NewAdapter constructs an Antigravity adapter.
@@ -72,12 +82,17 @@ func NewAdapter(pool ClientPool, breaker BreakerLookup, cfg Config) *Adapter {
 	if l == nil {
 		l = slog.Default()
 	}
+	sigs := cfg.Signatures
+	if sigs == nil {
+		sigs = NewSignatureStore()
+	}
 	return &Adapter{
 		pool:    pool,
 		breaker: breaker,
 		cfg:     cfg,
 		logger:  l,
 		metrics: cfg.Metrics,
+		sigs:    sigs,
 	}
 }
 
@@ -116,6 +131,10 @@ func (a *Adapter) Forward(ctx context.Context, t *domain.Target, req ports.Forwa
 	}
 
 	projectID := a.resolveProjectID(ctx, u, t)
+
+	// Backfill Gemini 3 thought signatures the client dropped from echoed
+	// tool calls, so the second turn of a tool-calling loop validates.
+	bodyBytes = a.enrichThoughtSignatures(bodyBytes)
 
 	antigravityBody, err := TranslateOpenAIToAntigravity(bodyBytes, t.UpstreamModel, projectID)
 	if err != nil {
@@ -190,6 +209,39 @@ func (a *Adapter) Forward(ctx context.Context, t *domain.Target, req ports.Forwa
 		return nil
 	}
 	return lastErr
+}
+
+// enrichThoughtSignatures backfills the Gemini 3 thought signature onto echoed
+// tool calls the client dropped it from, using the signature remembered when
+// the original call was relayed. The tool call id is a protocol-required field
+// every client round-trips, so the store lookup also covers clients (Cline,
+// Roo, the OpenAI SDKs, ...) that discard unknown JSON fields entirely.
+func (a *Adapter) enrichThoughtSignatures(body []byte) []byte {
+	if a.sigs == nil || len(body) == 0 || !gjson.ValidBytes(body) {
+		return body
+	}
+	for i, msg := range gjson.GetBytes(body, "messages").Array() {
+		for j, tc := range msg.Get("tool_calls").Array() {
+			// Client preserved the original field: TranslateOpenAIToAntigravity
+			// replays it verbatim, nothing to inject.
+			if tc.Get("thought_signature").Exists() || tc.Get("function.thought_signature").Exists() {
+				continue
+			}
+			id := tc.Get("id").String()
+			if id == "" {
+				continue
+			}
+			sig := a.sigs.Lookup(id)
+			if sig == "" {
+				continue
+			}
+			path := fmt.Sprintf("messages.%d.tool_calls.%d.thought_signature", i, j)
+			if updated, err := sjson.SetBytes(body, path, sig); err == nil {
+				body = updated
+			}
+		}
+	}
+	return body
 }
 
 func (a *Adapter) resolveToken(ctx context.Context, u *domain.Upstream, t *domain.Target) (string, bool) {
@@ -320,6 +372,10 @@ func (a *Adapter) attempt(ctx context.Context, u *domain.Upstream, req ports.For
 		return attemptResult{status: http.StatusInternalServerError, err: err}
 	}
 
+	// Remember Gemini 3 thought signatures keyed by tool call id so the next
+	// turn can replay them when the client echoes the calls back.
+	recordToolSignaturesFromOpenAI(a.sigs, openAIRespBytes)
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	n, werr := w.Write(openAIRespBytes)
@@ -368,6 +424,14 @@ func (a *Adapter) relayAntigravitySSE(ctx context.Context, w http.ResponseWriter
 					a.cfg.Logger.Warn("antigravity chunk translation error", "err", err)
 				}
 				continue
+			}
+			// Drain Gemini 3 thought signatures surfaced by this chunk into the
+			// store keyed by tool call id.
+			if a.sigs != nil && len(state.ToolSignatures) > 0 {
+				for _, ts := range state.ToolSignatures {
+					a.sigs.Record(ts.ID, ts.Sig)
+				}
+				state.ToolSignatures = state.ToolSignatures[:0]
 			}
 			for _, chunk := range chunks {
 				n, werr := io.WriteString(w, "data: "+string(chunk)+"\n\n")

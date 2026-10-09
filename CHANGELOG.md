@@ -5,6 +5,19 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.44.5] - 2026-10-09
+
+### Fixed
+
+- **Antigravity — Gemini 3 rejected the second turn of every tool-calling loop: "Function call is missing a thought_signature in functionCall parts" (`internal/adapter/antigravity/`)**: Gemini 3 models (`gemini-3.8-flash` and siblings) enforce strict validation on tool calling — every `functionCall` part echoed back inside `request.contents` must carry the `thoughtSignature` that was returned alongside the original call. The adapter dropped it in both directions: `TranslateAntigravityChunkToOpenAI` / `TranslateAntigravityToOpenAI` never surfaced the signature on the OpenAI tool call the client received, and `TranslateOpenAIToAntigravity` rebuilt `functionCall` parts from `tool_calls` history with no signature at all. The first turn of any agentic loop (Cline, Claude Code, the OpenAI SDKs, …) succeeded and the second was rejected, so tool use was effectively broken for Gemini 3.
+  - The response path now attaches the signature to the emitted tool call as `thought_signature` (streaming delta and non-streaming body alike). Because OpenAI clients discard unknown JSON fields when they echo a call back, the adapter additionally remembers every signature in a bounded, TTL-evicting `SignatureStore` (`signature.go`) keyed by the tool call `id` — a protocol-required field every client round-trips — and backfills the missing field onto echoed `tool_calls` before translation (`enrichThoughtSignatures`). A signature Gemini returns on a preceding *thought* part is carried forward onto the bare `functionCall` part through `StreamState.PendingThoughtSig`.
+  - Clients that *do* preserve the field are still honored verbatim (`toolCallThoughtSignature` probes the tool-call object and its function object, in either snake_case or camelCase), and `gemini-2.5` traffic — which never carries the field — is untouched: no key is emitted when there is no signature.
+  - Covered by `translate_test.go` (request round trip, function-object placement, no-signature no-op, streaming on-part and pending-thought-part, non-streaming), `signature_test.go` (record/lookup, TTL expiry, bounded eviction, concurrent access), and `adapter_test.go` end-to-end regressions that replay a full two-turn loop through a mock upstream — streaming and non-streaming — with the client dropping the field, asserting the second request upstream still arrives carrying the stored signature.
+
+### Changed
+
+- **Version bump**: `frontend/package.json` and `AppShell.tsx` bumped to `v1.44.5`.
+
 ## [1.44.4] - 2026-10-09
 
 ### Fixed

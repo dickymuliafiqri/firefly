@@ -36,8 +36,21 @@ type StreamState struct {
 	Model               string
 	FunctionIndex       int
 	GeminiToolCallCount int
-	PendingThoughtSig   string
-	FirstChunkEmitted   bool
+	// PendingThoughtSig holds the most recent Gemini 3 thoughtSignature seen
+	// on any part, so a functionCall part that carries none of its own can
+	// still be replayed with the signature covering that turn.
+	PendingThoughtSig string
+	// ToolSignatures accumulates (tool call id -> thoughtSignature) pairs the
+	// adapter drains into the SignatureStore after each chunk.
+	ToolSignatures    []ToolSig
+	FirstChunkEmitted bool
+}
+
+// ToolSig pairs an emitted tool call id with the Gemini 3 thought signature
+// that must be replayed when the client echoes that call back.
+type ToolSig struct {
+	ID  string
+	Sig string
 }
 
 // GeminiPart represents one part of Gemini content.
@@ -285,6 +298,24 @@ func rewriteSystemPrompts(text string) string {
 	return strings.TrimSpace(text)
 }
 
+// toolCallThoughtSignature extracts a Gemini 3 thought signature echoed back
+// by the client on an assistant tool_calls entry. Proxies and SDKs disagree
+// about where custom tool-call fields land, so both the tool call object and
+// its function object are probed, in either snake_case or camelCase.
+func toolCallThoughtSignature(tc gjson.Result) string {
+	for _, path := range []string{
+		"thought_signature",
+		"thoughtSignature",
+		"function.thought_signature",
+		"function.thoughtSignature",
+	} {
+		if sig := tc.Get(path).String(); sig != "" {
+			return sig
+		}
+	}
+	return ""
+}
+
 // TranslateOpenAIToAntigravity converts an OpenAI /v1/chat/completions payload into the
 // Google Cloud Code internal envelope structure.
 func TranslateOpenAIToAntigravity(body []byte, upstreamModel, projectID string) ([]byte, error) {
@@ -365,6 +396,11 @@ func TranslateOpenAIToAntigravity(body []byte, upstreamModel, projectID string) 
 						_ = json.Unmarshal([]byte(argsStr), &argsMap)
 					}
 					parts = append(parts, GeminiPart{
+						// Gemini 3 rejects functionCall parts that are echoed
+						// back without the signature returned alongside the
+						// original call. Clients that preserve the field get it
+						// replayed verbatim here.
+						ThoughtSignature: toolCallThoughtSignature(tc),
 						FunctionCall: &FunctionCall{
 							ID:   tc.Get("id").String(),
 							Name: fnName,
@@ -551,6 +587,13 @@ func TranslateAntigravityChunkToOpenAI(rawChunk []byte, publicModel string, stat
 		isThought := part.Get("thought").Bool()
 		text := part.Get("text").String()
 
+		// Gemini 3 attaches thought signatures to arbitrary parts (usually
+		// the thought part or the functionCall itself); remember the latest so
+		// a bare functionCall part can still be replayed with it.
+		if sig := part.Get("thoughtSignature").String(); sig != "" {
+			state.PendingThoughtSig = sig
+		}
+
 		if text != "" {
 			delta := make(map[string]any)
 			if isThought {
@@ -594,6 +637,17 @@ func TranslateAntigravityChunkToOpenAI(rawChunk []byte, publicModel string, stat
 					"name":      fnName,
 					"arguments": fnArgs,
 				},
+			}
+			// Surface the Gemini 3 thought signature on the tool call and queue
+			// it for the server-side store, because OpenAI clients discard
+			// unknown fields when they echo the call back.
+			sig := fc.Get("thoughtSignature").String()
+			if sig == "" {
+				sig = state.PendingThoughtSig
+			}
+			if sig != "" {
+				toolCall["thought_signature"] = sig
+				state.ToolSignatures = append(state.ToolSignatures, ToolSig{ID: callID, Sig: sig})
 			}
 			state.FunctionIndex++
 			state.GeminiToolCallCount++
@@ -679,8 +733,14 @@ func TranslateAntigravityToOpenAI(rawBody []byte, publicModel string) ([]byte, e
 	var textBuilder strings.Builder
 	var toolCalls []map[string]any
 	idx := 0
+	// pendingSig mirrors the streaming path: the most recent Gemini 3
+	// thoughtSignature seen on any part, replayed onto function calls.
+	var pendingSig string
 
 	for _, part := range parts {
+		if sig := part.Get("thoughtSignature").String(); sig != "" {
+			pendingSig = sig
+		}
 		if text := part.Get("text").String(); text != "" {
 			textBuilder.WriteString(text)
 		}
@@ -694,14 +754,22 @@ func TranslateAntigravityToOpenAI(rawBody []byte, publicModel string) ([]byte, e
 			if callID == "" {
 				callID = fmt.Sprintf("call_%s_%d", fnName, idx)
 			}
-			toolCalls = append(toolCalls, map[string]any{
+			sig := fc.Get("thoughtSignature").String()
+			if sig == "" {
+				sig = pendingSig
+			}
+			entry := map[string]any{
 				"id":   callID,
 				"type": "function",
 				"function": map[string]any{
 					"name":      fnName,
 					"arguments": fnArgs,
 				},
-			})
+			}
+			if sig != "" {
+				entry["thought_signature"] = sig
+			}
+			toolCalls = append(toolCalls, entry)
 			idx++
 		}
 	}
