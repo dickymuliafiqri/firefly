@@ -644,6 +644,24 @@ td.faint {
     color: var(--faint);
 }
 
+/* ---------- Text utilities (element-agnostic) ----------
+   .dim and .faint were only ever defined on td, and .mono only inside
+   .resmon, so every span/input/p/div carrying them silently fell back to the
+   inherited font and colour. ~50 call sites across the dashboard were written
+   expecting these to work; they now do, on any element.
+   Kept unlayered to match the rest of this file, so td.dim/td.faint above and
+   .resmon .mono below keep winning on specificity where they overlap. */
+.mono {
+    font-family: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+}
+.dim {
+    color: var(--muted);
+}
+.faint {
+    color: var(--faint);
+}
+
 /* ---------- Badge (status always has text) ---------- */
 .badge {
     display: inline-flex;

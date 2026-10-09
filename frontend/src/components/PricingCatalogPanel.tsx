@@ -162,13 +162,8 @@ export function PricingCatalogPanel() {
                       <span>{e.name || e.model_id}</span>
                       {e.model_id && e.model_id !== e.name ? (
                         <span
-                          style={{
-                            display: 'block',
-                            fontSize: 11,
-                            marginTop: 1,
-                            color: 'var(--faint)',
-                            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-                          }}
+                          className="mono faint"
+                          style={{ display: 'block', fontSize: 11, marginTop: 1 }}
                         >
                           {e.model_id}
                         </span>

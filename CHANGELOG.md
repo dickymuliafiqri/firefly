@@ -5,6 +5,21 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.44.4] - 2026-10-09
+
+### Fixed
+
+- **The `.mono`, `.dim`, and `.faint` CSS utilities were dead outside table cells (`frontend/src/styles/global.css`)**: `.dim` and `.faint` were only ever defined as `td.dim` / `td.faint`, and `.mono` only as `.resmon .mono`. Every `span`, `input`, `p`, and `div` carrying one of those classes therefore silently fell back to the inherited font and colour — roughly **fifty call sites** across the dashboard, including the API-key and base-URL inputs on the upstream and tenant forms, the credential-ref and upstream-model columns, the webhook channel URLs, the benchmark result figures, and the pricing catalog provider column. Nothing looked broken, because an element with no matching rule simply renders as its parent styled it; the monospace faces and the muted/faint tiers the markup asked for were just never applied.
+  - The three utilities are now defined as top-level rules, so they work on any element. They are kept unlayered to match the rest of the file, which means `td.dim` / `td.faint` and `.resmon .mono` still win on specificity where they overlap — and since every overlapping rule declares the same values, nothing that already worked changes.
+  - The compound `.waterfall span.dim` and `.visualizer-svg .viz-*.dim` rules stay scoped: they set `background`/`fill` rather than a text colour, so a bare `.dim` inside those containers must not inherit those overrides. Verified that no bare-`dim` element lives inside either container.
+  - The pricing catalog picker's model-id sub-line no longer needs an inline `fontFamily`; it uses `className="mono faint"`, matching the convention already used by the benchmark and chat telemetry labels.
+  - Covered by `frontend/src/styles/global.test.ts`, which injects the real stylesheet into jsdom and reads back **computed styles** rather than grepping the source: `.mono` must resolve to the JetBrains Mono stack with tabular figures, `.dim` to `var(--muted)`, `.faint` to `var(--faint)`, an unclassed element must resolve to none of those, and the four scoped visualizer/waterfall rules must remain compound. Verified to fail against the old td-only definitions.
+  - `vitest.config.ts` gained `css: true`. Without it vitest replaces every CSS import with an empty string, so `import css from "./global.css?raw"` yielded `""` and no stylesheet-level test was possible at all.
+
+### Changed
+
+- **Version bump**: `frontend/package.json` and `AppShell.tsx` bumped to `v1.44.4`.
+
 ## [1.44.3] - 2026-10-09
 
 ### Fixed

@@ -7,7 +7,7 @@ import { PendingChangesBar } from "@/components/shell/PendingChangesBar";
 import { ToastHost } from "@/components/ui/ToastHost";
 import { SIDEBAR_GROUPS } from "@/registry";
 
-const VERSION = "v1.44.3";
+const VERSION = "v1.44.4";
 
 interface AppShellProps {
   page: PageDef;
