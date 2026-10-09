@@ -606,7 +606,9 @@ type ModelEntry struct {
 	MaxContext    int
 	Enabled       bool
 	// SystemPrompt is an optional per-model directive appended to the system
-	// block of every chat completion routed to this model.
+	// block of every chat completion routed to this model. Bounded at
+	// domain.MaxModelSystemPromptChars (~32,000 tokens) and applied verbatim,
+	// so the adapter forwards the whole value downstream untouched.
 	SystemPrompt string
 }
 

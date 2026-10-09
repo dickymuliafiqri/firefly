@@ -375,20 +375,23 @@ function ModelForm({ editing, onClose }: ModelFormProps) {
       <Field
         label="System prompt (optional)"
         htmlFor="m-sysprompt"
-        hint="Appended to the system block of every chat completion routed to this model. The global Token Saver guard is injected afterwards, so it keeps the last word."
+        hint="Appended to the system block of every chat completion routed to this model. Capped at ~32,000 tokens (128,000 chars) and forwarded verbatim. The global Token Saver guard is injected afterwards, so it keeps the last word."
       >
         <textarea
           id="m-sysprompt"
-          rows={3}
+          rows={6}
           spellCheck={false}
-          maxLength={4000}
+          maxLength={128000}
           placeholder="e.g. You are a senior Go engineer. Prefer the standard library and keep answers terse."
           value={systemPrompt}
           onChange={(e) => setSystemPrompt(e.target.value)}
         />
       </Field>
       <div style={{ marginTop: -6, textAlign: "right" }}>
-        <span className="hint">{systemPrompt.length} / 4,000</span>
+        <span className="hint">
+          {systemPrompt.length.toLocaleString()} / 128,000 chars · ~
+          {Math.ceil(systemPrompt.length / 4).toLocaleString()} / 32,000 tokens
+        </span>
       </div>
       <div>
         <label

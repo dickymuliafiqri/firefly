@@ -5,7 +5,11 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.44.5] - 2026-10-09
+## [1.44.6] - 2026-10-09
+
+### Changed
+
+- **Per-model system prompt cap raised to ~32,000 tokens (`internal/domain`, `internal/config`, `internal/server`, `frontend`)**: `domain.MaxModelSystemPromptChars` (128,000 characters, estimated at the gateway's 4-chars-per-token rate) replaces the old 4,000-character bound on `ModelDTO.SystemPrompt`, so the Models page can carry a full behavior spec for a route instead of a tweet. The value is still validated in one place (`config.translateModel`), trimmed, and stored verbatim, and nothing downstream truncates it: the Models page textarea allows 128,000 chars with a live char/token counter. The global Token Saver System Prompt Guard keeps its separate, smaller bound (`domain.MaxSystemPromptChars`, 4,000 chars) — that directive rides every chat request, while a per-model prompt only rides traffic the operator already aimed at that route. The injection path (`tokensaver.InjectSystemPrompt`, shared by both) is proven to carry the full 128,000-char value untruncated to the upstream.
 
 ### Fixed
 

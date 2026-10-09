@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -213,6 +214,78 @@ func TestSettingsGetAndPost(t *testing.T) {
 	u2, _ := snap2.Upstream("test-openai")
 	if u2.KeyRing.Slots[0].Secret != "sk-secret-key-1" || u2.KeyRing.Slots[1].Secret != "sk-secret-key-2" {
 		t.Fatalf("secrets not retained after masked update: %+v", u2.KeyRing.Slots)
+	}
+}
+
+// The Models page may carry a full-size per-model system prompt (~32,000
+// tokens). The settings API must accept it, validate the boundary, persist it
+// verbatim, and hand it to the live snapshot — so the enforce/apply promise
+// is proven end-to-end, not just at the DTO layer.
+func TestSettingsAcceptsFullSizePerModelSystemPrompt(t *testing.T) {
+	tmpDir := t.TempDir()
+	reg := registry.New()
+
+	src := config.NewFileConfigSource(tmpDir)
+	if _, err := reg.BuildAndStore(context.Background(), src, os.LookupEnv); err != nil {
+		t.Fatalf("initial build and store: %v", err)
+	}
+
+	deps := RouterDeps{
+		Snapshots:   reg,
+		Registry:    reg,
+		ConfigDir:   tmpDir,
+		TenantStore: auth.NewStore(reg),
+		Limiter:     limits.New(),
+	}
+	s := New(Config{Addr: "0.0.0.0:8080"}, deps, context.Background(), nil)
+
+	post := func(t *testing.T, method string, payload string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(method, "/api/settings", strings.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, req)
+		return w
+	}
+
+	fullPrompt := strings.Repeat("P", domain.MaxModelSystemPromptChars)
+
+	postBody := `{"upstreams":[{"name":"test-openai","protocol":"openai","base_urls":["https://api.openai.com/v1"],"api_keys":["sk-secret-key"]}],
+		"models":[{"public_name":"gpt-4o","upstream":"test-openai","upstream_model":"gpt-4o","system_prompt":` +
+		strconv.Quote(fullPrompt) + `}]}`
+	w := post(t, "POST", postBody)
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST full-size prompt status = %d, want 200; body = %s", w.Code, w.Body.String())
+	}
+
+	snap := reg.Current()
+	entry, ok := snap.Model("gpt-4o")
+	if !ok || entry == nil {
+		t.Fatal("model gpt-4o missing from live snapshot")
+	}
+	if entry.SystemPrompt != fullPrompt {
+		t.Fatalf("snapshot system_prompt len = %d, want the verbatim %d", len(entry.SystemPrompt), len(fullPrompt))
+	}
+
+	// models.json on disk must hold the same value (round-trip without truncation).
+	onDisk, err := os.ReadFile(filepath.Join(tmpDir, config.FileNameModels))
+	if err != nil {
+		t.Fatalf("read models.json: %v", err)
+	}
+	if !strings.Contains(string(onDisk), fullPrompt) {
+		t.Fatalf("models.json does not hold the full prompt (%d bytes on disk)", len(onDisk))
+	}
+
+	// One char over the cap is still rejected, with the per-model field named.
+	overBody := `{"upstreams":[{"name":"test-openai","protocol":"openai","base_urls":["https://api.openai.com/v1"],"api_keys":["sk-secret-key"]}],
+		"models":[{"public_name":"gpt-4o","upstream":"test-openai","upstream_model":"gpt-4o","system_prompt":` +
+		strconv.Quote(strings.Repeat("P", domain.MaxModelSystemPromptChars+1)) + `}]}`
+	w = post(t, "POST", overBody)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("oversized prompt status = %d, want 400; body = %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "models[0].system_prompt") {
+		t.Fatalf("error body does not name the per-model field: %s", w.Body.String())
 	}
 }
 

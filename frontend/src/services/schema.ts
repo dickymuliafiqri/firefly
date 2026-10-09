@@ -254,7 +254,8 @@ export interface ModelDTO {
   enabled?: boolean | null;
   /** Optional per-model directive appended to the system block of every chat
    *  completion routed to this model. Injected before the global Token Saver
-   *  guard, so the operator's global directive keeps the last word. */
+   *  guard, so the operator's global directive keeps the last word. Capped at
+   *  ~32,000 tokens (128,000 chars) and forwarded to the provider verbatim. */
   system_prompt?: string | null;
 }
 

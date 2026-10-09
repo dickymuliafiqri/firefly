@@ -1187,8 +1187,9 @@ func TestBuildModelSystemPrompt(t *testing.T) {
 
 func TestBuildRejectsOversizedModelSystemPrompt(t *testing.T) {
 	t.Parallel()
+	big := strings.Repeat("x", domain.MaxModelSystemPromptChars+1)
 	models := `{"models":[{"public_name":"m1","upstream":"openai-main","upstream_model":"m1","system_prompt":"` +
-		strings.Repeat("x", domain.MaxSystemPromptChars+1) + `"}]}`
+		big + `"}]}`
 	_, err := Build(FileSet{
 		Upstreams: []byte(validUpstreams),
 		Models:    []byte(models),
@@ -1197,7 +1198,40 @@ func TestBuildRejectsOversizedModelSystemPrompt(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected validation error for oversized system prompt")
 	}
-	if _, ok := err.(*ValidationError); !ok {
+	verr, ok := err.(*ValidationError)
+	if !ok {
 		t.Fatalf("want *ValidationError, got %T: %v", err, err)
+	}
+	if verr.Field != "models[0].system_prompt" {
+		t.Fatalf("field = %q, want models[0].system_prompt", verr.Field)
+	}
+	if !strings.Contains(verr.Msg, "exceeds 128000 characters") {
+		t.Fatalf("msg = %q, want the per-model cap in the message", verr.Msg)
+	}
+}
+
+func TestBuildAcceptsMaxModelSystemPrompt(t *testing.T) {
+	t.Parallel()
+	// Exactly at the cap is accepted, and the value reaches the catalog
+	// verbatim (only surrounding whitespace is trimmed) so no downstream layer
+	// silently truncates it.
+	directive := strings.Repeat("y", domain.MaxModelSystemPromptChars)
+	models := `{"models":[{"public_name":"m1","upstream":"openai-main","upstream_model":"m1","system_prompt":"  ` +
+		directive + `  "}]}`
+	res, err := Build(FileSet{
+		Upstreams: []byte(validUpstreams),
+		Models:    []byte(models),
+		Tenants:   []byte(`{"tenants":[]}`),
+	}, fakeEnv(map[string]string{"OPENAI_KEY": "sk"}))
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	got := res.Models["m1"]
+	if got == nil {
+		t.Fatal("model m1 missing")
+	}
+	if got.SystemPrompt != directive {
+		t.Fatalf("system_prompt stored with length %d, want the verbatim %d-char directive",
+			len(got.SystemPrompt), len(directive))
 	}
 }

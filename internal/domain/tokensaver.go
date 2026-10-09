@@ -11,6 +11,12 @@ const (
 	// settings API. The guard rides on every chat request, so an unbounded
 	// value would silently inflate the input token cost of all traffic.
 	MaxSystemPromptChars = 4000
+	// MaxModelSystemPromptChars bounds the per-model system prompt
+	// (domain.ModelEntry.SystemPrompt) accepted by the models catalog. A
+	// model-route directive only rides the traffic routed to that model — the
+	// operator picks the model for it — so it may carry a full ~32,000-token
+	// behavior spec, estimated at the gateway's 4-chars-per-token rate.
+	MaxModelSystemPromptChars = 128000
 )
 
 // TokenSaverConfig defines gateway-level prompt and tool output optimization.

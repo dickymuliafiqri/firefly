@@ -756,14 +756,17 @@ func translateModel(i int, d ModelDTO, ups map[string]*domain.Upstream) (*domain
 	if d.UpstreamModel == "" {
 		return nil, &ValidationError{Field: fmt.Sprintf("models[%d].upstream_model", i), Msg: "required"}
 	}
-	// The per-model prompt rides on every chat request routed here, so an
-	// unbounded value would inflate the input token cost of that model's
-	// traffic. Bound it the same way as the global operator prompt.
+	// The per-model prompt rides on every chat request routed to this model,
+	// but unlike the global guard it only inflates the cost of traffic the
+	// operator already aimed at this route, so it carries a much larger cap
+	// (a full ~32,000-token behavior spec at the gateway's 4-chars-per-token
+	// estimate). The trimmed value is stored verbatim — the adapter forwards
+	// it whole, so nothing may truncate it downstream either.
 	systemPrompt := strings.TrimSpace(d.SystemPrompt)
-	if len(systemPrompt) > domain.MaxSystemPromptChars {
+	if len(systemPrompt) > domain.MaxModelSystemPromptChars {
 		return nil, &ValidationError{
 			Field: fmt.Sprintf("models[%d].system_prompt", i),
-			Msg:   fmt.Sprintf("exceeds %d characters", domain.MaxSystemPromptChars),
+			Msg:   fmt.Sprintf("exceeds %d characters", domain.MaxModelSystemPromptChars),
 		}
 	}
 	var caps domain.Capabilities

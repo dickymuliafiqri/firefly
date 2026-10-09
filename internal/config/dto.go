@@ -96,6 +96,8 @@ type ModelDTO struct {
 	// SystemPrompt is appended to the system block of every chat completion
 	// routed to this model, so a per-model directive can specialize (or
 	// constrain) behavior without editing each client. Empty disables it.
+	// Bounded at domain.MaxModelSystemPromptChars (~32,000 tokens) and
+	// forwarded to the provider verbatim.
 	SystemPrompt string `json:"system_prompt,omitempty"`
 }
 

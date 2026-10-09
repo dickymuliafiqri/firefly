@@ -74,3 +74,29 @@ func TestInjectSystemPromptNoOpCases(t *testing.T) {
 		require.Equal(t, tc.body, out, tc.name)
 	}
 }
+
+// TestInjectSystemPromptLargeDirective proves the injection path carries a
+// full-size per-model prompt (the ~32,000-token / 128,000-char cap) verbatim:
+// the whole directive reaches the system block, never truncated, both when
+// appended after existing text and when inserted on its own.
+func TestInjectSystemPromptLargeDirective(t *testing.T) {
+	big := strings.Repeat("Z", 128000)
+
+	t.Run("appended to existing system text", func(t *testing.T) {
+		body := []byte(`{"model":"m","messages":[{"role":"system","content":"You are helpful."},{"role":"user","content":"hi"}]}`)
+		out, modified := tokensaver.InjectSystemPrompt(body, big)
+		require.True(t, modified)
+		content := gjson.GetBytes(out, "messages.0.content").String()
+		require.True(t, strings.HasPrefix(content, "You are helpful.\n\n"), "existing text must survive at the head")
+		require.True(t, strings.HasSuffix(content, big), "the whole directive must land at the tail, untruncated")
+		require.Len(t, content, len("You are helpful.\n\n")+len(big))
+	})
+
+	t.Run("inserted when no system message", func(t *testing.T) {
+		body := []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
+		out, modified := tokensaver.InjectSystemPrompt(body, big)
+		require.True(t, modified)
+		require.Equal(t, big, gjson.GetBytes(out, "messages.0.content").String())
+		require.Equal(t, "user", gjson.GetBytes(out, "messages.1.role").String())
+	})
+}

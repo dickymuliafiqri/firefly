@@ -807,3 +807,72 @@ func TestForwardEndpointInjectsPerModelSystemPrompt(t *testing.T) {
 		t.Fatalf("per-model prompt must precede the global guard: %s", forwardedBody)
 	}
 }
+
+// TestForwardEndpointForwardsFullSizePerModelSystemPrompt sends a request
+// through the whole pipeline with a per-model prompt at the full cap
+// (domain.MaxModelSystemPromptChars, ~32,000 tokens) and proves the upstream
+// receives the value verbatim: no layer — buffer read, Token Saver rewrite,
+// re-estimation, adapter prep — may truncate or drop it.
+func TestForwardEndpointForwardsFullSizePerModelSystemPrompt(t *testing.T) {
+	bigPrompt := strings.Repeat("A", domain.MaxModelSystemPromptChars)
+
+	hash := auth.HashKey(testKey)
+	snap := domain.NewCatalogSnapshot(
+		1,
+		map[string]*domain.Upstream{"u": {Name: "u", Protocol: domain.ProtocolOpenAI, BaseURL: "https://x/v1", CredentialRef: "UP_KEY"}},
+		[]string{"u"},
+		map[string]*domain.ModelEntry{
+			"gpt-4o": {PublicName: "gpt-4o", Upstream: "u", UpstreamModel: "gpt-4o", Enabled: true, SystemPrompt: bigPrompt},
+		},
+		[]string{"gpt-4o"},
+		map[string]*domain.Tenant{hash: {
+			KeyHash: hash, Name: "alpha", Status: domain.TenantStatusActive,
+			AllowedModels: []string{"gpt-4o"},
+			RateLimit:     domain.RateLimit{RPS: 1000, Burst: 1000, MaxConcurrent: 100},
+		}},
+		[]string{hash},
+		domain.WithTokenSaver(domain.TokenSaverConfig{Enabled: false}),
+	)
+
+	fakeAd := &fakeAdapter{body: `{"id":"test","object":"chat.completion"}`}
+	deps := RouterDeps{
+		Snapshots:   fakeProvider{snap},
+		TenantStore: auth.NewStore(fakeProvider{snap}),
+		Limiter:     limits.New(),
+		Adapter:     fakeAd,
+		Usage:       usage.NewCounters(),
+		Logger:      discardLogger(),
+	}
+	s := newTestServer(t, deps)
+
+	reqBody := `{"model":"gpt-4o","messages":[{"role":"user","content":"halo"}]}`
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(reqBody))
+	req.Header.Set("Authorization", "Bearer "+testKey)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	forwardedBody := string(fakeAd.lastReq.BodyBytes)
+	if !strings.Contains(forwardedBody, bigPrompt) {
+		t.Fatalf("forwarded body is missing the full-size per-model prompt (body len %d, prompt len %d)",
+			len(forwardedBody), len(bigPrompt))
+	}
+	// The injected system message's content must start with the whole prompt:
+	// the gateway inserts it first and nothing appends in front of it.
+	var forwarded struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(fakeAd.lastReq.BodyBytes, &forwarded); err != nil {
+		t.Fatalf("unmarshal forwarded body: %v", err)
+	}
+	if len(forwarded.Messages) == 0 || forwarded.Messages[0].Role != "system" ||
+		!strings.HasPrefix(forwarded.Messages[0].Content, bigPrompt) {
+		t.Fatalf("system message content (role=%q, len=%d) does not start with the verbatim %d-char prompt",
+			forwarded.Messages[0].Role, len(forwarded.Messages[0].Content), len(bigPrompt))
+	}
+}
