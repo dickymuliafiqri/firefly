@@ -31,8 +31,10 @@ type keyActionEvent struct {
 }
 
 type tenantUsageEvent struct {
-	key    string
-	tokens int64
+	key        string
+	tokens     int64
+	cachedRead int64
+	cacheWrite int64
 }
 
 // defaultMeteringPushInterval throttles cloud pushes for pure usage metering.
@@ -81,13 +83,16 @@ func NewUsageFlusher(store *Store, inner ports.UsageRecorder, flushInterval time
 	}
 }
 
-// RecordTenantTokens queues tenant token usage to be flushed in batch to Turso/SQLite.
-func (f *UsageFlusher) RecordTenantTokens(apiKey string, tokens int64) {
+// RecordTenantTokens queues tenant token usage to be flushed in batch to
+// Turso/SQLite. cachedRead and cacheWrite are the prompt-cache shares of the
+// same request; they ride along with the billable total so one flush tick
+// persists all three counters.
+func (f *UsageFlusher) RecordTenantTokens(apiKey string, tokens, cachedRead, cacheWrite int64) {
 	if f == nil || apiKey == "" || tokens <= 0 {
 		return
 	}
 	select {
-	case f.tenantEvents <- tenantUsageEvent{key: apiKey, tokens: tokens}:
+	case f.tenantEvents <- tenantUsageEvent{key: apiKey, tokens: tokens, cachedRead: cachedRead, cacheWrite: cacheWrite}:
 	default:
 	}
 }
@@ -244,11 +249,18 @@ DRAINED_REVOCATIONS:
 DRAINED_ACTIONS:
 
 	// 4. Drain queued tenant token usage
-	tenantTokensAgg := make(map[string]int64)
+	tenantTokensAgg := make(map[string]*tenantUsageEvent)
 	for {
 		select {
 		case ev := <-f.tenantEvents:
-			tenantTokensAgg[ev.key] += ev.tokens
+			if existing, ok := tenantTokensAgg[ev.key]; ok {
+				existing.tokens += ev.tokens
+				existing.cachedRead += ev.cachedRead
+				existing.cacheWrite += ev.cacheWrite
+			} else {
+				copyEv := ev
+				tenantTokensAgg[ev.key] = &copyEv
+			}
 		default:
 			goto DRAINED_TENANTS
 		}
@@ -367,17 +379,22 @@ DRAINED_TENANTS:
 		}
 	}
 
-	// 4. Update tenant token usage
-	for key, delta := range tenantTokensAgg {
-		if delta <= 0 {
+	// 4. Update tenant token usage. The cached counters are pure metering: they
+	// share the tenants row but never touch api_keys.updated_at, which is the
+	// only MAX(updated_at) signal the syncer reads, so metering traffic can
+	// never force a catalog rebuild.
+	for key, agg := range tenantTokensAgg {
+		if agg.tokens <= 0 {
 			continue
 		}
 		res, err := tx.ExecContext(ctx, `
 			UPDATE tenants
 			SET used_tokens = used_tokens + ?,
+			    cached_read_tokens = cached_read_tokens + ?,
+			    cached_write_tokens = cached_write_tokens + ?,
 			    updated_at = ?
 			WHERE api_key = ? OR key_hash = ?
-		`, delta, now, key, key)
+		`, agg.tokens, agg.cachedRead, agg.cacheWrite, now, key, key)
 		if err == nil {
 			if r, _ := res.RowsAffected(); r > 0 {
 				meteringUpdated = true

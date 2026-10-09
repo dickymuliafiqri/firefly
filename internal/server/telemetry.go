@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dickymuliafiqri/firefly/internal/notify"
 	"github.com/dickymuliafiqri/firefly/internal/observability/metrics"
 	"github.com/dickymuliafiqri/firefly/internal/transport/httpx"
 )
@@ -25,6 +26,9 @@ type TelemetryDTO struct {
 	// htop-style monitor. Nil for unauthenticated callers: host CPU/memory and
 	// network volumes are infrastructure signals that must not leak publicly.
 	ResourceMonitor *ResourceMonitorDTO `json:"resource_monitor,omitempty"`
+	// Notifications carries the webhook dispatcher counters. Nil when no
+	// dispatcher is wired, which is the case for every unit test.
+	Notifications *notify.Stats `json:"notifications,omitempty"`
 }
 
 // ResourceMonitorDTO mirrors resmon.Stats for the wire. See that package for
@@ -110,6 +114,12 @@ type TelemetrySummaryDTO struct {
 	OutputTokens     int64   `json:"output_tokens"`
 	TotalTokens      int64   `json:"total_tokens"`
 	EstimatedCostUsd float64 `json:"estimated_cost_usd"`
+	// CachedReadTokens / CacheWriteTokens are prompt tokens served from, or
+	// written into, the provider prompt cache. OpenAI counts the read share
+	// inside input_tokens; Anthropic excludes both, so they are reported
+	// alongside rather than derived.
+	CachedReadTokens int64 `json:"cached_read_tokens"`
+	CacheWriteTokens int64 `json:"cache_write_tokens"`
 }
 
 type ModelTelemetryDTO struct {
@@ -201,6 +211,7 @@ func (deps RouterDeps) handleGetTelemetry(w http.ResponseWriter, r *http.Request
 	}
 
 	var inTokens, outTokens, hubReqs, hubErrors int64
+	var cachedRead, cacheWrite int64
 	var estCost float64
 	if deps.Analytics != nil {
 		if sum, err := deps.Analytics.Summary(r.Context()); err == nil {
@@ -209,11 +220,17 @@ func (deps RouterDeps) handleGetTelemetry(w http.ResponseWriter, r *http.Request
 			hubReqs = sum.TotalRequests
 			hubErrors = sum.TotalErrors
 			estCost = sum.EstimatedCostUSD
+			cachedRead = sum.CachedReadTokens
+			cacheWrite = sum.CacheWriteTokens
 		}
 	}
 	if inTokens == 0 && outTokens == 0 && deps.LiveLogs != nil {
 		inTokens, outTokens, hubReqs = deps.LiveLogs.CumulativeTotals()
-		estCost = (float64(inTokens) * 0.0000025) + (float64(outTokens) * 0.0000100)
+		cachedRead, cacheWrite = deps.LiveLogs.CumulativeCachedTokens()
+		// The hub already accumulated the priced figure of every completed
+		// request, so the fallback mirrors the live logs instead of applying a
+		// second flat-rate formula that would disagree with them.
+		estCost = microsToUSD(deps.LiveLogs.CumulativeCostMicros())
 	}
 	totTokens := inTokens + outTokens
 
@@ -245,6 +262,8 @@ func (deps RouterDeps) handleGetTelemetry(w http.ResponseWriter, r *http.Request
 		OutputTokens:     outTokens,
 		TotalTokens:      totTokens,
 		EstimatedCostUsd: estCost,
+		CachedReadTokens: cachedRead,
+		CacheWriteTokens: cacheWrite,
 	}
 
 	// Models telemetry
@@ -421,6 +440,15 @@ func (deps RouterDeps) handleGetTelemetry(w http.ResponseWriter, r *http.Request
 		Generation:      gen,
 		RecentLogs:      recentLogs,
 		ResourceMonitor: resmonDTO,
+	}
+
+	// Notification dispatcher counters. Admin only, alongside the resource
+	// monitor: an operator needs to see that events are being dropped.
+	if isAdmin {
+		if stats, ok := deps.Notifier.(interface{ Stats() notify.Stats }); ok {
+			s := stats.Stats()
+			out.Notifications = &s
+		}
 	}
 
 	_ = json.NewEncoder(w).Encode(out)

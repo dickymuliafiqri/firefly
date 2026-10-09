@@ -44,6 +44,7 @@ type BuildResult struct {
 	ComboOrder      []string
 	TokenSaver      domain.TokenSaverConfig
 	Visualizer      domain.VisualizerConfig
+	Pricing         *domain.PricingTable
 	Warnings        []string
 }
 
@@ -124,6 +125,11 @@ func Build(fs FileSet, envLookup func(string) (string, bool)) (*BuildResult, err
 		}
 	}
 
+	pricingTable, err := translatePricing(fs.Pricing)
+	if err != nil {
+		return nil, err
+	}
+
 	res := &BuildResult{
 		Upstreams:     make(map[string]*domain.Upstream, len(upFile.Upstreams)),
 		Models:        make(map[string]*domain.ModelEntry, len(modelFile.Models)),
@@ -131,6 +137,7 @@ func Build(fs FileSet, envLookup func(string) (string, bool)) (*BuildResult, err
 		Combos:        make(map[string]*domain.Combo, len(comboFile.Combos)),
 		TokenSaver:    tokenSaverCfg,
 		Visualizer:    visualizerCfg,
+		Pricing:       pricingTable,
 	}
 
 	for i, d := range upFile.Upstreams {
@@ -198,6 +205,109 @@ func Build(fs FileSet, envLookup func(string) (string, bool)) (*BuildResult, err
 	sort.Strings(res.TenantOrder)
 
 	return res, nil
+}
+
+// translatePricing decodes and validates the pricing file, then indexes it
+// into an immutable domain table. A missing or empty file yields an empty
+// table (callers fall back to flat-rate estimates); any malformed row fails
+// the whole build so a bad edit never reaches the live snapshot.
+func translatePricing(raw []byte) (*domain.PricingTable, error) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return domain.NewPricingTable(nil), nil
+	}
+	var pFile PricingFile
+	if err := decodeStrict("pricing", raw, &pFile); err != nil {
+		return nil, err
+	}
+	entries := make([]domain.PricingEntry, 0, len(pFile.Entries))
+	seen := make(map[string]bool, len(pFile.Entries))
+	for i, d := range pFile.Entries {
+		e, err := translatePricingEntry(i, d)
+		if err != nil {
+			return nil, err
+		}
+		if _, isWild := wildcardKey(e.Model); !isWild {
+			if seen[e.Model] {
+				return nil, &ValidationError{Field: fmt.Sprintf("pricing.entries[%d].model", i), Msg: "duplicate model key: " + e.Model}
+			}
+			seen[e.Model] = true
+		}
+		entries = append(entries, e)
+	}
+	return domain.NewPricingTable(entries), nil
+}
+
+// translatePricingEntry validates and normalizes one pricing row.
+func translatePricingEntry(i int, d PricingEntryDTO) (domain.PricingEntry, error) {
+	model := strings.TrimSpace(d.Model)
+	if model == "" {
+		return domain.PricingEntry{}, &ValidationError{Field: fmt.Sprintf("pricing.entries[%d].model", i), Msg: "required"}
+	}
+	if prefix, isWild := wildcardKey(model); isWild && prefix == "" {
+		return domain.PricingEntry{}, &ValidationError{Field: fmt.Sprintf("pricing.entries[%d].model", i), Msg: "wildcard needs a non-empty prefix before '*'"}
+	}
+	if d.InputMicrosPerM < 0 {
+		return domain.PricingEntry{}, &ValidationError{Field: fmt.Sprintf("pricing.entries[%d].input_micros_per_m", i), Msg: "must be non-negative"}
+	}
+	if d.OutputMicrosPerM < 0 {
+		return domain.PricingEntry{}, &ValidationError{Field: fmt.Sprintf("pricing.entries[%d].output_micros_per_m", i), Msg: "must be non-negative"}
+	}
+	if d.CacheReadMicrosPerM < 0 {
+		return domain.PricingEntry{}, &ValidationError{Field: fmt.Sprintf("pricing.entries[%d].cache_read_micros_per_m", i), Msg: "must be non-negative"}
+	}
+	if d.CacheWriteMicrosPerM < 0 {
+		return domain.PricingEntry{}, &ValidationError{Field: fmt.Sprintf("pricing.entries[%d].cache_write_micros_per_m", i), Msg: "must be non-negative"}
+	}
+	source := strings.TrimSpace(d.Source)
+	if source == "" {
+		source = domain.PricingSourceManual
+	}
+	switch source {
+	case domain.PricingSourceManual, domain.PricingSourceModelsDev:
+	default:
+		return domain.PricingEntry{}, &ValidationError{Field: fmt.Sprintf("pricing.entries[%d].source", i), Msg: "must be \"manual\" or \"models.dev\""}
+	}
+	return domain.PricingEntry{
+		Model:                model,
+		InputMicrosPerM:      d.InputMicrosPerM,
+		OutputMicrosPerM:     d.OutputMicrosPerM,
+		CacheReadMicrosPerM:  d.CacheReadMicrosPerM,
+		CacheWriteMicrosPerM: d.CacheWriteMicrosPerM,
+		Source:               source,
+		CanonicalModelID:     strings.TrimSpace(d.CanonicalModelID),
+	}, nil
+}
+
+// wildcardKey reports whether a model key is a trailing-wildcard prefix and
+// returns the prefix. A '*' anywhere else is not a wildcard.
+func wildcardKey(model string) (string, bool) {
+	if strings.HasSuffix(model, "*") {
+		return strings.TrimSuffix(model, "*"), true
+	}
+	return model, false
+}
+
+// NormalizePricing canonicalizes a pricing section in place: trims keys,
+// defaults the source to "manual", and sorts entries by model key so the
+// persisted file, the Turso row, and GET /api/settings never disagree about
+// ordering. It runs before validation and before persistence, mirroring
+// PinOAuthManagedEndpoints. A nil section is left nil ("preserve").
+func NormalizePricing(f *PricingFile) {
+	if f == nil {
+		return
+	}
+	for i := range f.Entries {
+		e := &f.Entries[i]
+		e.Model = strings.TrimSpace(e.Model)
+		e.Source = strings.TrimSpace(e.Source)
+		if e.Source == "" {
+			e.Source = domain.PricingSourceManual
+		}
+		e.CanonicalModelID = strings.TrimSpace(e.CanonicalModelID)
+	}
+	sort.SliceStable(f.Entries, func(i, j int) bool {
+		return f.Entries[i].Model < f.Entries[j].Model
+	})
 }
 
 // decodeStrict decodes JSON and rejects unknown fields (fail-closed).
@@ -800,6 +910,13 @@ func translateTenant(i int, d TenantDTO, models map[string]*domain.ModelEntry, c
 	if d.UsedTokens > 0 {
 		usedTokens.Store(d.UsedTokens)
 	}
+	spentMicros := new(atomic.Int64)
+	if d.SpentMicros > 0 {
+		spentMicros.Store(d.SpentMicros)
+	}
+	if d.BudgetMicros < 0 {
+		return nil, nil, &ValidationError{Field: fmt.Sprintf("tenants[%d].budget_micros", i), Msg: "must be non-negative"}
+	}
 
 	return &domain.Tenant{
 		APIKey:        apiKey,
@@ -811,6 +928,9 @@ func translateTenant(i int, d TenantDTO, models map[string]*domain.ModelEntry, c
 		RateLimit:     rl,
 		MaxTokens:     d.MaxTokens,
 		UsedTokens:    usedTokens,
+		BudgetMicros:  d.BudgetMicros,
+		SpentMicros:   spentMicros,
+		BudgetWarned:  new(atomic.Bool),
 		ExpiresAt:     exp,
 		Metadata:      d.Metadata,
 	}, warns, nil

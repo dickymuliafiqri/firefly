@@ -12,11 +12,12 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/limits"
+	"github.com/dickymuliafiqri/firefly/internal/notify"
 	"github.com/dickymuliafiqri/firefly/internal/observability/metrics"
 	"github.com/dickymuliafiqri/firefly/internal/observability/resmon"
 	"github.com/dickymuliafiqri/firefly/internal/observability/trace"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
-
+	"github.com/dickymuliafiqri/firefly/internal/pricing"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
 	"github.com/dickymuliafiqri/firefly/internal/security/auth"
 	"github.com/dickymuliafiqri/firefly/internal/security/oauth"
@@ -62,6 +63,24 @@ type RouterDeps struct {
 	// If nil and DisableGlobalAdmission is false, a default 1500-slot limiter is used.
 	GlobalLimiter          *httpx.GlobalLimiter
 	DisableGlobalAdmission bool
+
+	// PricingCatalog caches the fetched models.dev catalog for dashboard
+	// browsing and seeding. If nil, New() creates one. The cache is
+	// in-memory only and never a runtime dependency of cost tracking.
+	PricingCatalog *pricing.CatalogCache
+
+	// Notifier delivers lifecycle events (key cooldown, breaker transitions,
+	// tenant budget warnings) to operator-configured webhook channels. It is
+	// an interface so the rest of the gateway compiles and runs unchanged when
+	// no channel is configured — the default implementation is a no-op.
+	Notifier Notifier
+}
+
+// Notifier is the minimal surface the request path needs. Keeping it an
+// interface means upstream tests never construct a real dispatcher, and a nil
+// Notifier is handled by the helpers below rather than by every call site.
+type Notifier interface {
+	Emit(notify.Event)
 }
 
 // getTursoStore returns the active turso.Store, prioritizing TursoManager if present.
@@ -182,6 +201,24 @@ func (s *Server) buildHandler(deps RouterDeps) http.Handler {
 	mux.HandleFunc("GET /api/settings", deps.handleGetSettings)
 	mux.HandleFunc("POST /api/settings", deps.handleUpdateSettings)
 	mux.HandleFunc("PUT /api/settings", deps.handleUpdateSettings)
+
+	// Pricing API (admin-authorized): seed the local price sheet from the
+	// public models.dev catalog and browse that catalog for the dashboard
+	// picker. The catalog cache is in-memory only; seeding persists through
+	// the shared settings pipeline.
+	mux.HandleFunc("OPTIONS /api/pricing/import", deps.handleOptionsSettings)
+	mux.HandleFunc("POST /api/pricing/import", deps.handlePricingImport)
+	mux.HandleFunc("OPTIONS /api/pricing", deps.handleOptionsSettings)
+	mux.HandleFunc("GET /api/pricing", deps.handlePricingList)
+	mux.HandleFunc("OPTIONS /api/pricing/{key}", deps.handleOptionsSettings)
+	mux.HandleFunc("PUT /api/pricing/{key}", deps.handlePricingUpsert)
+	mux.HandleFunc("DELETE /api/pricing/{key}", deps.handlePricingDelete)
+	mux.HandleFunc("OPTIONS /api/pricing/resolve", deps.handleOptionsSettings)
+	mux.HandleFunc("POST /api/pricing/resolve", deps.handlePricingResolve)
+	mux.HandleFunc("OPTIONS /api/pricing/catalog", deps.handleOptionsSettings)
+	mux.HandleFunc("GET /api/pricing/catalog", deps.handlePricingCatalog)
+	mux.HandleFunc("OPTIONS /api/pricing/catalog/refresh", deps.handleOptionsSettings)
+	mux.HandleFunc("POST /api/pricing/catalog/refresh", deps.handlePricingCatalogRefresh)
 	mux.HandleFunc("OPTIONS /api/tenants/topup", deps.handleOptionsSettings)
 	mux.HandleFunc("POST /api/tenants/topup", deps.handleTenantTopup)
 
@@ -234,6 +271,10 @@ func (s *Server) buildHandler(deps RouterDeps) http.Handler {
 	mux.HandleFunc("GET /api/telemetry", deps.handleGetTelemetry)
 	mux.HandleFunc("OPTIONS /api/telemetry/events", deps.handleOptionsTelemetry)
 	mux.HandleFunc("GET /api/telemetry/events", deps.handleTelemetryEvents)
+	mux.HandleFunc("OPTIONS /api/usage/costs", deps.handleOptionsTelemetry)
+	mux.HandleFunc("GET /api/usage/costs", deps.handleUsageCosts)
+	mux.HandleFunc("OPTIONS /api/notifications/test", deps.handleOptionsSettings)
+	mux.HandleFunc("POST /api/notifications/test", deps.handleNotificationsTest)
 
 	// Upstream Circuit Breakers Management API
 	mux.HandleFunc("OPTIONS /api/breakers", deps.handleOptionsBreakers)
@@ -296,14 +337,24 @@ func (s *Server) buildHandler(deps RouterDeps) http.Handler {
 
 	// Upstream-backed endpoints. All three proxy to the OpenAI wire surface and
 	// differ only in path; they share one handler. Auth + admission run first.
-	for _, route := range []struct{ local, upstream string }{
-		{"/v1/chat/completions", "/chat/completions"},
-		{"/v1/completions", "/completions"},
-		{"/v1/embeddings", "/embeddings"},
+	for _, route := range []struct {
+		local, upstream string
+		ing             ingress
+	}{
+		{"/v1/chat/completions", "/chat/completions", openAIIngress{}},
+		{"/v1/completions", "/completions", openAIIngress{}},
+		{"/v1/embeddings", "/embeddings", openAIIngress{}},
 	} {
-		h := deps.protected(http.HandlerFunc(deps.forwardEndpoint(route.upstream)))
+		h := deps.protected(http.HandlerFunc(deps.forwardEndpoint(route.upstream, route.ing)))
 		mux.Handle("POST "+route.local, h)
 	}
+
+	// Anthropic Messages surface. The request is translated into the OpenAI
+	// shape the shared pipeline understands and the response is translated
+	// back, so /v1/messages gets the same routing, key rotation, token saver,
+	// budget guard, and usage metering as every other endpoint.
+	mux.HandleFunc("OPTIONS /v1/messages", deps.handleOptionsCompress)
+	mux.Handle("POST /v1/messages", deps.protected(http.HandlerFunc(deps.forwardEndpoint("/chat/completions", anthropicIngress{}))))
 
 	// Native Token Saver prompt & context compression endpoint
 	mux.HandleFunc("OPTIONS /v1/compress", deps.handleOptionsCompress)

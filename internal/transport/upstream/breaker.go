@@ -34,6 +34,20 @@ func (s BreakerState) String() string {
 	}
 }
 
+// eventName is the event-type suffix for a state. It deliberately differs from
+// String: event types are dotted identifiers, and "breaker.half-open" reads as
+// a subtraction to anything parsing the type.
+func (s BreakerState) eventName() string {
+	switch s {
+	case StateOpen:
+		return "open"
+	case StateHalfOpen:
+		return "half_open"
+	default:
+		return "closed"
+	}
+}
+
 // BreakerConfig tunes one breaker.
 type BreakerConfig struct {
 	// FailureThreshold is the number of consecutive failures that trips open.
@@ -45,6 +59,9 @@ type BreakerConfig struct {
 	Cooldown time.Duration
 	// Now is injectable for tests; defaults to time.Now.
 	Now func() time.Time
+	// Name identifies the upstream this breaker guards. It is only used for
+	// event payloads, so a zero value is harmless.
+	Name string
 }
 
 func (c BreakerConfig) withDefaults() BreakerConfig {
@@ -77,11 +94,44 @@ type Breaker struct {
 	failures  int
 	successes int
 	openedAt  time.Time
+
+	// emitter reports state transitions. Nil means "report nothing", which is
+	// the default every existing caller and test runs with.
+	emitter EventEmitter
+	// deduper suppresses flapping so an oscillating breaker cannot flood the
+	// notification channel.
+	deduper *eventDeduper
 }
 
 // NewBreaker returns a breaker with the given (defaulted) config.
 func NewBreaker(cfg BreakerConfig) *Breaker {
 	return &Breaker{cfg: cfg.withDefaults(), state: StateClosed}
+}
+
+// SetEmitter installs the event emitter for this breaker. Passing nil restores
+// the silent default.
+func (b *Breaker) SetEmitter(e EventEmitter) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.emitter = e
+	if b.deduper == nil {
+		b.deduper = newEventDeduper(breakerTransitionWindow)
+	}
+}
+
+// transition moves to a new state and reports it. The caller must hold b.mu.
+// The emit is a non-blocking channel send, so holding the mutex across it is
+// safe: a dispatcher with a full queue drops the event rather than parking the
+// request path here.
+func (b *Breaker) transition(to BreakerState) {
+	from := b.state
+	b.state = to
+	if to == StateOpen {
+		b.openedAt = b.cfg.Now()
+	}
+	if b.emitter != nil && b.deduper != nil {
+		emitBreakerTransition(b.emitter, b.deduper, b.cfg.Name, from.String(), to.eventName())
+	}
 }
 
 // Allow reports whether a request may proceed. It may transition Open->HalfOpen
@@ -96,7 +146,7 @@ func (b *Breaker) Allow() error {
 			return ErrCircuitOpen
 		}
 		// Cooldown elapsed: allow a probe.
-		b.state = StateHalfOpen
+		b.transition(StateHalfOpen)
 		b.successes = 0
 		return nil
 	case StateHalfOpen:
@@ -122,22 +172,20 @@ func (b *Breaker) Report(ok bool) {
 		}
 		b.failures++
 		if b.failures >= b.cfg.FailureThreshold {
-			b.state = StateOpen
-			b.openedAt = b.cfg.Now()
+			b.transition(StateOpen)
 		}
 	case StateHalfOpen:
 		if ok {
 			b.successes++
 			if b.successes >= b.cfg.SuccessThreshold {
-				b.state = StateClosed
+				b.transition(StateClosed)
 				b.failures = 0
 				b.successes = 0
 			}
 			return
 		}
 		// A probe failed: immediately re-open.
-		b.state = StateOpen
-		b.openedAt = b.cfg.Now()
+		b.transition(StateOpen)
 		b.successes = 0
 	case StateOpen:
 		// Stale report from a request that started before the trip. Refresh
@@ -171,11 +219,24 @@ type BreakerRegistry struct {
 
 	mu       sync.Mutex
 	breakers map[string]*Breaker
+	// emitter is stamped onto every breaker the registry creates.
+	emitter EventEmitter
 }
 
 // NewBreakerRegistry returns a registry that stamps new breakers with cfg.
 func NewBreakerRegistry(cfg BreakerConfig) *BreakerRegistry {
 	return &BreakerRegistry{cfg: cfg.withDefaults(), breakers: make(map[string]*Breaker)}
+}
+
+// SetEmitter installs the emitter on every breaker the registry hands out,
+// including ones created later by For.
+func (r *BreakerRegistry) SetEmitter(e EventEmitter) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.emitter = e
+	for _, b := range r.breakers {
+		b.SetEmitter(e)
+	}
 }
 
 // For returns the breaker for an upstream name, creating it on first use.
@@ -186,6 +247,9 @@ func (r *BreakerRegistry) For(name string) *Breaker {
 		return b
 	}
 	b := NewBreaker(r.cfg)
+	if r.emitter != nil {
+		b.SetEmitter(r.emitter)
+	}
 	r.breakers[name] = b
 	return b
 }

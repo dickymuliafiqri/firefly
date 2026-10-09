@@ -674,9 +674,108 @@ type Tenant struct {
 	RateLimit     RateLimit
 	MaxTokens     int64         // 0 = unlimited, >0 = quota cap for (tokens_in + tokens_out)
 	UsedTokens    *atomic.Int64 // In-memory atomic token usage counter
-	ExpiresAt     int64         // Unix timestamp in ms; 0 = never expires
-	Metadata      map[string]string
+	// BudgetMicros caps cumulative spend in integer micro-USD. 0 = unlimited,
+	// mirroring MaxTokens. The counter is atomic because every in-flight
+	// request adds to it from its own goroutine.
+	BudgetMicros int64
+	SpentMicros  *atomic.Int64
+	// BudgetWarned records whether the 80% soft warning already fired for the
+	// current budget period, so a tenant hovering at the threshold does not
+	// emit one event per request.
+	BudgetWarned *atomic.Bool
+	ExpiresAt    int64 // Unix timestamp in ms; 0 = never expires
+	Metadata     map[string]string
 }
+
+// NewTenant returns a tenant with its atomic counters initialised. A tenant
+// built as a bare struct literal would nil-panic on the first Add, so every
+// construction path goes through here.
+func NewTenant() Tenant {
+	return Tenant{
+		UsedTokens:   new(atomic.Int64),
+		SpentMicros:  new(atomic.Int64),
+		BudgetWarned: new(atomic.Bool),
+	}
+}
+
+// EnsureCounters lazily initialises the atomic counters on a tenant that was
+// decoded from JSON or built as a literal, so callers never have to nil-check.
+func (t *Tenant) EnsureCounters() {
+	if t.UsedTokens == nil {
+		t.UsedTokens = new(atomic.Int64)
+	}
+	if t.SpentMicros == nil {
+		t.SpentMicros = new(atomic.Int64)
+	}
+	if t.BudgetWarned == nil {
+		t.BudgetWarned = new(atomic.Bool)
+	}
+}
+
+// BudgetExceeded reports whether the tenant has a budget and has already spent
+// at or above it. A zero budget means unlimited and never blocks.
+func (t *Tenant) BudgetExceeded() bool {
+	if t == nil || t.BudgetMicros <= 0 || t.SpentMicros == nil {
+		return false
+	}
+	return t.SpentMicros.Load() >= t.BudgetMicros
+}
+
+// BudgetRemainingMicros returns the headroom left, or -1 when unlimited.
+func (t *Tenant) BudgetRemainingMicros() int64 {
+	if t == nil || t.BudgetMicros <= 0 || t.SpentMicros == nil {
+		return -1
+	}
+	remaining := t.BudgetMicros - t.SpentMicros.Load()
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
+}
+
+// BudgetRatio returns spend as a fraction of the budget, or 0 when unlimited.
+func (t *Tenant) BudgetRatio() float64 {
+	if t == nil || t.BudgetMicros <= 0 || t.SpentMicros == nil {
+		return 0
+	}
+	return float64(t.SpentMicros.Load()) / float64(t.BudgetMicros)
+}
+
+// AddSpend records cost against the tenant and reports whether this call
+// crossed the soft-warning threshold for the first time. The flag is reset by
+// ResetSpend so a top-up re-arms the warning.
+func (t *Tenant) AddSpend(micros int64) (crossedWarning bool) {
+	if t == nil || t.SpentMicros == nil {
+		return false
+	}
+	t.SpentMicros.Add(micros)
+	if t.BudgetMicros <= 0 || t.BudgetWarned == nil {
+		return false
+	}
+	if t.BudgetWarned.Load() {
+		return false
+	}
+	if t.BudgetRatio() >= budgetWarningThreshold {
+		if t.BudgetWarned.CompareAndSwap(false, true) {
+			return true
+		}
+	}
+	return false
+}
+
+// ResetSpend zeroes the spend counter and re-arms the soft warning. It is the
+// topup path.
+func (t *Tenant) ResetSpend() {
+	if t == nil {
+		return
+	}
+	t.EnsureCounters()
+	t.SpentMicros.Store(0)
+	t.BudgetWarned.Store(false)
+}
+
+// budgetWarningThreshold is the spend fraction at which a soft warning fires.
+const budgetWarningThreshold = 0.8
 
 // AllowsModel reports whether the tenant may use the given public model name.
 func (t Tenant) AllowsModel(publicName string) bool {

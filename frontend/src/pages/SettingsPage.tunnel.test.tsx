@@ -45,6 +45,7 @@ vi.mock("@/services/api", async (importOriginal) => {
     useWarpStatusQuery: () => ({ data: undefined, isPending: false }),
     useTestTursoMutation: () => ({ mutate: vi.fn(), isPending: false }),
     useRotateWarpMutation: () => ({ mutate: vi.fn(), isPending: false }),
+    useTestNotificationMutation: () => ({ mutate: vi.fn(), isPending: false }),
   };
 });
 

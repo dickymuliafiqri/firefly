@@ -85,14 +85,26 @@ func sanitizePublicSettings(src config.SettingsDTO) config.SettingsDTO {
 	}
 
 	return config.SettingsDTO{
-		Upstreams:  publicUpstreams,
-		Models:     publicModels,
-		Combos:     publicCombos,
-		Tenants:    []config.TenantDTO{},
-		TokenSaver: src.TokenSaver,
-		AutoTLS:    nil,
-		Turso:      nil,
+		Upstreams:     publicUpstreams,
+		Models:        publicModels,
+		Combos:        publicCombos,
+		Tenants:       []config.TenantDTO{},
+		TokenSaver:    src.TokenSaver,
+		Pricing:       src.Pricing,
+		Notifications: sanitizeNotificationsForPublic(src.Notifications),
+		AutoTLS:       nil,
+		Turso:         nil,
 	}
+}
+
+// sanitizeNotificationsForPublic masks every credential in the channel list
+// before it leaves the process. The public settings view must never carry a
+// bearer or signing secret, even for an authenticated operator.
+func sanitizeNotificationsForPublic(src *config.NotificationsFile) *config.NotificationsFile {
+	if src == nil {
+		return nil
+	}
+	return &config.NotificationsFile{Channels: sanitizeNotificationChannels(src.Channels)}
 }
 
 // handleGetSettings retrieves current configuration, safely redacting sensitive secrets.
@@ -137,6 +149,13 @@ func (deps RouterDeps) handleGetSettings(w http.ResponseWriter, r *http.Request)
 					var tsDTO config.TokenSaverDTO
 					if err := json.Unmarshal(raw["tokensaver"], &tsDTO); err == nil {
 						settings.TokenSaver = &tsDTO
+					}
+				}
+				if len(raw["pricing"]) > 0 {
+					var prFile config.PricingFile
+					if err := json.Unmarshal(raw["pricing"], &prFile); err == nil {
+						config.NormalizePricing(&prFile)
+						settings.Pricing = &prFile
 					}
 				}
 
@@ -200,6 +219,11 @@ func (deps RouterDeps) handleGetSettings(w http.ResponseWriter, r *http.Request)
 
 	if settings.Upstreams == nil {
 		settings.Upstreams = []config.UpstreamDTO{}
+	}
+	// Notification credentials are write-only: mask them on every read so a
+	// settings round trip never echoes a bearer or signing secret back.
+	if settings.Notifications != nil {
+		settings.Notifications.Channels = sanitizeNotificationChannels(settings.Notifications.Channels)
 	}
 	if settings.Models == nil {
 		settings.Models = []config.ModelDTO{}
@@ -369,6 +393,17 @@ func (deps RouterDeps) handleUpdateSettings(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
+	// Pricing follows the same normalize-before-persist contract as the
+	// OAuth endpoint pinning above: trim keys, default the source, and sort
+	// entries so the file, the Turso row, and the live snapshot agree. A
+	// payload that omits the section entirely (a page that only edits
+	// upstreams or tenants) inherits the current sheet instead of wiping it.
+	if payload.Pricing != nil {
+		config.NormalizePricing(payload.Pricing)
+	} else if snap != nil {
+		payload.Pricing = pricingFromSnapshot(snap)
+	}
+
 	// Prepare file structures for validation
 	upFile := config.UpstreamsFile{Upstreams: payload.Upstreams}
 	modFile := config.ModelsFile{Models: payload.Models}
@@ -405,12 +440,22 @@ func (deps RouterDeps) handleUpdateSettings(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
+	var pricingRaw []byte
+	if payload.Pricing != nil {
+		pricingRaw, err = json.Marshal(payload.Pricing)
+		if err != nil {
+			openai.WriteError(w, http.StatusInternalServerError, openai.TypeAPI, "marshal pricing: "+err.Error())
+			return
+		}
+	}
+
 	fs := config.FileSet{
 		Upstreams:  upRaw,
 		Models:     modRaw,
 		Tenants:    tenRaw,
 		Combos:     combRaw,
 		TokenSaver: tsRaw,
+		Pricing:    pricingRaw,
 	}
 
 	// Validate configuration
@@ -504,12 +549,18 @@ func (deps RouterDeps) handleUpdateSettings(w http.ResponseWriter, r *http.Reque
 			tsIndent, _ = json.MarshalIndent(payload.TokenSaver, "", "  ")
 		}
 
+		var pricingIndent []byte
+		if payload.Pricing != nil {
+			pricingIndent, _ = json.MarshalIndent(payload.Pricing, "", "  ")
+		}
+
 		if err := writeCatalogFiles(deps.ConfigDir, catalogFileSet{
 			upstreams:  upIndent,
 			models:     modIndent,
 			tenants:    tenIndent,
 			combos:     combIndent,
 			tokenSaver: tsIndent,
+			pricing:    pricingIndent,
 		}); err != nil {
 			rollbackTLS()
 			openai.WriteError(w, http.StatusInternalServerError, openai.TypeAPI, err.Error())
@@ -526,6 +577,18 @@ func (deps RouterDeps) handleUpdateSettings(w http.ResponseWriter, r *http.Reque
 	var newGen uint64
 	if !httpx.IsNil(deps.Registry) {
 		newGen = deps.Registry.NextGeneration()
+		opts := []domain.SnapshotOption{
+			domain.WithCombos(res.Combos, res.ComboOrder),
+			domain.WithTokenSaver(res.TokenSaver),
+			domain.WithPricing(res.Pricing),
+		}
+		// The FileSet rebuilt above carries no visualizer section, so the
+		// build result holds the visualizer defaults. Re-attach the live
+		// configuration: without this, every settings save would silently
+		// reset the recorder bounds until the next full reload.
+		if prev := deps.currentSnapshot(); prev != nil {
+			opts = append(opts, domain.WithVisualizer(prev.Visualizer()))
+		}
 		snap := domain.NewCatalogSnapshot(
 			newGen,
 			res.Upstreams,
@@ -534,8 +597,7 @@ func (deps RouterDeps) handleUpdateSettings(w http.ResponseWriter, r *http.Reque
 			res.EnabledModelIDs,
 			res.TenantsByHash,
 			res.TenantOrder,
-			domain.WithCombos(res.Combos, res.ComboOrder),
-			domain.WithTokenSaver(res.TokenSaver),
+			opts...,
 		)
 		deps.Registry.Store(snap)
 		if deps.Metrics != nil {
@@ -760,6 +822,33 @@ func (deps RouterDeps) handleTestTurso(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// pricingFromSnapshot projects the live price sheet back into its DTO form.
+// Returns nil when the snapshot carries no priced entries so an empty sheet
+// round-trips as an absent section instead of an empty one.
+func pricingFromSnapshot(snap *domain.CatalogSnapshot) *config.PricingFile {
+	if snap == nil {
+		return nil
+	}
+	table := snap.Pricing()
+	if table == nil || table.Len() == 0 {
+		return nil
+	}
+	entries := table.Entries()
+	dto := make([]config.PricingEntryDTO, 0, len(entries))
+	for _, e := range entries {
+		dto = append(dto, config.PricingEntryDTO{
+			Model:                e.Model,
+			InputMicrosPerM:      e.InputMicrosPerM,
+			OutputMicrosPerM:     e.OutputMicrosPerM,
+			CacheReadMicrosPerM:  e.CacheReadMicrosPerM,
+			CacheWriteMicrosPerM: e.CacheWriteMicrosPerM,
+			Source:               e.Source,
+			CanonicalModelID:     e.CanonicalModelID,
+		})
+	}
+	return &config.PricingFile{Entries: dto}
+}
+
 // settingsDTOFromSnapshot reconstructs the full settings DTO from the live
 // routing snapshot. Upstream credential secrets are masked for display;
 // callers that intend to re-persist the result must run it through
@@ -767,6 +856,25 @@ func (deps RouterDeps) handleTestTurso(w http.ResponseWriter, r *http.Request) {
 // back as real secrets.
 func settingsDTOFromSnapshot(snap *domain.CatalogSnapshot) config.SettingsDTO {
 	var settings config.SettingsDTO
+
+	// Notification channels round-trip through the snapshot so a hot reload and
+	// the API agree. Credentials are masked here; restoreMaskedSecrets puts the
+	// real ones back before anything is persisted.
+	if channels := snap.Notifications(); len(channels) > 0 {
+		dtos := make([]config.NotificationChannelDTO, 0, len(channels))
+		for _, ch := range channels {
+			dtos = append(dtos, config.NotificationChannelDTO{
+				URL:         ch.URL,
+				Format:      ch.Format,
+				Bearer:      maskNotificationSecret(ch.Bearer),
+				Secret:      maskNotificationSecret(ch.Secret),
+				Enabled:     ch.Enabled,
+				Events:      ch.Events,
+				MinSeverity: ch.MinSeverity,
+			})
+		}
+		settings.Notifications = &config.NotificationsFile{Channels: dtos}
+	}
 
 	for _, name := range snap.UpstreamNames() {
 		u, ok := snap.Upstream(name)
@@ -855,6 +963,7 @@ func settingsDTOFromSnapshot(snap *domain.CatalogSnapshot) config.SettingsDTO {
 	}
 
 	settings.Tenants = tenantDTOsFromSnapshot(snap)
+	settings.Pricing = pricingFromSnapshot(snap)
 
 	for _, c := range snap.AllCombos() {
 		en := c.Enabled
@@ -1002,5 +1111,23 @@ func restoreMaskedSecrets(payload *config.SettingsDTO, snap *domain.CatalogSnaps
 				}
 			}
 		}
+	}
+
+	// Notification credentials are write-only, so a payload that carries the
+	// mask must borrow the stored value rather than persist the mask itself.
+	if payload.Notifications != nil {
+		var stored []config.NotificationChannelDTO
+		for _, ch := range snap.Notifications() {
+			stored = append(stored, config.NotificationChannelDTO{
+				URL:         ch.URL,
+				Format:      ch.Format,
+				Bearer:      ch.Bearer,
+				Secret:      ch.Secret,
+				Enabled:     ch.Enabled,
+				Events:      ch.Events,
+				MinSeverity: ch.MinSeverity,
+			})
+		}
+		payload.Notifications.Channels = mergeNotificationSecrets(payload.Notifications.Channels, stored)
 	}
 }

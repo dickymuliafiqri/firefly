@@ -24,6 +24,10 @@ import (
 // be imported here because it transitively depends on the adapters). A bare
 // `notifier != nil` check lets the typed nil through and the first
 // NotifyKeyAction call panics into a recovered 500.
+//
+// emitters is variadic so the eight protocol adapters keep their existing call
+// shape while the gateway can hand in a notify.Dispatcher. A missing emitter
+// means "report nothing", which is what every existing test exercises.
 func HandleKeyOutcome(
 	u *domain.Upstream,
 	slot *domain.KeySlot,
@@ -31,10 +35,13 @@ func HandleKeyOutcome(
 	retryAfterHeader string,
 	notifier ports.KeyActionNotifier,
 	logger *slog.Logger,
+	emitters ...EventEmitter,
 ) (actionTaken bool, failoverEligible bool) {
 	if u == nil || slot == nil {
 		return false, false
 	}
+	emitter := firstEmitter(emitters)
+	deduper := sharedKeyDeduper
 
 	// 1. Classify key-level error: only 429, 401, 402, 403 are credential/quota
 	// errors that indicate the key itself is failing. Everything else — success,
@@ -55,6 +62,7 @@ func HandleKeyOutcome(
 	// 2. Dynamic cooldown for 429 always applies immediately to prevent loop hammering
 	if statusCode == http.StatusTooManyRequests && u.KeyRing != nil {
 		FromDomain(u.KeyRing).Handle429(slot.Ref, retryAfterHeader)
+		emitKeyCooldown(emitter, deduper, u.Name, slot.Ref, retryAfterHeader)
 	}
 
 	// 3. Increment consecutive error counter
@@ -66,7 +74,7 @@ func HandleKeyOutcome(
 	if rule != nil {
 		if rule.Threshold > 0 && consec >= int64(rule.Threshold) {
 			reason := fmt.Sprintf("reached per-status rule threshold of %d for HTTP %d", rule.Threshold, statusCode)
-			return applyRuleAction(u, slot, rule, notifier, logger, reason)
+			return applyRuleAction(u, slot, rule, notifier, logger, reason, emitter)
 		}
 		// Rule matched but its threshold is not reached yet: keep rotating keys
 		// exactly like the legacy path so a failing key never pins the request.
@@ -74,6 +82,7 @@ func HandleKeyOutcome(
 			if u.KeyRing != nil {
 				FromDomain(u.KeyRing).Handle401(slot.Ref)
 			}
+			emitKeyRevoked(emitter, u.Name, slot.Ref)
 			return false, true
 		}
 		if statusCode == http.StatusTooManyRequests ||
@@ -88,7 +97,7 @@ func HandleKeyOutcome(
 	threshold := u.KeyErrorThreshold
 	if threshold > 0 && consec >= int64(threshold) {
 		reason := fmt.Sprintf("reached consecutive error threshold of %d (last status: %d)", threshold, statusCode)
-		return applyKeyAction(u, slot, notifier, logger, reason)
+		return applyKeyAction(u, slot, notifier, logger, reason, emitter)
 	}
 
 	// 5. If threshold is not reached, handle standard single-error behaviors:
@@ -97,6 +106,7 @@ func HandleKeyOutcome(
 		if u.KeyRing != nil {
 			FromDomain(u.KeyRing).Handle401(slot.Ref)
 		}
+		emitKeyRevoked(emitter, u.Name, slot.Ref)
 		// If threshold was 0 (unlimited/unconfigured) or 1, trigger deactivation in notifier as well
 		if threshold <= 1 && !isNil(notifier) {
 			notifier.NotifyKeyAction(ports.KeyActionDeactivate, u.Name, slot.Ref, slot.APIKeyID, "HTTP 401 Unauthorized")
@@ -139,11 +149,13 @@ func applyRuleAction(
 	notifier ports.KeyActionNotifier,
 	logger *slog.Logger,
 	reason string,
+	emitter EventEmitter,
 ) (actionTaken bool, failoverEligible bool) {
 	action := rule.Action
 	if action == "" {
 		action = string(ports.KeyActionDeactivate)
 	}
+	emitKeyThreshold(emitter, u.Name, slot.Ref, action, reason)
 
 	switch ports.KeyAction(action) {
 	case ports.KeyActionDelete:
@@ -218,11 +230,13 @@ func applyKeyAction(
 	notifier ports.KeyActionNotifier,
 	logger *slog.Logger,
 	reason string,
+	emitter EventEmitter,
 ) (actionTaken bool, failoverEligible bool) {
 	action := u.KeyErrorAction
 	if action == "" {
 		action = string(ports.KeyActionDeactivate)
 	}
+	emitKeyThreshold(emitter, u.Name, slot.Ref, action, reason)
 
 	switch ports.KeyAction(action) {
 	case ports.KeyActionDelete:

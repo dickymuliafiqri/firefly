@@ -20,7 +20,7 @@ Written in pure Go, Firefly handles thousands of simultaneous streaming connecti
 - **Smart Load Balancing**: Combine multiple models across different providers into a single "Virtual Combo" to distribute traffic smoothly.
 - **Client Keys & Monetization**: Create and sell your own API keys with token budgets, rate limits, and expiration dates.
 - **Built-in Web Dashboard**: Manage models, upstreams, API keys, and monitor real-time traffic from a clean web interface - no external tools required. The **Visualizer** page animates every request as a routed line on a zoomable canvas with a locked three-column topology - the Firefly root (it states the ingress call), one node per active upstream (it states the model that upstream served, or why it was skipped) and a fixed terminal column (Thinking, Tool, Writing, Usage, Error) - so untouched rows stay dashed and dimmed until a request lights them, every connector is permanent (the root and _every_ upstream row fan out to the whole phase column) and only the state changes: the path the request actually took is bright and flowing, a traversed phase keeps a settled trail, the rest stay dim. Credentials and the Token Saver hop are deliberately not nodes here (a request spends one key out of a ring that may hold a thousand, and the rewrite is only visible when it changed the body); the rewrite is reported in the legend instead. The canvas opens auto-fitted to the viewport (drag to pan, wheel to zoom, double-click to snap back). A second **Town** view renders the same fleet as a pixel-art office powered by `agent-town`: one crew member per upstream lounges while idle and hurries to a desk when a stream arrives, with a persisted camera (zoom + follow) in the corner.
-- **Connect Page**: A single screen (**Services → Connect**) that tells any AI agent how to reach Firefly - the **base URL** (defaults to your dashboard's own origin, editable for tunnel or reverse-proxy setups) with copy buttons, a **tenant key dropdown** with a masked key and its own copy button, the model id, and copy-ready configuration for **Cline**, **Roo Code**, **Kilo Code**, **Cursor**, **Continue**, **OpenCode**, **Aider**, the **OpenAI Python/Node SDKs** and plain `curl`. A **Test connection** button verifies the key against `GET /v1/models`, and **Copy everything** hands a teammate the whole bundle. All presets use the OpenAI wire surface (`/v1/chat/completions`, `/v1/embeddings`, ...) - Firefly exposes no inbound Anthropic (`/v1/messages`) or Responses (`/v1/responses`) route, so point agents at their "OpenAI Compatible" provider.
+- **Connect Page**: A single screen (**Services → Connect**) that tells any AI agent how to reach Firefly - the **base URL** (defaults to your dashboard's own origin, editable for tunnel or reverse-proxy setups) with copy buttons, a **tenant key dropdown** with a masked key and its own copy button, the model id, and copy-ready configuration for **Cline**, **Roo Code**, **Kilo Code**, **Cursor**, **Continue**, **OpenCode**, **Aider**, the **OpenAI Python/Node SDKs** and plain `curl`. A **Test connection** button verifies the key against `GET /v1/models`, and **Copy everything** hands a teammate the whole bundle. Agents may use either wire surface: the OpenAI-compatible routes (`/v1/chat/completions`, `/v1/embeddings`, ...) or the Anthropic Messages route (`/v1/messages`), which is translated in both directions so a client that only speaks Anthropic reaches the same upstreams, key rotation, and budget guard.
 - **Single Binary, Easy Setup**: Runs as a single lightweight file with an embedded web UI and auto-generated configs.
 
 ---
@@ -87,7 +87,115 @@ Once installed, Firefly starts automatically:
 
 - **Web Dashboard**: `http://<SERVER_IP>:8080` (Default password: `12345678`)
 - **OpenAI API Endpoint**: `http://<SERVER_IP>:8080/v1/chat/completions`
+- **Anthropic Messages Endpoint**: `http://<SERVER_IP>:8080/v1/messages`
 - **Config Directory**: `/etc/firefly/`
+
+### The `/v1/messages` surface
+
+Firefly accepts the Anthropic Messages API on `POST /v1/messages` alongside the OpenAI-compatible
+routes. A request is translated into the OpenAI shape the gateway routes on and the response is
+translated back, so a client that only speaks Anthropic reaches exactly the same upstreams, key
+rotation, token saver, budget guard, and usage metering as `/v1/chat/completions`.
+
+```bash
+curl http://localhost:8080/v1/messages \
+  -H "Authorization: Bearer sk-gw-..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4o",
+    "max_tokens": 1024,
+    "system": "You are terse.",
+    "messages": [{"role": "user", "content": "Hello there"}]
+  }'
+```
+
+`model` and `max_tokens` are required — the Anthropic API makes both mandatory, so an absent one is a
+`400` in the Anthropic error envelope rather than a silent default. `system` may be a plain string or
+an array of text blocks; a `tool_use` block in an assistant turn becomes an OpenAI `tool_calls`
+entry, and a `tool_result` block becomes a `tool` role message. `stop_sequences` maps to `stop`, and
+`tool_choice` `"any"` maps to OpenAI's `"required"`.
+
+Streaming (`"stream": true`) returns Anthropic events — `message_start`, `content_block_start`,
+`content_block_delta`, `content_block_stop`, `message_delta`, `message_stop` — with
+`Content-Type: text/event-stream`. The OpenAI `data: [DONE]` sentinel never appears.
+
+Every failure on this surface, including auth `401`, admission `429`, and the tenant budget guard,
+uses the Anthropic error envelope (`{"type":"error","error":{"type":"...","message":"..."}}`) rather
+than OpenAI's.
+
+### Tenant budgets
+
+A tenant may carry a spend cap in integer micro-USD (`budget_micros`, `0` = unlimited, mirroring
+`max_tokens`). The guard runs before any upstream work, so an exhausted budget costs nothing and the
+spend counter is untouched by the rejection itself: the request is refused with `429` and
+`Retry-After: 60`.
+
+Spend is recorded for every request that consumed a credential slot, including ones the upstream
+failed on — otherwise a failing upstream could be used to drain a budget for free. Crossing 80% of
+the cap emits a `tenant.budget_warning` event exactly once per budget period; the latch is re-armed
+by a top-up, so a tenant hovering at the threshold does not emit one event per request.
+
+Top up (or reset) from the API:
+
+```bash
+curl -X POST http://localhost:8080/api/tenants/topup \
+  -H "Authorization: Bearer $FIREFLY_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"tenant_name":"acme","add_budget_micros":5000000,"reset_spend":true}'
+```
+
+`add_budget_micros` is additive, like `add_tokens`, so a caller never has to know the current value.
+`reset_spend` zeroes the counter and re-arms the soft warning. Spend persists across restarts through
+Turso when configured, and pure metering never bumps `updated_at`, so it cannot trigger a catalog
+reload.
+
+### Webhook notifications
+
+Lifecycle events can be delivered to operator-configured webhooks. Channels are managed under
+**Settings → Notifications** and persisted in the settings payload; each one carries a URL, a format,
+an optional bearer token, an optional HMAC signing secret, an event allowlist, and a minimum
+severity.
+
+| Format | Wire shape |
+| --- | --- |
+| `generic` | the event JSON verbatim |
+| `discord` | a single embed, coloured by severity |
+| `slack` | a header plus a section block with a field grid |
+| `telegram` | a `sendMessage` call with MarkdownV2 text |
+
+Emitted events: `key.cooldown`, `key.revoked`, `key.threshold_action`, `breaker.open`,
+`breaker.half_open`, `breaker.closed`, `upstream.health_failed`, `upstream.health_recovered`,
+`tenant.budget_warning`, `tenant.budget_exceeded`, and `notifications.test`.
+
+Delivery is off the request path: a bounded queue feeds a background worker, and a full queue drops
+the event and increments a counter rather than blocking a request. The Overview page surfaces those
+counters so a silent drop is visible. A `secret` enables the `X-Firefly-Signature` header
+(`t=<unix>,v1=<hex HMAC-SHA256 of "t.body">`), which lets a consumer verify the payload and reject
+replays.
+
+Webhook URLs are operator input, so the dialer refuses loopback, link-local, and private ranges —
+including the cloud metadata endpoint `169.254.169.254` — and dials the validated address directly so
+a second DNS lookup cannot swap in a private IP. Pass `-notify-allow-private` to lift the guard for
+local development.
+
+Credentials are write-only: the API returns `***` and never the real value, and a settings save that
+carries only the mask borrows the stored credential instead of wiping it. **Test** on a channel row
+sends a synthetic event and reports the outcome, so a webhook can be proven before an alert depends
+on it.
+
+### Cost accounting
+
+Every request is priced in integer micro-USD from the local price sheet (`configs/pricing.json`, or
+the **Pricing** dashboard page), so a provider's decimal per-1M price is stored exactly with no float
+rounding in the ledger. Cache reads and writes are billed at their own rates when the sheet carries
+them, and fall back to the input price when it does not — a missing cache price never makes cached
+tokens free.
+
+`GET /api/usage/costs` aggregates the request log by `tenant`, `model`, or `key` over a
+`since`/`until` window (unix seconds or RFC3339; the default is the last 7 days) and returns per-day
+series alongside the totals. The aggregation sums the integer micros, so the report reconciles
+exactly with `TokenLedger.EstimatedCostMicros` instead of drifting through a thousand float
+additions.
 
 Manage the service:
 

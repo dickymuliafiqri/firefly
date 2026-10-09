@@ -40,12 +40,14 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/config"
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/limits"
+	"github.com/dickymuliafiqri/firefly/internal/notify"
 	"github.com/dickymuliafiqri/firefly/internal/observability/logging"
 	"github.com/dickymuliafiqri/firefly/internal/observability/metrics"
 	"github.com/dickymuliafiqri/firefly/internal/observability/trace"
 	"github.com/dickymuliafiqri/firefly/internal/observability/usage"
 
 	"github.com/dickymuliafiqri/firefly/internal/ports"
+	"github.com/dickymuliafiqri/firefly/internal/pricing"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
 	"github.com/dickymuliafiqri/firefly/internal/security/auth"
 	"github.com/dickymuliafiqri/firefly/internal/server"
@@ -93,6 +95,7 @@ func run() error {
 		graceSecs            = flag.Int("shutdown-grace-seconds", 30, "max seconds to drain in-flight requests on shutdown")
 		adminToken           = flag.String("admin-token", "", "bearer token guarding /debug/* endpoints (defaults to $FIREFLY_ADMIN_TOKEN; empty disables them)")
 		dashboardPassword    = flag.String("dashboard-password", "", "master password for dashboard access (defaults to $INITIAL_PASSWORD, $FIREFLY_DASHBOARD_PASSWORD, or 12345678)")
+		notifyAllowPrivate   = flag.Bool("notify-allow-private", false, "allow webhook delivery to loopback/private addresses (development only; the SSRF guard is on by default)")
 		healthInterval       = flag.Duration("health-check-interval", upstream.DefaultHealthCheckInterval, "interval between background upstream health checks (0 disables; defaults to $FIREFLY_HEALTH_CHECK_INTERVAL or 15s)")
 		showVersion          = flag.Bool("version", false, "print version information and exit")
 		tursoURL             = flag.String("turso-url", "", "Turso database URL (e.g. libsql://...; defaults to $TURSO_DATABASE_URL)")
@@ -438,12 +441,35 @@ func run() error {
 	})
 	retry := upstream.DefaultRetryPolicy()
 
+	// 3-pre. Notification dispatcher. It is constructed before anything that
+	// can emit so the breaker, the health checker, and the request path all
+	// share one instance. With no channel configured it is a silent no-op, so
+	// an operator who never touches notifications sees identical behaviour.
+	notifyMgr := notify.NewManager(notify.ManagerConfig{
+		Channels: func() []notify.Channel {
+			snap := reg.Current()
+			if snap == nil {
+				return nil
+			}
+			return notifyChannelsFromSettings(snap.Notifications())
+		},
+		AllowPrivate: *notifyAllowPrivate,
+		Logger:       logger,
+	})
+	breakers.SetEmitter(notifyMgr)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		notifyMgr.Run(ctx)
+	}()
+
 	// 3a. Active health checker prober (periodic, bounded concurrency via errgroup).
 	if *healthInterval > 0 {
 		healthChecker := upstream.NewHealthChecker(upstream.HealthCheckConfig{
 			Interval: *healthInterval,
 			Logger:   logger,
 		}, reg, pool, breakers, usageFlusher)
+		healthChecker.SetEmitter(notifyMgr)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -686,6 +712,7 @@ func run() error {
 		Adapter:       openAIAdapter,
 		Usage:         usageRecorder,
 		Breakers:      breakers,
+		Notifier:      notifyMgr,
 		Analytics:     analyticsStore,
 		LiveLogs:      liveLogs,
 		Traces:        traces,
@@ -698,6 +725,10 @@ func run() error {
 		TunnelManager: tunnelManager,
 
 		Metrics: mx,
+
+		// In-memory models.dev catalog cache for the pricing dashboard.
+		// Never a runtime dependency of cost tracking.
+		PricingCatalog: pricing.NewCatalogCache(),
 	}
 	graceDuration := time.Duration(*graceSecs) * time.Second
 
@@ -776,4 +807,30 @@ func run() error {
 
 	logger.Info("bye")
 	return nil
+}
+
+// notifyChannelsFromSettings maps the snapshot's notification channels onto the
+// notify package's Channel type. A channel with an unknown format or an empty
+// URL is dropped here rather than at delivery time, so a typo in settings
+// disables one channel instead of failing every event.
+func notifyChannelsFromSettings(channels []domain.NotificationChannel) []notify.Channel {
+	if len(channels) == 0 {
+		return nil
+	}
+	out := make([]notify.Channel, 0, len(channels))
+	for _, ch := range channels {
+		if ch.URL == "" || !notify.IsKnownFormat(ch.Format) {
+			continue
+		}
+		out = append(out, notify.Channel{
+			URL:         ch.URL,
+			Format:      ch.Format,
+			Bearer:      ch.Bearer,
+			Secret:      ch.Secret,
+			Enabled:     ch.Enabled,
+			Events:      ch.Events,
+			MinSeverity: notify.Severity(ch.MinSeverity),
+		})
+	}
+	return out
 }

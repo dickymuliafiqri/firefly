@@ -29,6 +29,23 @@ type CatalogSnapshot struct {
 
 	tokenSaver TokenSaverConfig
 	visualizer VisualizerConfig
+	pricing    *PricingTable
+	// notifications is the raw settings section; the notify package owns the
+	// Channel type, so the domain keeps the DTO shape and lets the caller map.
+	notifications []NotificationChannel
+}
+
+// NotificationChannel is one webhook channel as carried on the snapshot. It
+// mirrors config.NotificationChannelDTO without importing the config package
+// (which would invert the dependency).
+type NotificationChannel struct {
+	URL         string
+	Format      string
+	Bearer      string
+	Secret      string
+	Enabled     bool
+	Events      []string
+	MinSeverity string
 }
 
 // SnapshotOption configures optional fields on a CatalogSnapshot.
@@ -56,6 +73,18 @@ func (s *CatalogSnapshot) TokenSaver() TokenSaverConfig {
 	return s.tokenSaver
 }
 
+// WithNotifications attaches the webhook channel list to the snapshot.
+func WithNotifications(channels []NotificationChannel) SnapshotOption {
+	return func(s *CatalogSnapshot) {
+		s.notifications = channels
+	}
+}
+
+// Notifications returns the webhook channel list for this snapshot.
+func (s *CatalogSnapshot) Notifications() []NotificationChannel {
+	return s.notifications
+}
+
 // WithVisualizer attaches visualizer recorder bounds to the snapshot.
 func WithVisualizer(cfg VisualizerConfig) SnapshotOption {
 	return func(s *CatalogSnapshot) {
@@ -66,6 +95,22 @@ func WithVisualizer(cfg VisualizerConfig) SnapshotOption {
 // Visualizer returns the request visualizer configuration for this snapshot.
 func (s *CatalogSnapshot) Visualizer() VisualizerConfig {
 	return s.visualizer
+}
+
+// WithPricing attaches the model price sheet to the snapshot. A nil table is
+// stored as-is so every snapshot construction site can pass the build result
+// unconditionally; lookups on a nil table miss and callers fall back to the
+// flat-rate estimate.
+func WithPricing(table *PricingTable) SnapshotOption {
+	return func(s *CatalogSnapshot) {
+		s.pricing = table
+	}
+}
+
+// Pricing returns the model price sheet for this snapshot. The returned table
+// is immutable and safe for concurrent lock-free reads on the hot path.
+func (s *CatalogSnapshot) Pricing() *PricingTable {
+	return s.pricing
 }
 
 // NewCatalogSnapshot constructs a snapshot from already-validated parts. It

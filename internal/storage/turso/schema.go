@@ -138,6 +138,10 @@ CREATE TABLE IF NOT EXISTS tenants (
     status         VARCHAR(20) NOT NULL DEFAULT 'active',
     max_tokens     BIGINT NOT NULL DEFAULT 0,
     used_tokens    BIGINT NOT NULL DEFAULT 0,
+    budget_micros  BIGINT NOT NULL DEFAULT 0,
+    spent_micros   BIGINT NOT NULL DEFAULT 0,
+    cached_read_tokens  BIGINT NOT NULL DEFAULT 0,
+    cached_write_tokens BIGINT NOT NULL DEFAULT 0,
     expires_at     BIGINT,
     rps            REAL,
     burst          INTEGER,
@@ -201,6 +205,8 @@ func MigrateSchema(ctx context.Context, db *sql.DB) error {
 	_, _ = db.ExecContext(ctx, "ALTER TABLE tenants ADD COLUMN api_key VARCHAR(128)")
 	_, _ = db.ExecContext(ctx, "ALTER TABLE tenants ADD COLUMN max_tokens BIGINT DEFAULT 0")
 	_, _ = db.ExecContext(ctx, "ALTER TABLE tenants ADD COLUMN used_tokens BIGINT DEFAULT 0")
+	_, _ = db.ExecContext(ctx, "ALTER TABLE tenants ADD COLUMN cached_read_tokens BIGINT DEFAULT 0")
+	_, _ = db.ExecContext(ctx, "ALTER TABLE tenants ADD COLUMN cached_write_tokens BIGINT DEFAULT 0")
 	_, _ = db.ExecContext(ctx, "ALTER TABLE tenants ADD COLUMN expires_at BIGINT")
 	if _, err := db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS idx_tenants_api_key ON tenants(api_key)"); err != nil {
 		return fmt.Errorf("create idx_tenants_api_key index: %w", err)

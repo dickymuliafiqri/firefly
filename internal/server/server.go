@@ -14,6 +14,7 @@ import (
 
 	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
 	"github.com/dickymuliafiqri/firefly/internal/observability/resmon"
+	"github.com/dickymuliafiqri/firefly/internal/pricing"
 )
 
 // Config holds server-level tuning. Zero values fall back to defaults.
@@ -71,6 +72,9 @@ func New(cfg Config, deps RouterDeps, baseCtx context.Context, logger *slog.Logg
 	}
 	if deps.ResMon == nil {
 		deps.ResMon = resmon.New()
+	}
+	if deps.PricingCatalog == nil {
+		deps.PricingCatalog = pricing.NewCatalogCache()
 	}
 	if deps.Analytics != nil {
 		deps.LiveLogs.AttachStore(deps.Analytics)

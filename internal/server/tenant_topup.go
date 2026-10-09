@@ -17,6 +17,12 @@ type TenantTopupRequest struct {
 	AddTokens  int64  `json:"add_tokens,omitempty"`
 	ExtendDays int    `json:"extend_days,omitempty"`
 	ResetUsed  bool   `json:"reset_used,omitempty"`
+	// AddBudgetMicros raises the spend cap. It is additive, like AddTokens, so
+	// a caller never has to know the current value.
+	AddBudgetMicros int64 `json:"add_budget_micros,omitempty"`
+	// ResetSpend zeroes the spend counter and re-arms the soft warning, which
+	// is what makes a topped-up tenant usable again after a hard stop.
+	ResetSpend bool `json:"reset_spend,omitempty"`
 }
 
 // TenantTopupResponse confirms topup execution.
@@ -28,6 +34,9 @@ type TenantTopupResponse struct {
 	MaxTokens       int64  `json:"max_tokens"`
 	UsedTokens      int64  `json:"used_tokens"`
 	RemainingTokens int64  `json:"remaining_tokens"`
+	BudgetMicros    int64  `json:"budget_micros"`
+	SpentMicros     int64  `json:"spent_micros"`
+	RemainingMicros int64  `json:"remaining_micros"`
 	ExpiresAt       *int64 `json:"expires_at,omitempty"`
 	Status          string `json:"status"`
 }
@@ -77,6 +86,12 @@ func (deps RouterDeps) handleTenantTopup(w http.ResponseWriter, r *http.Request)
 	if req.ResetUsed && targetTenant.UsedTokens != nil {
 		targetTenant.UsedTokens.Store(0)
 	}
+	if req.AddBudgetMicros > 0 {
+		targetTenant.BudgetMicros += req.AddBudgetMicros
+	}
+	if req.ResetSpend {
+		targetTenant.ResetSpend()
+	}
 	if req.ExtendDays > 0 {
 		now := time.Now().UnixMilli()
 		baseTime := targetTenant.ExpiresAt
@@ -103,6 +118,9 @@ func (deps RouterDeps) handleTenantTopup(w http.ResponseWriter, r *http.Request)
 	if targetTenant.UsedTokens != nil {
 		used = targetTenant.UsedTokens.Load()
 	}
+	targetTenant.EnsureCounters()
+	spent := targetTenant.SpentMicros.Load()
+	remainingMicros := targetTenant.BudgetRemainingMicros()
 
 	var expPtr *int64
 	if targetTenant.ExpiresAt > 0 {
@@ -114,13 +132,15 @@ func (deps RouterDeps) handleTenantTopup(w http.ResponseWriter, r *http.Request)
 	tursoStore, err := deps.getTursoStore(r.Context())
 	if err == nil && tursoStore != nil {
 		_ = tursoStore.SaveTenant(r.Context(), &turso.TenantRecord{
-			Name:       targetTenant.Name,
-			APIKey:     targetTenant.APIKey,
-			KeyHash:    targetTenant.KeyHash,
-			Status:     string(targetTenant.Status),
-			MaxTokens:  targetTenant.MaxTokens,
-			UsedTokens: used,
-			ExpiresAt:  expPtr,
+			Name:         targetTenant.Name,
+			APIKey:       targetTenant.APIKey,
+			KeyHash:      targetTenant.KeyHash,
+			Status:       string(targetTenant.Status),
+			MaxTokens:    targetTenant.MaxTokens,
+			UsedTokens:   used,
+			BudgetMicros: targetTenant.BudgetMicros,
+			SpentMicros:  spent,
+			ExpiresAt:    expPtr,
 		})
 	}
 
@@ -134,6 +154,9 @@ func (deps RouterDeps) handleTenantTopup(w http.ResponseWriter, r *http.Request)
 		MaxTokens:       targetTenant.MaxTokens,
 		UsedTokens:      used,
 		RemainingTokens: targetTenant.RemainingTokens(),
+		BudgetMicros:    targetTenant.BudgetMicros,
+		SpentMicros:     spent,
+		RemainingMicros: remainingMicros,
 		ExpiresAt:       expPtr,
 		Status:          string(targetTenant.Status),
 	})

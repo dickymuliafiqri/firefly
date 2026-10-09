@@ -899,3 +899,123 @@ func TestRestoreMaskedSecretsDropsUnresolvablePoolEntries(t *testing.T) {
 		}
 	})
 }
+
+// TestSettingsPricingRoundTrip covers the pricing section of the settings
+// surface: POST persists the sheet (snapshot + pricing.json), GET serves it
+// back, a payload that omits the section preserves the live sheet, and a
+// malformed sheet is rejected fail-closed.
+func TestSettingsPricingRoundTrip(t *testing.T) {
+	tmpDir := t.TempDir()
+	reg := registry.New()
+
+	src := config.NewFileConfigSource(tmpDir)
+	if _, err := reg.BuildAndStore(context.Background(), src, os.LookupEnv); err != nil {
+		t.Fatalf("initial build and store failed: %v", err)
+	}
+
+	deps := RouterDeps{
+		Snapshots:   reg,
+		Registry:    reg,
+		ConfigDir:   tmpDir,
+		TenantStore: auth.NewStore(reg),
+		Limiter:     limits.New(),
+	}
+	s := New(Config{Addr: "0.0.0.0:8080"}, deps, context.Background(), nil)
+
+	baseSettings := config.SettingsDTO{
+		Upstreams: []config.UpstreamDTO{
+			{Name: "test-openai", Protocol: "openai", BaseURLs: []string{"https://api.openai.com/v1"}, APIKeys: []string{"sk-secret-key-1"}},
+		},
+		Models: []config.ModelDTO{
+			{PublicName: "gpt-4o", Upstream: "test-openai", UpstreamModel: "gpt-4o"},
+		},
+		Tenants: []config.TenantDTO{
+			{Name: "frontend-tenant", APIKey: "sk-gw-client-token-12345", AllowedModels: []string{"*"}},
+		},
+	}
+
+	withPricing := func(p *config.PricingFile) config.SettingsDTO {
+		s := baseSettings
+		s.Pricing = p
+		return s
+	}
+	post := func(t *testing.T, payload config.SettingsDTO) *httptest.ResponseRecorder {
+		t.Helper()
+		body, _ := json.Marshal(payload)
+		req := httptest.NewRequest("POST", "/api/settings", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, req)
+		return w
+	}
+	get := func(t *testing.T) config.SettingsDTO {
+		t.Helper()
+		req := httptest.NewRequest("GET", "/api/settings", nil)
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET /api/settings status = %d, body = %s", w.Code, w.Body.String())
+		}
+		var out config.SettingsDTO
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatalf("unmarshal settings: %v", err)
+		}
+		return out
+	}
+
+	// 1. POST with a pricing section.
+	w := post(t, withPricing(&config.PricingFile{Entries: []config.PricingEntryDTO{
+		{Model: "gpt-4o", InputMicrosPerM: 2_500_000, OutputMicrosPerM: 10_000_000, Source: "models.dev"},
+		{Model: "gpt-4o-mini*", InputMicrosPerM: 150_000, OutputMicrosPerM: 600_000},
+	}}))
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST with pricing status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	// 2. The live snapshot carries the indexed table.
+	table := reg.Current().Pricing()
+	if table == nil || table.Len() != 2 {
+		t.Fatalf("snapshot pricing table missing: %+v", table)
+	}
+	e, ok := table.Lookup("gpt-4o")
+	if !ok || e.InputMicrosPerM != 2_500_000 || e.Source != "models.dev" {
+		t.Fatalf("snapshot pricing entry wrong: %+v ok=%v", e, ok)
+	}
+	if _, ok := table.Lookup("gpt-4o-mini-2024"); !ok {
+		t.Fatal("wildcard entry must resolve in the snapshot")
+	}
+
+	// 3. pricing.json is persisted for the watcher to hot-reload.
+	if _, err := os.Stat(filepath.Join(tmpDir, config.FileNamePricing)); err != nil {
+		t.Errorf("pricing.json was not written: %v", err)
+	}
+
+	// 4. GET serves the sheet back.
+	fetched := get(t)
+	if fetched.Pricing == nil || len(fetched.Pricing.Entries) != 2 {
+		t.Fatalf("GET pricing section missing: %+v", fetched.Pricing)
+	}
+	if fetched.Pricing.Entries[0].Model != "gpt-4o" || fetched.Pricing.Entries[1].Model != "gpt-4o-mini*" {
+		t.Fatalf("GET pricing entries must be sorted, got %+v", fetched.Pricing.Entries)
+	}
+
+	// 5. A payload that omits the section preserves the live sheet.
+	w = post(t, baseSettings)
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST without pricing status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if table := reg.Current().Pricing(); table == nil || table.Len() != 2 {
+		t.Fatalf("omitted pricing section must be preserved, got %+v", table)
+	}
+
+	// 6. A malformed sheet is rejected fail-closed and changes nothing.
+	w = post(t, withPricing(&config.PricingFile{Entries: []config.PricingEntryDTO{
+		{Model: "gpt-4o", InputMicrosPerM: -1},
+	}}))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("negative price must be rejected, status = %d body = %s", w.Code, w.Body.String())
+	}
+	if table := reg.Current().Pricing(); table == nil || table.Len() != 2 {
+		t.Fatalf("rejected payload must not touch the live sheet, got %+v", table)
+	}
+}

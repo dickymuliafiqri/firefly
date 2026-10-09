@@ -38,6 +38,11 @@ import type {
   KeyDeleteResponse,
   TursoProvidersResponse,
   TursoKeyHintsResponse,
+  PricingEntryDTO,
+  PricingListResponse,
+  PricingResolveModel,
+  PricingResolveResponse,
+  NotificationChannelDTO,
   TursoDTO,
   ProviderRecordDTO,
   ProviderQuotaResponseDTO,
@@ -159,6 +164,119 @@ export async function saveSettings(
   return request("/api/settings", {
     method: "PUT",
     body: JSON.stringify(settings),
+  });
+}
+
+// ================= PRICING =================
+
+/** One models.dev catalog entry, as served by GET /api/pricing/catalog. */
+export interface PricingCatalogEntry {
+  key: string;
+  provider: string;
+  model: string;
+  input_micros_per_m: number;
+  output_micros_per_m: number;
+  cache_read_micros_per_m?: number;
+  cache_write_micros_per_m?: number;
+}
+
+export interface PricingCatalogResponse {
+  status: string;
+  fetched_at: string;
+  providers: string[];
+  entries: PricingCatalogEntry[];
+  total: number;
+  error?: string;
+}
+
+export interface PricingImportRequest {
+  all?: boolean;
+  models?: string[];
+}
+
+export interface PricingImportResponse {
+  status: string;
+  added: number;
+  skipped: number;
+  total: number;
+  catalog_fetched_at?: string;
+  error?: string;
+}
+
+/** Browses the cached models.dev catalog, fetching it on first use. */
+export async function fetchPricingCatalog(): Promise<PricingCatalogResponse> {
+  return request<PricingCatalogResponse>("/api/pricing/catalog");
+}
+
+/** Force-fetches the catalog, replacing the in-memory cache. */
+export async function refreshPricingCatalog(): Promise<PricingCatalogResponse> {
+  return request<PricingCatalogResponse>("/api/pricing/catalog/refresh", { method: "POST" });
+}
+
+/**
+ * Seeds the local sheet from the catalog. The merge is additive-only: a key
+ * the sheet already holds is never overwritten, so this is safe to re-run.
+ */
+export async function importPricing(
+  payload: PricingImportRequest,
+): Promise<PricingImportResponse> {
+  return request<PricingImportResponse>("/api/pricing/import", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+/** Lists the local price sheet, each entry flagged as used or unused. */
+export async function fetchPricing(): Promise<PricingListResponse> {
+  return request<PricingListResponse>("/api/pricing");
+}
+
+/** Creates or replaces one price entry. The key is the model name. */
+export async function upsertPricingEntry(
+  key: string,
+  entry: Omit<PricingEntryDTO, "model">,
+): Promise<{ status: string; entry: PricingEntryDTO }> {
+  return request(`/api/pricing/${encodeURIComponent(key)}`, {
+    method: "PUT",
+    body: JSON.stringify(entry),
+  });
+}
+
+/** Removes one price entry, letting a seeded price show through again. */
+export async function deletePricingEntry(
+  key: string,
+): Promise<{ status: string; key: string }> {
+  return request(`/api/pricing/${encodeURIComponent(key)}`, { method: "DELETE" });
+}
+
+/**
+ * Asks the backend what a batch of models would be billed at. The
+ * protocol-to-provider mapping and the wildcard rules live server-side, so a
+ * client cannot answer "is this model priced?" on its own.
+ */
+export async function resolvePricing(
+  models: PricingResolveModel[],
+): Promise<PricingResolveResponse> {
+  return request<PricingResolveResponse>("/api/pricing/resolve", {
+    method: "POST",
+    body: JSON.stringify({ models }),
+  });
+}
+
+/** Sends a synthetic event to one channel and reports the outcome. */
+export async function testNotificationChannel(
+  channel: NotificationChannelDTO,
+): Promise<{ success: boolean; message?: string; error?: string }> {
+  return request("/api/notifications/test", {
+    method: "POST",
+    body: JSON.stringify(channel),
+  });
+}
+
+/** Test-send mutation for the Settings → Notifications card. */
+export function useTestNotificationMutation() {
+  return useMutation({
+    mutationFn: (channel: NotificationChannelDTO) => testNotificationChannel(channel),
   });
 }
 

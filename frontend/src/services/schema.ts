@@ -505,6 +505,72 @@ export interface SettingsDTO {
   storage_engine?: string;
   turso?: TursoDTO;
   token_saver?: TokenSaverDTO;
+  pricing?: PricingFile;
+  notifications?: NotificationsFile;
+}
+
+// ================= PRICING =================
+
+/** One price-sheet entry. Prices are integer micro-USD per 1M tokens. */
+export interface PricingEntryDTO {
+  model: string;
+  input_micros_per_m: number;
+  output_micros_per_m: number;
+  cache_read_micros_per_m?: number;
+  cache_write_micros_per_m?: number;
+  source?: 'models.dev' | 'manual';
+  canonical_model_id?: string;
+}
+
+export interface PricingFile {
+  entries: PricingEntryDTO[];
+}
+
+/** A price entry plus the backend's "is this model routed?" flag. */
+export interface PricingEntryView extends PricingEntryDTO {
+  used: boolean;
+}
+
+export interface PricingListResponse {
+  status: string;
+  entries: PricingEntryView[];
+  total: number;
+}
+
+/** What a model would actually be billed at, or null when unpriced. */
+export interface PricingResolveEntry {
+  public_name: string;
+  matched_key?: string;
+  entry: PricingEntryDTO | null;
+}
+
+export interface PricingResolveResponse {
+  status: string;
+  entries: PricingResolveEntry[];
+}
+
+export interface PricingResolveModel {
+  public_name: string;
+  upstream?: string;
+  upstream_model?: string;
+}
+
+// ================= NOTIFICATIONS =================
+
+export interface NotificationChannelDTO {
+  url: string;
+  format: string;
+  /** Write-only: the API returns "***" and never the real value. */
+  bearer?: string;
+  /** Write-only: the API returns "***" and never the real value. */
+  secret?: string;
+  enabled: boolean;
+  events?: string[];
+  min_severity?: string;
+}
+
+export interface NotificationsFile {
+  channels: NotificationChannelDTO[];
 }
 
 export interface HealthStatus {
@@ -613,6 +679,13 @@ export interface TelemetryDTO {
    * admin callers — the backend omits it for anonymous public telemetry.
    */
   resource_monitor?: ResourceMonitorDTO | null;
+  /** Webhook dispatcher counters. Admin only — absent for unauthenticated callers. */
+  notifications?: {
+    queued: number;
+    dropped: number;
+    delivered: number;
+    failed: number;
+  } | null;
 }
 
 export interface ResourceMonitorDTO {

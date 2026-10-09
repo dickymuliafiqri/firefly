@@ -17,6 +17,7 @@ type catalogFileSet struct {
 	tenants    []byte
 	combos     []byte
 	tokenSaver []byte
+	pricing    []byte
 }
 
 // writeCatalogFiles persists the catalog snapshot into dir. upstreams.json holds
@@ -33,6 +34,7 @@ func writeCatalogFiles(dir string, files catalogFileSet) error {
 		{config.FileNameTenants, files.tenants, true},
 		{config.FileNameCombos, files.combos, false},
 		{config.FileNameTokenSaver, files.tokenSaver, false},
+		{config.FileNamePricing, files.pricing, false},
 	}
 	for _, wr := range writes {
 		if wr.raw == nil {

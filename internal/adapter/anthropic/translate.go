@@ -14,74 +14,328 @@ import (
 // ErrMalformedJSON is returned when an incoming request body is empty or invalid JSON.
 var ErrMalformedJSON = errors.New("invalid request json: malformed json")
 
+// anthropicMessage content is either a plain string or an array of blocks.
+// Tool turns need the array form, so the field is typed as any and the request
+// builder decides per message.
 type anthropicMessage struct {
 	Role    string `json:"role"`
-	Content string `json:"content"`
+	Content any    `json:"content"`
+}
+
+// anthropicToolResultBlock answers a tool_use block from the previous
+// assistant turn.
+type anthropicToolResultBlock struct {
+	Type      string `json:"type"`
+	ToolUseID string `json:"tool_use_id"`
+	Content   string `json:"content"`
+	IsError   bool   `json:"is_error,omitempty"`
+}
+
+// anthropicImageBlock carries an image the client attached. OpenAI spells the
+// source as image_url.url; Anthropic wants an explicit source type, and a
+// data: URL has to be split into its media type and payload.
+type anthropicImageBlock struct {
+	Type   string `json:"type"`
+	Source struct {
+		Type      string `json:"type"`
+		URL       string `json:"url,omitempty"`
+		MediaType string `json:"media_type,omitempty"`
+		Data      string `json:"data,omitempty"`
+	} `json:"source"`
+}
+
+// anthropicTool is one entry of the Anthropic tools array.
+type anthropicTool struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	InputSchema json.RawMessage `json:"input_schema"`
+}
+
+// anthropicToolChoice selects how the model may call tools.
+type anthropicToolChoice struct {
+	Type string `json:"type"`
+	Name string `json:"name,omitempty"`
 }
 
 type anthropicRequest struct {
-	Model         string             `json:"model"`
-	System        string             `json:"system,omitempty"`
-	Messages      []anthropicMessage `json:"messages"`
-	MaxTokens     int                `json:"max_tokens"`
-	Temperature   *float64           `json:"temperature,omitempty"`
-	Stream        bool               `json:"stream,omitempty"`
-	StopSequences []string           `json:"stop_sequences,omitempty"`
+	Model         string               `json:"model"`
+	System        string               `json:"system,omitempty"`
+	Messages      []anthropicMessage   `json:"messages"`
+	MaxTokens     int                  `json:"max_tokens"`
+	Temperature   *float64             `json:"temperature,omitempty"`
+	TopP          *float64             `json:"top_p,omitempty"`
+	Stream        bool                 `json:"stream,omitempty"`
+	StopSequences []string             `json:"stop_sequences,omitempty"`
+	Tools         []anthropicTool      `json:"tools,omitempty"`
+	ToolChoice    *anthropicToolChoice `json:"tool_choice,omitempty"`
+}
+
+// assistantBlocks builds the content array of an assistant turn: the text (if
+// any) followed by one tool_use block per tool call. Dropping the tool calls
+// here would silently break every agentic client, so they are never optional.
+func assistantBlocks(msg gjson.Result) (any, error) {
+	calls := msg.Get("tool_calls").Array()
+	if len(calls) == 0 {
+		return extractContent(msg.Get("content")), nil
+	}
+
+	blocks := make([]json.RawMessage, 0, len(calls)+1)
+	if text := extractContent(msg.Get("content")); strings.TrimSpace(text) != "" {
+		b, err := json.Marshal(anthropicTextBlock{Type: "text", Text: text})
+		if err != nil {
+			return nil, fmt.Errorf("marshal assistant text: %w", err)
+		}
+		blocks = append(blocks, b)
+	}
+	for i, tc := range calls {
+		rawArgs := tc.Get("function.arguments").String()
+		input := json.RawMessage(`{}`)
+		if strings.TrimSpace(rawArgs) != "" {
+			var probe any
+			if err := json.Unmarshal([]byte(rawArgs), &probe); err != nil {
+				return nil, fmt.Errorf("tool_call %d (%s): invalid arguments json: %w", i, tc.Get("function.name").String(), err)
+			}
+			input = json.RawMessage(rawArgs)
+		}
+		b, err := json.Marshal(anthropicToolUseBlock{
+			Type:  "tool_use",
+			ID:    tc.Get("id").String(),
+			Name:  tc.Get("function.name").String(),
+			Input: input,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("marshal tool_use %d: %w", i, err)
+		}
+		blocks = append(blocks, b)
+	}
+	return blocks, nil
+}
+
+// userBlocks builds the content of a user turn. A plain string stays a string.
+// An OpenAI multimodal array collapses back to a joined string when it holds
+// nothing but text — that keeps the wire body small and matches what Anthropic
+// itself emits — and becomes a block array as soon as an image (or any other
+// non-text part) appears, because only the block form can carry a source.
+func userBlocks(msg gjson.Result) (any, error) {
+	content := msg.Get("content")
+	if !content.IsArray() {
+		return extractContent(content), nil
+	}
+
+	parts := content.Array()
+	hasNonText := false
+	for _, part := range parts {
+		switch part.Get("type").String() {
+		case "text", "":
+		default:
+			hasNonText = true
+		}
+		if hasNonText {
+			break
+		}
+	}
+	if !hasNonText {
+		return extractContent(content), nil
+	}
+
+	blocks := make([]json.RawMessage, 0, len(parts))
+	for _, part := range parts {
+		switch part.Get("type").String() {
+		case "text", "":
+			if txt := part.Get("text").String(); txt != "" {
+				b, err := json.Marshal(anthropicTextBlock{Type: "text", Text: txt})
+				if err != nil {
+					return nil, fmt.Errorf("marshal user text: %w", err)
+				}
+				blocks = append(blocks, b)
+			}
+		case "image_url":
+			raw := part.Get("image_url.url").String()
+			if raw == "" {
+				continue
+			}
+			var img anthropicImageBlock
+			img.Type = "image"
+			if strings.HasPrefix(raw, "data:") {
+				header, payload, found := strings.Cut(strings.TrimPrefix(raw, "data:"), ",")
+				if !found {
+					continue
+				}
+				img.Source.Type = "base64"
+				img.Source.MediaType = strings.TrimSuffix(header, ";base64")
+				img.Source.Data = payload
+			} else {
+				img.Source.Type = "url"
+				img.Source.URL = raw
+			}
+			b, err := json.Marshal(img)
+			if err != nil {
+				return nil, fmt.Errorf("marshal image block: %w", err)
+			}
+			blocks = append(blocks, b)
+		}
+	}
+	if len(blocks) == 0 {
+		return "", nil
+	}
+	return blocks, nil
+}
+
+// translateTools maps the OpenAI tools array onto the Anthropic shape.
+func translateTools(root gjson.Result) ([]anthropicTool, error) {
+	raw := root.Get("tools").Array()
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	tools := make([]anthropicTool, 0, len(raw))
+	for i, t := range raw {
+		fn := t.Get("function")
+		name := fn.Get("name").String()
+		if name == "" {
+			return nil, fmt.Errorf("tools[%d]: missing function.name", i)
+		}
+		schema := fn.Get("parameters")
+		if !schema.Exists() {
+			return nil, fmt.Errorf("tools[%d] (%s): missing parameters", i, name)
+		}
+		tools = append(tools, anthropicTool{
+			Name:        name,
+			Description: fn.Get("description").String(),
+			InputSchema: json.RawMessage(schema.Raw),
+		})
+	}
+	return tools, nil
+}
+
+// translateToolChoice maps the OpenAI tool_choice vocabulary. "none" has no
+// Anthropic equivalent, so it is dropped and the model decides on its own.
+func translateToolChoice(root gjson.Result) *anthropicToolChoice {
+	tc := root.Get("tool_choice")
+	if !tc.Exists() {
+		return nil
+	}
+	if tc.Type == gjson.String {
+		switch tc.String() {
+		case "auto":
+			return &anthropicToolChoice{Type: "auto"}
+		case "required", "any":
+			return &anthropicToolChoice{Type: "any"}
+		default:
+			return nil
+		}
+	}
+	switch tc.Get("type").String() {
+	case "function":
+		name := tc.Get("function.name").String()
+		if name == "" {
+			return nil
+		}
+		return &anthropicToolChoice{Type: "tool", Name: name}
+	case "auto", "":
+		return &anthropicToolChoice{Type: "auto"}
+	case "required", "any":
+		return &anthropicToolChoice{Type: "any"}
+	default:
+		return nil
+	}
 }
 
 // TranslateOpenAIToAnthropic converts an OpenAI chat completion request into
-// an Anthropic messages API request body using gjson for zero-AST message extraction.
+// an Anthropic messages API request body using gjson for zero-AST message
+// extraction. System and developer messages fold into the top-level system
+// string, assistant tool_calls become tool_use blocks, and tool role messages
+// become tool_result blocks merged into a single following user turn - which
+// is the only shape Anthropic accepts.
 func TranslateOpenAIToAnthropic(body []byte, upstreamModel string) ([]byte, error) {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return nil, ErrMalformedJSON
 	}
+	root := gjson.ParseBytes(body)
 
 	model := upstreamModel
 	if model == "" {
-		model = gjson.GetBytes(body, "model").String()
+		model = root.Get("model").String()
 	}
 
-	msgs := gjson.GetBytes(body, "messages").Array()
+	msgs := root.Get("messages").Array()
 	aMsgs := make([]anthropicMessage, 0, len(msgs))
 	var systems []string
+	var pendingResults []json.RawMessage
 
-	for _, msg := range msgs {
-		contentStr := extractContent(msg.Get("content"))
-		switch strings.ToLower(msg.Get("role").String()) {
-		case "system":
-			if contentStr != "" {
-				systems = append(systems, contentStr)
-			}
-		case "user":
-			aMsgs = append(aMsgs, anthropicMessage{Role: "user", Content: contentStr})
-		case "assistant":
-			aMsgs = append(aMsgs, anthropicMessage{Role: "assistant", Content: contentStr})
-		default:
-			aMsgs = append(aMsgs, anthropicMessage{Role: "user", Content: contentStr})
+	flushResults := func() {
+		if len(pendingResults) == 0 {
+			return
 		}
+		aMsgs = append(aMsgs, anthropicMessage{Role: "user", Content: pendingResults})
+		pendingResults = nil
 	}
 
+	for _, msg := range msgs {
+		switch strings.ToLower(msg.Get("role").String()) {
+		case "system", "developer":
+			flushResults()
+			if contentStr := extractContent(msg.Get("content")); contentStr != "" {
+				systems = append(systems, contentStr)
+			}
+		case "tool", "function":
+			// Consecutive tool answers accumulate so they land in one user turn.
+			block := anthropicToolResultBlock{
+				Type:      "tool_result",
+				ToolUseID: msg.Get("tool_call_id").String(),
+				Content:   extractContent(msg.Get("content")),
+			}
+			b, err := json.Marshal(block)
+			if err != nil {
+				return nil, fmt.Errorf("marshal tool_result: %w", err)
+			}
+			pendingResults = append(pendingResults, b)
+		case "assistant":
+			flushResults()
+			blocks, err := assistantBlocks(msg)
+			if err != nil {
+				return nil, err
+			}
+			aMsgs = append(aMsgs, anthropicMessage{Role: "assistant", Content: blocks})
+		case "user":
+			flushResults()
+			blocks, err := userBlocks(msg)
+			if err != nil {
+				return nil, err
+			}
+			aMsgs = append(aMsgs, anthropicMessage{Role: "user", Content: blocks})
+		default:
+			flushResults()
+			aMsgs = append(aMsgs, anthropicMessage{Role: "user", Content: extractContent(msg.Get("content"))})
+		}
+	}
+	flushResults()
+
 	maxTokens := 4096
-	if mt := gjson.GetBytes(body, "max_tokens"); mt.Exists() && mt.Int() > 0 {
+	if mt := root.Get("max_tokens"); mt.Exists() && mt.Int() > 0 {
 		maxTokens = int(mt.Int())
 	}
 
 	var temperature *float64
-	if temp := gjson.GetBytes(body, "temperature"); temp.Exists() {
+	if temp := root.Get("temperature"); temp.Exists() {
 		v := temp.Float()
 		temperature = &v
 	}
 
-	stream := gjson.GetBytes(body, "stream").Bool()
+	var topP *float64
+	if tp := root.Get("top_p"); tp.Exists() {
+		v := tp.Float()
+		topP = &v
+	}
+
+	stream := root.Get("stream").Bool()
 
 	var stopSeqs []string
-	if stopRes := gjson.GetBytes(body, "stop"); stopRes.Exists() {
+	if stopRes := root.Get("stop"); stopRes.Exists() {
 		if stopRes.IsArray() {
 			arr := stopRes.Array()
 			stopSeqs = make([]string, 0, len(arr))
 			for _, item := range arr {
-				s := item.String()
-				if s != "" {
+				if s := item.String(); s != "" {
 					stopSeqs = append(stopSeqs, s)
 				}
 			}
@@ -90,14 +344,22 @@ func TranslateOpenAIToAnthropic(body []byte, upstreamModel string) ([]byte, erro
 		}
 	}
 
+	tools, err := translateTools(root)
+	if err != nil {
+		return nil, err
+	}
+
 	aReq := anthropicRequest{
 		Model:         model,
 		System:        strings.Join(systems, "\n\n"),
 		Messages:      aMsgs,
 		MaxTokens:     maxTokens,
 		Temperature:   temperature,
+		TopP:          topP,
 		Stream:        stream,
 		StopSequences: stopSeqs,
+		Tools:         tools,
+		ToolChoice:    translateToolChoice(root),
 	}
 
 	return json.Marshal(aReq)

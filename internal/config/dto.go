@@ -11,6 +11,7 @@ type FileSet struct {
 	Combos     []byte
 	TokenSaver []byte
 	Visualizer []byte
+	Pricing    []byte
 }
 
 // --- DTOs mirroring the JSON schema. All fields are pointers or have explicit
@@ -121,6 +122,8 @@ type TenantDTO struct {
 	Status        string            `json:"status,omitempty"`
 	MaxTokens     int64             `json:"max_tokens,omitempty"`
 	UsedTokens    int64             `json:"used_tokens"`
+	BudgetMicros  int64             `json:"budget_micros,omitempty"`
+	SpentMicros   int64             `json:"spent_micros,omitempty"`
 	ExpiresAt     *int64            `json:"expires_at,omitempty"`
 	AllowedModels []string          `json:"allowed_models,omitempty"`
 	CredentialRef string            `json:"credential_ref,omitempty"`
@@ -174,6 +177,51 @@ type SettingsDTO struct {
 	Turso *TursoDTO `json:"turso,omitempty"`
 	// TokenSaver configures prompt and tool output optimization.
 	TokenSaver *TokenSaverDTO `json:"token_saver,omitempty"`
+	// Pricing carries the model price sheet. A nil value on update means
+	// "preserve the existing pricing section".
+	Pricing *PricingFile `json:"pricing,omitempty"`
+	// Notifications carries the webhook channel list. A nil value on update
+	// means "preserve the existing notifications section".
+	Notifications *NotificationsFile `json:"notifications,omitempty"`
+}
+
+// NotificationsFile is the top-level shape of notifications.json and of the
+// notifications section of the settings payload.
+type NotificationsFile struct {
+	Channels []NotificationChannelDTO `json:"channels"`
+}
+
+// NotificationChannelDTO is one webhook channel over the wire and on disk.
+// The bearer and secret are write-only: the API masks them on read so a
+// settings round trip never echoes a credential back.
+type NotificationChannelDTO struct {
+	URL         string   `json:"url"`
+	Format      string   `json:"format"`
+	Bearer      string   `json:"bearer,omitempty"`
+	Secret      string   `json:"secret,omitempty"`
+	Enabled     bool     `json:"enabled"`
+	Events      []string `json:"events,omitempty"`
+	MinSeverity string   `json:"min_severity,omitempty"`
+}
+
+// PricingEntryDTO mirrors domain.PricingEntry over the wire and on disk.
+// Prices are integer micro-USD per 1M tokens (1 USD per 1M tokens == 1
+// micro-USD per token), so a provider's decimal per-1M price is stored
+// exactly with no float rounding in the ledger.
+type PricingEntryDTO struct {
+	Model                string `json:"model"`
+	InputMicrosPerM      int64  `json:"input_micros_per_m"`
+	OutputMicrosPerM     int64  `json:"output_micros_per_m"`
+	CacheReadMicrosPerM  int64  `json:"cache_read_micros_per_m,omitempty"`
+	CacheWriteMicrosPerM int64  `json:"cache_write_micros_per_m,omitempty"`
+	Source               string `json:"source,omitempty"`
+	CanonicalModelID     string `json:"canonical_model_id,omitempty"`
+}
+
+// PricingFile is the top-level shape of pricing.json and of the pricing
+// section of the settings payload.
+type PricingFile struct {
+	Entries []PricingEntryDTO `json:"entries"`
 }
 
 // TokenSaverDTO mirrors tokensaver.json and configures optimization features.

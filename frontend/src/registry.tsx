@@ -32,6 +32,7 @@ import { QuotaPage } from '@/pages/QuotaPage';
 import { ConsolePage } from '@/pages/ConsolePage';
 import { VisualizerPage } from '@/pages/VisualizerPage';
 import { WarpPage } from '@/pages/WarpPage';
+import { PricingPage } from '@/pages/PricingPage';
 
 import { LoginPage } from '@/pages/LoginPage';
 import { UpstreamEditorPage } from '@/pages/UpstreamEditorPage';
@@ -52,6 +53,7 @@ export type PageId =
   | 'console'
   | 'visualizer'
   | 'warp'
+  | 'pricing'
   | 'login'
   | 'upstream-editor';
 
@@ -80,6 +82,7 @@ export const PAGES: Record<PageId, PageDef> = {
   quota:      { id: 'quota',      title: 'Quota',      description: 'Tenant quota tracker with top-up.',               group: 'MONITORING',    icon: Coins,         element: () => <QuotaPage /> },
   console:    { id: 'console',    title: 'Console',    description: 'Structured request execution log.',               group: 'MONITORING',    icon: Terminal,      element: () => <ConsolePage /> },
   visualizer: { id: 'visualizer', title: 'Visualizer', description: 'Live routing traces as pluggable diagrams.',      group: 'MONITORING',    icon: Radar,         element: () => <VisualizerPage /> },
+  pricing:    { id: 'pricing',    title: 'Pricing',    description: 'Model price sheet driving every cost figure.', group: 'CONFIGURATION', icon: Coins,         element: () => <PricingPage /> },
   login:      { id: 'login',      title: 'Sign in',    description: 'Dashboard master password.',                      group: 'AUTH',          icon: Lock,          element: () => <LoginPage /> },
   'upstream-editor': { id: 'upstream-editor', title: 'Upstream Editor', description: 'Full-page upstream configuration.', group: 'EDITOR', icon: Server, element: () => <UpstreamEditorPage /> },
 };

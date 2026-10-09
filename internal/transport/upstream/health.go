@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -96,9 +97,18 @@ type HealthChecker struct {
 	breakers BreakerManager
 	notifier ports.KeyActionNotifier
 	logger   *slog.Logger
+	// emitter reports probe outcomes. Nil means "report nothing", the default
+	// every existing caller and test runs with.
+	emitter EventEmitter
 
 	// staticUpstreams is used when provider is nil (e.g. in targeted tests)
 	staticUpstreams []*domain.Upstream
+}
+
+// SetEmitter installs the event emitter for probe outcomes. Passing nil
+// restores the silent default.
+func (h *HealthChecker) SetEmitter(e EventEmitter) {
+	h.emitter = e
 }
 
 // NewHealthChecker constructs a HealthChecker. notifier may be nil (or a
@@ -561,9 +571,23 @@ func (h *HealthChecker) reportOutcome(name string, ok bool, err error, status in
 		} else {
 			h.logger.Warn("upstream probe returned 5xx", "upstream", name, "status", status)
 		}
-	} else {
-		h.logger.Debug("upstream probe healthy", "upstream", name, "status", status)
+		emitHealthFailed(h.emitter, name, probeFailureReason(err, status))
+		return
 	}
+	h.logger.Debug("upstream probe healthy", "upstream", name, "status", status)
+	emitHealthRecovered(h.emitter, name)
+}
+
+// probeFailureReason renders why a probe failed for an event payload. It never
+// includes a credential, only the transport error or the status code.
+func probeFailureReason(err error, status int) string {
+	if err != nil {
+		return err.Error()
+	}
+	if status > 0 {
+		return "HTTP " + strconv.Itoa(status)
+	}
+	return "unknown"
 }
 
 // isNil reports whether v is nil, including typed-nil pointers stored in interfaces.

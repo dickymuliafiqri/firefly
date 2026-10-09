@@ -120,6 +120,12 @@ func (s *Store) Record(ctx context.Context, log RequestLog) error {
 		if log.TokensOut > 0 {
 			s.summary.OutputTokens += int64(log.TokensOut)
 		}
+		if log.CachedReadTokens > 0 {
+			s.summary.CachedReadTokens += int64(log.CachedReadTokens)
+		}
+		if log.CacheWriteTokens > 0 {
+			s.summary.CacheWriteTokens += int64(log.CacheWriteTokens)
+		}
 		totalTok := log.Tokens
 		if totalTok <= 0 {
 			totalTok = log.TokensIn + log.TokensOut
@@ -129,6 +135,9 @@ func (s *Store) Record(ctx context.Context, log RequestLog) error {
 		}
 		if log.EstimatedCost > 0 {
 			s.summary.EstimatedCostUSD += log.EstimatedCost
+		}
+		if log.CostMicros > 0 {
+			s.summary.EstimatedCostMicros += log.CostMicros
 		}
 	}
 

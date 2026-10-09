@@ -94,25 +94,70 @@ func (t *responseTracker) Flush() {
 	}
 }
 
-func parseUsageFromBytes(data []byte) (promptToks int, compToks int, ok bool) {
+// usageCounts carries the token counts parsed out of an upstream usage
+// object. Cached tokens are reported separately by both wire shapes: OpenAI
+// nests the read count under prompt_tokens_details, Anthropic uses flat
+// cache_read_input_tokens / cache_creation_input_tokens fields.
+type usageCounts struct {
+	promptToks int
+	compToks   int
+	cachedRead int
+	cacheWrite int
+	// cachedInPrompt records whether the provider's prompt figure already
+	// contains the cached reads. OpenAI does (prompt_tokens includes
+	// cached_tokens); Anthropic does not (input_tokens excludes both cache
+	// counters). Cost estimation subtracts the cached counts only for the
+	// former, so a cache hit is never billed twice.
+	cachedInPrompt bool
+}
+
+// parseUsageObject reads token counts from a gjson usage result, accepting
+// both the OpenAI and the Anthropic field names. It reports ok only when at
+// least one of prompt/completion is non-zero, so a usage object that carries
+// nothing but cache counters never fabricates a billed request.
+func parseUsageObject(usage gjson.Result) (usageCounts, bool) {
+	var c usageCounts
+	pt := usage.Get("prompt_tokens")
+	// The field name is the wire shape: prompt_tokens is the OpenAI spelling
+	// and already includes the cached reads, input_tokens is the Anthropic
+	// one and excludes them.
+	c.cachedInPrompt = pt.Exists()
+	if !pt.Exists() {
+		pt = usage.Get("input_tokens")
+	}
+	ct := usage.Get("completion_tokens")
+	if !ct.Exists() {
+		ct = usage.Get("output_tokens")
+	}
+	c.promptToks = int(pt.Int())
+	c.compToks = int(ct.Int())
+
+	// OpenAI: usage.prompt_tokens_details.cached_tokens
+	if d := usage.Get("prompt_tokens_details.cached_tokens"); d.Exists() {
+		c.cachedRead = int(d.Int())
+	}
+	// Anthropic: usage.cache_read_input_tokens / cache_creation_input_tokens
+	if v := usage.Get("cache_read_input_tokens"); v.Exists() {
+		c.cachedRead = int(v.Int())
+	}
+	if v := usage.Get("cache_creation_input_tokens"); v.Exists() {
+		c.cacheWrite = int(v.Int())
+	}
+
+	if c.promptToks > 0 || c.compToks > 0 {
+		return c, true
+	}
+	return usageCounts{}, false
+}
+
+func parseUsageFromBytes(data []byte) (usageCounts, bool) {
 	if len(data) == 0 {
-		return 0, 0, false
+		return usageCounts{}, false
 	}
 	// Case 1: Standard JSON object with top-level "usage"
 	if gjson.GetBytes(data, "usage").Exists() {
-		usage := gjson.GetBytes(data, "usage")
-		pt := usage.Get("prompt_tokens")
-		if !pt.Exists() {
-			pt = usage.Get("input_tokens")
-		}
-		ct := usage.Get("completion_tokens")
-		if !ct.Exists() {
-			ct = usage.Get("output_tokens")
-		}
-		pVal := int(pt.Int())
-		cVal := int(ct.Int())
-		if pVal > 0 || cVal > 0 {
-			return pVal, cVal, true
+		if c, ok := parseUsageObject(gjson.GetBytes(data, "usage")); ok {
+			return c, true
 		}
 	}
 
@@ -128,19 +173,8 @@ func parseUsageFromBytes(data []byte) (promptToks int, compToks int, ok bool) {
 			continue
 		}
 		if gjson.GetBytes(payload, "usage").Exists() {
-			usage := gjson.GetBytes(payload, "usage")
-			pt := usage.Get("prompt_tokens")
-			if !pt.Exists() {
-				pt = usage.Get("input_tokens")
-			}
-			ct := usage.Get("completion_tokens")
-			if !ct.Exists() {
-				ct = usage.Get("output_tokens")
-			}
-			pVal := int(pt.Int())
-			cVal := int(ct.Int())
-			if pVal > 0 || cVal > 0 {
-				return pVal, cVal, true
+			if c, ok := parseUsageObject(gjson.GetBytes(payload, "usage")); ok {
+				return c, true
 			}
 		}
 	}
@@ -151,37 +185,26 @@ func parseUsageFromBytes(data []byte) (promptToks int, compToks int, ok bool) {
 		sub := data[idx:]
 		usageBlock := append([]byte("{"), sub...)
 		if gjson.GetBytes(usageBlock, "usage").Exists() {
-			usage := gjson.GetBytes(usageBlock, "usage")
-			pt := usage.Get("prompt_tokens")
-			if !pt.Exists() {
-				pt = usage.Get("input_tokens")
-			}
-			ct := usage.Get("completion_tokens")
-			if !ct.Exists() {
-				ct = usage.Get("output_tokens")
-			}
-			pVal := int(pt.Int())
-			cVal := int(ct.Int())
-			if pVal > 0 || cVal > 0 {
-				return pVal, cVal, true
+			if c, ok := parseUsageObject(gjson.GetBytes(usageBlock, "usage")); ok {
+				return c, true
 			}
 		}
 	}
 
-	return 0, 0, false
+	return usageCounts{}, false
 }
 
-func (t *responseTracker) extractUsage() (promptToks int, compToks int, ok bool) {
+func (t *responseTracker) extractUsage() (usageCounts, bool) {
 	if t == nil {
-		return 0, 0, false
+		return usageCounts{}, false
 	}
-	if pIn, pOut, found := parseUsageFromBytes(t.tailBuf); found {
-		return pIn, pOut, true
+	if c, found := parseUsageFromBytes(t.tailBuf); found {
+		return c, true
 	}
-	if pIn, pOut, found := parseUsageFromBytes(t.bodyBuf); found {
-		return pIn, pOut, true
+	if c, found := parseUsageFromBytes(t.bodyBuf); found {
+		return c, true
 	}
-	return 0, 0, false
+	return usageCounts{}, false
 }
 
 // tokenSaverDetail summarizes one pre-forward rewrite for the visualizer's
@@ -279,9 +302,10 @@ func estimateInputTokens(body []byte) int {
 }
 
 // forwardEndpoint is the shared handler for /v1/chat/completions,
-// /v1/completions, and /v1/embeddings. The three share identical proxying
-// semantics and differ only in the upstream path, so one handler serves all.
-func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
+// /v1/completions, /v1/embeddings, and /v1/messages. The four share identical
+// proxying semantics and differ only in the upstream path and the client wire
+// protocol, so one handler serves all and the ingress carries the edges.
+func (deps RouterDeps) forwardEndpoint(upstreamPath string, ing ingress) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tenant, ok := httpx.RequireTenant(w, r)
 		if !ok {
@@ -289,13 +313,13 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 		}
 		snap := deps.currentSnapshot()
 		if snap == nil {
-			openai.WriteError(w, http.StatusServiceUnavailable, openai.TypeAPI, "config not loaded")
+			ing.WriteError(w, http.StatusServiceUnavailable, "config not loaded")
 			return
 		}
 
 		// 0. Fast-fail if Content-Length explicitly exceeds maximum allowable body size.
 		if r.ContentLength > maxRequestBodyBytes {
-			openai.WriteError(w, http.StatusRequestEntityTooLarge, openai.TypeInvalidRequest, "request body too large")
+			ing.WriteError(w, http.StatusRequestEntityTooLarge, "request body too large")
 			return
 		}
 
@@ -314,28 +338,28 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 		copyBufferPool.Put(copyBuf)
 
 		if err != nil {
-			openai.WriteError(w, http.StatusBadRequest, openai.TypeInvalidRequest, "failed to read request body")
+			ing.WriteError(w, http.StatusBadRequest, "failed to read request body")
 			return
 		}
 		if int64(buf.Len()) > maxRequestBodyBytes {
-			openai.WriteError(w, http.StatusRequestEntityTooLarge, openai.TypeInvalidRequest, "request body too large")
+			ing.WriteError(w, http.StatusRequestEntityTooLarge, "request body too large")
 			return
 		}
 		body := buf.Bytes()
 
 		// 2. Minimal decode for routing (zero-allocation fast path via gjson).
-		// A malformed body is a client error, not a 500: fail with OpenAI's invalid_request_error.
+		// A malformed body is a client error, not a 500: fail with the surface's
+		// own invalid-request envelope.
 		if len(body) > 0 && !gjson.ValidBytes(body) {
-			openai.WriteError(w, http.StatusBadRequest, openai.TypeInvalidRequest, "invalid JSON body")
+			ing.WriteError(w, http.StatusBadRequest, "invalid JSON body")
 			return
 		}
-		model := gjson.GetBytes(body, "model").String()
-		if model == "" {
-			openai.WriteError(w, http.StatusBadRequest, openai.TypeInvalidRequest, "you must provide a model parameter")
+		openAIBody, model, stream, tokensIn, parseErr := ing.ParseBody(body)
+		if parseErr != nil {
+			ing.WriteError(w, http.StatusBadRequest, parseErr.Error())
 			return
 		}
-		stream := gjson.GetBytes(body, "stream").Bool()
-		tokensIn := estimateInputTokens(body)
+		body = openAIBody
 
 		capture := deps.Traces.Start(trace.Meta{
 			ID:     httpx.RequestIDFrom(r.Context()),
@@ -347,6 +371,39 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 		})
 		capture.Stage(trace.StageReceived, strconv.Itoa(len(body))+" bytes")
 		defer capture.Finish(0, nil)
+
+		// 3a. Budget guard. A tenant that has already spent its cap is refused
+		// before any upstream work happens, so an exhausted budget costs nothing
+		// and the spend counter is untouched by the rejection itself. The check
+		// sits after the trace starts so the refusal is still visible in the
+		// request visualiser.
+		if tenant.BudgetExceeded() {
+			if deps.Logger != nil {
+				deps.Logger.Warn("tenant budget exceeded",
+					"request_id", httpx.RequestIDFrom(r.Context()),
+					"tenant", tenant.Name,
+					"budget_micros", tenant.BudgetMicros,
+					"spent_micros", tenant.SpentMicros.Load())
+			}
+			deps.recordLog(LiveLog{
+				ID:        httpx.RequestIDFrom(r.Context()),
+				Timestamp: time.Now().UnixMilli(),
+				Method:    r.Method,
+				Path:      r.URL.Path,
+				Status:    http.StatusTooManyRequests,
+				Model:     model,
+				Tenant:    tenant.Name,
+				Stream:    stream,
+				TokensIn:  tokensIn,
+				Tokens:    tokensIn,
+				Error:     "tenant budget exceeded",
+			})
+			capture.Fail(http.StatusTooManyRequests, nil)
+			w.Header().Set("Retry-After", "60")
+			ing.WriteError(w, http.StatusTooManyRequests,
+				"tenant budget exceeded; top up or raise the budget to continue")
+			return
+		}
 
 		// 3. Resolve the routing target (model -> upstream + credential).
 		var canUseUpstream func(string) bool
@@ -393,12 +450,12 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 					TokensIn:      tokensIn,
 					TokensOut:     0,
 					Tokens:        tokensIn,
-					EstimatedCost: float64(tokensIn) * 0.0000025,
+					EstimatedCost: microsToUSD(estimateRequestCost(snap, model, "", tokensIn, 0, 0, 0)),
 					Error:         "provider quota exhausted for every candidate",
 				})
 				capture.Fail(http.StatusTooManyRequests, nil)
 				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-				openai.WriteError(w, http.StatusTooManyRequests, openai.TypeRateLimit,
+				ing.WriteError(w, http.StatusTooManyRequests,
 					"provider quota exhausted for every upstream serving model "+model+
 						"; retry after the window resets")
 				return
@@ -433,10 +490,10 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 				TokensIn:      tokensIn,
 				TokensOut:     0,
 				Tokens:        tokensIn,
-				EstimatedCost: float64(tokensIn) * 0.0000025,
+				EstimatedCost: microsToUSD(estimateRequestCost(snap, model, "", tokensIn, 0, 0, 0)),
 				Error:         err.Error(),
 			})
-			writeResolveError(w, err)
+			ing.WriteResolveError(w, err)
 			return
 		}
 		capture.Stage(trace.StageResolve, model)
@@ -516,18 +573,18 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 					TokensIn:      tokensIn,
 					TokensOut:     0,
 					Tokens:        tokensIn,
-					EstimatedCost: float64(tokensIn) * 0.0000025,
+					EstimatedCost: microsToUSD(estimateRequestCost(snap, model, target.UpstreamModel, tokensIn, 0, 0, 0)),
 					Error:         "upstream credential capacity exhausted",
 				})
 				capture.Fail(http.StatusTooManyRequests, nil)
 				w.Header().Set("Retry-After", "1")
-				openai.WriteError(w, http.StatusTooManyRequests, openai.TypeRateLimit,
+				ing.WriteError(w, http.StatusTooManyRequests,
 					"upstream credential capacity exhausted; retry shortly")
 				return
 			}
 			capture.Fail(http.StatusInternalServerError, nil)
 
-			openai.WriteError(w, http.StatusInternalServerError, openai.TypeAPI, "admission control error")
+			ing.WriteError(w, http.StatusInternalServerError, "admission control error")
 			return
 		}
 		deps.Metrics.IncKeyInflight(target.Upstream.Name, keyRef)
@@ -602,7 +659,7 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 
 		adapter, err := deps.adapterFor(target.Upstream.Protocol)
 		if err != nil {
-			openai.WriteError(w, http.StatusNotImplemented, openai.TypeAPI, err.Error())
+			ing.WriteError(w, http.StatusNotImplemented, err.Error())
 			capture.Fail(http.StatusNotImplemented, err)
 
 			return
@@ -629,11 +686,14 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 			TokensIn:      tokensIn,
 			TokensOut:     0,
 			Tokens:        tokensIn,
-			EstimatedCost: float64(tokensIn) * 0.0000025,
+			EstimatedCost: microsToUSD(estimateRequestCost(snap, model, target.UpstreamModel, tokensIn, 0, 0, 0)),
 		})
 
-		tracker := &responseTracker{ResponseWriter: w}
+		tracker := &responseTracker{ResponseWriter: ing.WrapWriter(w, model, stream)}
 		fwdErr := adapter.Forward(trace.WithCapture(r.Context(), capture), target, fwdReq, tracker)
+		if finalizer, ok := tracker.ResponseWriter.(interface{ finalize(error) }); ok {
+			finalizer.finalize(fwdErr)
+		}
 		elapsed := time.Since(start)
 
 		// 6. Record usage regardless of outcome (a failed call still consumed
@@ -669,13 +729,17 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 			errStr = fwdErr.Error()
 		}
 		tokensOut := 0
-		if pIn, pOut, ok := tracker.extractUsage(); ok {
-			if pIn > 0 {
-				tokensIn = pIn
+		cachedRead, cacheWrite := 0, 0
+		cachedInPrompt := false
+		if u, ok := tracker.extractUsage(); ok {
+			if u.promptToks > 0 {
+				tokensIn = u.promptToks
 			}
-			if pOut > 0 {
-				tokensOut = pOut
+			if u.compToks > 0 {
+				tokensOut = u.compToks
 			}
+			cachedRead, cacheWrite = u.cachedRead, u.cacheWrite
+			cachedInPrompt = u.cachedInPrompt
 		}
 		if tokensOut <= 0 && keyStatus == http.StatusOK && tracker.bytesWritten > 0 {
 			if stream {
@@ -691,7 +755,9 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 			}
 		}
 		totTokens := tokensIn + tokensOut
-		totCost := (float64(tokensIn) * 0.0000025) + (float64(tokensOut) * 0.0000100)
+		billableIn := billableInputTokens(tokensIn, cachedRead, cacheWrite, cachedInPrompt)
+		costMicros := estimateRequestCost(snap, model, target.UpstreamModel, billableIn, tokensOut, cachedRead, cacheWrite)
+		totCost := microsToUSD(costMicros)
 
 		if totTokens > 0 && tenant != nil && tenant.UsedTokens != nil {
 			tenant.UsedTokens.Add(int64(totTokens))
@@ -700,27 +766,39 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string) http.HandlerFunc {
 				if key == "" {
 					key = tenant.KeyHash
 				}
-				flusher.RecordTenantTokens(key, int64(totTokens))
+				flusher.RecordTenantTokens(key, int64(totTokens), int64(cachedRead), int64(cacheWrite))
+			}
+		}
+
+		// Spend is recorded even when the upstream produced no token counts:
+		// a request that returned an error still consumed quota, and dropping it
+		// would let a failing upstream be used to drain a budget for free.
+		if tenant != nil {
+			if crossed := tenant.AddSpend(costMicros); crossed {
+				deps.emitTenantBudgetWarning(tenant)
 			}
 		}
 
 		deps.recordLog(LiveLog{
-			ID:            reqID,
-			Timestamp:     start.UnixMilli(),
-			Method:        r.Method,
-			Path:          r.URL.Path,
-			Status:        keyStatus,
-			DurationMs:    elapsed.Milliseconds(),
-			Model:         model,
-			Upstream:      upstreamName,
-			KeyRef:        keyRef,
-			Tenant:        tenant.Name,
-			Stream:        stream,
-			TokensIn:      tokensIn,
-			TokensOut:     tokensOut,
-			Tokens:        totTokens,
-			EstimatedCost: totCost,
-			Error:         errStr,
+			ID:               reqID,
+			Timestamp:        start.UnixMilli(),
+			Method:           r.Method,
+			Path:             r.URL.Path,
+			Status:           keyStatus,
+			DurationMs:       elapsed.Milliseconds(),
+			Model:            model,
+			Upstream:         upstreamName,
+			KeyRef:           keyRef,
+			Tenant:           tenant.Name,
+			Stream:           stream,
+			TokensIn:         tokensIn,
+			TokensOut:        tokensOut,
+			Tokens:           totTokens,
+			EstimatedCost:    totCost,
+			CostMicros:       costMicros,
+			CachedReadTokens: cachedRead,
+			CacheWriteTokens: cacheWrite,
+			Error:            errStr,
 		})
 
 		capture.SetUsage(tokensIn, tokensOut)

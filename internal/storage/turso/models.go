@@ -90,6 +90,8 @@ type TenantRecord struct {
 	Status        string            `json:"status"`
 	MaxTokens     int64             `json:"max_tokens"`
 	UsedTokens    int64             `json:"used_tokens"`
+	BudgetMicros  int64             `json:"budget_micros,omitempty"`
+	SpentMicros   int64             `json:"spent_micros,omitempty"`
 	ExpiresAt     *int64            `json:"expires_at,omitempty"`
 	RPS           *float64          `json:"rps,omitempty"`
 	Burst         *int              `json:"burst,omitempty"`

@@ -5,6 +5,48 @@ import { ResourceMonitor } from '@/components/ui/ResourceMonitor';
 import { SceneryStrip } from '@/components/shell/SceneryStrip';
 import { useTelemetryQuery } from '@/services/api';
 
+/**
+ * Dispatcher health at a glance. An operator needs to see that events are
+ * being dropped before a missed alert becomes an incident, so the drop counter
+ * is surfaced with a warning tone rather than hidden in telemetry.
+ */
+function NotificationsPanel({ stats }: { stats?: { queued: number; dropped: number; delivered: number; failed: number } | null }) {
+  if (!stats) return null;
+  const quiet = stats.delivered === 0 && stats.dropped === 0 && stats.failed === 0 && stats.queued === 0;
+  return (
+    <div className="card">
+      <div className="card-header">
+        <h2>Notifications</h2>
+        <Badge tone={stats.dropped > 0 ? 'warn' : stats.failed > 0 ? 'warn' : quiet ? 'neutral' : 'ok'}>
+          {stats.dropped > 0 ? 'DROPPING' : stats.failed > 0 ? 'FAILING' : quiet ? 'IDLE' : 'HEALTHY'}
+        </Badge>
+      </div>
+      <div className="card-body tight">
+        <KpiGrid>
+          <KpiCard label="Delivered" value={stats.delivered.toLocaleString()} />
+          <KpiCard label="Queued" value={stats.queued.toLocaleString()} />
+          <KpiCard
+            label="Dropped"
+            value={stats.dropped.toLocaleString()}
+            tone={stats.dropped > 0 ? 'warn' : 'plain'}
+          />
+          <KpiCard
+            label="Failed"
+            value={stats.failed.toLocaleString()}
+            tone={stats.failed > 0 ? 'warn' : 'plain'}
+          />
+        </KpiGrid>
+        {stats.dropped > 0 ? (
+          <p className="hint" style={{ marginTop: 10, fontSize: 12, color: 'var(--faint)' }}>
+            Events are being dropped because the queue is full — a channel is too slow or
+            unreachable. Raise the queue size or fix the channel in Settings → Notifications.
+          </p>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 export function OverviewPage() {
   const telemetry = useTelemetryQuery();
   const s = telemetry.data?.summary;
@@ -32,6 +74,7 @@ export function OverviewPage() {
 
         <QueryGate isLoading={telemetry.isLoading} error={telemetry.error}>
           <ResourceMonitor stats={telemetry.data?.resource_monitor} />
+          <NotificationsPanel stats={telemetry.data?.notifications} />
 
           <div className="card">
             <div className="card-header">

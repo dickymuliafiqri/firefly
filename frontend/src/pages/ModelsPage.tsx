@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { ArrowUp, ArrowDown, Trash2, Plus, RefreshCw } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { Segmented } from "@/components/ui/Controls";
@@ -6,10 +7,11 @@ import { Drawer } from "@/components/ui/Drawer";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { QueryGate } from "@/components/ui/QueryGate";
 import {
+  resolvePricing,
   useUpstreamModelsMutation,
   type UpstreamModelsRequest,
 } from "@/services/api";
-import type { ModelDTO, ComboDTO } from "@/services/schema";
+import type { ModelDTO, ComboDTO, PricingEntryDTO } from "@/services/schema";
 import {
   isValidModelName,
   sanitizeModelName,
@@ -17,6 +19,7 @@ import {
   MODEL_NAME_HINT,
 } from "@/services/schema";
 import { useUiStore } from "@/state/store";
+import { navigate } from "@/lib/router";
 import { useDraftStore, useSettingsView } from "@/state/draftStore";
 import { useModelCacheStore } from "@/services/modelCache";
 import { resolveBaseUrl } from "@/components/upstream/GeneralTab";
@@ -816,9 +819,17 @@ function ComboForm({
   );
 }
 
+/** Prices are integer micro-USD per 1M tokens, numerically identical to a
+ *  provider's USD-per-1M figure, so the table shows the provider's own number. */
+function perM(micros: number | undefined): string {
+  if (micros === undefined || micros === null) return "—";
+  return `$${(micros / 1_000_000).toFixed(3)}`;
+}
+
 export function ModelsPage() {
   const [panel, setPanel] = useState("direct");
   const [query, setQuery] = useState("");
+  const [pricingFilter, setPricingFilter] = useState("all");
   const settings = useSettingsView();
   const stage = useDraftStore((s) => s.stage);
   const [formOpen, setFormOpen] = useState(false);
@@ -829,14 +840,50 @@ export function ModelsPage() {
   const allModels = settings.data?.models ?? [];
   const allCombos = settings.data?.combos ?? [];
 
+  const pricingResolve = useQuery({
+    queryKey: ["pricing", "resolve", "models"],
+    queryFn: () =>
+      resolvePricing(
+        allModels.map((m) => ({
+          public_name: m.public_name,
+          upstream: m.upstream,
+          upstream_model: m.upstream_model,
+        })),
+      ),
+    enabled: allModels.length > 0,
+  });
+
+  // "Is this model priced?" cannot be answered client-side: the
+  // protocol-to-provider mapping and the wildcard rules live on the backend.
+  // One batch resolve covers the whole table, so the filter is exact rather
+  // than a guess based on the model name.
+  const pricedNames = useMemo(
+    () =>
+      new Set(
+        (pricingResolve.data?.entries ?? [])
+          .filter((e) => e.entry !== null)
+          .map((e) => e.public_name),
+      ),
+    [pricingResolve.data],
+  );
+
+  const priceByModel = useMemo(() => {
+    const map = new Map<string, PricingEntryDTO>();
+    for (const e of pricingResolve.data?.entries ?? []) {
+      if (e.entry !== null) map.set(e.public_name, e.entry);
+    }
+    return map;
+  }, [pricingResolve.data]);
+
   const q = query.trim().toLowerCase();
-  const models = q
-    ? allModels.filter(
-        (m) =>
-          m.public_name.toLowerCase().includes(q) ||
-          m.upstream.toLowerCase().includes(q),
-      )
-    : allModels;
+  const models = allModels.filter((m) => {
+    if (q && !m.public_name.toLowerCase().includes(q) && !m.upstream.toLowerCase().includes(q)) {
+      return false;
+    }
+    if (pricingFilter === "registered") return pricedNames.has(m.public_name);
+    if (pricingFilter === "unregistered") return !pricedNames.has(m.public_name);
+    return true;
+  });
   const combos = q
     ? allCombos.filter(
         (c) =>
@@ -893,6 +940,18 @@ export function ModelsPage() {
           onChange={setPanel}
           ariaLabel="Model panel"
         />
+        {panel === "direct" ? (
+          <Segmented
+            items={[
+              { id: "all", label: "All pricing" },
+              { id: "registered", label: "Registered" },
+              { id: "unregistered", label: "Not registered" },
+            ]}
+            value={pricingFilter}
+            onChange={setPricingFilter}
+            ariaLabel="Filter by pricing"
+          />
+        ) : null}
         <input
           type="search"
           placeholder="Search models…"
@@ -913,18 +972,37 @@ export function ModelsPage() {
                     <th>Upstream</th>
                     <th>Upstream model</th>
                     <th className="num">Fallbacks</th>
+                    <th className="num">In / 1M</th>
+                    <th className="num">Out / 1M</th>
                     <th>Status</th>
                     <th className="num">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {models.map((m) => (
+                  {models.map((m) => {
+                    const price = priceByModel.get(m.public_name);
+                    return (
                     <tr key={m.public_name}>
                       <td>{m.public_name}</td>
                       <td className="dim">{m.upstream}</td>
                       <td className="mono dim">{m.upstream_model}</td>
                       <td className="num">
                         {m.fallback_upstreams?.length ?? 0}
+                      </td>
+                      <td className="num">
+                        {price ? (
+                          perM(price.input_micros_per_m)
+                        ) : (
+                          <button
+                            className="btn btn-ghost"
+                            onClick={() => navigate("pricing", { model: m.public_name })}
+                          >
+                            Set price
+                          </button>
+                        )}
+                      </td>
+                      <td className="num">
+                        {price ? perM(price.output_micros_per_m) : "—"}
                       </td>
                       <td>
                         <Badge tone={m.enabled === false ? "neutral" : "ok"}>
@@ -969,10 +1047,11 @@ export function ModelsPage() {
                         </button>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                   {models.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="faint">
+                      <td colSpan={8} className="faint">
                         Model catalog is empty.
                       </td>
                     </tr>

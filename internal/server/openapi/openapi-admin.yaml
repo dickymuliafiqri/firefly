@@ -43,6 +43,12 @@ tags:
       by the Turso database: every handler fails closed with 503 when no store
       is configured. Sensitive
       fields are write-only or masked, never echoed.
+  - name: Pricing
+    description: >
+      Price-sheet seeding and catalog browsing. The local sheet in
+      `pricing.json` drives cost tracking on the data plane; the models.dev
+      catalog is a read-only public source the operator can browse and seed
+      from. Seeding is once-only: existing keys are never overwritten.
 
 security:
   - AdminAuth: []
@@ -532,6 +538,249 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
+  /api/pricing:
+    get:
+      tags: [Pricing]
+      summary: List the local price sheet
+      description: >
+        Returns every entry in the local price sheet, each annotated with a
+        `used` flag that says whether the gateway's own catalog actually routes
+        a model matching that key. Prices are integer micro-USD per 1M tokens.
+      operationId: listPricing
+      responses:
+        "200":
+          description: The price sheet.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  entries:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/PricingEntryView"
+                  total:
+                    type: integer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/pricing/{key}:
+    put:
+      tags: [Pricing]
+      parameters:
+        - $ref: "#/components/parameters/PricingKey"
+      summary: Create or replace one price entry
+      description: >
+        Upserts the entry for `key` (a model name, optionally a wildcard
+        prefix). A new entry is appended; an existing one takes the new numbers
+        and its `source` becomes `manual`, so a later models.dev import cannot
+        silently revert an operator's edit. The sheet is persisted through the
+        same pipeline as `POST /api/settings` and hot-swapped into the routing
+        snapshot.
+      operationId: upsertPricingEntry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PricingEntryUpsert"
+      responses:
+        "200":
+          description: The stored entry.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  entry:
+                    $ref: "#/components/schemas/PricingEntryUpsert"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    delete:
+      tags: [Pricing]
+      parameters:
+        - $ref: "#/components/parameters/PricingKey"
+      summary: Delete one price entry
+      description: >
+        Removes the entry for `key`. A model whose only price came from a
+        models.dev seed simply becomes unpriced and falls back to the legacy
+        flat rate, exactly as it did before any import.
+      operationId: deletePricingEntry
+      responses:
+        "200":
+          description: The entry was removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  key:
+                    type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          description: No entry exists for that key.
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/pricing/resolve:
+    post:
+      tags: [Pricing]
+      summary: Resolve what a batch of models would be billed at
+      description: >
+        Accepts the gateway's own models (`public_name`, `upstream`,
+        `upstream_model`) and returns the price entry each one resolves to, or
+        `null` when the sheet has nothing for it. The public name is tried
+        first and the upstream's private model name second, mirroring the cost
+        path. This endpoint exists because the protocol-to-provider mapping and
+        the wildcard rules live on the backend, so a client cannot answer "is
+        this model priced?" on its own.
+      operationId: resolvePricing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PricingResolveRequest"
+      responses:
+        "200":
+          description: One resolved entry per requested model.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  entries:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/PricingResolveEntry"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/pricing/import:
+    post:
+      tags: [Pricing]
+      summary: Seed the price sheet from the models.dev catalog
+      description: >
+        Fetches the public models.dev catalog (or reuses the in-memory cache),
+        selects entries, and merges them into the local price sheet. The merge
+        is additive-only: a key the sheet already holds — manual, wildcard, or
+        seeded by an earlier import — is never overwritten, so re-running the
+        endpoint only adds models the sheet does not know yet. The merged
+        sheet is persisted through the same pipeline as `POST /api/settings`
+        (Turso when configured, otherwise `pricing.json`) and hot-swapped into
+        the routing snapshot. Either `all` or a non-empty `models` list is
+        required. An unreachable models.dev surfaces as 502 and leaves the
+        live sheet untouched.
+      operationId: importPricing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PricingImportRequest"
+      responses:
+        "200":
+          description: Import complete. `added` may be 0 when every selected key is already present.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PricingImportResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "502":
+          description: The models.dev catalog could not be fetched.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PricingImportResponse"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/pricing/catalog:
+    get:
+      tags: [Pricing]
+      summary: Browse the models.dev catalog
+      description: >
+        Returns the cached models.dev catalog for the dashboard picker,
+        fetching it on first use. Models without a published cost are omitted.
+        `provider` filters on the exact models.dev provider id and `q` matches
+        a case-insensitive substring against the `provider/model` key and the
+        display name. The catalog is in-memory only: it never mutates the
+        persisted price sheet.
+      operationId: getPricingCatalog
+      parameters:
+        - name: provider
+          in: query
+          required: false
+          description: Exact models.dev provider id, e.g. `openai`.
+          schema:
+            type: string
+        - name: q
+          in: query
+          required: false
+          description: Case-insensitive substring over key and display name.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The catalog, optionally filtered.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PricingCatalogResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "502":
+          description: The models.dev catalog could not be fetched.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PricingCatalogResponse"
+
+  /api/pricing/catalog/refresh:
+    post:
+      tags: [Pricing]
+      summary: Refresh the models.dev catalog cache
+      description: >
+        Force-fetches the catalog and replaces the in-memory cache, so a
+        stale picker can be renewed without waiting for a restart. Like the
+        browse endpoint, this never mutates the persisted price sheet.
+      operationId: refreshPricingCatalog
+      responses:
+        "200":
+          description: The freshly fetched catalog, unfiltered.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PricingCatalogResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "502":
+          description: The models.dev catalog could not be fetched.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PricingCatalogResponse"
+
 components:
   securitySchemes:
     AdminAuth:
@@ -570,6 +819,17 @@ components:
         format: int64
         minimum: 1
         examples: [184]
+    PricingKey:
+      name: key
+      in: path
+      required: true
+      description: >
+        Price-sheet key: an exact model name or a wildcard prefix ending in
+        `*` (the longest matching prefix wins). Matched against both the
+        public model name and the upstream's private model name.
+      schema:
+        type: string
+        examples: ["gpt-4o", "claude-sonnet-4-*", "openai/gpt-4o"]
 
   responses:
     Unauthorized:
@@ -1211,3 +1471,204 @@ components:
           type: boolean
         reloaded:
           type: boolean
+
+    PricingEntryUpsert:
+      type: object
+      description: >
+        One price-sheet entry. All prices are integer micro-USD per 1M tokens,
+        so a provider's decimal per-1M price is stored exactly with no float
+        rounding. `model` in the body is ignored — the path key wins.
+      required: [input_micros_per_m, output_micros_per_m]
+      properties:
+        input_micros_per_m:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Uncached prompt price per 1M tokens.
+          examples: [2500000]
+        output_micros_per_m:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Completion price per 1M tokens.
+          examples: [10000000]
+        cache_read_micros_per_m:
+          type: integer
+          format: int64
+          minimum: 0
+          description: >
+            Cached prompt read price per 1M tokens. When absent, cached tokens
+            are billed at the input price rather than for free.
+          examples: [1250000]
+        cache_write_micros_per_m:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Prompt cache write price per 1M tokens. Falls back to the input price when absent.
+          examples: [3125000]
+        source:
+          type: string
+          description: Ignored on write; an upsert always records `manual`.
+          enum: [models.dev, manual]
+        canonical_model_id:
+          type: string
+          description: >
+            Provider-qualified id used to resolve a price for protocols that
+            serve several providers (antigravity serves both Gemini and
+            Claude).
+          examples: ["openai/gpt-4o"]
+
+    PricingEntryView:
+      allOf:
+        - $ref: "#/components/schemas/PricingEntryUpsert"
+        - type: object
+          properties:
+            model:
+              type: string
+              description: The price-sheet key.
+            used:
+              type: boolean
+              description: Whether the gateway's catalog routes a model matching this key.
+
+    PricingResolveRequest:
+      type: object
+      required: [models]
+      properties:
+        models:
+          type: array
+          items:
+            type: object
+            required: [public_name]
+            properties:
+              public_name:
+                type: string
+                description: The name a client asks for.
+              upstream:
+                type: string
+                description: The upstream serving the model.
+              upstream_model:
+                type: string
+                description: The provider's private model id.
+
+    PricingResolveEntry:
+      type: object
+      properties:
+        public_name:
+          type: string
+        matched_key:
+          type: string
+          description: The sheet key that matched, empty when nothing did.
+        entry:
+          description: The resolved entry, or null when the model is unpriced.
+          oneOf:
+            - $ref: "#/components/schemas/PricingEntryUpsert"
+            - type: "null"
+
+    PricingImportRequest:
+      type: object
+      description: >
+        Selection for a seed run. Exactly one of `all` or `models` must carry
+        a value. `overwrite` is accepted for forward compatibility and
+        deliberately ignored: seeding is once-only by design.
+      properties:
+        all:
+          type: boolean
+          description: Seed every catalog model whose provider maps to a configured protocol.
+        models:
+          type: array
+          description: Explicit `provider/model` keys to seed. Unknown keys are ignored.
+          items:
+            type: string
+          examples: [["openai/gpt-4o", "anthropic/claude-sonnet-4-5"]]
+        overwrite:
+          type: boolean
+          description: Ignored. Present so a future overwrite mode can be added without a breaking change.
+
+    PricingImportResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, error]
+        added:
+          type: integer
+          description: Keys newly written to the sheet.
+        skipped:
+          type: integer
+          description: Selected keys already present in the sheet (never overwritten).
+        total:
+          type: integer
+          description: Size of the merged sheet after the import.
+        catalog_fetched_at:
+          type: string
+          format: date-time
+          description: When the catalog snapshot backing this import was fetched.
+        error:
+          type: string
+          description: Failure detail. Present only when `status` is `error`.
+
+    PricingCatalogResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, error]
+        fetched_at:
+          type: string
+          format: date-time
+        providers:
+          type: array
+          description: Sorted provider ids present in the catalog.
+          items:
+            type: string
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/PricingCatalogEntry"
+        total:
+          type: integer
+          description: Number of entries after filtering.
+        error:
+          type: string
+          description: Failure detail. Present only when `status` is `error`.
+
+    PricingCatalogEntry:
+      type: object
+      description: One priced model in the models.dev catalog.
+      properties:
+        key:
+          type: string
+          description: Stable `provider/model` identifier used for selection.
+          examples: ["openai/gpt-4o"]
+        provider:
+          type: string
+        model_id:
+          type: string
+        name:
+          type: string
+          description: Human-readable display name from the catalog.
+        input_micros_per_m:
+          type: integer
+          format: int64
+          description: Input price in micro-USD per 1M tokens.
+        output_micros_per_m:
+          type: integer
+          format: int64
+          description: Output price in micro-USD per 1M tokens.
+        cache_read_micros_per_m:
+          type: integer
+          format: int64
+        cache_write_micros_per_m:
+          type: integer
+          format: int64
+        context_limit:
+          type: integer
+          format: int64
+        output_limit:
+          type: integer
+          format: int64
+        canonical_model_id:
+          type: string
+          description: >
+            Catalog canonical id. Falls back to the lowercased key when the
+            catalog omits it.

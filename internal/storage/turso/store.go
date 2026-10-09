@@ -237,12 +237,22 @@ func (s *Store) LoadCatalogSnapshot(ctx context.Context, envLookup func(string) 
 		}
 	}
 
+	// Pricing follows the same blob contract as Token Saver.
+	var pricingRaw []byte
+	if settings.Pricing != nil {
+		pricingRaw, err = json.Marshal(settings.Pricing)
+		if err != nil {
+			return nil, nil, fmt.Errorf("marshal pricing: %w", err)
+		}
+	}
+
 	fs := config.FileSet{
 		Upstreams:  upRaw,
 		Models:     modRaw,
 		Tenants:    tenRaw,
 		Combos:     combRaw,
 		TokenSaver: tsRaw,
+		Pricing:    pricingRaw,
 	}
 
 	res, err := config.Build(fs, envLookup)
@@ -271,6 +281,7 @@ func (s *Store) LoadCatalogSnapshot(ctx context.Context, envLookup func(string) 
 		res.TenantOrder,
 		domain.WithCombos(res.Combos, res.ComboOrder),
 		domain.WithTokenSaver(res.TokenSaver),
+		domain.WithPricing(res.Pricing),
 	)
 
 	return snap, res.Warnings, nil
@@ -696,7 +707,8 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 
 	// 5. Load Tenants
 	tenRows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, api_key, key_hash, key_hint, status, max_tokens, used_tokens, expires_at,
+		SELECT id, name, api_key, key_hash, key_hint, status, max_tokens, used_tokens,
+		       budget_micros, spent_micros, expires_at,
 		       rps, burst, max_concurrent, allowed_models, metadata
 		FROM tenants
 		ORDER BY id ASC
@@ -709,16 +721,18 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 	var tenants []config.TenantDTO
 	for tenRows.Next() {
 		var (
-			id                               int64
-			name, status                     string
-			apiKey, keyHash, keyHint         sql.NullString
-			maxTokens, usedTokens, expiresAt sql.NullInt64
-			rps                              sql.NullFloat64
-			burst, maxConcurrent             sql.NullInt64
-			allowedModelsJSON, metadataJSON  sql.NullString
+			id                              int64
+			name, status                    string
+			apiKey, keyHash, keyHint        sql.NullString
+			maxTokens, usedTokens           sql.NullInt64
+			budgetMicros, spentMicros       sql.NullInt64
+			expiresAt                       sql.NullInt64
+			rps                             sql.NullFloat64
+			burst, maxConcurrent            sql.NullInt64
+			allowedModelsJSON, metadataJSON sql.NullString
 		)
 
-		if err := tenRows.Scan(&id, &name, &apiKey, &keyHash, &keyHint, &status, &maxTokens, &usedTokens, &expiresAt, &rps, &burst, &maxConcurrent, &allowedModelsJSON, &metadataJSON); err != nil {
+		if err := tenRows.Scan(&id, &name, &apiKey, &keyHash, &keyHint, &status, &maxTokens, &usedTokens, &budgetMicros, &spentMicros, &expiresAt, &rps, &burst, &maxConcurrent, &allowedModelsJSON, &metadataJSON); err != nil {
 			return nil, fmt.Errorf("scan tenant: %w", err)
 		}
 
@@ -767,6 +781,8 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 			Status:        status,
 			MaxTokens:     maxTokens.Int64,
 			UsedTokens:    usedTokens.Int64,
+			BudgetMicros:  budgetMicros.Int64,
+			SpentMicros:   spentMicros.Int64,
 			ExpiresAt:     expPtr,
 			AllowedModels: allowedModels,
 			RateLimit:     rl,
@@ -783,12 +799,23 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 		}
 	}
 
+	var pricing *config.PricingFile
+	var pricingVal string
+	if err := s.db.QueryRowContext(ctx, "SELECT value FROM system_settings WHERE key = 'pricing'").Scan(&pricingVal); err == nil && pricingVal != "" {
+		var pr config.PricingFile
+		if err := json.Unmarshal([]byte(pricingVal), &pr); err == nil {
+			config.NormalizePricing(&pr)
+			pricing = &pr
+		}
+	}
+
 	return &config.SettingsDTO{
 		Upstreams:  upstreams,
 		Models:     models,
 		Combos:     combos,
 		Tenants:    tenants,
 		TokenSaver: tokenSaver,
+		Pricing:    pricing,
 	}, nil
 }
 
@@ -1296,12 +1323,14 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 				UPDATE tenants SET
 					name = ?, api_key = ?, key_hash = ?, key_hint = ?, status = ?,
 					max_tokens = ?, used_tokens = ?, expires_at = ?,
+					budget_micros = ?, spent_micros = ?,
 					rps = ?, burst = ?, max_concurrent = ?,
 					allowed_models = ?, metadata = ?,
 					version = version + 1, updated_at = ?
 				WHERE id = ?
 			`, t.Name, key, keyHash, keyHint, status,
 				t.MaxTokens, t.UsedTokens, expVal,
+				t.BudgetMicros, t.SpentMicros,
 				rpsVal, burstVal, maxConcurVal,
 				allowedJSON, metaJSON, now, existingID)
 			if err != nil {
@@ -1312,11 +1341,13 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 				INSERT INTO tenants (
 					name, api_key, key_hash, key_hint, status,
 					max_tokens, used_tokens, expires_at,
+					budget_micros, spent_micros,
 					rps, burst, max_concurrent, allowed_models, metadata,
 					version, created_at, updated_at
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
 			`, t.Name, key, keyHash, keyHint, status,
 				t.MaxTokens, t.UsedTokens, expVal,
+				t.BudgetMicros, t.SpentMicros,
 				rpsVal, burstVal, maxConcurVal,
 				allowedJSON, metaJSON, now, now)
 			if err != nil {
@@ -1344,6 +1375,17 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 				VALUES ('token_saver', ?, 1, ?)
 				ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
 			`, string(tsRaw), now)
+		}
+	}
+
+	// 4c. Upsert the pricing sheet if provided (same blob contract).
+	if settings.Pricing != nil {
+		if pricingRaw, err := json.Marshal(settings.Pricing); err == nil {
+			_, _ = tx.ExecContext(ctx, `
+				INSERT INTO system_settings (key, value, version, updated_at)
+				VALUES ('pricing', ?, 1, ?)
+				ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+			`, string(pricingRaw), now)
 		}
 	}
 

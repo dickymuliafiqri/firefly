@@ -164,6 +164,51 @@ paths:
         "503":
           $ref: "#/components/responses/ConfigUnavailable"
 
+  /v1/messages:
+    post:
+      tags: [Inference]
+      summary: Create message (Anthropic Messages API)
+      description: >
+        Anthropic-compatible messages endpoint. The request is translated into
+        the OpenAI chat-completions shape the gateway routes on, and the
+        response is translated back, so `/v1/messages` shares the same upstream
+        resolution, key rotation, token saver, budget guard, and usage metering
+        as `/v1/chat/completions`. `model` and `max_tokens` are required. Set
+        `stream: true` for a Server-Sent Events stream of Anthropic events
+        (`message_start`, `content_block_start`, `content_block_delta`,
+        `content_block_stop`, `message_delta`, `message_stop`).
+      operationId: createMessage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AnthropicMessageRequest"
+      responses:
+        "200":
+          description: >
+            An Anthropic message. When `stream` is false the body is a
+            `message` JSON object with `content` blocks; when true it is a
+            `text/event-stream` of Anthropic events.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnthropicMessageResponse"
+            text/event-stream:
+              schema:
+                type: string
+                description: "SSE stream of Anthropic message events."
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ConfigUnavailable"
+
   /v1/completions:
     post:
       tags: [Inference]
@@ -443,6 +488,95 @@ components:
         name:
           type: string
       additionalProperties: true
+
+    AnthropicMessageRequest:
+      type: object
+      required: [model, max_tokens, messages]
+      description: >
+        Anthropic Messages API request. `system` may be a plain string or an
+        array of text blocks; `messages` carry `user`/`assistant` turns whose
+        content is either a string or an array of `text`/`image` blocks, and
+        tool answers arrive as `user` turns holding `tool_result` blocks.
+      properties:
+        model:
+          type: string
+          description: Public model id or combo name (see /v1/models).
+        max_tokens:
+          type: integer
+          description: Required by the Anthropic API; bounds the completion.
+        system:
+          description: System prompt, either a string or an array of text blocks.
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: object
+                additionalProperties: true
+        messages:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        stream:
+          type: boolean
+          default: false
+        temperature:
+          type: number
+        top_p:
+          type: number
+        stop_sequences:
+          type: array
+          items:
+            type: string
+        tools:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        tool_choice:
+          description: '"auto", "any", or {"type":"tool","name":"..."}.'
+          oneOf:
+            - type: string
+            - type: object
+              additionalProperties: true
+      additionalProperties: true
+
+    AnthropicMessageResponse:
+      type: object
+      description: Anthropic `message` object (non-streaming).
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          const: message
+        role:
+          type: string
+          const: assistant
+        content:
+          type: array
+          description: Ordered `text` and `tool_use` blocks.
+          items:
+            type: object
+            additionalProperties: true
+        model:
+          type: string
+        stop_reason:
+          type: string
+          description: "end_turn | max_tokens | stop_sequence | tool_use | refusal"
+        stop_sequence:
+          type: [string, "null"]
+        usage:
+          type: object
+          properties:
+            input_tokens:
+              type: integer
+            output_tokens:
+              type: integer
+            cache_read_input_tokens:
+              type: integer
+            cache_creation_input_tokens:
+              type: integer
 
     ChatCompletionRequest:
       type: object

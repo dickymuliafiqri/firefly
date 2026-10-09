@@ -114,6 +114,45 @@ func TestBuildAndStoreCarriesTokenSaver(t *testing.T) {
 
 var _ = config.FileSetFromMap
 
+// TestBuildAndStoreCarriesPricing guards the reload path for the price sheet:
+// the table must reach the snapshot on startup and on every watcher reload,
+// otherwise per-model cost tracking silently reverts to the flat-rate
+// fallback until the next settings save.
+func TestBuildAndStoreCarriesPricing(t *testing.T) {
+	files := validFiles()
+	files["pricing"] = []byte(`{"entries":[
+		{"model":"m","input_micros_per_m":2500,"output_micros_per_m":10000,"source":"models.dev"},
+		{"model":"m-mini*","input_micros_per_m":150,"output_micros_per_m":600}
+	]}`)
+
+	r := New()
+	if _, err := r.BuildAndStore(context.Background(), &mapSource{files: files}, env); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	table := r.Current().Pricing()
+	if table == nil || table.Len() != 2 {
+		t.Fatalf("pricing table missing from the built snapshot: %+v", table)
+	}
+	e, ok := table.Lookup("m")
+	if !ok || e.InputMicrosPerM != 2500 || e.Source != "models.dev" {
+		t.Fatalf("exact pricing entry wrong: %+v ok=%v", e, ok)
+	}
+	if _, ok := table.Lookup("m-mini-2024"); !ok {
+		t.Fatal("wildcard pricing entry must resolve")
+	}
+
+	// A malformed sheet fails the reload and keeps the previous snapshot.
+	bad := validFiles()
+	bad["pricing"] = []byte(`{"entries":[{"model":"m","input_micros_per_m":-1}]}`)
+	if _, err := r.BuildAndStore(context.Background(), &mapSource{files: bad}, env); err == nil {
+		t.Fatal("negative price must fail the reload")
+	}
+	if r.Current().Pricing() == nil || r.Current().Pricing().Len() != 2 {
+		t.Fatal("failed reload must keep the previous pricing table")
+	}
+}
+
 // TestBuildAndStoreCarriesVisualizer guards the reload path for the private
 // visualizer: the recorder bounds must reach the snapshot, otherwise the
 // recorder silently falls back to defaults after every config reload.

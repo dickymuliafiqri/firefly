@@ -73,6 +73,7 @@ func (r *Registry) BuildAndStore(ctx context.Context, src ports.ConfigSource, en
 		domain.WithCombos(res.Combos, res.ComboOrder),
 		domain.WithTokenSaver(res.TokenSaver),
 		domain.WithVisualizer(res.Visualizer),
+		domain.WithPricing(res.Pricing),
 	)
 	r.Store(snap)
 	return res.Warnings, nil

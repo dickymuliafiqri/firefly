@@ -62,6 +62,8 @@ func tenantDTOFromDomain(t *domain.Tenant) config.TenantDTO {
 	if t.UsedTokens != nil {
 		used = t.UsedTokens.Load()
 	}
+	t.EnsureCounters()
+	spent := t.SpentMicros.Load()
 	apiKey := t.APIKey
 	if apiKey == "" {
 		apiKey = t.KeyHash
@@ -73,6 +75,8 @@ func tenantDTOFromDomain(t *domain.Tenant) config.TenantDTO {
 		Status:        string(t.Status),
 		MaxTokens:     t.MaxTokens,
 		UsedTokens:    used,
+		BudgetMicros:  t.BudgetMicros,
+		SpentMicros:   spent,
 		ExpiresAt:     expPtr,
 		AllowedModels: t.AllowedModels,
 		CredentialRef: t.CredentialRef,
@@ -496,12 +500,22 @@ func (deps RouterDeps) persistSettings(ctx context.Context, settings config.Sett
 		}
 	}
 
+	var pricingRaw []byte
+	if settings.Pricing != nil {
+		config.NormalizePricing(settings.Pricing)
+		pricingRaw, err = json.Marshal(settings.Pricing)
+		if err != nil {
+			return 0, nil, fmt.Errorf("marshal pricing: %w", err)
+		}
+	}
+
 	fs := config.FileSet{
 		Upstreams:  upRaw,
 		Models:     modRaw,
 		Tenants:    tenRaw,
 		Combos:     combRaw,
 		TokenSaver: tsRaw,
+		Pricing:    pricingRaw,
 	}
 
 	res, err := config.Build(fs, os.LookupEnv)
@@ -532,12 +546,18 @@ func (deps RouterDeps) persistSettings(ctx context.Context, settings config.Sett
 			tsIndent, _ = json.MarshalIndent(settings.TokenSaver, "", "  ")
 		}
 
+		var pricingIndent []byte
+		if settings.Pricing != nil {
+			pricingIndent, _ = json.MarshalIndent(settings.Pricing, "", "  ")
+		}
+
 		if err := writeCatalogFiles(deps.ConfigDir, catalogFileSet{
 			upstreams:  upIndent,
 			models:     modIndent,
 			tenants:    tenIndent,
 			combos:     combIndent,
 			tokenSaver: tsIndent,
+			pricing:    pricingIndent,
 		}); err != nil {
 			return 0, nil, err
 		}
@@ -547,6 +567,17 @@ func (deps RouterDeps) persistSettings(ctx context.Context, settings config.Sett
 	var newGen uint64
 	if !httpx.IsNil(deps.Registry) {
 		newGen = deps.Registry.NextGeneration()
+		opts := []domain.SnapshotOption{
+			domain.WithCombos(res.Combos, res.ComboOrder),
+			domain.WithTokenSaver(res.TokenSaver),
+			domain.WithPricing(res.Pricing),
+		}
+		// Same contract as handleUpdateSettings: the rebuilt FileSet carries
+		// no visualizer section, so re-attach the live bounds instead of
+		// resetting them to defaults on every tenant mutation.
+		if prev := deps.currentSnapshot(); prev != nil {
+			opts = append(opts, domain.WithVisualizer(prev.Visualizer()))
+		}
 		snap := domain.NewCatalogSnapshot(
 			newGen,
 			res.Upstreams,
@@ -555,8 +586,7 @@ func (deps RouterDeps) persistSettings(ctx context.Context, settings config.Sett
 			res.EnabledModelIDs,
 			res.TenantsByHash,
 			res.TenantOrder,
-			domain.WithCombos(res.Combos, res.ComboOrder),
-			domain.WithTokenSaver(res.TokenSaver),
+			opts...,
 		)
 		deps.Registry.Store(snap)
 		if deps.Metrics != nil {

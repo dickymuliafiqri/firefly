@@ -15,6 +15,7 @@ import {
   ApiError,
 } from "@/services/api";
 import { useDraftStore, useSettingsView } from "@/state/draftStore";
+import { NotificationsCard } from "@/components/NotificationsCard";
 import { handleSessionInvalid } from "@/lib/session";
 
 interface DiffRow {
@@ -1195,6 +1196,7 @@ export function SettingsPage() {
         <AccessCard />
         <PasswordCard />
         <TokenSaverCard />
+        <NotificationsCard />
         <TunnelCard />
 
         <TursoCard />

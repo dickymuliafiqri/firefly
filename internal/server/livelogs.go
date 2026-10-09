@@ -16,13 +16,16 @@ const maxLiveLogHistory = 100
 // LiveLogHub manages an in-memory ring buffer of recent request logs and
 // broadcasts live events to SSE subscribers with non-blocking sends.
 type LiveLogHub struct {
-	mu             sync.RWMutex
-	history        []LiveLog
-	subscribers    map[chan LiveLog]struct{}
-	totalInTokens  atomic.Int64
-	totalOutTokens atomic.Int64
-	totalReqs      atomic.Int64
-	store          *analytics.Store
+	mu              sync.RWMutex
+	history         []LiveLog
+	subscribers     map[chan LiveLog]struct{}
+	totalInTokens   atomic.Int64
+	totalOutTokens  atomic.Int64
+	totalReqs       atomic.Int64
+	totalCachedRead atomic.Int64
+	totalCacheWrite atomic.Int64
+	totalCostMicros atomic.Int64
+	store           *analytics.Store
 }
 
 // NewLiveLogHub creates an initialized LiveLogHub.
@@ -104,6 +107,18 @@ func (h *LiveLogHub) Publish(log LiveLog) {
 		if log.TokensOut > 0 {
 			h.totalOutTokens.Add(int64(log.TokensOut))
 		}
+		if log.CachedReadTokens > 0 {
+			h.totalCachedRead.Add(int64(log.CachedReadTokens))
+		}
+		if log.CacheWriteTokens > 0 {
+			h.totalCacheWrite.Add(int64(log.CacheWriteTokens))
+		}
+		// The live log carries dollars as a float; the micro-USD round trip is
+		// exact for any realistic ledger and keeps the telemetry fallback free
+		// of a second, divergent cost formula.
+		if log.EstimatedCost > 0 {
+			h.totalCostMicros.Add(int64(log.EstimatedCost*microsPerUSD + 0.5))
+		}
 	}
 
 	// Broadcast non-blocking to active subscribers
@@ -121,6 +136,27 @@ func (h *LiveLogHub) Publish(log LiveLog) {
 	if store != nil {
 		_ = store.Record(context.Background(), log)
 	}
+}
+
+// CumulativeCachedTokens returns the recorded cached read and cache write
+// prompt tokens. It is the fallback source for the telemetry summary when no
+// persistent analytics store is attached.
+func (h *LiveLogHub) CumulativeCachedTokens() (cachedRead, cacheWrite int64) {
+	if h == nil {
+		return 0, 0
+	}
+	return h.totalCachedRead.Load(), h.totalCacheWrite.Load()
+}
+
+// CumulativeCostMicros returns the recorded estimated cost in integer
+// micro-USD. It is the fallback source for the telemetry summary when no
+// persistent analytics store is attached, so the dashboard reports the same
+// priced figure the live logs do instead of a flat-rate guess.
+func (h *LiveLogHub) CumulativeCostMicros() int64 {
+	if h == nil {
+		return 0
+	}
+	return h.totalCostMicros.Load()
 }
 
 // CumulativeTotals returns the recorded input tokens, output tokens, and completed requests.

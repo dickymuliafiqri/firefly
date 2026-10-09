@@ -79,16 +79,17 @@ func TestOpenAPIAdminSpec_RefsResolve(t *testing.T) {
 	}
 }
 
-// adminRoutesFromSource extracts the METHOD /api/tenants*, /api/providers* and
-// /api/keys* routes registered in router.go so the admin spec is checked
-// against the actual mux registrations rather than a hand-maintained list.
+// adminRoutesFromSource extracts the METHOD /api/tenants*, /api/providers*,
+// /api/keys* and /api/pricing* routes registered in router.go so the admin
+// spec is checked against the actual mux registrations rather than a
+// hand-maintained list.
 func adminRoutesFromSource(t *testing.T) map[string]bool {
 	t.Helper()
 	src, err := os.ReadFile("router.go")
 	if err != nil {
 		t.Fatalf("read router.go: %v", err)
 	}
-	re := regexp.MustCompile(`"(GET|POST|PUT|PATCH|DELETE) (/api/(?:tenants|providers|keys)[A-Za-z0-9/_{}]*)"`)
+	re := regexp.MustCompile(`"(GET|POST|PUT|PATCH|DELETE) (/api/(?:tenants|providers|keys|pricing)[A-Za-z0-9/_{}]*)"`)
 	routes := map[string]bool{}
 	for _, m := range re.FindAllStringSubmatch(string(src), -1) {
 		// Skip OPTIONS/preflight; the spec documents the functional verbs only.
@@ -135,8 +136,11 @@ func TestOpenAPIAdminSpec_SanityRouteCount(t *testing.T) {
 	// POST /api/tenants/topup = 6.
 	// Providers/keys: GET+POST /api/providers, GET+PUT+DELETE /api/providers/{id},
 	// GET+POST /api/providers/{id}/keys, PATCH+DELETE /api/keys/{id} = 9.
-	if len(routes) != 15 {
-		t.Fatalf("expected 15 admin routes extracted from router.go, got %d: %v", len(routes), routes)
+	// Pricing: GET /api/pricing, PUT+DELETE /api/pricing/{key},
+	// POST /api/pricing/resolve, GET /api/pricing/catalog,
+	// POST /api/pricing/catalog/refresh, POST /api/pricing/import = 7.
+	if len(routes) != 22 {
+		t.Fatalf("expected 22 admin routes extracted from router.go, got %d: %v", len(routes), routes)
 	}
 }
 
