@@ -173,7 +173,8 @@ export async function saveSettings(
 export interface PricingCatalogEntry {
   key: string;
   provider: string;
-  model: string;
+  model_id: string;
+  name: string;
   input_micros_per_m: number;
   output_micros_per_m: number;
   cache_read_micros_per_m?: number;

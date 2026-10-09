@@ -5,6 +5,18 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.44.3] - 2026-10-09
+
+### Fixed
+
+- **Pricing — the models.dev catalog picker rendered an empty Model column (`frontend/src/services/api.ts`, `frontend/src/components/PricingCatalogPanel.tsx`)**: `GET /api/pricing/catalog` has always served each row as `model_id` plus a human-readable `name` (both documented in `openapi-admin.yaml`), but the dashboard's `PricingCatalogEntry` interface declared a single `model` field that the endpoint never emitted. `e.model` was therefore `undefined` and React rendered nothing, so every catalog row showed a blank Model cell while its provider and both prices displayed normally — the table looked populated, which is why the mismatch survived review. The interface now declares `model_id` and `name`, the picker renders the display name with the raw model id beneath it in a dimmed monospace sub-line, and the local search box matches the display name, the model id, and the `provider/model` key (the backend's own `q` filter already matched key and name; the client-side pass only saw the one missing field).
+  - Covered by `frontend/src/components/PricingCatalogPanel.test.tsx`: six tests over a fixture that decodes through the endpoint's real field names — every Model cell non-empty, name and model id both present in the cell, provider/price columns intact, filtering by display name, filtering by model id, and the picker staying closed until opened. Verified to fail against the old render.
+  - Backed by `TestPricingCatalogEntryFieldNames` in `internal/server/pricing_admin_test.go`, which decodes the live handler response into a struct mirroring the dashboard interface field-for-field and asserts `model_id`, `name`, prices, and limits are all populated, pinning the contract on the Go side too.
+
+### Changed
+
+- **Version bump**: `frontend/package.json` and `AppShell.tsx` bumped to `v1.44.3`.
+
 ## [1.44.2] - 2026-10-09
 
 ### Added

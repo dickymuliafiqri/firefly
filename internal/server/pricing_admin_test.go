@@ -246,6 +246,97 @@ func TestPricingCatalogBrowse(t *testing.T) {
 	}
 }
 
+// dashboardCatalogEntry mirrors the dashboard's PricingCatalogEntry interface
+// field-for-field. The catalog picker renders straight off these names, so a
+// rename on the Go side silently blanks the Model column: the rows still show a
+// provider and a price, which is exactly how the bug shipped.
+type dashboardCatalogEntry struct {
+	Key              string  `json:"key"`
+	Provider         string  `json:"provider"`
+	ModelID          string  `json:"model_id"`
+	Name             string  `json:"name"`
+	InputMicrosPerM  float64 `json:"input_micros_per_m"`
+	OutputMicrosPerM float64 `json:"output_micros_per_m"`
+	CacheReadMicros  float64 `json:"cache_read_micros_per_m"`
+	CacheWriteMicros float64 `json:"cache_write_micros_per_m"`
+	ContextLimit     int     `json:"context_limit"`
+	OutputLimit      int     `json:"output_limit"`
+	CanonicalModelID string  `json:"canonical_model_id"`
+}
+
+// TestPricingCatalogEntryFieldNames pins the JSON contract the dashboard
+// consumes. Decoding into the mirrored struct above is the check: a field the
+// handler stops emitting decodes as its zero value and the assertions below
+// fail instead of the UI quietly rendering an empty Model column.
+func TestPricingCatalogEntryFieldNames(t *testing.T) {
+	srv := serveFixture(t)
+	pointCatalogAt(t, srv.URL)
+	s, _ := newPricingTestServer(t)
+
+	w := pricingReq(t, s, "GET", "/api/pricing/catalog", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", w.Code, w.Body.String())
+	}
+
+	var body struct {
+		Status    string                  `json:"status"`
+		FetchedAt string                  `json:"fetched_at"`
+		Providers []string                `json:"providers"`
+		Entries   []dashboardCatalogEntry `json:"entries"`
+		Total     int                     `json:"total"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body.Total != 3 || len(body.Entries) != 3 {
+		t.Fatalf("total = %d, want 3", body.Total)
+	}
+
+	for _, e := range body.Entries {
+		if e.Key == "" {
+			t.Errorf("entry %+v has an empty key", e)
+		}
+		if e.Provider == "" {
+			t.Errorf("entry %+v has an empty provider", e)
+		}
+		// The two fields the picker's Model column and search box read.
+		if e.ModelID == "" {
+			t.Errorf("entry %+v is missing model_id", e)
+		}
+		if e.Name == "" {
+			t.Errorf("entry %+v is missing name", e)
+		}
+		if e.InputMicrosPerM <= 0 || e.OutputMicrosPerM <= 0 {
+			t.Errorf("entry %+v has non-positive prices", e)
+		}
+	}
+
+	// Spot-check the exact row the dashboard shows for gemini-2.5-pro.
+	var gemini *dashboardCatalogEntry
+	for i := range body.Entries {
+		if body.Entries[i].Key == "google/gemini-2.5-pro" {
+			gemini = &body.Entries[i]
+		}
+	}
+	if gemini == nil {
+		t.Fatal("google/gemini-2.5-pro missing from the catalog")
+	}
+	if gemini.ModelID != "gemini-2.5-pro" {
+		t.Errorf("model_id = %q, want gemini-2.5-pro", gemini.ModelID)
+	}
+	if gemini.Name != "Gemini 2.5 Pro" {
+		t.Errorf("name = %q, want \"Gemini 2.5 Pro\"", gemini.Name)
+	}
+	if gemini.InputMicrosPerM != 1_250_000 || gemini.OutputMicrosPerM != 10_000_000 {
+		t.Errorf("prices = %v/%v, want 1250000/10000000",
+			gemini.InputMicrosPerM, gemini.OutputMicrosPerM)
+	}
+	if gemini.ContextLimit != 1_048_576 || gemini.OutputLimit != 65_536 {
+		t.Errorf("limits = %d/%d, want 1048576/65536",
+			gemini.ContextLimit, gemini.OutputLimit)
+	}
+}
+
 func TestPricingCatalogRefresh(t *testing.T) {
 	srv := serveFixture(t)
 	pointCatalogAt(t, srv.URL)

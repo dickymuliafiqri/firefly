@@ -72,7 +72,10 @@ export function PricingCatalogPanel() {
     return entries.filter(
       (e) =>
         (provider === 'all' || e.provider === provider) &&
-        (q === '' || e.model.toLowerCase().includes(q)),
+        (q === '' ||
+          e.key.toLowerCase().includes(q) ||
+          e.model_id.toLowerCase().includes(q) ||
+          e.name.toLowerCase().includes(q)),
     );
   }, [entries, provider, search]);
 
@@ -155,7 +158,22 @@ export function PricingCatalogPanel() {
                         onChange={() => toggle(e.key)}
                       />
                     </td>
-                    <td className="mono">{e.model}</td>
+                    <td>
+                      <span>{e.name || e.model_id}</span>
+                      {e.model_id && e.model_id !== e.name ? (
+                        <span
+                          style={{
+                            display: 'block',
+                            fontSize: 11,
+                            marginTop: 1,
+                            color: 'var(--faint)',
+                            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                          }}
+                        >
+                          {e.model_id}
+                        </span>
+                      ) : null}
+                    </td>
                     <td className="dim">{e.provider}</td>
                     <td className="num">${(e.input_micros_per_m / 1_000_000).toFixed(3)}</td>
                     <td className="num">${(e.output_micros_per_m / 1_000_000).toFixed(3)}</td>
