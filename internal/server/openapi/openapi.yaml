@@ -416,6 +416,16 @@ components:
           type: string
           description: "`firefly` for direct models, `firefly-combo` for virtual combos."
           enum: [firefly, firefly-combo]
+        context_length:
+          type: integer
+          format: int64
+          description: >-
+            Context window in tokens, carried from the model's `max_context`
+            catalog setting. Coding agents (Cline, Roo Code, OpenRouter-style
+            clients) read model metadata to detect the window instead of
+            falling back to their own default. Omitted when the operator left
+            `max_context` unset. A virtual combo reports the smallest window
+            among its members, and only when every member has one.
 
     ModelsResponse:
       type: object

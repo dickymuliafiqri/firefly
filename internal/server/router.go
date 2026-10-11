@@ -133,6 +133,49 @@ type ModelObj struct {
 	Object  string `json:"object"`
 	Created int64  `json:"created"`
 	OwnedBy string `json:"owned_by"`
+	// ContextLength is the model's context window in tokens, carried straight
+	// from the catalog's max_context setting. Coding agents (Cline, Roo Code,
+	// OpenRouter-style clients) read model metadata to learn the window so
+	// they know when to condense a conversation; without the field they fall
+	// back to their own hardcoded default and either truncate early or
+	// overflow the upstream. A model with no configured max_context omits the
+	// field entirely instead of advertising a guess.
+	ContextLength *int `json:"context_length,omitempty"`
+}
+
+// modelContextLength returns the publishable context window for a direct
+// model, or nil when the operator left max_context unset. Absent is louder
+// than 0 here: a client seeing 0 would treat it as "no context at all".
+func modelContextLength(snap *domain.CatalogSnapshot, id string) *int {
+	entry, ok := snap.Model(id)
+	if !ok || entry == nil || entry.MaxContext <= 0 {
+		return nil
+	}
+	n := entry.MaxContext
+	return &n
+}
+
+// comboContextLength returns the context window a virtual combo may safely
+// advertise: the smallest configured window among its members, and only when
+// every member has one. A combo distributes requests across models with
+// different windows, so promising the largest would overflow the smallest
+// member, and one member without a configured value means the combo has no
+// safe bound at all.
+func comboContextLength(snap *domain.CatalogSnapshot, combo *domain.Combo) *int {
+	if combo == nil || len(combo.Models) == 0 {
+		return nil
+	}
+	smallest := 0
+	for _, name := range combo.Models {
+		n := modelContextLength(snap, name)
+		if n == nil {
+			return nil
+		}
+		if smallest == 0 || *n < smallest {
+			smallest = *n
+		}
+	}
+	return &smallest
 }
 
 // protected wraps a handler with auth then admission control. Order matters:
@@ -406,10 +449,11 @@ func (deps RouterDeps) handleListModels(w http.ResponseWriter, r *http.Request) 
 			continue
 		}
 		resp.Data = append(resp.Data, ModelObj{
-			ID:      id,
-			Object:  "model",
-			Created: now,
-			OwnedBy: "firefly",
+			ID:            id,
+			Object:        "model",
+			Created:       now,
+			OwnedBy:       "firefly",
+			ContextLength: modelContextLength(snap, id),
 		})
 	}
 	for _, combo := range snap.AllCombos() {
@@ -417,10 +461,11 @@ func (deps RouterDeps) handleListModels(w http.ResponseWriter, r *http.Request) 
 			continue
 		}
 		resp.Data = append(resp.Data, ModelObj{
-			ID:      combo.Name,
-			Object:  "model",
-			Created: now,
-			OwnedBy: "firefly-combo",
+			ID:            combo.Name,
+			Object:        "model",
+			Created:       now,
+			OwnedBy:       "firefly-combo",
+			ContextLength: comboContextLength(snap, combo),
 		})
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -444,10 +489,11 @@ func (deps RouterDeps) handleRetrieveModel(w http.ResponseWriter, r *http.Reques
 	if combo, ok := snap.Combo(id); ok && combo.Enabled && tenant.AllowsModel(id) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(ModelObj{
-			ID:      id,
-			Object:  "model",
-			Created: time.Now().Unix(),
-			OwnedBy: "firefly-combo",
+			ID:            id,
+			Object:        "model",
+			Created:       time.Now().Unix(),
+			OwnedBy:       "firefly-combo",
+			ContextLength: comboContextLength(snap, combo),
 		})
 		return
 	}
@@ -458,9 +504,10 @@ func (deps RouterDeps) handleRetrieveModel(w http.ResponseWriter, r *http.Reques
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(ModelObj{
-		ID:      id,
-		Object:  "model",
-		Created: time.Now().Unix(),
-		OwnedBy: "firefly",
+		ID:            id,
+		Object:        "model",
+		Created:       time.Now().Unix(),
+		OwnedBy:       "firefly",
+		ContextLength: modelContextLength(snap, id),
 	})
 }

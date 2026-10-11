@@ -5,6 +5,15 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.44.7] - 2026-10-11
+
+### Added
+
+- **`GET /v1/models` (and `GET /v1/models/{id}`) now publish the model context window as `context_length` (`internal/server/router.go`, `internal/server/openapi/openapi.yaml`)**: coding agents (Cline, Roo Code, Kilo Code, Cursor, Hermes, OpenRouter-style clients) size their conversation/condense logic off the model metadata they read from the gateway, but both model surfaces answered with only `id`, `object`, `created`, and `owned_by` — so an agent pointed at Firefly could never learn the window the operator had already configured and fell back to its own hardcoded default (Cline's 128k `openAiModelInfoSaneDefaults`, or whatever an operator typed by hand into the provider form). The catalog's `max_context` existed all the way down the stack — `ModelDTO.MaxContext` → `domain.ModelEntry.MaxContext` (settable in `models.json`, the dashboard Models page, and the Turso `models` row) — it was simply never serialized to the client. Every direct model now emits `context_length` (tokens) whenever `max_context > 0`, and the field is **absent** when unset: a client seeing `0` would read it as "no context at all", whereas an absent key clearly means "not declared".
+  - A virtual combo reports the **smallest** configured window among its members, and only when *every* member has one. A combo load-balances across models with different windows, so advertising the largest would overflow the smallest member, and one bare/unknown member means the combo has no safe bound to publish at all.
+  - Both handlers (`handleListModels`, `handleRetrieveModel`) resolve the value through `modelContextLength` / `comboContextLength`, which are nil-safe on a missing snapshot entry, so a catalog hot-swap that lands between the listing and the read degrades to an absent field instead of panicking.
+  - Documented in the `ModelObject` component schema. Covered by `internal/server/models_test.go`: list and retrieve surfaces, the omitempty wire behavior (raw-JSON key presence, not just the decoded pointer), combo smallest-member resolution, combo with a bare member, combo with a missing member, and the 404 path. `go test -count=1 -race ./internal/server/` passes.
+
 ## [1.44.6] - 2026-10-09
 
 ### Changed
