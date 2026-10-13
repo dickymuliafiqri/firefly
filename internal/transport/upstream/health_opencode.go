@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -71,13 +72,52 @@ func MapOpenCodeFreeModel(model string) string {
 	}
 }
 
+// openCodeIDCounter is the process-wide generator state behind
+// GenerateOpenCodeTimestampID. The official client keeps exactly this pair of
+// variables (packages/schema/src/identifier.ts): the counter resets to zero
+// every time the millisecond changes and is incremented for each ID minted
+// inside that millisecond, so a real client only ever emits small counters
+// (1, 2, 3 …).
+var openCodeIDCounter struct {
+	sync.Mutex
+	lastMs  int64
+	counter int64
+}
+
+// nextOpenCodeIDCounter returns the counter for an ID minted at nowMs, mirroring
+// the official client's per-millisecond sequence.
+//
+// Why this is not random (regression guard): OpenCode's free-tier gate decodes
+// the counter from the low 12 bits of the ID's timestamp field and rejects a
+// value that a single CLI process could not plausibly have produced inside one
+// millisecond, answering
+// 403 {"type":"FreeTierError","message":"OpenCode's free tier can only be used
+// from within OpenCode…"}. The generator used to draw a random 1…4096 counter,
+// which a Go gateway hits constantly; the gate then blocked perfectly valid
+// requests and the failure looked like a fingerprint/header problem even though
+// every other client attribute was byte-identical to the official client.
+func nextOpenCodeIDCounter(nowMs int64) int64 {
+	openCodeIDCounter.Lock()
+	defer openCodeIDCounter.Unlock()
+	if nowMs != openCodeIDCounter.lastMs {
+		openCodeIDCounter.lastMs = nowMs
+		openCodeIDCounter.counter = 0
+	}
+	// The counter shares the field with the timestamp (timestamp<<12 | counter),
+	// so it must stay inside 12 bits. The official client does not clamp, but a
+	// gateway mints far more IDs per millisecond than a CLI process; clamping
+	// keeps the timestamp intact instead of letting the counter carry into it.
+	if openCodeIDCounter.counter < 0x0FFF {
+		openCodeIDCounter.counter++
+	}
+	return openCodeIDCounter.counter
+}
+
 // GenerateOpenCodeTimestampID creates a timestamp-based 26-character ID identical to the official
 // OpenCode client: 12 hex characters from (or bitwise-inverted) (timestamp_ms*0x1000 + counter) and 14 base62 random chars.
 func GenerateOpenCodeTimestampID(descending bool) string {
 	now := time.Now().UnixMilli()
-	var rnd [2]byte
-	_, _ = rand.Read(rnd[:])
-	counter := (int64(rnd[0])<<8|int64(rnd[1]))&0x0FFF + 1
+	counter := nextOpenCodeIDCounter(now)
 	var value int64
 	if descending {
 		value = ^(now*0x1000 + counter)
