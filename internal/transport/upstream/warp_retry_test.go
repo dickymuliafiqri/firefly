@@ -79,6 +79,45 @@ func TestWarpRetryTransport_429RetriesThroughNewEgress(t *testing.T) {
 	}
 }
 
+// A 503 on a WARP egress is frequently an IP-bound resource exhaustion or regional
+// overload signal from upstream AI providers, so the transport must rotate and replay
+// through a new egress session rather than failing immediately.
+func TestWarpRetryTransport_503RetriesThroughNewEgress(t *testing.T) {
+	var baseCalls atomic.Int64
+	rot := &stubRotator{alternate: true}
+
+	base := rtFunc(func(*http.Request) (*http.Response, error) {
+		if baseCalls.Add(1) == 1 {
+			return textResponse(http.StatusServiceUnavailable, `{"error":{"message":"Resource exhausted"}}`), nil
+		}
+		return textResponse(http.StatusOK, `{"ok":true}`), nil
+	})
+
+	client := &http.Client{Transport: &warpRetryTransport{base: base, warp: rot}}
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		"https://upstream.example/v1/chat", strings.NewReader(`{"model":"m"}`))
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 after rotating egress on 503", resp.StatusCode)
+	}
+	if got := baseCalls.Load(); got != 2 {
+		t.Fatalf("base transport called %d times, want 2 (original + retry)", got)
+	}
+	if got := rot.rotations.Load(); got != 1 {
+		t.Fatalf("RotateEgress called %d times, want 1", got)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != `{"ok":true}` {
+		t.Fatalf("retry body = %q, want the successful response", body)
+	}
+}
+
 // The retried request must carry the same body as the original: http.Transport
 // consumes and closes the body it is handed, so a naive clone would replay an
 // empty payload.

@@ -5,6 +5,12 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.44.9] - 2026-10-13
+
+### Fixed
+
+- **WARP Egress — retry `503 Service Unavailable` on alternate sessions and immediately evict/replenish penalized pool slots (`internal/transport/warp/`, `internal/transport/upstream/`)**: upstream AI providers (Google Cloud Code / Gemini, OpenCode edge proxy, Claude, DeepSeek) frequently return HTTP `503` with "resource exhausted" or capacity limits when traffic on a shared public IP egress reaches regional rate thresholds. `warpRetryTransport` previously only intercepted HTTP `429`, passing `503` through to the caller and triggering circuit breaker host failures. `warpRetryTransport` now intercepts and replays `503 Service Unavailable` across live WARP sessions in the pool. Additionally, `RotateEgress` now immediately evicts the rate-limited proxy from `activeSessions` (gracefully draining in-flight streams via `drainSession`) and triggers asynchronous background replenishment (`replenishSlot`) to register a fresh WARP session, ensuring the pool is refilled with a clean IP rather than keeping dormant slots. Covered by unit tests in `internal/transport/warp/egress_retry_test.go` and `internal/transport/upstream/warp_retry_test.go`.
+
 ## [1.44.8] - 2026-10-13
 
 ### Fixed

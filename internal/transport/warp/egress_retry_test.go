@@ -200,3 +200,33 @@ func TestSetEgressLimit(t *testing.T) {
 		t.Fatalf("egressLimit after reset = %v, want the default", mgr.egressLimit)
 	}
 }
+
+// RotateEgress must evict the penalized session from the active pool so it is
+// removed rather than simply kept dormant, allowing a fresh session to take its slot.
+func TestRotateEgress_EvictsPenalizedSessionFromActivePool(t *testing.T) {
+	mgr := NewManager(quietLogger(), "")
+	defer mgr.Close()
+
+	a := &Session{PublicIP: "203.0.113.1", CreatedAt: time.Now()}
+	b := &Session{PublicIP: "203.0.113.2", CreatedAt: time.Now().Add(time.Second)}
+	c := &Session{PublicIP: "203.0.113.3", CreatedAt: time.Now().Add(2 * time.Second)}
+	seedActive(mgr, a, b, c)
+
+	mgr.lastPicked.Store(b)
+	if !mgr.RotateEgress() {
+		t.Fatal("expected alternate sessions when pool has 3 slots and 1 is penalized")
+	}
+
+	active := mgr.activeSessions()
+	if len(active) != 2 {
+		t.Fatalf("expected active pool length 2 after eviction, got %d", len(active))
+	}
+	for _, s := range active {
+		if s == b {
+			t.Fatal("penalized session b must be evicted from active pool")
+		}
+	}
+	if !b.quiesced.Load() {
+		t.Error("evicted session must be quiesced")
+	}
+}

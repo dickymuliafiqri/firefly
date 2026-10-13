@@ -1100,8 +1100,17 @@ func (m *Manager) RotateEgress() bool {
 		break
 	}
 
+	// Evict the penalized session immediately from the active pool and gracefully drain it,
+	// rather than leaving it in the active set.
+	if target != nil {
+		m.evictSession(target)
+	}
+
 	// Drop idle sockets pooled on the penalized IP so the next dial is fresh.
 	m.notifyRotation()
+
+	// Trigger background registration of a fresh session to refill the pool slot.
+	m.replenishSlot()
 
 	if m.logger != nil {
 		m.logger.Debug("warp egress rotated off a rate-limited IP",
@@ -1110,6 +1119,56 @@ func (m *Manager) RotateEgress() bool {
 			"alternate_available", alternate)
 	}
 	return alternate
+}
+
+// evictSession removes target from the active pool and moves it to drainSession
+// so its active in-flight streams finish cleanly without blocking new work.
+func (m *Manager) evictSession(target *Session) {
+	if m == nil || target == nil {
+		return
+	}
+	m.publishMu.Lock()
+	defer m.publishMu.Unlock()
+	if m.closed.Load() {
+		return
+	}
+
+	cur := cloneActive(&m.active)
+	idx := -1
+	for i, s := range cur {
+		if s == target {
+			idx = i
+			break
+		}
+	}
+	if idx >= 0 {
+		target.Quiesce()
+		cur = append(cur[:idx], cur[idx+1:]...)
+		m.active.Store(&cur)
+		m.drainSession(target)
+	}
+}
+
+// replenishSlot launches a background task to register and install a fresh
+// WARP session into the pool, replacing the slot vacated by an evicted session.
+func (m *Manager) replenishSlot() {
+	if m == nil || m.closed.Load() {
+		return
+	}
+	go func() {
+		defer func() {
+			if r := recover(); r != nil && m.logger != nil {
+				m.logger.Error("recovered from panic during warp session replenishment", "panic", r)
+			}
+		}()
+		ctx, cancel := context.WithTimeout(m.bgCtx, m.rotateTimeout)
+		defer cancel()
+		if _, err := m.Rotate(ctx); err != nil {
+			if !m.closed.Load() && m.logger != nil {
+				m.logger.Debug("background warp session replenishment skipped or failed", "err", err)
+			}
+		}
+	}()
 }
 
 // publicIPOf safely reads a session's public egress IP for logging.

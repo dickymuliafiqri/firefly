@@ -59,6 +59,19 @@ type warpRetryTransport struct {
 	warp egressRotator
 }
 
+// isWarpRetryableStatus reports whether an upstream response indicates an
+// egress-IP specific rate limit or temporary regional exhaustion that should be
+// retried through another live session in the WARP pool before surfacing.
+//
+// Status 429 Too Many Requests indicates IP/account quota exhaustion.
+// Status 503 Service Unavailable is frequently used by upstream AI providers
+// (Google Cloud Code / Gemini, OpenCode edge proxy, Claude, DeepSeek) for
+// "resource exhausted", "endpoint unavailable", or capacity throttle on that
+// egress route.
+func isWarpRetryableStatus(code int) bool {
+	return code == http.StatusTooManyRequests || code == http.StatusServiceUnavailable
+}
+
 // RoundTrip implements http.RoundTripper. The original request is never mutated:
 // every retry runs against a clone with a fresh body from GetBody.
 func (t *warpRetryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -66,12 +79,12 @@ func (t *warpRetryTransport) RoundTrip(req *http.Request) (*http.Response, error
 		return nil, errors.New("warp retry transport is not configured")
 	}
 	resp, err := t.base.RoundTrip(req)
-	// Only a 429 is an egress-IP signal. Transport errors and every other
+	// Only 429 and 503 are egress-IP signals. Transport errors and every other
 	// status keep flowing through the existing breaker/key paths untouched.
-	if err != nil || resp == nil || resp.StatusCode != http.StatusTooManyRequests {
+	if err != nil || resp == nil || !isWarpRetryableStatus(resp.StatusCode) {
 		return resp, err
 	}
-	// A body that cannot be replayed cannot be retried. Hand the 429 back so
+	// A body that cannot be replayed cannot be retried. Hand the response back so
 	// the adapter's key failover owns it.
 	if req.Body != nil && req.GetBody == nil {
 		return resp, nil
@@ -87,7 +100,7 @@ func (t *warpRetryTransport) RoundTrip(req *http.Request) (*http.Response, error
 		if buildErr != nil {
 			return resp, nil
 		}
-		// Release the 429 connection back to the pool *before* rotating, so
+		// Release the rate-limited connection back to the pool *before* rotating, so
 		// the rotation's CloseIdleConnections actually drops the socket
 		// instead of leaving it pinned to the penalized IP. The body is
 		// buffered (not discarded) because it may still have to be handed
@@ -95,7 +108,7 @@ func (t *warpRetryTransport) RoundTrip(req *http.Request) (*http.Response, error
 		resp.Body = bufferAndClose(resp.Body)
 
 		if !t.warp.RotateEgress() {
-			// No healthy alternate session: surface the 429 verbatim so the
+			// No healthy alternate session: surface the response verbatim so the
 			// adapter cools down the key and fails over exactly as before.
 			return resp, nil
 		}
@@ -108,7 +121,7 @@ func (t *warpRetryTransport) RoundTrip(req *http.Request) (*http.Response, error
 			return nil, errors.New("warp egress retry: upstream returned no response")
 		}
 		resp = retryResp
-		if resp.StatusCode != http.StatusTooManyRequests {
+		if !isWarpRetryableStatus(resp.StatusCode) {
 			return resp, nil
 		}
 	}
