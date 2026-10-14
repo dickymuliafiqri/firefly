@@ -31,6 +31,27 @@ var (
 	envVarNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 )
 
+// publicNameUnsafeRe matches any run of characters the gateway forbids in a
+// public_name; used only to build an advisory suggestion in error messages.
+var publicNameUnsafeRe = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
+
+// suggestNamespacedPublicName mirrors the dashboard's `uniquePublicName`: two
+// upstreams may legitimately expose the same provider model id, so the collision
+// is resolved by giving the second route a distinct public name namespaced under
+// its upstream (`<upstream>--<public_name>`). Returns "" when no valid
+// suggestion can be derived.
+func suggestNamespacedPublicName(upstream, publicName string) string {
+	s := publicNameUnsafeRe.ReplaceAllString(upstream+"--"+publicName, "-")
+	s = strings.TrimLeft(s, "-._")
+	if len(s) > 128 {
+		s = s[:128]
+	}
+	if !modelNameRe.MatchString(s) {
+		return ""
+	}
+	return s
+}
+
 // BuildResult is the fully-resolved, validated content ready to become a
 // snapshot. Maps are owned by the caller.
 type BuildResult struct {
@@ -159,8 +180,17 @@ func Build(fs FileSet, envLookup func(string) (string, bool)) (*BuildResult, err
 		if err != nil {
 			return nil, err
 		}
-		if _, dup := res.Models[m.PublicName]; dup {
-			return nil, &ValidationError{Field: "models", Msg: "duplicate public_name: " + m.PublicName}
+		if prev, dup := res.Models[m.PublicName]; dup {
+			msg := fmt.Sprintf("duplicate public_name %q: upstream %q maps %q, upstream %q maps %q",
+				m.PublicName, prev.Upstream, prev.UpstreamModel, m.Upstream, m.UpstreamModel)
+			if prev.Upstream != m.Upstream {
+				if suggestion := suggestNamespacedPublicName(m.Upstream, m.PublicName); suggestion != "" {
+					msg += fmt.Sprintf("; give this route a distinct public_name such as %q", suggestion)
+				} else {
+					msg += "; give this route a distinct public_name (namespaced per upstream)"
+				}
+			}
+			return nil, &ValidationError{Field: "models", Msg: msg}
 		}
 		res.Models[m.PublicName] = m
 		if m.Enabled {

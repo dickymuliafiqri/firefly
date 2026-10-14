@@ -2,7 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { Activity, Plus, RefreshCw, Square, X } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { Field } from "@/components/ui/Controls";
-import { isValidModelName, MODEL_NAME_HINT } from "@/services/schema";
+import {
+  findRegisteredRoute,
+  isValidModelName,
+  MODEL_NAME_HINT,
+} from "@/services/schema";
 import {
   useCheckUpstreamMutation,
   useUpstreamModelsMutation,
@@ -28,7 +32,6 @@ interface ModelsTabProps {
   probeModel: string;
   discoveredModels: string[];
   latencyMs: number | null;
-  catalogNames?: string[];
   catalogModels?: Array<{
     public_name: string;
     upstream: string;
@@ -58,7 +61,6 @@ export function ModelsTab({
   probeModel,
   discoveredModels,
   latencyMs,
-  catalogNames = [],
   catalogModels = [],
   onProbeModelChange,
   onDiscover,
@@ -587,13 +589,20 @@ export function ModelsTab({
                   </tr>
                 ) : (
                   discoveredModels.map((m) => {
-                    const existingMapping = catalogModels.find(
+                    // Registration is per-upstream: the same provider id may be
+                    // legitimately routed on other upstreams under a namespaced
+                    // public name, and that must not mark this one REGISTERED.
+                    const existingMapping = findRegisteredRoute(
+                      catalogModels,
+                      upstreamName,
+                      m,
+                    );
+                    const inCatalog = Boolean(existingMapping);
+                    const registeredElsewhere = catalogModels.filter(
                       (cm) =>
-                        cm.upstream === upstreamName &&
+                        cm.upstream !== upstreamName &&
                         (cm.upstream_model === m || cm.public_name === m),
                     );
-                    const inCatalog =
-                      Boolean(existingMapping) || catalogNames.includes(m);
                     const check = modelChecks[m];
                     const isProbe = probeModel === m;
                     return (
@@ -625,6 +634,20 @@ export function ModelsTab({
                           existingMapping.public_name !== m ? (
                             <div className="text-[11px] text-muted font-mono mt-0.5">
                               Mapped as: {existingMapping.public_name}
+                            </div>
+                          ) : null}
+                          {!existingMapping && registeredElsewhere.length > 0 ? (
+                            <div
+                              className="text-[11px] text-faint mt-0.5"
+                              title={registeredElsewhere
+                                .map((cm) => `${cm.upstream} → ${cm.public_name}`)
+                                .join("\n")}
+                            >
+                              Also routed on{" "}
+                              {registeredElsewhere
+                                .map((cm) => cm.upstream)
+                                .join(", ")}{" "}
+                              — adding here will namespace the name.
                             </div>
                           ) : null}
                         </td>
