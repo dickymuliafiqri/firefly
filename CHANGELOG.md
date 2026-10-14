@@ -5,6 +5,25 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.44.12] - 2026-10-15
+
+### Fixed
+
+- **Antigravity & Server — stop retry-amplifying host failures across the keyring and surface TTFB timeouts as 504 (`internal/adapter/antigravity/adapter.go`, `internal/server/handlers.go`)**:
+  - **Host failures were retried once per credential instead of bounded by retry policy.** In `Adapter.Forward`, `attempts` was raised to `KeyRing.SlotCount()`. While key rotation is needed for credential errors (429/401), a host failure (transport drop or 5xx) targets the same host for every key in the ring. On an upstream with 4 credentials (such as `agy`), a single slow request hitting TTFB timeout (`ResponseHeaderTimeout`, 30s) was retried across all 4 keys, taking 121s and logging 4 breaker failures. Two slow requests exceeded `FailureThreshold` (5), forcing the breaker `OPEN` and causing every subsequent request to fail with `503 circuit open` for the 10s cooldown. Host retries are now bounded by `hostAttempts` (`a.cfg.Retry.Attempts()`), while key failover remains free to rotate through the full keyring. On breaking out of the loop, execution drops into the post-loop relay so provider 5xx bodies are still relayed verbatim.
+  - **Transport timeouts now report as 504 Gateway Timeout instead of opaque 502.** When an upstream exceeds `ResponseHeaderTimeout` (e.g. Gemini 3.8 flash queueing under load), `writeUpstreamFailure` now checks `isUpstreamTimeout(ue.Cause)` and responds with `504` and `upstream did not start responding in time: <cause>`, clearly pointing the operator at upstream latency rather than a generic proxy error.
+
+## [1.44.11] - 2026-10-14
+
+### Fixed
+
+- **Antigravity — `502: {"message":"upstream request failed","type":"api_error"}` no longer stands in for three unrelated failures (`internal/server/handlers.go`, `internal/adapter/antigravity/adapter.go`, `internal/adapter/openai/errors.go`)**: the shared server layer emits that envelope from a single place, `writeUpstreamFailure`, and every antigravity failure that was not a relayed 4xx collapsed into it — which is why it looked intermittent and unexplainable.
+  - **A circuit-open rejection answered `502`, not `503`.** `writeUpstreamFailure` only mapped `503` when the error arrived wrapped in an `*openai.ErrUpstream`; antigravity (like cline, codebuddy, grok, qoder) returns the bare `upstream.ErrCircuitOpen` sentinel, so it fell through to the generic `502` *"upstream request failed"*. Because the breaker stays open for 10s and retries the trial window, *every* request in that window returned the identical `502` — indistinguishable from a real provider outage. `errors.Is(err, upstream.ErrCircuitOpen)` is now checked first and answers `503 upstream temporarily unavailable (circuit open)`.
+  - **An unresolvable credential was classified as a host failure.** `attempt()` reported it with status `0` — the transport-error shape — so `upstream.ProcessAttemptOutcome` treated a healthy host as failing: the breaker tripped (Layer 2) on a *credential* problem, the key's consecutive-error counter advanced as a transport drop, the request retried three times, and the client got the generic `502` instead of the `401` it is. It now returns `&openai.ErrUpstream{Status: 401}` with an OpenAI error envelope (`openai.ErrorBody`), keeping it in Layer 1 so the keyring can still fail over to another connection.
+  - **A 2xx response the translator could not parse tripped the breaker.** `TranslateAntigravityToOpenAI` failing on a 200 (a Google error envelope delivered under a success status, or a retired shape) returned a synthetic `500` with no body: reported as a host failure, retried, and finally surfaced as an opaque `502`. It is a protocol anomaly, not a host outage — it now answers `502 upstream returned an unreadable response: <reason>` and marks the attempt committed, so it neither retries nor reports `ok=false` to the breaker.
+  - **Inference requests now carry the Cloud Code identity headers.** `X-Goog-Api-Client` (`google-cloud-sdk vscode_cloudshelleditor/0.1`) and `Client-Metadata` (`{"ideType":"ANTIGRAVITY",…}`) were sent by the live probe but not by real traffic; both are now set alongside the existing `User-Agent`.
+  - Covered by `internal/server/upstream_failure_test.go` (bare and wrapped `ErrCircuitOpen` ⇒ `503`; transport, empty-5xx and plain errors stay `502`; a relayed 4xx and a client cancel write nothing) and `internal/adapter/antigravity/adapter_test.go` (`UnresolvedCredentialIs401` — never dials, never reports a host failure; `UnreadableSuccessBodyIs502` — answers with the reason, no retry, no breaker trip; `SendsCloudCodeIdentityHeaders`).
+
 ## [1.44.10] - 2026-10-13
 
 ### Fixed

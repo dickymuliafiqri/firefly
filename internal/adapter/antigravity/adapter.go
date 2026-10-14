@@ -142,15 +142,27 @@ func (a *Adapter) Forward(ctx context.Context, t *domain.Target, req ports.Forwa
 		return nil
 	}
 
-	attempts := 1
+	// Key failover may consume one attempt per credential (a 429 on one key is
+	// worth retrying on the next), but a HOST failure is not credential-specific:
+	// every slot in the ring points at the same host, so retrying it once per key
+	// only multiplies the wait and the breaker's failure count. The ring size as
+	// the bound did exactly that — a 4-credential antigravity upstream turned one
+	// slow request into 4 consecutive 30s TTFB timeouts (121s of latency) and 4
+	// breaker failures, so two such requests crossed FailureThreshold and every
+	// following request answered 503 "circuit open" for the whole cooldown. Host
+	// retries are therefore bounded by the retry policy; key rotation is not.
+	hostAttempts := 1
 	if a.cfg.Retry != nil {
-		attempts = a.cfg.Retry.Attempts()
+		hostAttempts = a.cfg.Retry.Attempts()
 	}
+	attempts := hostAttempts
 	if u.KeyRing != nil && u.KeyRing.SlotCount() > attempts {
 		attempts = u.KeyRing.SlotCount()
 	}
 
 	var lastErr error
+	hostFailures := 0
+retryLoop:
 	for attempt := 1; attempt <= attempts; attempt++ {
 		if attempt > 1 {
 			if ctx.Err() != nil {
@@ -199,6 +211,14 @@ func (a *Adapter) Forward(ctx context.Context, t *domain.Target, req ports.Forwa
 			lastErr = &openai.ErrUpstream{Status: res.status, Retried: attempt > 1, Cause: res.err, Body: res.body, Header: res.headers}
 			if !decision.IsHostFailure {
 				return lastErr
+			}
+			hostFailures++
+			if hostFailures >= hostAttempts {
+				// Break, do not return: the post-loop block relays the
+				// upstream body (it is how a provider 5xx envelope reaches the
+				// client verbatim). Returning here answered 200 with an empty
+				// body instead of the upstream error.
+				break retryLoop
 			}
 		}
 	}
@@ -310,6 +330,11 @@ func (a *Adapter) attempt(ctx context.Context, u *domain.Upstream, req ports.For
 
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("User-Agent", "antigravity/ide/2.11.0 darwin/arm64")
+	// The two identity headers the Cloud Code unified gateway documents besides
+	// Authorization and User-Agent. The live probe (NewProbeRequest) already
+	// sends them; real traffic must present the same fingerprint.
+	httpReq.Header.Set("X-Goog-Api-Client", googleAPIClient)
+	httpReq.Header.Set("Client-Metadata", clientMetadata)
 
 	token, ok := a.resolveToken(ctx, u, t)
 	if !ok {
@@ -317,7 +342,20 @@ func (a *Adapter) attempt(ctx context.Context, u *domain.Upstream, req ports.For
 		if t != nil && t.CredentialRef != "" {
 			ref = t.CredentialRef
 		}
-		return attemptResult{err: fmt.Errorf("credential %q could not be resolved", ref)}
+		// A credential that cannot be resolved is a KEY error (Layer 1), not a
+		// host failure: the upstream was never dialed. It used to be reported
+		// with status 0 (a transport shape), so ProcessAttemptOutcome classified
+		// it as a host failure — tripping the circuit breaker for a healthy host,
+		// advancing the key's consecutive-error counter as a transport drop,
+		// retrying three times, and surfacing as a generic 502 instead of the 401
+		// it is. A synthetic 401 keeps it in Layer 1 and still lets the ring fail
+		// over to another connection.
+		cause := fmt.Errorf("credential %q could not be resolved", ref)
+		return attemptResult{
+			status: http.StatusUnauthorized,
+			body:   openai.ErrorBody(openai.TypeAuthentication, cause.Error()),
+			err:    &openai.ErrUpstream{Status: http.StatusUnauthorized, Cause: cause},
+		}
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 
@@ -366,10 +404,22 @@ func (a *Adapter) attempt(ctx context.Context, u *domain.Upstream, req ports.For
 		}
 	}
 
-	// Translate non-streaming Antigravity response to OpenAI format
+	// Translate non-streaming Antigravity response to OpenAI format. A 2xx body
+	// we cannot parse is a protocol anomaly (a new upstream error envelope, a
+	// retired shape), not a host outage: answer with the reason and mark the
+	// attempt committed so it neither retries nor reports a host failure to the
+	// breaker. It previously returned a synthetic 500 with no body, which tripped
+	// the breaker and ended as an opaque 502.
 	openAIRespBytes, err := TranslateAntigravityToOpenAI(buf, t.UpstreamModel)
 	if err != nil {
-		return attemptResult{status: http.StatusInternalServerError, err: err}
+		openai.WriteError(w, http.StatusBadGateway, openai.TypeAPI,
+			"upstream returned an unreadable response: "+err.Error())
+		return attemptResult{
+			status:   resp.StatusCode,
+			headers:  resp.Header.Clone(),
+			streamed: true,
+			err:      err,
+		}
 	}
 
 	// Remember Gemini 3 thought signatures keyed by tool call id so the next
