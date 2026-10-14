@@ -74,6 +74,100 @@ export function sanitizeModelName(raw: string): string {
 }
 
 /**
+ * Minimal shape of a catalog model entry needed for identity checks. Kept
+ * structural (not the full `ModelDTO`) so pure helpers stay usable from tests
+ * and from callers that only carry a projection of the catalog.
+ */
+export interface CatalogModelLike {
+  public_name: string;
+  upstream: string;
+  upstream_model?: string;
+}
+
+/**
+ * Finds the catalog entry that already maps this upstream's model id.
+ *
+ * Identity is per-upstream: the same upstream model id (`gpt-4o`) may be
+ * registered on several upstreams as distinct public names, so "is this model
+ * already routed?" must be answered for *this* upstream, not for the whole
+ * catalog. A legacy match on `public_name` is also accepted, because an entry
+ * created before the upstream model id was tracked (or one registered by hand
+ * under the id itself) is still this upstream's route.
+ */
+export function findRegisteredRoute(
+  catalogModels: readonly CatalogModelLike[] = [],
+  upstreamName: string,
+  modelName: string,
+): CatalogModelLike | undefined {
+  return catalogModels.find(
+    (m) =>
+      m.upstream === upstreamName &&
+      (m.upstream_model === modelName || m.public_name === modelName),
+  );
+}
+
+/** Separator between the upstream namespace and the model id. `--` is valid in
+ *  a public name (`MODEL_NAME_RE`) yet never appears in a real model id, so a
+ *  namespaced name can never be mistaken for a raw one. */
+const NAMESPACE_SEP = "--";
+
+/**
+ * Derives a globally-unique public name for `modelName` on `upstreamName`.
+ *
+ * The gateway keys the catalog by `public_name` (globally unique), while the
+ * same provider model id legitimately exists on several upstreams. So the plain
+ * sanitized id is preferred when free, and on collision the upstream name is
+ * prefixed (`<upstream>--<model>`), with a numeric suffix (`-2`, `-3`, …) as a
+ * last resort when even the namespaced form is taken. Deterministic: repeated
+ * calls with the same catalog always yield the same name, so "Add all routes"
+ * run twice cannot invent drifting suffixes.
+ *
+ * Returns '' when nothing nameable remains (mirrors `sanitizeModelName`).
+ * Callers that must distinguish "already routed on this upstream" from "name
+ * collision" should check `findRegisteredRoute` first.
+ */
+export function uniquePublicName(
+  modelName: string,
+  upstreamName: string,
+  catalogModels: readonly CatalogModelLike[] = [],
+): string {
+  const taken = new Set(catalogModels.map((m) => m.public_name));
+  const base = sanitizeModelName(modelName);
+  if (!base) return "";
+  if (!taken.has(base)) return base;
+
+  const namespaced = namespaceName(upstreamName, modelName);
+  if (namespaced && namespaced !== base && !taken.has(namespaced)) {
+    return namespaced;
+  }
+
+  // Last resort: a numeric suffix on the best candidate we have. Bounded so a
+  // pathological catalog can never spin forever.
+  const stem = namespaced || base;
+  for (let n = 2; n < 10_000; n++) {
+    const suffix = `-${n}`;
+    const candidate = `${stem.slice(0, 128 - suffix.length)}${suffix}`;
+    if (!taken.has(candidate) && isValidModelName(candidate)) return candidate;
+  }
+  return stem;
+}
+
+/**
+ * Builds `<upstream>--<model>` within the 128-char public-name budget. The
+ * model part is truncated (not the upstream prefix) so a long provider id can
+ * never swallow the namespace that makes the name unique.
+ */
+function namespaceName(upstreamName: string, modelName: string): string {
+  const prefix = sanitizeModelName(upstreamName);
+  if (!prefix) return "";
+  const budget = 128 - prefix.length - NAMESPACE_SEP.length;
+  if (budget <= 0) return prefix.slice(0, 128);
+  const model = sanitizeModelName(modelName).slice(0, budget);
+  if (!model) return prefix;
+  return `${prefix}${NAMESPACE_SEP}${model}`;
+}
+
+/**
  * Scans a save payload for the first catalog entry the backend's name rules
  * would reject. Gives the dashboard a precise, named complaint instead of the
  * backend's index-based `models[0]` / `combos[0]` messages — even when the

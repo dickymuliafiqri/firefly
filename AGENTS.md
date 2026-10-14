@@ -37,6 +37,11 @@ Before modifying or adding code to Firefly, every AI Agent **must understand and
    The static `adminToken` path stays exactly as it is: it is a **machine credential** for fetch/API callers (harvester, operator CRUD), never a dashboard session, and it must not be repurposed as a login shortcut. The token parser must fail closed on malformed, forged, expired, or superseded-generation input, with the tag compared via `hmac.Equal`.
    Regression coverage lives in `TestSessionToken_ValidAcrossInstances` (package level) and `TestAuthEndpoints_SessionHonoredByAnotherInstance` (HTTP level: login on one instance, authorized request on another).
 
+9. **Model Identity Is Per-Upstream — Never Gate Registration On The Global Name List:**
+   The catalog is keyed by the globally-unique `public_name` (`config.Build` rejects a duplicate), but the same provider model id (`gpt-4o`) legitimately exists on many upstreams and must be routable on each. The dashboard must therefore answer "is this already registered?" **per upstream**, never against the global catalog name list — doing so previously reported upstream B's `gpt-4o` as `REGISTERED` the moment upstream A registered its own, and both the Models tab and the upstream editor's "Add route" / "Add all routes" dead-ended the operator on *"Already registered"*.
+   The single source of truth is `frontend/src/services/schema.ts`: `findRegisteredRoute(catalogModels, upstreamName, modelName)` (this upstream maps this id; a `public_name` match is accepted for legacy rows) and `uniquePublicName(modelName, upstreamName, catalogModels)`, which keeps `public_name` unique by namespacing under the upstream (`<upstream>--<model>`, deterministic, 128-char budget with the model part truncated before the upstream prefix) and only then appending a bounded numeric suffix. The Models page form refuses a cross-upstream overwrite (otherwise appending a same-named entry silently deletes another upstream's route), and `config.Build`'s `duplicate public_name` error names both mappings and suggests a namespaced name (`suggestNamespacedPublicName`).
+   New code paths that add or check model routes must go through these helpers; re-introducing a raw `catalogNames.includes(...)` check is the regression this replaced.
+
 ---
 
 ## 2. Package Map

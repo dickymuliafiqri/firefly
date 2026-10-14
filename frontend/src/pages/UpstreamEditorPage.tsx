@@ -10,6 +10,7 @@ import {
 import { PageHeader } from "@/components/ui/PageHeader";
 import type { UpstreamDTO, CredentialKeyDTO } from "@/services/schema";
 import { sanitizeModelName } from "@/services/schema";
+import { findRegisteredRoute, uniquePublicName } from "@/services/schema";
 import { useHashRest, navigate } from "@/lib/router";
 import { useUiStore } from "@/state/store";
 import { useDraftStore, useSettingsView } from "@/state/draftStore";
@@ -161,29 +162,37 @@ export function UpstreamEditorPage() {
   }, [editingTarget, isEdit, editingName]);
 
   // Model actions
-  const catalogModelNames = (settings.data?.models ?? []).map(
-    (m) => m.public_name,
-  );
-
   function handleCreateRoute(modelName: string) {
     if (!settings.data) return;
-    // Discovered upstream ids routinely contain characters the gateway forbids
-    // in public names (`vendor/model`, `name:tag`), so register under the
-    // sanitized name while keeping the raw id as the provider-side mapping.
-    const publicName = sanitizeModelName(modelName);
+    // Identity is per-upstream: the same provider id (`gpt-4o`) may be routed on
+    // several upstreams, so "already registered" means *this* upstream already
+    // maps it — another upstream's identically-named route must not block us.
+    const existing = findRegisteredRoute(
+      settings.data.models,
+      general.name,
+      modelName,
+    );
+    if (existing) {
+      pushToast({
+        type: "info",
+        title: "Already registered",
+        message: `${general.name} already routes ${modelName} as ${existing.public_name}.`,
+      });
+      return;
+    }
+    // Public names are globally unique in the catalog; when a different upstream
+    // already owns the derived name, namespace under this upstream instead of
+    // refusing (previously this dead-ended the operator on "Already registered").
+    const publicName = uniquePublicName(
+      modelName,
+      general.name,
+      settings.data.models,
+    );
     if (!publicName) {
       pushToast({
         type: "error",
         title: "Invalid model name",
         message: `Cannot derive a valid public name from "${modelName}". Add a route from the Models page instead.`,
-      });
-      return;
-    }
-    if (catalogModelNames.includes(publicName)) {
-      pushToast({
-        type: "info",
-        title: "Already registered",
-        message: `Model ${publicName} already exists in the catalog.`,
       });
       return;
     }
@@ -200,37 +209,48 @@ export function UpstreamEditorPage() {
     pushToast({
       type: "info",
       title: "Route staged",
-      message: `Model ${publicName} added to pending changes — commit to register it.`,
+      message:
+        publicName === sanitizeModelName(modelName)
+          ? `Model ${publicName} added to pending changes — commit to register it.`
+          : `Model ${publicName} namespaced (${modelName} is taken by another upstream) — commit to register it.`,
     });
   }
 
   function handleCreateAllRoutes(modelsToAdd: string[]) {
     if (!settings.data) return;
-    const currentSet = new Set(catalogModelNames);
-    const seen = new Set<string>();
-    const newModels = [];
+    // Fold against a growing list so two ids of one batch (or an id that needs a
+    // namespace) can never produce the same public name and make the backend
+    // reject the whole save.
+    let working = [...settings.data.models];
+    let added = 0;
+    let namespaced = 0;
     for (const raw of modelsToAdd) {
-      const publicName = sanitizeModelName(raw);
-      // Skip empty derivations (nothing registerable) and anything that would
-      // collide with the catalog or with an earlier entry of this same batch —
-      // either would make the backend reject the whole save.
-      if (!publicName || currentSet.has(publicName) || seen.has(publicName))
-        continue;
-      seen.add(publicName);
-      newModels.push({
-        public_name: publicName,
-        upstream: general.name,
-        upstream_model: raw,
-        enabled: true,
-      });
+      if (findRegisteredRoute(working, general.name, raw)) continue;
+      const publicName = uniquePublicName(raw, general.name, working);
+      if (!publicName) continue;
+      if (publicName !== sanitizeModelName(raw)) namespaced++;
+      working = [
+        ...working,
+        {
+          public_name: publicName,
+          upstream: general.name,
+          upstream_model: raw,
+          enabled: true,
+        },
+      ];
+      added++;
     }
 
-    if (newModels.length === 0) return;
-    stage({ models: [...settings.data.models, ...newModels] });
+    if (added === 0) return;
+    stage({ models: working });
     pushToast({
       type: "info",
       title: "Routes staged",
-      message: `${newModels.length} model routes added to pending changes.`,
+      message:
+        `${added} model routes added to pending changes` +
+        (namespaced > 0
+          ? ` (${namespaced} namespaced to avoid collisions with other upstreams).`
+          : "."),
     });
   }
 
@@ -479,7 +499,6 @@ export function UpstreamEditorPage() {
           probeModel={probeModel}
           discoveredModels={discoveredModels}
           latencyMs={modelsLatency}
-          catalogNames={catalogModelNames}
           catalogModels={settings.data?.models ?? []}
           onProbeModelChange={setProbeModel}
           onDiscover={(mods, lat) => {

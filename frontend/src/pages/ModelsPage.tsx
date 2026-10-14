@@ -16,6 +16,7 @@ import {
   isValidModelName,
   sanitizeModelName,
   findInvalidCatalogName,
+  uniquePublicName,
   MODEL_NAME_HINT,
 } from "@/services/schema";
 import { useUiStore } from "@/state/store";
@@ -210,6 +211,37 @@ function ModelForm({ editing, onClose }: ModelFormProps) {
           }
         : {}),
     };
+    // A public name is the gateway-wide identity, but the same provider id is
+    // routinely routed on several upstreams. Appending below drops every entry
+    // with this public_name — including another upstream's — so refuse that
+    // cross-upstream overwrite instead of silently deleting a live route.
+    const originalKey = editing
+      ? `${editing.public_name}\u0000${editing.upstream}\u0000${editing.upstream_model}`
+      : null;
+    const collision = settings.data.models.find(
+      (m) =>
+        m.public_name === entry.public_name &&
+        m.upstream !== entry.upstream &&
+        `${m.public_name}\u0000${m.upstream}\u0000${m.upstream_model}` !==
+          originalKey,
+    );
+    if (collision) {
+      const suggestion = uniquePublicName(
+        entry.upstream_model,
+        entry.upstream,
+        settings.data.models,
+      );
+      pushToast({
+        type: "error",
+        title: "Name used by another upstream",
+        message:
+          `"${entry.public_name}" is already routed on upstream "${collision.upstream}". ` +
+          (suggestion
+            ? `Use a different public name, e.g. "${suggestion}".`
+            : "Use a different public name."),
+      });
+      return;
+    }
     const others = settings.data.models.filter(
       (m) => m.public_name !== entry.public_name,
     );
