@@ -6,12 +6,21 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
 	"github.com/dickymuliafiqri/firefly/internal/transport/upstream"
 	"github.com/stretchr/testify/assert"
 )
+
+// timeoutNetErr mimics the net.Error net/http returns when the transport's
+// ResponseHeaderTimeout expires ("net/http: timeout awaiting response headers").
+type timeoutNetErr struct{}
+
+func (timeoutNetErr) Error() string   { return "net/http: timeout awaiting response headers" }
+func (timeoutNetErr) Timeout() bool   { return true }
+func (timeoutNetErr) Temporary() bool { return true }
 
 // writeUpstreamFailure is the single place that turns a forwarding error into a
 // client-visible body, so its classification is what an operator sees. A
@@ -65,6 +74,27 @@ func TestWriteUpstreamFailure_Mapping(t *testing.T) {
 			name:     "relayed 4xx body is not overwritten",
 			err:      &openai.ErrUpstream{Status: http.StatusUnauthorized},
 			wantCode: http.StatusOK, // untouched recorder default
+		},
+		{
+			name:     "transport timeout is 504",
+			err:      &openai.ErrUpstream{Status: 0, Cause: timeoutNetErr{}},
+			wantCode: http.StatusGatewayTimeout,
+			wantBody: "did not start responding in time",
+		},
+		{
+			name: "wrapped transport timeout is 504",
+			err: &openai.ErrUpstream{Status: 0, Cause: &url.Error{
+				Op: "Post", URL: "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent",
+				Err: timeoutNetErr{},
+			}},
+			wantCode: http.StatusGatewayTimeout,
+			wantBody: "did not start responding in time",
+		},
+		{
+			name:     "dial refusal is not a timeout",
+			err:      &openai.ErrUpstream{Status: 0, Cause: errors.New("dial tcp 1.2.3.4:443: connect: connection refused")},
+			wantCode: http.StatusBadGateway,
+			wantBody: "upstream request failed",
 		},
 		{
 			name:     "client cancellation writes nothing",

@@ -552,6 +552,63 @@ func TestAdapter_Forward_UnreadableSuccessBodyIs502(t *testing.T) {
 		"a 2xx body we cannot parse must never be reported as a host failure")
 }
 
+// The retry loop must not spend one attempt per credential on a HOST failure:
+// every slot in the ring points at the same host, so a 4-credential antigravity
+// upstream used to turn a single slow request into four consecutive 30s TTFB
+// timeouts and four breaker failures. Key rotation (429/401) is unaffected —
+// only host retries are bounded, by the retry policy.
+func TestAdapter_Forward_HostFailureDoesNotRetryPerKey(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"code":500,"message":"Internal error encountered."}}`))
+	}))
+	defer server.Close()
+
+	breaker := &mockBreaker{}
+	// Deliberately no Retry policy: one host attempt is the bound.
+	adapter := NewAdapter(&mockClientPool{client: server.Client()}, breaker, Config{
+		TokenResolver: func(ctx context.Context, ref string) (string, error) {
+			return "tok-" + ref, nil
+		},
+	})
+
+	ring := domain.NewKeyRing(domain.KeyStrategyRoundRobin, []*domain.KeySlot{
+		{Ref: "oauth:conn-1"},
+		{Ref: "oauth:conn-2"},
+		{Ref: "oauth:conn-3"},
+		{Ref: "oauth:conn-4"},
+	})
+	u := &domain.Upstream{
+		Name:    "agy-four-keys",
+		BaseURL: server.URL,
+		KeyRing: ring,
+	}
+	target := &domain.Target{
+		Upstream:      u,
+		UpstreamModel: "gemini-3.8-flash",
+		CredentialRef: "oauth:conn-1",
+		KeySlot:       ring.Slots[0],
+	}
+
+	rec := httptest.NewRecorder()
+	_ = adapter.Forward(context.Background(), target, ports.ForwardRequest{
+		Method:    http.MethodPost,
+		Path:      "/v1/chat/completions",
+		BodyBytes: []byte(`{"model":"gemini-3.8-flash","messages":[{"role":"user","content":"Hi"}]}`),
+		Stream:    false,
+	}, rec)
+
+	assert.EqualValues(t, 1, calls.Load(), "a host failure must not be retried once per credential")
+	// The provider's 500 body is still relayed verbatim rather than replaced by ours.
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+	assert.Contains(t, rec.Body.String(), "Internal error encountered.")
+}
+
 // The Cloud Code unified gateway fingerprints callers by these headers; the
 // live probe already sends them, so real traffic must match.
 func TestAdapter_Forward_SendsCloudCodeIdentityHeaders(t *testing.T) {

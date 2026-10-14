@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 
@@ -898,6 +899,15 @@ func writeUpstreamFailure(w http.ResponseWriter, err error) {
 			openai.WriteError(w, http.StatusServiceUnavailable, openai.TypeAPI,
 				"upstream temporarily unavailable (circuit open)")
 			return
+		case isUpstreamTimeout(ue.Cause):
+			// The host was reachable but never started responding — typically the
+			// transport's ResponseHeaderTimeout expiring on a request the provider
+			// queued. Reporting it as a plain 502 hid the single most common
+			// antigravity failure; naming the timeout points the operator at the
+			// upstream's time budget instead of a nonexistent gateway bug.
+			openai.WriteError(w, http.StatusGatewayTimeout, openai.TypeAPI,
+				"upstream did not start responding in time: "+ue.Cause.Error())
+			return
 		default:
 			openai.WriteError(w, http.StatusBadGateway, openai.TypeAPI,
 				"upstream request failed")
@@ -905,6 +915,17 @@ func writeUpstreamFailure(w http.ResponseWriter, err error) {
 		}
 	}
 	openai.WriteError(w, http.StatusBadGateway, openai.TypeAPI, "upstream request failed")
+}
+
+// isUpstreamTimeout reports whether a transport error was a timeout — the wait
+// for response headers (ResponseHeaderTimeout), the dial, or the TLS handshake
+// — rather than a hard failure such as a refused dial or a reset connection.
+// Both are host failures for the breaker, but only the timeout is worth
+// surfacing to the client as 504: the host answered nothing at all, and the
+// likely remedy is a larger time budget rather than a different endpoint.
+func isUpstreamTimeout(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 // upstreamOutcome classifies a forwarding error into a low-cardinality metric

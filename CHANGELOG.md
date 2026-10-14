@@ -5,6 +5,14 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.44.12] - 2026-10-15
+
+### Fixed
+
+- **Antigravity & Server — stop retry-amplifying host failures across the keyring and surface TTFB timeouts as 504 (`internal/adapter/antigravity/adapter.go`, `internal/server/handlers.go`)**:
+  - **Host failures were retried once per credential instead of bounded by retry policy.** In `Adapter.Forward`, `attempts` was raised to `KeyRing.SlotCount()`. While key rotation is needed for credential errors (429/401), a host failure (transport drop or 5xx) targets the same host for every key in the ring. On an upstream with 4 credentials (such as `agy`), a single slow request hitting TTFB timeout (`ResponseHeaderTimeout`, 30s) was retried across all 4 keys, taking 121s and logging 4 breaker failures. Two slow requests exceeded `FailureThreshold` (5), forcing the breaker `OPEN` and causing every subsequent request to fail with `503 circuit open` for the 10s cooldown. Host retries are now bounded by `hostAttempts` (`a.cfg.Retry.Attempts()`), while key failover remains free to rotate through the full keyring. On breaking out of the loop, execution drops into the post-loop relay so provider 5xx bodies are still relayed verbatim.
+  - **Transport timeouts now report as 504 Gateway Timeout instead of opaque 502.** When an upstream exceeds `ResponseHeaderTimeout` (e.g. Gemini 3.8 flash queueing under load), `writeUpstreamFailure` now checks `isUpstreamTimeout(ue.Cause)` and responds with `504` and `upstream did not start responding in time: <cause>`, clearly pointing the operator at upstream latency rather than a generic proxy error.
+
 ## [1.44.11] - 2026-10-14
 
 ### Fixed
