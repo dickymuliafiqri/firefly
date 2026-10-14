@@ -19,8 +19,8 @@ Written in pure Go, Firefly handles thousands of simultaneous streaming connecti
 - **System Prompt Guard**: Automatically attaches your custom instructions (like blocking unwanted promotional ads from API account sellers) to every chat request.
 - **Smart Load Balancing**: Combine multiple models across different providers into a single "Virtual Combo" to distribute traffic smoothly.
 - **Client Keys & Monetization**: Create and sell your own API keys with token budgets, rate limits, and expiration dates.
-- **Built-in Web Dashboard**: Manage models, upstreams, API keys, and monitor real-time traffic from a clean web interface - no external tools required. The **Visualizer** page animates every request as a routed line on a zoomable canvas with a locked three-column topology - the Firefly root (it states the ingress call), one node per active upstream (it states the model that upstream served, or why it was skipped) and a fixed terminal column (Thinking, Tool, Writing, Usage, Error) - so untouched rows stay dashed and dimmed until a request lights them, every connector is permanent (the root and _every_ upstream row fan out to the whole phase column) and only the state changes: the path the request actually took is bright and flowing, a traversed phase keeps a settled trail, the rest stay dim. Credentials and the Token Saver hop are deliberately not nodes here (a request spends one key out of a ring that may hold a thousand, and the rewrite is only visible when it changed the body); the rewrite is reported in the legend instead. The canvas opens auto-fitted to the viewport (drag to pan, wheel to zoom, double-click to snap back). A second **Town** view renders the same fleet as a pixel-art office powered by `agent-town`: one crew member per upstream lounges while idle and hurries to a desk when a stream arrives, with a persisted camera (zoom + follow) in the corner.
-- **Connect Page**: A single screen (**Services → Connect**) that tells any AI agent how to reach Firefly - the **base URL** (defaults to your dashboard's own origin, editable for tunnel or reverse-proxy setups) with copy buttons, a **tenant key dropdown** with a masked key and its own copy button, the model id, and copy-ready configuration for **Cline**, **Roo Code**, **Kilo Code**, **Cursor**, **Continue**, **OpenCode**, **Aider**, the **OpenAI Python/Node SDKs** and plain `curl`. A **Test connection** button verifies the key against `GET /v1/models`, and **Copy everything** hands a teammate the whole bundle. Agents may use either wire surface: the OpenAI-compatible routes (`/v1/chat/completions`, `/v1/embeddings`, ...) or the Anthropic Messages route (`/v1/messages`), which is translated in both directions so a client that only speaks Anthropic reaches the same upstreams, key rotation, and budget guard.
+- **Built-in Web Dashboard**: Manage models, upstreams, API keys, and monitor real-time traffic from a clean web interface, with no external tools required. The **Visualizer** page animates every request as a routed line on a zoomable canvas with a locked three-column topology: the Firefly root (it states the ingress call), one node per active upstream (it states the model that upstream served, or why it was skipped), and a fixed terminal column (Thinking, Tool, Writing, Usage, Error). Untouched rows stay dashed and dimmed until a request lights them, every connector is permanent (the root and _every_ upstream row fan out to the whole phase column), and only the state changes: the path the request actually took is bright and flowing, a traversed phase keeps a settled trail, the rest stay dim. Credentials and the Token Saver hop are deliberately not nodes here (a request spends one key out of a ring that may hold a thousand, and the rewrite is only visible when it changed the body); the rewrite is reported in the legend instead. The canvas opens auto-fitted to the viewport (drag to pan, wheel to zoom, double-click to snap back). A second **Town** view renders the same fleet as a pixel-art office powered by `agent-town`. One crew member per upstream lounges while idle and hurries to a desk when a stream arrives, with a persisted camera (zoom + follow) in the corner.
+- **Connect Page**: A single screen (**Services → Connect**) that tells any AI agent how to reach Firefly: the **base URL** (defaults to your dashboard's own origin, editable for tunnel or reverse-proxy setups) with copy buttons, a **tenant key dropdown** with a masked key and its own copy button, the model id, and copy-ready configuration for **Cline**, **Roo Code**, **Kilo Code**, **Cursor**, **Continue**, **OpenCode**, **Aider**, the **OpenAI Python/Node SDKs** and plain `curl`. A **Test connection** button verifies the key against `GET /v1/models`, and **Copy everything** hands a teammate the whole bundle. Agents may use either wire surface: the OpenAI-compatible routes (`/v1/chat/completions`, `/v1/embeddings`, ...) or the Anthropic Messages route (`/v1/messages`), which is translated in both directions so a client that only speaks Anthropic reaches the same upstreams, key rotation, and budget guard.
 - **Single Binary, Easy Setup**: Runs as a single lightweight file with an embedded web UI and auto-generated configs.
 
 ---
@@ -67,9 +67,9 @@ Firefly supports direct API keys and native OAuth login for:
 - **CodeBuddy** (China & International)
 - **OpenCode & OpenCode Go**
 
-> **Server deployments:** the consent link's `redirect_uri` is always pinned to `localhost` (the only redirect family these OAuth clients register), so the link stays valid no matter which host serves the dashboard. When the provider's login then redirects to a callback URL the gateway never receives (e.g. `http://localhost:<port>/api/oauth/callback?...`), copy that URL from the browser address bar and paste it into the OAuth dialog's **Verify** field — the gateway validates the state and exchanges the authorization code manually.
+> **Server deployments:** the consent link's `redirect_uri` is always pinned to `localhost` (the only redirect family these OAuth clients register), so the link stays valid no matter which host serves the dashboard. When the provider's login then redirects to a callback URL the gateway never receives (e.g. `http://localhost:<port>/api/oauth/callback?...`), copy that URL from the browser address bar and paste it into the OAuth dialog's **Verify** field. The gateway validates the state and exchanges the authorization code manually.
 
-> **Google Cloud Code (Antigravity):** Cloud Code serves no model-list route, so **Fetch models** returns Firefly's built-in catalog for that provider (the ids below, plus anything already routed to it) instantly and without spending a token - use the **"Add a model id manually"** field in **Upstreams → Edit → Models** for any id that is not in it. The per-model **Check** (and **Check all health**) is the real verification: an authenticated one-token generation against Google whose verdict mirrors the host. Both need a connected Google account. Model ids follow the Cloud Code convention - the version sits in the **middle** and the tier is a **suffix**: `gemini-3.8-flash`, `gemini-3.1-pro-high` (a bare `gemini-3.1-pro` is rejected), `claude-sonnet-4-6-thinking`, `gpt-oss-120b-medium`. Map them in **Models** exactly as they appear.
+> **Google Cloud Code (Antigravity):** Cloud Code serves no model-list route, so **Fetch models** returns Firefly's built-in catalog for that provider (the ids below, plus anything already routed to it) instantly and without spending a token. Use the **"Add a model id manually"** field in **Upstreams → Edit → Models** for any id that is not in it. The per-model **Check** (and **Check all health**) runs an authenticated one-token generation against Google, and its verdict mirrors the host. Both need a connected Google account. Model ids follow the Cloud Code convention: the version sits in the **middle** and the tier is a **suffix**, as in `gemini-3.8-flash`, `gemini-3.1-pro-high` (a bare `gemini-3.1-pro` is rejected), `claude-sonnet-4-6-thinking`, or `gpt-oss-120b-medium`. Map them in **Models** exactly as they appear.
 
 ---
 
@@ -90,6 +90,70 @@ Once installed, Firefly starts automatically:
 - **Anthropic Messages Endpoint**: `http://<SERVER_IP>:8080/v1/messages`
 - **Config Directory**: `/etc/firefly/`
 
+### Option 2: One-Line Production Install (Windows)
+
+Install and run Firefly as an automatic background service that starts at boot:
+
+```powershell
+curl.exe -fsSL -o install.cmd https://raw.githubusercontent.com/dickymuliafiqri/firefly/main/install.cmd && .\install.cmd
+```
+
+Or fetch the same bootstrap from PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/dickymuliafiqri/firefly/main/install.cmd -OutFile "$env:TEMP\firefly-install.cmd"; & "$env:TEMP\firefly-install.cmd"
+```
+
+The bootstrap downloads `install.ps1`, asks for elevation (UAC) and then:
+
+- installs `firefly.exe` and `loadtest.exe` into `C:\Program Files\Firefly`
+- writes the JSON configs, `firefly.env` and `logs\` into `C:\ProgramData\Firefly`
+- registers a Scheduled Task named **Firefly** that starts the gateway **at boot as `SYSTEM`**, whether or not anyone is logged in
+- adds an inbound firewall rule for the listen port (skip with `-SkipFirewall`)
+
+Once installed, Firefly starts automatically:
+
+- **Web Dashboard**: `http://<SERVER_IP>:8080` (Default password: `12345678`)
+- **OpenAI API Endpoint**: `http://<SERVER_IP>:8080/v1/chat/completions`
+- **Anthropic Messages Endpoint**: `http://<SERVER_IP>:8080/v1/messages`
+- **Install Directory**: `C:\Program Files\Firefly\`
+- **Config Directory**: `C:\ProgramData\Firefly\`
+
+Useful installer switches (also accepted by `install.cmd`, which forwards every argument):
+
+| Switch | Purpose |
+| :--- | :--- |
+| `-Addr <host:port>` | Listen address for traffic and the dashboard (default `0.0.0.0:8080`). Equivalent env var: `FIREFLY_ADDR`. |
+| `-Version <tag>` | Release tag to install (default: latest). Equivalent env var: `FIREFLY_VERSION`. |
+| `-InstallDir <dir>` / `-ConfigDir <dir>` | Override `C:\Program Files\Firefly` / `C:\ProgramData\Firefly`. |
+| `-AdminToken` / `-DashboardPassword` / `-SessionSecret` | Pre-seed credentials into `firefly.env` instead of editing it afterwards. |
+| `-TursoURL` / `-TursoToken` | Enable Turso cloud persistence. |
+| `-SkipFirewall` / `-SkipService` | Skip the firewall rule / the autostart task (binaries-only install, no UAC needed). |
+| `-Force` | Overwrite an existing installation. |
+| `-Uninstall` / `-Uninstall -Purge` | Remove the task and binaries, keeping (or deleting) the config directory. |
+
+Manage the service (Windows):
+
+```powershell
+Get-ScheduledTask Firefly          # Check status
+Start-ScheduledTask Firefly        # Start the gateway
+Stop-ScheduledTask Firefly         # Stop the gateway
+Get-Content "$env:ProgramData\Firefly\logs\firefly.log" -Wait -Tail 50   # View live logs
+```
+
+Remove it again at any time:
+
+```powershell
+.\install.cmd -Uninstall           # keep configuration
+.\install.cmd -Uninstall -Purge    # delete configuration too
+```
+
+The task runs the generated launcher `C:\Program Files\Firefly\run-firefly.ps1`, which loads every
+`KEY=VALUE` pair from `firefly.env` and appends the gateway's stdout and stderr to
+`C:\ProgramData\Firefly\logs\firefly.log`. A scheduled task is used instead of `sc.exe create`
+because `firefly.exe` is not a service binary (Windows would fail the start with error 1053), and it
+needs no third-party tooling such as NSSM.
+
 ### The `/v1/messages` surface
 
 Firefly accepts the Anthropic Messages API on `POST /v1/messages` alongside the OpenAI-compatible
@@ -109,14 +173,14 @@ curl http://localhost:8080/v1/messages \
   }'
 ```
 
-`model` and `max_tokens` are required — the Anthropic API makes both mandatory, so an absent one is a
+`model` and `max_tokens` are required. The Anthropic API makes both mandatory, so an absent one is a
 `400` in the Anthropic error envelope rather than a silent default. `system` may be a plain string or
 an array of text blocks; a `tool_use` block in an assistant turn becomes an OpenAI `tool_calls`
 entry, and a `tool_result` block becomes a `tool` role message. `stop_sequences` maps to `stop`, and
 `tool_choice` `"any"` maps to OpenAI's `"required"`.
 
-Streaming (`"stream": true`) returns Anthropic events — `message_start`, `content_block_start`,
-`content_block_delta`, `content_block_stop`, `message_delta`, `message_stop` — with
+Streaming (`"stream": true`) returns Anthropic events (`message_start`, `content_block_start`,
+`content_block_delta`, `content_block_stop`, `message_delta`, `message_stop`) with
 `Content-Type: text/event-stream`. The OpenAI `data: [DONE]` sentinel never appears.
 
 Every failure on this surface, including auth `401`, admission `429`, and the tenant budget guard,
@@ -127,11 +191,11 @@ than OpenAI's.
 
 A tenant may carry a spend cap in integer micro-USD (`budget_micros`, `0` = unlimited, mirroring
 `max_tokens`). The guard runs before any upstream work, so an exhausted budget costs nothing and the
-spend counter is untouched by the rejection itself: the request is refused with `429` and
+spend counter is untouched by the rejection itself; the request is refused with `429` and
 `Retry-After: 60`.
 
 Spend is recorded for every request that consumed a credential slot, including ones the upstream
-failed on — otherwise a failing upstream could be used to drain a budget for free. Crossing 80% of
+failed on. Otherwise a failing upstream could be used to drain a budget for free. Crossing 80% of
 the cap emits a `tenant.budget_warning` event exactly once per budget period; the latch is re-armed
 by a top-up, so a tenant hovering at the threshold does not emit one event per request.
 
@@ -167,18 +231,18 @@ Emitted events: `key.cooldown`, `key.revoked`, `key.threshold_action`, `breaker.
 `breaker.half_open`, `breaker.closed`, `upstream.health_failed`, `upstream.health_recovered`,
 `tenant.budget_warning`, `tenant.budget_exceeded`, and `notifications.test`.
 
-Delivery is off the request path: a bounded queue feeds a background worker, and a full queue drops
+Delivery is off the request path. A bounded queue feeds a background worker, and a full queue drops
 the event and increments a counter rather than blocking a request. The Overview page surfaces those
 counters so a silent drop is visible. A `secret` enables the `X-Firefly-Signature` header
 (`t=<unix>,v1=<hex HMAC-SHA256 of "t.body">`), which lets a consumer verify the payload and reject
 replays.
 
-Webhook URLs are operator input, so the dialer refuses loopback, link-local, and private ranges —
-including the cloud metadata endpoint `169.254.169.254` — and dials the validated address directly so
+Webhook URLs are operator input, so the dialer refuses loopback, link-local, and private ranges
+(including the cloud metadata endpoint `169.254.169.254`) and dials the validated address directly so
 a second DNS lookup cannot swap in a private IP. Pass `-notify-allow-private` to lift the guard for
 local development.
 
-Credentials are write-only: the API returns `***` and never the real value, and a settings save that
+Credentials are write-only; the API returns `***` and never the real value, and a settings save that
 carries only the mask borrows the stored credential instead of wiping it. **Test** on a channel row
 sends a synthetic event and reports the outcome, so a webhook can be proven before an alert depends
 on it.
@@ -188,7 +252,7 @@ on it.
 Every request is priced in integer micro-USD from the local price sheet (`configs/pricing.json`, or
 the **Pricing** dashboard page), so a provider's decimal per-1M price is stored exactly with no float
 rounding in the ledger. Cache reads and writes are billed at their own rates when the sheet carries
-them, and fall back to the input price when it does not — a missing cache price never makes cached
+them, and fall back to the input price when it does not. A missing cache price never makes cached
 tokens free.
 
 `GET /api/usage/costs` aggregates the request log by `tenant`, `model`, or `key` over a
@@ -197,7 +261,7 @@ series alongside the totals. The aggregation sums the integer micros, so the rep
 exactly with `TokenLedger.EstimatedCostMicros` instead of drifting through a thousand float
 additions.
 
-Manage the service:
+Manage the service (Linux):
 
 ```bash
 sudo systemctl status firefly    # Check status
@@ -205,7 +269,7 @@ sudo systemctl restart firefly   # Restart gateway
 sudo journalctl -u firefly -f    # View live logs
 ```
 
-### Option 2: Build from Source
+### Option 3: Build from Source
 
 **Prerequisites**: Go 1.22 or higher. (Optional: Bun 1.0+ or Node.js 18+, only if you want to rebuild the web dashboard.)
 
@@ -251,7 +315,7 @@ Firefly includes built-in tools to shrink token usage without losing answer qual
 - **Ponytail (Minimal Code)**: Encourages the model to write clean, direct code using standard libraries rather than over-engineered solutions.
 - **Headroom (Context Pruning)**: Automatically trims older middle messages in long conversations when approaching context limits.
 - **System Prompt Guard**: Adds your own custom rules to every chat request (for example: _"Do not send any promotional messages to the user"_). Great for blocking ads or group invites injected by third-party account sellers.
-- **Per-Model System Prompt**: Each model route can carry its own `system_prompt` (up to 4,000 characters) from the **Models** page. It is appended to the system block of every chat completion routed to that model — _before_ the global guard above, so the global rule keeps the last word — which lets you specialize a single model (tone, language, coding style) without reconfiguring any client. Virtual combos use the directive of the member model that was selected.
+- **Per-Model System Prompt**: Each model route can carry its own `system_prompt` (up to 4,000 characters) from the **Models** page. It is appended to the system block of every chat completion routed to that model, _before_ the global guard above, so the global rule keeps the last word, which lets you specialize a single model (tone, language, coding style) without reconfiguring any client. Virtual combos use the directive of the member model that was selected.
 - **Direct Compression Endpoint (`POST /v1/compress`)**: Standalone API to clean and compress text or tool outputs on demand.
 
 All Token Saver features can be toggled on or off individually from the **Settings** page.
@@ -261,7 +325,7 @@ All Token Saver features can be toggled on or off individually from the **Settin
 Create and distribute your own gateway API keys (`sk-gw-...`) to customers or team members:
 
 - **Token Quotas**: Set a maximum token balance (e.g. 5,000,000 tokens) or leave unlimited (`0`).
-- **Provider Quota (upstream side)**: the **Quota** page also shows what each connected OAuth account has left, straight from the provider — per model and per rolling window (weekly / 5h). These reads are read-only: refreshing them never spends the quota it reports. A model the provider reports at 0% is skipped by routing until its reset time instead of being forwarded into a guaranteed failure, and a generation 429/409 invalidates the snapshot so the next read reflects reality. A provider that does not expose a quota endpoint is omitted rather than shown as zero.
+- **Provider Quota (upstream side)**: the **Quota** page also shows what each connected OAuth account has left, straight from the provider: per model and per rolling window (weekly / 5h). These reads are read-only. Refreshing them never spends the quota it reports. A model the provider reports at 0% is skipped by routing until its reset time instead of being forwarded into a guaranteed failure, and a generation 429/409 invalidates the snapshot so the next read reflects reality. A provider that does not expose a quota endpoint is omitted rather than shown as zero.
 - **Expiration Dates**: Set validity periods (e.g. 7 days, 30 days). Expired keys are rejected automatically.
 - **Rate Limits**: Control requests-per-second (RPS) and concurrent connections per client.
 - **Check Balance Endpoint (`GET /v1/usage`)**:
@@ -271,7 +335,7 @@ Create and distribute your own gateway API keys (`sk-gw-...`) to customers or te
     -H "Authorization: Bearer sk-gw-YOUR_KEY"
   ```
 - **Automated Top-Ups (`POST /api/tenants/topup`)**:
-  Add tokens or extend expiry dates via API — easily connected to payment webhooks like Stripe, Midtrans, or Lemon Squeezy:
+  Add tokens or extend expiry dates via API, easily connected to payment webhooks like Stripe, Midtrans, or Lemon Squeezy:
   ```bash
   curl -X POST http://localhost:8080/api/tenants/topup \
     -H "Content-Type: application/json" \
@@ -293,7 +357,7 @@ Firefly protects your service from both account-level issues and provider outage
 
 ### 5. Remote Access & Cloudflare Integrations
 
-- **Cloudflare Tunnel**: Make your gateway accessible from the internet without port forwarding or a static IP. Supports instant quick tunnels (`trycloudflare.com`) or production named tunnels directly from the dashboard. The chosen mode and the named-tunnel token are persisted to `tunnel.json` (owner-only `0600`, never returned to the dashboard), so a restart restores the **same** tunnel instead of a new random quick-tunnel hostname; an explicit `-tunnel*` flag or `FIREFLY_TUNNEL*` variable still wins over the saved file. Note that a quick tunnel cannot pin its hostname and does not support streaming (SSE) — use a **named** tunnel for long-running AI completions. The dashboard's **Quick | Named** switch is live: changing it while the tunnel runs reconnects the ingress in place, and switching to **named** without a stored token opens the token field instead of failing.
+- **Cloudflare Tunnel**: Make your gateway accessible from the internet without port forwarding or a static IP. Supports instant quick tunnels (`trycloudflare.com`) or production named tunnels directly from the dashboard. The chosen mode and the named-tunnel token are persisted to `tunnel.json` (owner-only `0600`, never returned to the dashboard), so a restart restores the **same** tunnel instead of a new random quick-tunnel hostname; an explicit `-tunnel*` flag or `FIREFLY_TUNNEL*` variable still wins over the saved file. Note that a quick tunnel cannot pin its hostname and does not support streaming (SSE). Use a **named** tunnel for long-running AI completions. The dashboard's **Quick | Named** switch is live. Changing it while the tunnel runs reconnects the ingress in place, and switching to **named** without a stored token opens the token field instead of failing.
 - **Cloudflare WARP Egress**: Route outbound calls to AI providers through Cloudflare WARP with automatic IP rotation to avoid IP-based rate limiting.
 - **Free HTTPS (Auto-TLS)**: Enable free Let's Encrypt certificates from **Settings → Native Let's Encrypt Auto-TLS**. You only need a real domain pointing to your server and TCP ports `80` and `443` open and unused. Firefly then serves your gateway over HTTPS automatically.
 
