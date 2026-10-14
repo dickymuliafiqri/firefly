@@ -5,26 +5,36 @@
     High-Concurrency OpenAI & Anthropic AI Reverse Proxy & Gateway.
 
 .DESCRIPTION
-    Downloads a prebuilt Firefly release, installs it under
-    C:\Program Files\Firefly, bootstraps its configuration under
-    C:\ProgramData\Firefly, and registers a Windows Scheduled Task that starts
-    the gateway automatically at boot (as SYSTEM, whether or not anyone logs in).
+    Downloads a prebuilt Firefly release and bootstraps its configuration.
 
-    Quick install (run in an *Administrator* PowerShell):
+    Machine scope (default in an elevated shell) installs under
+    C:\Program Files\Firefly with configuration under C:\ProgramData\Firefly and
+    registers a Scheduled Task that starts the gateway at boot as SYSTEM,
+    whether or not anyone logs in. It needs admin, so the script self-elevates.
+
+    User scope (default in a normal shell) installs under
+    %LOCALAPPDATA%\Programs\Firefly with configuration under %APPDATA%\Firefly,
+    adds a per-user Startup shortcut instead of a task, adds no firewall rule,
+    and never asks for elevation. Force it with -User.
+
+    Quick install (admin shell for machine scope, normal shell for user scope):
       irm https://raw.githubusercontent.com/dickymuliafiqri/firefly/main/install.ps1 | iex
 
-    Or with the cmd bootstrap (self-elevates):
+    Or with the cmd bootstrap:
       curl.exe -fsSL -o install.cmd https://raw.githubusercontent.com/dickymuliafiqri/firefly/main/install.cmd && install.cmd
 
 .PARAMETER Version
     Release tag to install (e.g. v1.44.10). Defaults to $env:FIREFLY_VERSION or the latest release.
 
 .PARAMETER InstallDir
-    Directory for the executables. Defaults to $env:FIREFLY_INSTALL_DIR or "$env:ProgramFiles\Firefly".
+    Directory for the executables. Defaults to $env:FIREFLY_INSTALL_DIR, then
+    "$env:ProgramFiles\Firefly" (machine scope) or
+    "$env:LOCALAPPDATA\Programs\Firefly" (user scope).
 
 .PARAMETER ConfigDir
-    Directory for JSON configuration and runtime data.
-    Defaults to $env:FIREFLY_CONFIG_DIR or "$env:ProgramData\Firefly".
+    Directory for JSON configuration and runtime data. Defaults to
+    $env:FIREFLY_CONFIG_DIR, then "$env:ProgramData\Firefly" (machine scope) or
+    "$env:APPDATA\Firefly" (user scope).
 
 .PARAMETER Addr
     Listen address for AI traffic and the dashboard. Defaults to $env:FIREFLY_ADDR or 0.0.0.0:8080.
@@ -59,6 +69,15 @@
 .PARAMETER Purge
     With -Uninstall, also delete the configuration directory.
 
+.PARAMETER User
+    Force user scope: per-user directories, Startup-folder autostart, no
+    firewall rule, no elevation. This is the default in a non-elevated shell.
+
+.PARAMETER Machine
+    Force machine scope: "Program Files"/"ProgramData", boot Scheduled Task
+    running as SYSTEM, firewall rule. This is the default in an elevated shell,
+    and elevates through UAC when it is not already elevated.
+
 .EXAMPLE
     irm https://raw.githubusercontent.com/dickymuliafiqri/firefly/main/install.ps1 | iex
 
@@ -84,7 +103,9 @@ param(
     [switch] $SkipStart,
     [switch] $Force,
     [switch] $Uninstall,
-    [switch] $Purge
+    [switch] $Purge,
+    [switch] $User,
+    [switch] $Machine
 )
 
 $ErrorActionPreference = 'Stop'
@@ -115,6 +136,19 @@ function Write-TextFileNoBom {
     [System.IO.File]::WriteAllText($Path, $Content, $utf8)
 }
 
+function Test-DirectoryWritable {
+    param([string] $Path)
+    try {
+        if (-not (Test-Path -LiteralPath $Path)) { New-Item -ItemType Directory -Force -Path $Path | Out-Null }
+        $probe = Join-Path $Path ('.firefly-write-test-' + [Guid]::NewGuid().ToString('N'))
+        [System.IO.File]::WriteAllText($probe, 'ok')
+        Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+        return $true
+    } catch {
+        return $false
+    }
+}
+
 # Modern GitHub endpoints reject TLS 1.0, which is what Windows PowerShell 5.1
 # negotiates by default.
 try {
@@ -122,23 +156,56 @@ try {
 } catch { }
 
 # -----------------------------------------------------------------------------
-# Privilege Verification (self-elevate when launched from a file)
+# Install scope: machine-wide (needs admin) or per-user (never needs admin)
 #
-# Admin is only required for operations that touch machine-wide state: the
-# autostart Scheduled Task, the firewall rule, and uninstall. A binaries-only
-# install (-SkipService -SkipFirewall) into a writable directory needs no
-# elevation, which also keeps CI/local dry runs possible.
+# Machine scope writes to $env:ProgramFiles and $env:ProgramData, registers a
+# boot Scheduled Task as SYSTEM and adds a firewall rule. User scope writes only
+# under $env:LOCALAPPDATA and $env:APPDATA, autostarts from the user's Startup
+# folder, adds no firewall rule, and therefore never prompts for UAC.
+#
+# Auto-detection: an elevated shell gets machine scope, a normal shell gets user
+# scope. -Machine and -User force one and are mutually exclusive.
 # -----------------------------------------------------------------------------
-$needsAdmin = $Uninstall -or (-not $SkipService) -or (-not $SkipFirewall)
+$isAdmin = Test-Admin
 
-if ($needsAdmin -and -not (Test-Admin)) {
+if ($User -and $Machine) {
+    Write-Err '-User and -Machine are mutually exclusive.'
+    exit 1
+}
+
+if ($Machine) { $Scope = 'machine' }
+elseif ($User) { $Scope = 'user' }
+elseif ($isAdmin) { $Scope = 'machine' }
+else { $Scope = 'user' }
+
+$machineInstallDir = Join-Path $env:ProgramFiles 'Firefly'
+$machineConfigDir = Join-Path $env:ProgramData 'Firefly'
+$userInstallDir = Join-Path $env:LOCALAPPDATA 'Programs\Firefly'
+$userConfigDir = Join-Path $env:APPDATA 'Firefly'
+
+# An uninstall with no explicit scope removes whichever installation exists; if
+# both exist, the per-user one is removed (a non-elevated shell can only do that
+# one anyway) and the run says so.
+$scopeAmbiguous = $false
+if ($Uninstall -and -not ($User -or $Machine)) {
+    if ($InstallDir) { $probe = $InstallDir }
+    elseif ($env:FIREFLY_INSTALL_DIR) { $probe = $env:FIREFLY_INSTALL_DIR }
+    else { $probe = $null }
+    $inMachine = if ($probe) { Test-Path -LiteralPath $probe } else { Test-Path -LiteralPath $machineInstallDir }
+    $inUser = if ($probe) { Test-Path -LiteralPath $probe } else { Test-Path -LiteralPath $userInstallDir }
+    if (-not $inMachine -and $inUser) { $Scope = 'user' }
+    elseif ($inMachine -and -not $inUser) { $Scope = 'machine' }
+    elseif ($inMachine -and $inUser) { $Scope = 'user'; $scopeAmbiguous = $true }
+}
+
+if ($Scope -eq 'machine' -and -not $isAdmin) {
     if (-not $PSCommandPath) {
-        Write-Err 'Administrator privileges are required.'
-        Write-Info 'Open PowerShell with "Run as Administrator" and run the installer again:'
-        Write-Host "    irm https://raw.githubusercontent.com/$Repo/main/install.ps1 | iex" -ForegroundColor Cyan
+        Write-Err 'Administrator privileges are required for machine scope.'
+        Write-Info 'Open PowerShell with "Run as Administrator" and run the installer again, or install'
+        Write-Info 'per-user instead (no admin needed): .\install.ps1 -User'
         exit 1
     }
-    Write-Warn 'Administrator privileges required - relaunching elevated...'
+    Write-Warn 'Machine scope needs Administrator privileges - relaunching elevated...'
     $relaunch = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath)
     foreach ($key in $PSBoundParameters.Keys) {
         $value = $PSBoundParameters[$key]
@@ -167,12 +234,22 @@ if (-not $SessionSecret) { $SessionSecret = $env:FIREFLY_SESSION_SECRET }
 if (-not $TursoURL) { $TursoURL = $env:TURSO_DATABASE_URL }
 if (-not $TursoToken) { $TursoToken = $env:TURSO_AUTH_TOKEN }
 
-if (-not $InstallDir) { $InstallDir = Join-Path $env:ProgramFiles 'Firefly' }
-if (-not $ConfigDir) { $ConfigDir = Join-Path $env:ProgramData 'Firefly' }
+if (-not $InstallDir) { $InstallDir = if ($Scope -eq 'machine') { $machineInstallDir } else { $userInstallDir } }
+if (-not $ConfigDir) { $ConfigDir = if ($Scope -eq 'machine') { $machineConfigDir } else { $userConfigDir } }
 if (-not $Addr) { $Addr = '0.0.0.0:8080' }
 
 $InstallDir = [System.IO.Path]::GetFullPath($InstallDir)
 $ConfigDir = [System.IO.Path]::GetFullPath($ConfigDir)
+
+# Fail early with a clear message instead of failing inside the download or copy
+# step when an explicit directory is not writable by this account.
+foreach ($dir in @($InstallDir, $ConfigDir)) {
+    if (-not (Test-DirectoryWritable -Path $dir)) {
+        Write-Err "Not writable by this account: $dir"
+        Write-Info 'Choose a writable directory, or run an elevated shell for machine scope (-Machine).'
+        exit 1
+    }
+}
 
 $Port = 8080
 $parsedPort = 0
@@ -479,6 +556,104 @@ function Install-FireflyTask {
     Write-Ok "Scheduled task '$TaskName' registered"
 }
 
+# -----------------------------------------------------------------------------
+# Autostart (user scope): per-user Startup shortcut
+#
+# A Startup-folder shortcut needs no admin and no Task Scheduler entry, which is
+# what makes a per-user install possible at all. It starts Firefly when the user
+# logs on (not at boot) and stops when the user signs out.
+# -----------------------------------------------------------------------------
+function Get-FireflyStartupFolder {
+    $folder = [Environment]::GetFolderPath('Startup')
+    if (-not $folder) {
+        $folder = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup'
+    }
+    return $folder
+}
+
+function Get-FireflyShortcutPath {
+    return (Join-Path (Get-FireflyStartupFolder) 'Firefly Gateway.lnk')
+}
+
+function Install-FireflyStartupEntry {
+    param([string] $LauncherPath)
+
+    Write-Step 'Registering per-user autostart shortcut (Startup folder)...'
+
+    $folder = Get-FireflyStartupFolder
+    if (-not (Test-Path -LiteralPath $folder)) {
+        New-Item -ItemType Directory -Force -Path $folder | Out-Null
+    }
+    $linkPath = Get-FireflyShortcutPath
+    $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+
+    $wsh = New-Object -ComObject WScript.Shell
+    try {
+        $shortcut = $wsh.CreateShortcut($linkPath)
+        $shortcut.TargetPath = $shell
+        $shortcut.Arguments = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f $LauncherPath
+        $shortcut.WorkingDirectory = (Split-Path -Parent $LauncherPath)
+        $shortcut.WindowStyle = 7
+        $shortcut.Description = 'Firefly AI Gateway'
+        $shortcut.Save()
+    } finally {
+        [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($wsh)
+    }
+
+    Write-Ok "Startup shortcut created: $linkPath"
+}
+
+function Remove-FireflyStartupEntry {
+    $linkPath = Get-FireflyShortcutPath
+    if (Test-Path -LiteralPath $linkPath) {
+        Remove-Item -LiteralPath $linkPath -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $linkPath) {
+            Write-Warn "Could not remove the startup shortcut: $linkPath"
+        } else {
+            Write-Ok "Removed startup shortcut: $linkPath"
+        }
+    }
+}
+
+# Starts the launcher detached, with no console window and no dependency on the
+# console that is running this installer. Start-Process alone is not enough: the
+# installer runs inside a cmd window (install.cmd), and closing that window sends
+# CTRL_CLOSE_EVENT to every process in the console group, which kills the gateway
+# moments after the install reports success. Win32_Process.Create is owned by the
+# WMI provider instead, so the gateway survives; it still runs as the invoking
+# user in that user's session.
+function Start-FireflyLauncher {
+    param([string] $LauncherPath)
+
+    $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $commandLine = '"{0}" -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{1}"' -f $shell, $LauncherPath
+
+    try {
+        $result = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $commandLine }
+        if ($result.ReturnValue -eq 0) { return }
+        Write-Warn "Detached start failed (Win32_Process.Create returned $($result.ReturnValue)); falling back to Start-Process."
+    } catch {
+        Write-Warn "Detached start failed ($($_.Exception.Message)); falling back to Start-Process."
+    }
+
+    Start-Process -FilePath $shell -WindowStyle Hidden `
+        -ArgumentList @('-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', $LauncherPath) `
+        -WorkingDirectory (Split-Path -Parent $LauncherPath) | Out-Null
+}
+
+# Stops only the gateway installed at $BinaryPath, so an unrelated firefly.exe
+# running from another directory is never touched.
+function Stop-FireflyProcess {
+    param([string] $BinaryPath)
+
+    Get-CimInstance Win32_Process -Filter "Name='firefly.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.ExecutablePath -and ($_.ExecutablePath -ieq $BinaryPath) } |
+        ForEach-Object {
+            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+            Write-Ok "Stopped running process (PID $($_.ProcessId))"
+        }
+}
+
 function Test-FireflyHealth {
     param([int] $Port, [int] $TimeoutSeconds = 25)
 
@@ -495,13 +670,21 @@ function Test-FireflyHealth {
 }
 
 function Uninstall-Firefly {
-    Write-Step 'Removing Firefly...'
+    Write-Step "Removing Firefly ($Scope scope)..."
 
     if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
-        Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
-        Write-Ok "Removed scheduled task '$TaskName'"
+        try {
+            Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+            Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction Stop
+            Write-Ok "Removed scheduled task '$TaskName'"
+        } catch {
+            Write-Warn "Could not remove scheduled task '$TaskName': $($_.Exception.Message)"
+            Write-Info 'Removing a machine-wide task needs an elevated shell (-Machine).'
+        }
     }
+
+    Remove-FireflyStartupEntry
+    Stop-FireflyProcess -BinaryPath $BinaryPath
 
     try {
         Get-NetFirewallRule -DisplayName $FirewallRuleName -ErrorAction SilentlyContinue |
@@ -510,7 +693,11 @@ function Uninstall-Firefly {
 
     if (Test-Path $InstallDir) {
         Remove-Item -LiteralPath $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
-        Write-Ok "Removed $InstallDir"
+        if (Test-Path $InstallDir) {
+            Write-Warn "Could not fully remove $InstallDir (files in use, or the directory needs admin)"
+        } else {
+            Write-Ok "Removed $InstallDir"
+        }
     }
 
     if (Test-Path $ConfigDir) {
@@ -520,6 +707,12 @@ function Uninstall-Firefly {
         } else {
             Write-Info "Kept configuration at $ConfigDir (use -Purge to delete it)"
         }
+    }
+
+    if ($Scope -eq 'machine' -and (Test-Path -LiteralPath $userInstallDir)) {
+        Write-Info "A per-user install is still present at $userInstallDir - remove it with: .\install.ps1 -Uninstall -User"
+    } elseif ($Scope -eq 'user' -and (Test-Path -LiteralPath $machineInstallDir)) {
+        Write-Info "A machine-wide install is still present at $machineInstallDir - remove it from an elevated shell with: .\install.ps1 -Uninstall -Machine"
     }
 }
 
@@ -541,6 +734,9 @@ function Invoke-Main {
     Write-Host ''
 
     if ($Uninstall) {
+        if ($scopeAmbiguous) {
+            Write-Warn 'Both a machine-wide and a per-user install exist; this run removes the per-user one. Pass -Machine or -User to choose.'
+        }
         Uninstall-Firefly
         Write-Host ''
         Write-Ok 'Firefly has been uninstalled.'
@@ -550,6 +746,12 @@ function Invoke-Main {
 
     $arch = Resolve-Arch
     Write-Info "Detected platform: windows/$arch"
+
+    if ($Scope -eq 'machine') {
+        Write-Info 'Install scope: machine-wide (admin)'
+    } else {
+        Write-Info 'Install scope: per-user (no admin required)'
+    }
 
     if ((Test-Path $BinaryPath) -and -not $Force) {
         Write-Warn "Firefly is already installed at $BinaryPath (use -Force to reinstall)"
@@ -564,15 +766,25 @@ function Invoke-Main {
     if ($SkipService) {
         Write-Warn 'Skipping autostart setup (-SkipService)'
     } else {
-        Install-FireflyTask -LauncherPath $LauncherPath
-
-        if (-not $SkipFirewall) { Add-FireflyFirewallRule -Port $Port }
+        if ($Scope -eq 'machine') {
+            Install-FireflyTask -LauncherPath $LauncherPath
+            if (-not $SkipFirewall) { Add-FireflyFirewallRule -Port $Port }
+        } else {
+            Install-FireflyStartupEntry -LauncherPath $LauncherPath
+            Write-Info ('No firewall rule was added (that needs admin). Locally: http://127.0.0.1:{0}' -f $Port)
+            Write-Info "For other machines, add an inbound TCP $Port rule from an elevated shell:"
+            Write-Host "    netsh advfirewall firewall add rule name=`"$FirewallRuleName`" dir=in action=allow protocol=TCP localport=$Port" -ForegroundColor DarkGray
+        }
 
         if ($SkipStart) {
             Write-Warn 'Autostart registered but Firefly was not started (-SkipStart)'
         } else {
             Write-Step 'Starting Firefly in the background...'
-            Start-ScheduledTask -TaskName $TaskName
+            if ($Scope -eq 'machine') {
+                Start-ScheduledTask -TaskName $TaskName
+            } else {
+                Start-FireflyLauncher -LauncherPath $LauncherPath
+            }
             Start-Sleep -Seconds 1.5
 
             if (Test-FireflyHealth -Port $Port) {
@@ -585,21 +797,29 @@ function Invoke-Main {
     }
 
     $hostIp = Get-PrimaryIP
+    $scopeLabel = if ($Scope -eq 'machine') { 'machine-wide (Scheduled Task, starts at boot as SYSTEM)' } else { 'per-user (Startup shortcut, starts at logon)' }
 
     Write-Host ''
     Write-Host '==================================================================' -ForegroundColor Green
     Write-Host '  Firefly has been installed successfully!' -ForegroundColor Green
     Write-Host '==================================================================' -ForegroundColor Green
     Write-Host ''
-    Write-Host "  Dashboard URL:      http://${hostIp}:$Port"
+    Write-Host "  Install scope:      $scopeLabel"
+    if ($Scope -eq 'machine') {
+        Write-Host "  Dashboard URL:      http://${hostIp}:$Port"
+        Write-Host "  API Endpoint:       http://${hostIp}:$Port/v1/chat/completions"
+    } else {
+        Write-Host "  Dashboard URL:      http://127.0.0.1:$Port  (this machine only)"
+        Write-Host "  LAN URL:            http://${hostIp}:$Port  (needs an inbound firewall rule)"
+        Write-Host "  API Endpoint:       http://127.0.0.1:$Port/v1/chat/completions"
+    }
     Write-Host '  Default Password:   12345678 (change it in Settings)'
-    Write-Host "  API Endpoint:       http://${hostIp}:$Port/v1/chat/completions"
     Write-Host "  Install Directory:  $InstallDir"
     Write-Host "  Config Directory:   $ConfigDir"
     Write-Host "  Environment File:   $EnvFilePath"
     Write-Host "  Log File:           $LogPath"
     Write-Host ''
-    if (-not $SkipService) {
+    if (-not $SkipService -and $Scope -eq 'machine') {
         Write-Host '  Service Controls (PowerShell):' -ForegroundColor White
         Write-Host "    Status:    Get-ScheduledTask -TaskName $TaskName"
         Write-Host "    Start:     Start-ScheduledTask -TaskName $TaskName"
@@ -607,6 +827,15 @@ function Invoke-Main {
         Write-Host "    Restart:   Stop-ScheduledTask -TaskName $TaskName; Start-ScheduledTask -TaskName $TaskName"
         Write-Host "    Logs:      Get-Content `"$LogPath`" -Wait -Tail 50"
         Write-Host '    Uninstall: .\install.ps1 -Uninstall [-Purge]'
+        Write-Host ''
+    } elseif (-not $SkipService) {
+        Write-Host '  Service Controls (PowerShell):' -ForegroundColor White
+        Write-Host "    Status:    Get-Process firefly -ErrorAction SilentlyContinue"
+        Write-Host "    Start:     & '$LauncherPath'"
+        Write-Host "    Stop:      Stop-Process -Name firefly"
+        Write-Host "    Autostart: $(Get-FireflyShortcutPath) (delete this shortcut to disable)"
+        Write-Host "    Logs:      Get-Content `"$LogPath`" -Wait -Tail 50"
+        Write-Host '    Uninstall: .\install.ps1 -Uninstall -User [-Purge]'
         Write-Host ''
     }
     Write-Host '  Quick Concurrency Test:' -ForegroundColor White

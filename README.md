@@ -92,7 +92,7 @@ Once installed, Firefly starts automatically:
 
 ### Option 2: One-Line Production Install (Windows)
 
-Install and run Firefly as an automatic background service that starts at boot:
+Install and run Firefly as an automatic background service:
 
 ```powershell
 curl.exe -fsSL -o install.cmd https://raw.githubusercontent.com/dickymuliafiqri/firefly/main/install.cmd && .\install.cmd
@@ -104,20 +104,34 @@ Or fetch the same bootstrap from PowerShell:
 irm https://raw.githubusercontent.com/dickymuliafiqri/firefly/main/install.cmd -OutFile "$env:TEMP\firefly-install.cmd"; & "$env:TEMP\firefly-install.cmd"
 ```
 
-The bootstrap downloads `install.ps1`, asks for elevation (UAC) and then:
+The bootstrap downloads `install.ps1` and runs it. The installer picks one of two scopes:
 
-- installs `firefly.exe` and `loadtest.exe` into `C:\Program Files\Firefly`
-- writes the JSON configs, `firefly.env` and `logs\` into `C:\ProgramData\Firefly`
-- registers a Scheduled Task named **Firefly** that starts the gateway **at boot as `SYSTEM`**, whether or not anyone is logged in
-- adds an inbound firewall rule for the listen port (skip with `-SkipFirewall`)
+| | Machine scope | User scope |
+| :--- | :--- | :--- |
+| Chosen when | the shell is already elevated | the shell is not elevated, or you pass `-User` |
+| Binaries | `C:\Program Files\Firefly` | `%LOCALAPPDATA%\Programs\Firefly` |
+| Configuration | `C:\ProgramData\Firefly` | `%APPDATA%\Firefly` |
+| Autostart | Scheduled Task **Firefly**, at boot as `SYSTEM` | `Firefly Gateway.lnk` in your Startup folder, at logon |
+| Firewall rule | added for the listen port | not added (that needs admin) |
+| Elevation | UAC prompt | none |
 
-Once installed, Firefly starts automatically:
+Machine scope is the full production service: it starts before anyone logs in and answers other
+machines on the network. User scope runs the same gateway from a per-user footprint and never asks
+for administrator rights, so it works on a locked-down laptop. Force either one with `-Machine` or
+`-User`; the two are mutually exclusive.
+
+With the default `0.0.0.0:8080` listener a machine-scope install answers on:
 
 - **Web Dashboard**: `http://<SERVER_IP>:8080` (Default password: `12345678`)
 - **OpenAI API Endpoint**: `http://<SERVER_IP>:8080/v1/chat/completions`
 - **Anthropic Messages Endpoint**: `http://<SERVER_IP>:8080/v1/messages`
-- **Install Directory**: `C:\Program Files\Firefly\`
-- **Config Directory**: `C:\ProgramData\Firefly\`
+
+A user-scope install adds no firewall rule, so its dashboard answers at `http://127.0.0.1:8080` on
+that machine only. To open the port for other machines, run this from an elevated shell:
+
+```powershell
+netsh advfirewall firewall add rule name="Firefly AI Gateway" dir=in action=allow protocol=TCP localport=8080
+```
 
 Useful installer switches (also accepted by `install.cmd`, which forwards every argument):
 
@@ -125,20 +139,29 @@ Useful installer switches (also accepted by `install.cmd`, which forwards every 
 | :--- | :--- |
 | `-Addr <host:port>` | Listen address for traffic and the dashboard (default `0.0.0.0:8080`). Equivalent env var: `FIREFLY_ADDR`. |
 | `-Version <tag>` | Release tag to install (default: latest). Equivalent env var: `FIREFLY_VERSION`. |
-| `-InstallDir <dir>` / `-ConfigDir <dir>` | Override `C:\Program Files\Firefly` / `C:\ProgramData\Firefly`. |
+| `-User` / `-Machine` | Force per-user scope (no elevation) or machine-wide scope (elevates through UAC). |
+| `-InstallDir <dir>` / `-ConfigDir <dir>` | Override the scope defaults in the table above. |
 | `-AdminToken` / `-DashboardPassword` / `-SessionSecret` | Pre-seed credentials into `firefly.env` instead of editing it afterwards. |
 | `-TursoURL` / `-TursoToken` | Enable Turso cloud persistence. |
-| `-SkipFirewall` / `-SkipService` | Skip the firewall rule / the autostart task (binaries-only install, no UAC needed). |
+| `-SkipFirewall` / `-SkipService` | Skip the firewall rule / the autostart entry (binaries-only install). |
 | `-Force` | Overwrite an existing installation. |
-| `-Uninstall` / `-Uninstall -Purge` | Remove the task and binaries, keeping (or deleting) the config directory. |
+| `-Uninstall` / `-Uninstall -Purge` | Remove the autostart entry and binaries, keeping (or deleting) the configuration directory. |
 
 Manage the service (Windows):
 
 ```powershell
+# Machine scope
 Get-ScheduledTask Firefly          # Check status
 Start-ScheduledTask Firefly        # Start the gateway
 Stop-ScheduledTask Firefly         # Stop the gateway
-Get-Content "$env:ProgramData\Firefly\logs\firefly.log" -Wait -Tail 50   # View live logs
+
+# User scope
+Get-Process firefly -ErrorAction SilentlyContinue       # Check status
+& "$env:LOCALAPPDATA\Programs\Firefly\run-firefly.ps1"  # Start the gateway
+Stop-Process -Name firefly                              # Stop the gateway
+
+Get-Content "$env:ProgramData\Firefly\logs\firefly.log" -Wait -Tail 50   # machine scope log
+Get-Content "$env:APPDATA\Firefly\logs\firefly.log" -Wait -Tail 50       # user scope log
 ```
 
 Remove it again at any time:
@@ -146,13 +169,14 @@ Remove it again at any time:
 ```powershell
 .\install.cmd -Uninstall           # keep configuration
 .\install.cmd -Uninstall -Purge    # delete configuration too
+.\install.cmd -Uninstall -User     # remove a per-user install without admin
 ```
 
-The task runs the generated launcher `C:\Program Files\Firefly\run-firefly.ps1`, which loads every
-`KEY=VALUE` pair from `firefly.env` and appends the gateway's stdout and stderr to
-`C:\ProgramData\Firefly\logs\firefly.log`. A scheduled task is used instead of `sc.exe create`
-because `firefly.exe` is not a service binary (Windows would fail the start with error 1053), and it
-needs no third-party tooling such as NSSM.
+Both scopes run the generated `run-firefly.ps1` launcher, which loads every `KEY=VALUE` pair from
+`firefly.env` and appends the gateway's stdout and stderr to `logs\firefly.log`. The installer starts
+it detached from its own console, so the gateway keeps running after the install window closes. A
+scheduled task is used instead of `sc.exe create` because `firefly.exe` is not a service binary
+(Windows would fail the start with error 1053), and it needs no third-party tooling such as NSSM.
 
 ### The `/v1/messages` surface
 

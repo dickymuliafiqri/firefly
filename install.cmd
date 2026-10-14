@@ -10,9 +10,14 @@ rem      curl -fsSL https://raw.githubusercontent.com/dickymuliafiqri/firefly/ma
 rem
 rem  Examples:
 rem      install.cmd
+rem      install.cmd -User                     (install for this user only, no UAC)
 rem      install.cmd -Version v1.44.10 -Addr 0.0.0.0:8080
 rem      install.cmd -Uninstall
 rem      install.cmd -SkipService -SkipFirewall   (binaries only, no UAC)
+rem
+rem  Scope: an elevated shell installs machine-wide (Program Files, boot task,
+rem  firewall rule). A normal shell installs per-user (%LOCALAPPDATA%, Startup
+rem  shortcut, no firewall rule) and needs no admin. -Machine / -User force one.
 rem
 rem  Environment overrides:
 rem      FIREFLY_VERSION      pin the installer script to a release tag
