@@ -873,6 +873,18 @@ func writeResolveError(w http.ResponseWriter, err error) {
 
 // writeUpstreamFailure maps a forwarding error to an OpenAI-shaped response.
 func writeUpstreamFailure(w http.ResponseWriter, err error) {
+	// A breaker rejection is an availability signal, not a gateway failure: the
+	// upstream is known-bad and was never dialed. Several adapters (antigravity,
+	// cline, codebuddy, grok, qoder) return the sentinel bare — not wrapped in an
+	// *openai.ErrUpstream — so without this branch a circuit-open rejection fell
+	// through to the generic 502 "upstream request failed" and looked like a
+	// gateway fault, even though upstreamOutcome already names it
+	// (metrics.OutcomeCircuitOpen).
+	if errors.Is(err, upstream.ErrCircuitOpen) {
+		openai.WriteError(w, http.StatusServiceUnavailable, openai.TypeAPI,
+			"upstream temporarily unavailable (circuit open)")
+		return
+	}
 	var ue *openai.ErrUpstream
 	if errors.As(err, &ue) {
 		switch {

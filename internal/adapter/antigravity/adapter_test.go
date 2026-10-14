@@ -470,3 +470,119 @@ func TestAdapter_Forward_ThoughtSignatureBackfill_NonStreaming(t *testing.T) {
 	assert.Equal(t, "sig-ns-1", gjson.GetBytes(upstreamBodies[1], "request.contents.1.parts.0.thoughtSignature").String())
 	assert.Equal(t, "done", gjson.GetBytes(rec2.Body.Bytes(), "choices.0.message.content").String())
 }
+
+// An unresolvable credential is a Layer-1 key error, not a host failure. It used
+// to be reported with status 0, which ProcessAttemptOutcome classified as a
+// transport drop: the breaker tripped on a healthy host, the key counter
+// advanced, and the client got the generic 502 instead of the 401 it is.
+func TestAdapter_Forward_UnresolvedCredentialIs401(t *testing.T) {
+	t.Parallel()
+
+	var dialed atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dialed.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	breaker := &mockBreaker{}
+	adapter := NewAdapter(&mockClientPool{client: server.Client()}, breaker, Config{
+		SecretLookup: func(ref string) (string, bool) { return "", false },
+	})
+
+	u := &domain.Upstream{Name: "ag-dead-cred", BaseURL: server.URL, CredentialRef: "oauth:dead"}
+	target := &domain.Target{Upstream: u, UpstreamModel: "gemini-3.8-flash", CredentialRef: "oauth:dead"}
+
+	rec := httptest.NewRecorder()
+	err := adapter.Forward(context.Background(), target, ports.ForwardRequest{
+		Method:    http.MethodPost,
+		Path:      "/v1/chat/completions",
+		BodyBytes: []byte(`{"model":"gemini-3.8-flash","messages":[{"role":"user","content":"Hi"}]}`),
+		Stream:    false,
+	}, rec)
+
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	assert.Contains(t, rec.Body.String(), "could not be resolved")
+	assert.Zero(t, dialed.Load(), "an unresolved credential must not reach the upstream")
+	assert.NotContains(t, breaker.reports, false,
+		"a credential error must never be reported to the breaker as a host failure")
+}
+
+// A 2xx body the translator cannot parse is a protocol anomaly, not a host
+// outage. It used to return a synthetic 500 with no body, which tripped the
+// breaker and ended as the opaque 502 "upstream request failed".
+func TestAdapter_Forward_UnreadableSuccessBodyIs502(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		// Google's error envelope delivered under a 200: valid JSON but no
+		// candidates, so no OpenAI answer can be built from it.
+		_, _ = w.Write([]byte(`{"error":{"code":500,"message":"Internal error encountered."}}`))
+	}))
+	defer server.Close()
+
+	breaker := &mockBreaker{}
+	adapter := NewAdapter(&mockClientPool{client: server.Client()}, breaker, Config{
+		SecretLookup: func(ref string) (string, bool) { return "tok", true },
+	})
+
+	u := &domain.Upstream{Name: "ag-unreadable", BaseURL: server.URL, CredentialRef: "SECRET_ENV"}
+	target := &domain.Target{Upstream: u, UpstreamModel: "gemini-3.8-flash", CredentialRef: "SECRET_ENV"}
+
+	rec := httptest.NewRecorder()
+	err := adapter.Forward(context.Background(), target, ports.ForwardRequest{
+		Method:    http.MethodPost,
+		Path:      "/v1/chat/completions",
+		BodyBytes: []byte(`{"model":"gemini-3.8-flash","messages":[{"role":"user","content":"Hi"}]}`),
+		Stream:    false,
+	}, rec)
+
+	// The adapter already answered the client, so the attempt is committed and
+	// Forward surfaces the cause; the handler must not re-write its own envelope.
+	require.Error(t, err)
+	assert.Equal(t, http.StatusBadGateway, rec.Code)
+	assert.Contains(t, rec.Body.String(), "unreadable response")
+	assert.EqualValues(t, 1, calls.Load(), "a protocol anomaly must not be retried")
+	assert.NotContains(t, breaker.reports, false,
+		"a 2xx body we cannot parse must never be reported as a host failure")
+}
+
+// The Cloud Code unified gateway fingerprints callers by these headers; the
+// live probe already sends them, so real traffic must match.
+func TestAdapter_Forward_SendsCloudCodeIdentityHeaders(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, googleAPIClient, r.Header.Get("X-Goog-Api-Client"))
+		assert.Equal(t, clientMetadata, r.Header.Get("Client-Metadata"))
+		assert.Equal(t, "antigravity/ide/2.11.0 darwin/arm64", r.Header.Get("User-Agent"))
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}}`))
+	}))
+	defer server.Close()
+
+	adapter := NewAdapter(&mockClientPool{client: server.Client()}, &mockBreaker{}, Config{
+		SecretLookup: func(ref string) (string, bool) { return "tok", true },
+	})
+
+	u := &domain.Upstream{Name: "ag-headers", BaseURL: server.URL, CredentialRef: "SECRET_ENV"}
+	target := &domain.Target{Upstream: u, UpstreamModel: "gemini-3.8-flash", CredentialRef: "SECRET_ENV"}
+
+	rec := httptest.NewRecorder()
+	err := adapter.Forward(context.Background(), target, ports.ForwardRequest{
+		Method:    http.MethodPost,
+		Path:      "/v1/chat/completions",
+		BodyBytes: []byte(`{"model":"gemini-3.8-flash","messages":[{"role":"user","content":"Hi"}]}`),
+		Stream:    false,
+	}, rec)
+
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, rec.Code)
+}

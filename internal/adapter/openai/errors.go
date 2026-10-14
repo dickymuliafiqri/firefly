@@ -33,6 +33,21 @@ func WriteError(w http.ResponseWriter, status int, errType, message string) {
 	}})
 }
 
+// ErrorBody renders the OpenAI error envelope as JSON bytes. It is the buffered
+// counterpart of WriteError, for adapters that must hand an error back through
+// the shared outcome path (which relays the body) or replay it later, rather
+// than writing to the ResponseWriter at the point of failure.
+func ErrorBody(errType, message string) []byte {
+	b, err := json.Marshal(APIError{Error: ErrorDetail{
+		Message: message,
+		Type:    errType,
+	}})
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
 // Error type constants aligned with OpenAI's documented taxonomy.
 const (
 	TypeInvalidRequest = "invalid_request_error"
