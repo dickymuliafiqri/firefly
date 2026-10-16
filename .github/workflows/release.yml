@@ -55,7 +55,8 @@ jobs:
             echo "Error: RELEASE_TAG is empty"; exit 1
           fi
           node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.version=process.argv[1];fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')" "$VERSION"
-          echo "frontend/package.json version -> $(node -p \"require('./package.json').version\")"
+          STAMPED="$(node -p "require('./package.json').version")"
+          echo "frontend/package.json version -> ${STAMPED}"
 
       - name: Build Frontend Bundle
         working-directory: ./frontend
