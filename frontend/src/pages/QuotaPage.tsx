@@ -460,7 +460,7 @@ export function QuotaPage() {
     <div className="page-col">
       <PageHeader
         title="Quota"
-        description="Token quota & expiry per tenant, plus the upstream allowance of every connected OAuth account."
+        description="Token quota and expiry per tenant, plus the upstream allowance of every connected OAuth account."
       />
 
       {/* KPI Summary — exactly 4 cards per tab view */}

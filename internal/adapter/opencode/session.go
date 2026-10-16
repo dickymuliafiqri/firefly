@@ -2,6 +2,7 @@ package opencode
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -9,14 +10,45 @@ import (
 )
 
 const (
-	HeaderSession = "x-opencode-session"
-	HeaderRequest = "x-opencode-request"
-	HeaderClient  = "x-opencode-client"
-	HeaderProject = "x-opencode-project"
+	// HeaderSessionID is the header the OpenCode Zen free-tier gate actually
+	// reads to attest the caller. Dropping the three siblings below still yields
+	// 200; dropping this one yields 403 FreeTierError.
+	HeaderSessionID = upstream.OpenCodeSessionIDHeader
+	// HeaderSession, HeaderSessionAffinity and HeaderSessionLegacy are the
+	// decorative siblings the official client also sends.
+	HeaderSession         = "x-opencode-session"
+	HeaderSessionAffinity = "x-session-affinity"
+	HeaderSessionLegacy   = "x-session-id"
+	HeaderRequest         = "x-opencode-request"
+	HeaderClient          = "x-opencode-client"
+	HeaderProject         = "x-opencode-project"
 )
 
+// ApplySessionHeaders writes every session header the free-tier gate looks at,
+// all from a single value.
+func ApplySessionHeaders(h http.Header, id string) {
+	upstream.SetOpenCodeSessionHeaders(h, id)
+}
+
+// SessionCounter decodes the per-millisecond counter the free-tier gate
+// validates out of a descending (ses_) identifier. A session ID carries
+// ~(ms<<12 | counter) as 12 hex characters, so the counter is recoverable as
+// (0xFFFFFFFFFFFF - hex) & 0xFFF. The gate rejects any value above
+// upstream.OpenCodeSessionCounterMax.
+func SessionCounter(s string) (int64, bool) {
+	if len(s) != 30 || !strings.HasPrefix(s, "ses_") {
+		return 0, false
+	}
+	v, err := strconv.ParseUint(s[4:16], 16, 64)
+	if err != nil {
+		return 0, false
+	}
+	return int64((0xFFFFFFFFFFFF - v) & 0xFFF), true
+}
+
 // IsValidSessionID reports whether s matches the OpenCode canonical session format:
-// ^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$ (30 characters total).
+// ^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$ (30 characters total) AND carries a counter
+// inside the window the free-tier gate accepts.
 func IsValidSessionID(s string) bool {
 	if len(s) != 30 || !strings.HasPrefix(s, "ses_") {
 		return false
@@ -33,7 +65,8 @@ func IsValidSessionID(s string) bool {
 			return false
 		}
 	}
-	return true
+	counter, ok := SessionCounter(s)
+	return ok && counter <= upstream.OpenCodeSessionCounterMax
 }
 
 // GenerateSessionID creates a new canonical OpenCode session identifier (ses_<26-chars>).
@@ -119,7 +152,7 @@ func getCachedSession(key string) string {
 // (inbound session, connection, or tenant) to ensure OpenCode Console timestamp validation passes.
 func ResolveSessionID(h http.Header, tenant, reqID string) string {
 	if h != nil {
-		for _, key := range []string{HeaderSession, "x-session-id", "session-id"} {
+		for _, key := range []string{HeaderSessionID, HeaderSession, HeaderSessionAffinity, HeaderSessionLegacy, "session-id"} {
 			if raw := h.Get(key); raw != "" {
 				trimmed := strings.TrimSpace(raw)
 				if IsValidSessionID(trimmed) {

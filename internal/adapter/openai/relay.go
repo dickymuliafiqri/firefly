@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/dickymuliafiqri/firefly/internal/observability/trace"
+	"github.com/dickymuliafiqri/firefly/internal/supervisor"
 )
 
 // errStreamIdle indicates the upstream stopped delivering bytes for longer than
@@ -180,7 +181,12 @@ func newStreamWatchdog(ctx context.Context, body io.ReadCloser, idleTimeout time
 		done:       make(chan struct{}),
 	}
 	w.last.Store(time.Now())
-	go w.watch()
+	go func() {
+		// The idle watchdog runs on every streamed response; a panic here must not
+		// abort the whole process mid-stream.
+		defer supervisor.Guard("adapter.sse-watchdog")()
+		w.watch()
+	}()
 	return w, w.stop
 }
 

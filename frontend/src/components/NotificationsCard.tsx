@@ -215,16 +215,16 @@ export function NotificationsCard() {
             <input
               value={form.bearer}
               onChange={(e) => setForm({ ...form, bearer: e.target.value })}
-              placeholder="leave as *** to keep the stored value"
+              placeholder="Leave *** to keep the stored value"
             />
-            <em>Sent as Authorization: Bearer. Write-only — never returned by the API.</em>
+            <em>Sent as Authorization: Bearer. Write-only. Never returned by the API.</em>
           </label>
           <label className="field">
             <span>Signing secret (optional)</span>
             <input
               value={form.secret}
               onChange={(e) => setForm({ ...form, secret: e.target.value })}
-              placeholder="leave as *** to keep the stored value"
+              placeholder="Leave *** to keep the stored value"
             />
             <em>Enables the X-Firefly-Signature HMAC header. Write-only.</em>
           </label>

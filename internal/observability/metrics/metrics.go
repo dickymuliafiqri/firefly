@@ -42,6 +42,9 @@ type Metrics struct {
 	keyCooldownEvents *prometheus.CounterVec
 	keyRequests       *prometheus.CounterVec
 	globalInflight    prometheus.Gauge
+
+	workerPanics   *prometheus.CounterVec
+	workerRestarts *prometheus.CounterVec
 }
 
 // durationBuckets cover the full range of gateway latency: sub-millisecond
@@ -104,6 +107,14 @@ func New() *Metrics {
 			Name: "firefly_global_inflight_requests",
 			Help: "Number of concurrent in-flight requests admitted globally across the server.",
 		}),
+		workerPanics: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "firefly_worker_panics_total",
+			Help: "Total recovered panics per background worker (internal/supervisor).",
+		}, []string{"worker"}),
+		workerRestarts: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "firefly_worker_restarts_total",
+			Help: "Total background-worker restarts performed after a panic (internal/supervisor).",
+		}, []string{"worker"}),
 	}
 	reg.MustRegister(
 		m.httpRequests,
@@ -117,6 +128,8 @@ func New() *Metrics {
 		m.keyCooldownEvents,
 		m.keyRequests,
 		m.globalInflight,
+		m.workerPanics,
+		m.workerRestarts,
 		prometheus.NewGoCollector(),
 		prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}),
 	)
@@ -239,6 +252,24 @@ func (m *Metrics) DecGlobalInflight() {
 		return
 	}
 	m.globalInflight.Dec()
+}
+
+// WorkerPanic counts one panic recovered by internal/supervisor, by worker
+// name. It satisfies supervisor.Observer without importing that package.
+func (m *Metrics) WorkerPanic(worker string) {
+	if m == nil || worker == "" {
+		return
+	}
+	m.workerPanics.WithLabelValues(worker).Inc()
+}
+
+// WorkerRestart counts one background-worker restart after a panic, by worker
+// name. It satisfies supervisor.Observer without importing that package.
+func (m *Metrics) WorkerRestart(worker string) {
+	if m == nil || worker == "" {
+		return
+	}
+	m.workerRestarts.WithLabelValues(worker).Inc()
 }
 
 // Upstream call outcomes.

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/dickymuliafiqri/firefly/internal/ports"
+	"github.com/dickymuliafiqri/firefly/internal/supervisor"
 )
 
 var _ ports.UsageRecorder = (*UsageFlusher)(nil)
@@ -155,6 +156,7 @@ func (f *UsageFlusher) NotifyKeyAction(action ports.KeyAction, upstreamName, ref
 	default:
 		// Queue full; execute directly in background worker
 		go func() {
+			defer supervisor.Guard("turso.key-action")()
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if action == ports.KeyActionDelete {

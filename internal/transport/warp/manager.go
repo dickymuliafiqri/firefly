@@ -26,6 +26,7 @@ import (
 	"golang.zx2c4.com/wireguard/tun/netstack"
 
 	"github.com/dickymuliafiqri/firefly/internal/singleflightx"
+	"github.com/dickymuliafiqri/firefly/internal/supervisor"
 )
 
 const (
@@ -39,10 +40,12 @@ const (
 	// 429-driven trigger, which proved unreliable in production (e.g. behind
 	// 9router the 429 never reached the rotation path), while a steady timer
 	// keeps the egress IP fresh regardless of upstream response shape.
-	// Two minutes stays well above the observed per-IP rate limits of the
-	// Cloudflare registration endpoint, which start answering 429 to sustained
-	// bursts faster than about one registration per minute.
-	DefaultAutoRotateInterval = 2 * time.Minute
+	// Thirty seconds refreshes the egress IP aggressively; it sits close to the
+	// observed per-IP rate limits of the Cloudflare registration endpoint, so a
+	// tick that trips 429 is logged and simply retried on the next interval
+	// rather than crashing the loop. Raise `-warp-rotate-interval` if the
+	// endpoint starts throttling consistently.
+	DefaultAutoRotateInterval = 30 * time.Second
 
 	// DefaultMinRotateInterval throttles asynchronous manual/fallback background rotations.
 	DefaultMinRotateInterval = 60 * time.Second
@@ -155,9 +158,10 @@ func (s *Session) Close() {
 	if s == nil || s.closed.Swap(true) {
 		return
 	}
-	defer func() {
-		_ = recover()
-	}()
+	// Teardown must not take the process down; a panic here is recorded (worker
+	// plus location) instead of being dropped silently, which is what made an
+	// occasional crash impossible to attribute.
+	defer supervisor.Guard("warp.session-close")()
 	if s.Dev != nil {
 		_ = s.Dev.Down()
 		s.Dev.Close()
@@ -304,7 +308,11 @@ func (m *Manager) StartAutoRotation() {
 	if m == nil || m.autoRotateInterval <= 0 {
 		return
 	}
-	go m.autoRotationLoop()
+	// A panic in this ticker used to kill the process, which is exactly the
+	// unattributable restart this supervision exists to prevent.
+	supervisor.Go(m.bgCtx, "warp.auto-rotate", supervisor.DefaultPolicy(), func(context.Context) {
+		m.autoRotationLoop()
+	})
 }
 
 func (m *Manager) autoRotationLoop() {
@@ -640,7 +648,7 @@ func (m *Manager) DialContext(ctx context.Context, network, address string) (net
 // WarmUp establishes the tunnel on a cold start so status surfaces report the
 // engine as live from process start. Without it the session is dialled lazily —
 // by the first request through a WARP-egress upstream, or by the first rotation
-// tick a full auto-rotate interval (5m by default) after boot — so a fresh
+// tick a full auto-rotate interval (30s by default) after boot — so a fresh
 // deployment (a new container with an empty config volume, for instance)
 // answered enabled:false to GET /api/warp/status for minutes and the dashboard
 // showed a perfectly healthy engine as DISABLED.
@@ -898,6 +906,7 @@ func (m *Manager) drainSession(old *Session) {
 	m.drainWG.Add(1)
 
 	go func() {
+		defer supervisor.Guard("warp.session-drain")()
 		defer m.drainWG.Done()
 		defer m.draining.Add(-1)
 		defer old.Close()
@@ -1025,11 +1034,7 @@ func (m *Manager) RotateAsync(upstreamName string) {
 	}
 
 	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				m.logger.Error("recovered from panic during async warp rotation", "panic", r, "upstream", upstreamName)
-			}
-		}()
+		defer supervisor.Guard("warp.rotate-async")()
 
 		m.logger.Info("triggering background warp rotation", "upstream", upstreamName)
 		if _, err := m.Rotate(m.bgCtx); err != nil {
@@ -1156,11 +1161,7 @@ func (m *Manager) replenishSlot() {
 		return
 	}
 	go func() {
-		defer func() {
-			if r := recover(); r != nil && m.logger != nil {
-				m.logger.Error("recovered from panic during warp session replenishment", "panic", r)
-			}
-		}()
+		defer supervisor.Guard("warp.replenish-slot")()
 		ctx, cancel := context.WithTimeout(m.bgCtx, m.rotateTimeout)
 		defer cancel()
 		if _, err := m.Rotate(ctx); err != nil {

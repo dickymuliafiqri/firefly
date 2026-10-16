@@ -1,6 +1,7 @@
 package opencode
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -78,58 +79,165 @@ func SanitizeTools(body []byte) ([]byte, bool) {
 	return out, modified
 }
 
-// NormalizeReasoning ensures reasoning/thinking parameters match OpenCode expectations.
-// If reasoning_effort is provided or reasoning.effort exists:
-// 1. Normalizes "ultra" effort to "max".
-// 2. Wraps into reasoning: { effort, summary: "auto" }.
-// 3. Deletes top-level reasoning_effort.
+// reasoningParams is the sanitized form of whatever a client called "reasoning".
+type reasoningParams struct {
+	effort     string
+	maxTokens  int64
+	exclude    bool
+	enabled    bool
+	hasMax     bool
+	hasExclude bool
+	hasEnabled bool
+	// sawObject records that the client supplied a reasoning object (even an
+	// empty one), which is what decides between emitting `{summary: "auto"}`
+	// and leaving the field out entirely.
+	sawObject bool
+}
+
+func (p reasoningParams) usable() bool {
+	return p.effort != "" || p.hasMax || p.hasExclude || p.hasEnabled
+}
+
+// NormalizeReasoning folds every client dialect of the reasoning field into the
+// single object shape OpenCode validates:
+//
+//	reasoning: { effort?: string, max_tokens?: positive integer,
+//	             exclude?: bool, enabled?: bool, summary?: string }
+//
+// Recognized spellings, in effort priority order:
+//
+//	reasoning_effort: "high"        → reasoning.effort = "high"
+//	reasoning: "high"               → reasoning.effort = "high" (OpenRouter shorthand)
+//	reasoning: {"effort": "high"}   → kept
+//	reasoning: {"max_tokens": 2048} → kept
+//
+// and "ultra" (derived from a thinking model suffix elsewhere) becomes "max".
+//
+// Everything unusable is dropped instead of relayed. OpenCode rejects the whole
+// request with `[invalid_reasoning] reasoning must be an object with optional
+// effort (string), max_tokens (positive integer), exclude and enabled
+// (booleans)` for a non-object value (`"high"`, `true`, `42`) or a wrongly-typed
+// member (`{"enabled": "yes"}`, `{"max_tokens": -1}`), and a client that asked
+// for something this gateway cannot express should still get an answer rather
+// than a 400 it has no way to act on.
+//
+// The top-level `reasoning_effort` is always removed, so the request never
+// carries both spellings.
 func NormalizeReasoning(body []byte) ([]byte, bool) {
-	effort := gjson.GetBytes(body, "reasoning_effort")
-	reasoning := gjson.GetBytes(body, "reasoning")
+	effortField := gjson.GetBytes(body, "reasoning_effort")
+	reasoningField := gjson.GetBytes(body, "reasoning")
 
-	var effortStr string
-	if effort.Exists() {
-		effortStr = strings.ToLower(strings.TrimSpace(effort.String()))
-	} else if reasoning.Exists() && reasoning.IsObject() && reasoning.Get("effort").Exists() {
-		effortStr = strings.ToLower(strings.TrimSpace(reasoning.Get("effort").String()))
+	objectEffort := ""
+	if v := reasoningField.Get("effort"); v.Type == gjson.String {
+		objectEffort = normalizeEffort(v.String())
 	}
 
-	if effortStr == "ultra" {
-		effortStr = "max"
+	var p reasoningParams
+	switch {
+	case effortField.Type == gjson.String:
+		p.effort = normalizeEffort(effortField.String())
+	case reasoningField.Type == gjson.String:
+		p.effort = normalizeEffort(reasoningField.String())
+	default:
+		p.effort = objectEffort
 	}
 
-	if effortStr != "" {
-		out := body
-		if effort.Exists() {
-			out, _ = sjson.DeleteBytes(out, "reasoning_effort")
+	p.sawObject = reasoningField.IsObject()
+	if v := reasoningField.Get("max_tokens"); v.Type == gjson.Number && v.Int() > 0 && v.Num == float64(v.Int()) {
+		p.maxTokens, p.hasMax = v.Int(), true
+	}
+	if v := reasoningField.Get("exclude"); v.Type == gjson.True || v.Type == gjson.False {
+		p.exclude, p.hasExclude = v.Bool(), true
+	}
+	if v := reasoningField.Get("enabled"); v.Type == gjson.True || v.Type == gjson.False {
+		p.enabled, p.hasEnabled = v.Bool(), true
+	}
+
+	summary := "auto"
+	if s := reasoningField.Get("summary"); s.Type == gjson.String && strings.TrimSpace(s.String()) != "" {
+		summary = strings.TrimSpace(s.String())
+	}
+
+	out, _ := sjson.DeleteBytes(body, "reasoning_effort")
+	out, _ = sjson.DeleteBytes(out, "reasoning")
+
+	if p.usable() || p.sawObject {
+		rebuilt := []byte("{}")
+		if p.effort != "" {
+			rebuilt, _ = sjson.SetBytes(rebuilt, "effort", p.effort)
 		}
-		if reasoning.Exists() && reasoning.IsObject() {
-			out, _ = sjson.SetBytes(out, "reasoning.effort", effortStr)
-			if !reasoning.Get("summary").Exists() {
-				out, _ = sjson.SetBytes(out, "reasoning.summary", "auto")
-			}
-		} else {
-			rObj := map[string]string{
-				"effort":  effortStr,
-				"summary": "auto",
-			}
-			raw, _ := json.Marshal(rObj)
-			out, _ = sjson.SetRawBytes(out, "reasoning", raw)
+		if p.hasMax {
+			rebuilt, _ = sjson.SetBytes(rebuilt, "max_tokens", p.maxTokens)
 		}
-		return out, true
+		if p.hasExclude {
+			rebuilt, _ = sjson.SetBytes(rebuilt, "exclude", p.exclude)
+		}
+		if p.hasEnabled {
+			rebuilt, _ = sjson.SetBytes(rebuilt, "enabled", p.enabled)
+		}
+		rebuilt, _ = sjson.SetBytes(rebuilt, "summary", summary)
+		out, _ = sjson.SetRawBytes(out, "reasoning", rebuilt)
 	}
 
-	if reasoning.Exists() && reasoning.IsObject() && !reasoning.Get("summary").Exists() {
-		out, _ := sjson.SetBytes(body, "reasoning.summary", "auto")
-		return out, true
-	}
+	return out, !bytes.Equal(out, body)
+}
 
-	return body, false
+// StripReasoning removes both spellings of the reasoning directive from a
+// request. It backs the one-shot retry an upstream refusal triggers: when the
+// model backend rejects the reasoning field itself, the same call is worth one
+// more attempt without it, because the field is an optional hint rather than the
+// substance of the request.
+func StripReasoning(body []byte) ([]byte, bool) {
+	out, _ := sjson.DeleteBytes(body, "reasoning_effort")
+	out, _ = sjson.DeleteBytes(out, "reasoning")
+	return out, !bytes.Equal(out, body)
+}
+
+// invalidReasoningMarker is the token OpenCode puts in a 400 body when its
+// validator refuses the reasoning field. The prose around it may be reworded, so
+// the marker is what is matched.
+const invalidReasoningMarker = "invalid_reasoning"
+
+// IsInvalidReasoningError reports whether an upstream error body is the
+// `[invalid_reasoning]` refusal of the reasoning field.
+func IsInvalidReasoningError(body []byte) bool {
+	return bytes.Contains(body, []byte(invalidReasoningMarker))
+}
+
+// normalizeEffort lowercases an effort value and maps the aliases callers derive
+// from a thinking model suffix onto the levels OpenCode names.
+func normalizeEffort(effort string) string {
+	e := strings.ToLower(strings.TrimSpace(effort))
+	if e == "ultra" {
+		return "max"
+	}
+	return e
+}
+
+// responsesReasoning copies a sanitized reasoning object into the Responses API
+// payload. The two endpoints do not name every effort level the same way: what
+// Chat Completions accepts as "max" (an "ultra" request) is "xhigh" there.
+func responsesReasoning(r gjson.Result) map[string]any {
+	out := make(map[string]any, 5)
+	for key, value := range r.Map() {
+		out[key] = value.Value()
+	}
+	if effort, ok := out["effort"].(string); ok && (effort == "max" || effort == "ultra") {
+		out["effort"] = "xhigh"
+	}
+	return out
 }
 
 // TransformChatToResponses transforms an OpenAI Chat Completions payload into
 // an OpenAI Responses API payload suitable for OpenCode's /responses endpoint.
 func TransformChatToResponses(body []byte, upstreamModel string, isFree bool) ([]byte, error) {
+	// Fold every reasoning dialect into the single object OpenCode validates
+	// upstream of payload assembly, so both routes share one sanitizer. Without
+	// this a bare `reasoning: "high"` was copied across as a non-object and the
+	// upstream answered 400 [invalid_reasoning].
+	if normalized, changed := NormalizeReasoning(body); changed {
+		body = normalized
+	}
 	parsed := gjson.ParseBytes(body)
 
 	// Determine output token limits
@@ -311,25 +419,10 @@ func TransformChatToResponses(body []byte, upstreamModel string, isFree bool) ([
 		payload["max_output_tokens"] = 32000
 	}
 
-	// Reasoning
-	if parsed.Get("reasoning").Exists() {
-		var rObj map[string]any
-		_ = json.Unmarshal([]byte(parsed.Get("reasoning").Raw), &rObj)
-		if rObj != nil {
-			if _, ok := rObj["summary"]; !ok {
-				rObj["summary"] = "auto"
-			}
-			payload["reasoning"] = rObj
-		}
-	} else if parsed.Get("reasoning_effort").Exists() {
-		effort := parsed.Get("reasoning_effort").String()
-		if effort == "max" || effort == "ultra" {
-			effort = "xhigh"
-		}
-		payload["reasoning"] = map[string]string{
-			"effort":  effort,
-			"summary": "auto",
-		}
+	// Reasoning: already sanitized into an object, so it is copied across — with
+	// the effort levels the Responses API names differently.
+	if r := parsed.Get("reasoning"); r.IsObject() {
+		payload["reasoning"] = responsesReasoning(r)
 	}
 
 	// Tools

@@ -12,6 +12,7 @@ import (
 	rpprof "runtime/pprof"
 	"time"
 
+	"github.com/dickymuliafiqri/firefly/internal/supervisor"
 	"github.com/dickymuliafiqri/firefly/internal/transport/httpx"
 )
 
@@ -97,6 +98,7 @@ func (a *Admin) Serve(ctx context.Context) error {
 func (a *Admin) ServeOnListener(ctx context.Context, ln net.Listener) error {
 	errCh := make(chan error, 1)
 	go func() {
+		defer supervisor.Guard("server.admin-http-serve")()
 		a.logger.Info("admin server listening", "addr", ln.Addr().String(), "path", "/metrics")
 		err := a.http.Serve(ln)
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {

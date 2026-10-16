@@ -14,6 +14,7 @@ import (
 
 	"github.com/dickymuliafiqri/firefly/internal/config"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
+	"github.com/dickymuliafiqri/firefly/internal/supervisor"
 	"github.com/fsnotify/fsnotify"
 )
 
@@ -80,8 +81,13 @@ func (w *Watcher) Run(ctx context.Context, reload func(context.Context) error) e
 	}
 
 	triggers := make(chan trigger, 1)
-	// Debounce worker: coalesces rapid triggers into a single reload.
-	go w.debounce(ctx, triggers, reload)
+	// Debounce worker: coalesces rapid triggers into a single reload. A panic
+	// here would otherwise be an unattributable process death, because the
+	// watcher runs outside the request path.
+	go func() {
+		defer supervisor.Guard("config.debounce")()
+		w.debounce(ctx, triggers, reload)
+	}()
 
 	// SIGHUP setup is hoisted OUT of the loop on purpose: watchSIGHUP registers a
 	// signal handler, so calling it per-iteration would leak a registration on

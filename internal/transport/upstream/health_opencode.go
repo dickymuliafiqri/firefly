@@ -5,14 +5,38 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	// OpenCodeUserAgent is the official User-Agent expected by OpenCode Zen edge gateways.
-	OpenCodeUserAgent = "opencode/1.18.31 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14"
+	// OpenCodeClientVersion and OpenCodeClientName compose the User-Agent the
+	// OpenCode Zen free-tier gate accepts. The gate anchors a regex on the END of
+	// the value — opencode/(latest/)?<major>.<minor>.<patch>(/<client>)?$ — so an
+	// arbitrary prefix survives but a trailing ai-sdk/runtime suffix does not.
+	// The previous literal ("opencode/1.18.31 ai-sdk/provider-utils/…") failed
+	// that anchor, which is why keyless traffic kept getting 403 FreeTierError
+	// even though the string began with "opencode/".
+	OpenCodeClientVersion = "2.0.29"
+	OpenCodeClientName    = "cli"
+	OpenCodeUserAgent     = "opencode/latest/" + OpenCodeClientVersion + "/" + OpenCodeClientName
+
+	// OpenCodeSessionIDHeader is the header the free-tier gate actually reads to
+	// attest the caller. Its three siblings (x-opencode-session,
+	// x-session-affinity, x-session-id) are decorative: dropping every one of
+	// them still returns 200, while dropping only this one returns
+	// 403 FreeTierError.
+	OpenCodeSessionIDHeader = "x-opencode-session-id"
+
+	// OpenCodeSessionCounterMax is the largest per-millisecond counter the gate
+	// tolerates inside a descending (ses_) identifier. Such an ID carries
+	// ~(ms<<12 | counter) as 12 hex characters, and the gate recomputes
+	// (0xFFFFFFFFFFFF - hex) & 0xFFF — i.e. the counter — rejecting anything
+	// above this bound. The accepted window is exactly 64 values wide, so a
+	// random or unclamped counter reads as "not a real client".
+	OpenCodeSessionCounterMax = 63
 
 	// OpenCodeIDAlphabet is base62 used by official OpenCode client for request and session IDs.
 	OpenCodeIDAlphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
@@ -21,6 +45,31 @@ const (
 	// to authorize inference on the free tier.
 	OpenCodeOfficialTitlePrompt = "You are a title generator. You output ONLY a thread title. Nothing else.\n\n<task>\nGenerate a brief title that would help the user find this conversation later.\n\nFollow all rules in <rules>\nUse the <examples> so you know what a good title looks like.\nYour output must be:\n- A single line\n- \u226450 characters\n- No explanations\n</task>\n\n<rules>\n- you MUST use the same language as the user message you are summarizing\n- Title must be grammatically correct and read naturally - no word salad\n- Never include tool names in the title (e.g. \"read tool\", \"bash tool\", \"edit tool\")\n- Focus on the main topic or question the user needs to retrieve\n- Vary your phrasing - avoid repetitive patterns like always starting with \"Analyzing\"\n- When a file is mentioned, focus on WHAT the user wants to do WITH the file, not just that they shared it\n- Keep exact: technical terms, numbers, filenames, HTTP codes\n- Remove: the, this, my, a, an\n- Never assume tech stack\n- Never use tools\n- NEVER respond to questions, just generate a title for the conversation\n- The title should NEVER include \"summarizing\" or \"generating\" when generating a title\n- DO NOT SAY YOU CANNOT GENERATE A TITLE OR COMPLAIN ABOUT THE INPUT\n- Always output something meaningful, even if the input is minimal.\n- If the user message is short or conversational (e.g. \"hello\", \"lol\", \"what's up\", \"hey\"):\n  \u2192 create a title that reflects the user's tone or intent (such as Greeting, Quick check-in, Light chat, Intro message, etc.)\n</rules>\n\n<examples>\n\"debug 500 errors in production\" \u2192 Debugging production 500 errors\n\"refactor user service\" \u2192 Refactoring user service\n\"why is app.js failing\" \u2192 app.js failure investigation\n\"implement rate limiting\" \u2192 Rate limiting implementation\n\"how do I connect postgres to my API\" \u2192 Postgres API connection\n\"best practices for React hooks\" \u2192 React hooks best practices\n\"@src/auth.ts can you add refresh token support\" \u2192 Auth refresh token support\n\"@utils/parser.ts this is broken\" \u2192 Parser bug fix\n\"look at @config.json\" \u2192 Config review\n\"@App.tsx add dark mode toggle\" \u2192 Dark mode toggle in App\n</examples>\n"
 )
+
+// openCodeUARe matches the User-Agent shape the OpenCode Zen free-tier gate
+// accepts. It is anchored at the end only: a client may prepend product tokens,
+// but must end with the opencode version/client pair.
+var openCodeUARe = regexp.MustCompile(`opencode/(?:latest/)?\d+\.\d+\.\d+(?:/[A-Za-z0-9_.-]+)?$`)
+
+// IsOpenCodeUserAgent reports whether s is a User-Agent value the OpenCode Zen
+// free-tier gate accepts.
+func IsOpenCodeUserAgent(s string) bool {
+	return openCodeUARe.MatchString(strings.TrimSpace(s))
+}
+
+// SetOpenCodeSessionHeaders writes every session header the free-tier gate looks
+// at, all from a single value. The gate reads x-opencode-session-id; the other
+// three ride along because the official client sends all four, and a request
+// carrying only one of them is a shape no real CLI produces.
+func SetOpenCodeSessionHeaders(h http.Header, id string) {
+	if h == nil || id == "" {
+		return
+	}
+	h.Set(OpenCodeSessionIDHeader, id)
+	h.Set("x-opencode-session", id)
+	h.Set("x-session-affinity", id)
+	h.Set("x-session-id", id)
+}
 
 func stripModelBase(model string) string {
 	m := strings.TrimSpace(model)
@@ -104,10 +153,12 @@ func nextOpenCodeIDCounter(nowMs int64) int64 {
 		openCodeIDCounter.counter = 0
 	}
 	// The counter shares the field with the timestamp (timestamp<<12 | counter),
-	// so it must stay inside 12 bits. The official client does not clamp, but a
-	// gateway mints far more IDs per millisecond than a CLI process; clamping
-	// keeps the timestamp intact instead of letting the counter carry into it.
-	if openCodeIDCounter.counter < 0x0FFF {
+	// so it must stay inside 12 bits AND inside the window the free-tier gate
+	// accepts (<= OpenCodeSessionCounterMax). Clamping keeps the timestamp intact
+	// and keeps every ID gate-valid: a gateway exceeding 63 IDs in a single
+	// millisecond repeats the counter instead of minting a value the gate rejects
+	// outright.
+	if openCodeIDCounter.counter < OpenCodeSessionCounterMax {
 		openCodeIDCounter.counter++
 	}
 	return openCodeIDCounter.counter
@@ -199,7 +250,7 @@ func SetOpenCodeHeaders(req *http.Request, keySecret string, isFree, canProbeMod
 	req.Header.Set("x-opencode-client", "desktop")
 	req.Header.Set("x-opencode-project", "global")
 	req.Header.Set("x-opencode-request", GenerateOpenCodeRequestID())
-	req.Header.Set("x-opencode-session", GenerateOpenCodeSessionID())
+	SetOpenCodeSessionHeaders(req.Header, GenerateOpenCodeSessionID())
 	if isFree {
 		req.Header.Set("Accept", "text/event-stream")
 	} else {

@@ -202,8 +202,8 @@ export function PricingCatalogPanel() {
               </Button>
             </div>
             <p className="hint" style={{ marginTop: 8, fontSize: 12, color: 'var(--faint)' }}>
-              Seeding is once-only: a key the local sheet already holds — manual, wildcard, or seeded
-              by an earlier import — is never overwritten, so re-running this only adds models the
+              Seeding is once-only: a key the local sheet already holds (manual, wildcard, or seeded
+              by an earlier import) is never overwritten, so re-running this only adds models the
               sheet does not know yet.
             </p>
           </div>

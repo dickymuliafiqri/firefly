@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/dickymuliafiqri/firefly/internal/supervisor"
 )
 
 // Start launches a cloudflared tunnel process in background.
@@ -77,11 +79,20 @@ func (m *Manager) Start(mode Mode, token string) error {
 	m.running.Store(true)
 
 	go func() {
+		defer supervisor.Guard("tunnel.process")()
 		defer cancel()
 		var wg sync.WaitGroup
 		wg.Add(2)
-		go func() { defer wg.Done(); m.streamReader(stdout) }()
-		go func() { defer wg.Done(); m.streamReader(stderr) }()
+		go func() {
+			defer wg.Done()
+			defer supervisor.Guard("tunnel.stream-reader")()
+			m.streamReader(stdout)
+		}()
+		go func() {
+			defer wg.Done()
+			defer supervisor.Guard("tunnel.stream-reader")()
+			m.streamReader(stderr)
+		}()
 		waitErr := cmd.Wait()
 		m.running.Store(false)
 		close(done)

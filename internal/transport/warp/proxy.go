@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"golang.org/x/net/proxy"
+
+	"github.com/dickymuliafiqri/firefly/internal/supervisor"
 )
 
 // EgressConfig specifies the outbound routing parameters.
@@ -116,6 +118,7 @@ func ProxyDialer(proxyURLStr string) (func(ctx context.Context, network, addr st
 		resCh := make(chan result, 1)
 
 		go func() {
+			defer supervisor.Guard("warp.egress-dial")()
 			c, err := dialer.Dial(network, addr)
 			resCh <- result{conn: c, err: err}
 		}()
@@ -123,6 +126,7 @@ func ProxyDialer(proxyURLStr string) (func(ctx context.Context, network, addr st
 		select {
 		case <-ctx.Done():
 			go func() {
+				defer supervisor.Guard("warp.egress-dial")()
 				res := <-resCh
 				if res.conn != nil {
 					_ = res.conn.Close()

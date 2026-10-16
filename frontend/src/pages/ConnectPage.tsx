@@ -225,7 +225,7 @@ export function ConnectPage() {
       const count = body && Array.isArray(body.data) ? body.data.length : 0;
       setProbe({
         state: "ok",
-        message: `Gateway reachable — ${count} model(s) visible to ${selectedTenant || "this key"}.`,
+        message: `Gateway reachable. ${count} model(s) visible to ${selectedTenant || "this key"}.`,
       });
     } catch (err) {
       setProbe({ state: "fail", message: err instanceof Error ? err.message : "Request failed" });
@@ -238,7 +238,7 @@ export function ConnectPage() {
         pushToast({
           type: "success",
           title: "Connection bundle copied",
-          message: `${presets.length} client preset(s) with base URL and key.`,
+          message: `Includes ${presets.length} client preset(s), the base URL, and the tenant key.`,
         }),
       () =>
         pushToast({
@@ -253,7 +253,7 @@ export function ConnectPage() {
     <div className="page-col">
       <PageHeader
         title="Connect"
-        description="Base URL, tenant key and copy-ready presets for wiring AI agents to this gateway."
+        description="Base URL, tenant key, and client presets for wiring AI agents to this gateway."
         actions={
           <Button variant="secondary" onClick={copyBundle}>
             Copy everything
@@ -307,7 +307,7 @@ export function ConnectPage() {
 
               <p className="connect-note">
                 Every preset below takes the <strong>OpenAI base URL</strong> (origin +{" "}
-                <code>/v1</code>) — the same value clients send to api.openai.com.
+                <code>/v1</code>), the same value clients send to api.openai.com.
               </p>
 
               <div className="section-title">Endpoints</div>
@@ -448,7 +448,7 @@ export function ConnectPage() {
 
               {tenants.length === 0 ? (
                 <p className="connect-note">
-                  No tenant keys yet — create one on the Tenants page, then come back here.
+                  No tenant keys yet. Create one on the Tenants page, then come back here.
                 </p>
               ) : null}
 
@@ -460,7 +460,7 @@ export function ConnectPage() {
                   {!sameOrigin ? (
                     <span className="connect-note">
                       Probing another origin is blocked by the browser (the data plane sends no CORS
-                      headers) — use this dashboard's host to test.
+                      headers). Use this dashboard's host to test.
                     </span>
                   ) : null}
                   <Button

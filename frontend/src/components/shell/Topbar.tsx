@@ -58,7 +58,7 @@ export function Topbar({ title }: TopbarProps) {
           style={{ color: statusColor }}
           title={
             mock
-              ? 'Gateway unreachable — displaying demo data'
+              ? 'Gateway unreachable. Showing demo data'
               : live
               ? 'Backend healthy'
               : 'Backend offline'

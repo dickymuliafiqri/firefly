@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/acme/autocert"
+
+	"github.com/dickymuliafiqri/firefly/internal/supervisor"
 )
 
 const (
@@ -241,6 +243,7 @@ func requestHostMatches(host, domain string) bool {
 
 func (a *AutoTLS) serveAsync(name string, srv *http.Server, ln net.Listener) {
 	go func() {
+		defer supervisor.Guard("server.autotls-listener")()
 		a.logger.Info(name+" listening", "addr", ln.Addr().String())
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			a.logger.Error(name+" stopped", "err", err)

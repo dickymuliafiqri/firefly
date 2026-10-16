@@ -166,7 +166,7 @@ export function ChatPage() {
                   id="chat-msg"
                   rows={5}
                   spellCheck={false}
-                  placeholder="Tulis pesan…"
+                  placeholder="Type a message…"
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => {

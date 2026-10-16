@@ -2,17 +2,20 @@ package opencode
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
 	"github.com/dickymuliafiqri/firefly/internal/transport/httpx"
+	"github.com/dickymuliafiqri/firefly/internal/transport/upstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -44,7 +47,7 @@ func (m *mockBreaker) Report(name string, ok bool) {
 
 func TestResolveSessionID(t *testing.T) {
 	t.Run("preserves valid canonical native header", func(t *testing.T) {
-		canonical := "ses_f50b1e8a4175RyWGSMj14y2e90"
+		canonical := "ses_" + fmt.Sprintf("%012x", 0xFFFFFFFFFFFF-12) + "RyWGSMj14y2e90"
 		assert.True(t, IsValidSessionID(canonical))
 		h := make(http.Header)
 		h.Set(HeaderSession, canonical)
@@ -111,6 +114,266 @@ func TestNormalizeReasoning(t *testing.T) {
 		assert.Equal(t, "high", gjson.GetBytes(out, "reasoning.effort").String())
 		assert.Equal(t, "auto", gjson.GetBytes(out, "reasoning.summary").String())
 	})
+
+	t.Run("bare string is read as effort", func(t *testing.T) {
+		// OpenRouter-style shorthand: `reasoning: "high"` is not an object, and
+		// relaying it verbatim is what earned the upstream 400.
+		out, modified := NormalizeReasoning([]byte(`{"model": "m", "reasoning": "ultra"}`))
+		assert.True(t, modified)
+		assert.Equal(t, "max", gjson.GetBytes(out, "reasoning.effort").String())
+		assert.Equal(t, "auto", gjson.GetBytes(out, "reasoning.summary").String())
+	})
+
+	t.Run("preserves every member OpenCode accepts", func(t *testing.T) {
+		body := []byte(`{"model": "m", "reasoning": {"effort": "HIGH", "max_tokens": 2048, "exclude": true, "enabled": false, "summary": "concise"}}`)
+		out, modified := NormalizeReasoning(body)
+		require.True(t, modified)
+		assert.Equal(t, "high", gjson.GetBytes(out, "reasoning.effort").String())
+		assert.Equal(t, int64(2048), gjson.GetBytes(out, "reasoning.max_tokens").Int())
+		assert.True(t, gjson.GetBytes(out, "reasoning.exclude").Bool())
+		assert.True(t, gjson.GetBytes(out, "reasoning.enabled").Exists())
+		assert.False(t, gjson.GetBytes(out, "reasoning.enabled").Bool())
+		assert.Equal(t, "concise", gjson.GetBytes(out, "reasoning.summary").String())
+	})
+
+	t.Run("reasoning_effort outranks the object member", func(t *testing.T) {
+		out, _ := NormalizeReasoning([]byte(`{"model": "m", "reasoning": {"effort": "high"}, "reasoning_effort": "low"}`))
+		assert.Equal(t, "low", gjson.GetBytes(out, "reasoning.effort").String())
+		assert.False(t, gjson.GetBytes(out, "reasoning_effort").Exists())
+	})
+
+	t.Run("leaves a request without reasoning alone", func(t *testing.T) {
+		body := []byte(`{"model": "m", "messages": []}`)
+		out, modified := NormalizeReasoning(body)
+		assert.False(t, modified)
+		assert.Equal(t, string(body), string(out))
+	})
+
+	// Every shape below used to reach OpenCode unchanged and come back as
+	// `400 [invalid_reasoning] reasoning must be an object with optional effort
+	// (string), max_tokens (positive integer), exclude and enabled (booleans)`.
+	// Whatever a client sends, what leaves NormalizeReasoning is either that
+	// exact object or no reasoning field at all.
+	t.Run("unusable shapes never reach the upstream", func(t *testing.T) {
+		cases := []struct {
+			name string
+			body string
+		}{
+			{"bare string", `{"model": "m", "reasoning": "high"}`},
+			{"boolean", `{"model": "m", "reasoning": true}`},
+			{"number", `{"model": "m", "reasoning": 42}`},
+			{"null", `{"model": "m", "reasoning": null}`},
+			{"array", `{"model": "m", "reasoning": []}`},
+			{"empty object", `{"model": "m", "reasoning": {}}`},
+			{"non-string effort", `{"model": "m", "reasoning": {"effort": 5}}`},
+			{"zero max_tokens", `{"model": "m", "reasoning": {"max_tokens": 0}}`},
+			{"negative max_tokens", `{"model": "m", "reasoning": {"max_tokens": -1}}`},
+			{"fractional max_tokens", `{"model": "m", "reasoning": {"max_tokens": 1.5}}`},
+			{"string exclude", `{"model": "m", "reasoning": {"exclude": "no"}}`},
+			{"string enabled", `{"model": "m", "reasoning": {"enabled": "yes"}}`},
+			{"non-string summary", `{"model": "m", "reasoning": {"summary": true}}`},
+			{"non-string reasoning_effort", `{"model": "m", "reasoning_effort": 5}`},
+			{"object reasoning_effort", `{"model": "m", "reasoning_effort": {"effort": "high"}}`},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				out, _ := NormalizeReasoning([]byte(tc.body))
+				assert.False(t, gjson.GetBytes(out, "reasoning_effort").Exists())
+
+				r := gjson.GetBytes(out, "reasoning")
+				if !r.Exists() {
+					return // dropped outright, which is also accepted
+				}
+				require.True(t, r.IsObject(), "reasoning must be an object, got %s", r.Raw)
+
+				if e := r.Get("effort"); e.Exists() {
+					assert.Equal(t, gjson.String, e.Type)
+					assert.NotEmpty(t, e.String())
+				}
+				if m := r.Get("max_tokens"); m.Exists() {
+					assert.Equal(t, gjson.Number, m.Type)
+					assert.Greater(t, m.Int(), int64(0))
+					assert.Equal(t, float64(m.Int()), m.Num, "max_tokens must be a whole number")
+				}
+				for _, key := range []string{"exclude", "enabled"} {
+					if b := r.Get(key); b.Exists() {
+						assert.True(t, b.Type == gjson.True || b.Type == gjson.False, "%s must be a boolean", key)
+					}
+				}
+				if s := r.Get("summary"); s.Exists() {
+					assert.Equal(t, gjson.String, s.Type)
+				}
+			})
+		}
+	})
+}
+
+func TestTransformChatToResponses_SanitizesReasoning(t *testing.T) {
+	const model = "muse-spark-1.2-contributor"
+	req := func(reasoning string) []byte {
+		return []byte(`{"model": "` + model + `", "messages": [{"role": "user", "content": "hi"}]` + reasoning + `}`)
+	}
+
+	// The same malformed input that 400s on /chat/completions used to be copied
+	// into the Responses payload as a non-object.
+	bodies := [][]byte{
+		req(`, "reasoning": "high"`),
+		req(`, "reasoning": true`),
+		req(`, "reasoning": {"enabled": "yes"}`),
+		req(`, "reasoning": {"max_tokens": -1}`),
+		req(`, "reasoning_effort": "ultra"`),
+		req(``),
+	}
+	for _, body := range bodies {
+		out, err := TransformChatToResponses(body, model, false)
+		require.NoError(t, err)
+		if r := gjson.GetBytes(out, "reasoning"); r.Exists() {
+			require.True(t, r.IsObject(), "reasoning must be an object for %s, got %s", body, r.Raw)
+			assert.False(t, gjson.GetBytes(out, "reasoning_effort").Exists())
+		}
+	}
+
+	// The shorthand arrives as an effort, and the Responses endpoint names the
+	// top level differently from Chat Completions.
+	out, err := TransformChatToResponses(req(`, "reasoning": "high"`), model, false)
+	require.NoError(t, err)
+	assert.Equal(t, "high", gjson.GetBytes(out, "reasoning.effort").String())
+	assert.Equal(t, "auto", gjson.GetBytes(out, "reasoning.summary").String())
+
+	out, err = TransformChatToResponses(req(`, "reasoning_effort": "ultra"`), model, false)
+	require.NoError(t, err)
+	assert.Equal(t, "xhigh", gjson.GetBytes(out, "reasoning.effort").String())
+}
+
+func TestAdapter_ForwardSanitizesReasoning(t *testing.T) {
+	var receivedBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	adapter := NewAdapter(&mockClientPool{client: server.Client()}, &mockBreaker{allowed: true}, Config{})
+	target := &domain.Target{
+		Upstream:      &domain.Upstream{Name: "test-oc", BaseURL: server.URL + "/zen/v1"},
+		UpstreamModel: "mimo-v2.6-flash",
+	}
+
+	// The 400 that started this: a client sent the field as a bare string.
+	req := ports.ForwardRequest{
+		Method:    http.MethodPost,
+		Path:      "/chat/completions",
+		BodyBytes: []byte(`{"model": "mimo-v2.6-flash", "messages": [{"role": "user", "content": "hi"}], "reasoning": "high"}`),
+	}
+	err := adapter.Forward(context.Background(), target, req, httptest.NewRecorder())
+	require.NoError(t, err)
+	require.Equal(t, gjson.JSON, gjson.GetBytes(receivedBody, "reasoning").Type)
+	assert.Equal(t, "high", gjson.GetBytes(receivedBody, "reasoning.effort").String())
+
+	// A value the upstream cannot express is dropped rather than relayed.
+	req.BodyBytes = []byte(`{"model": "mimo-v2.6-flash", "messages": [{"role": "user", "content": "hi"}], "reasoning": true}`)
+	err = adapter.Forward(context.Background(), target, req, httptest.NewRecorder())
+	require.NoError(t, err)
+	assert.False(t, gjson.GetBytes(receivedBody, "reasoning").Exists())
+}
+
+func TestStripReasoning(t *testing.T) {
+	out, changed := StripReasoning([]byte(`{"model":"m","reasoning_effort":"high","reasoning":{"effort":"low"},"stream":true}`))
+	require.True(t, changed)
+	assert.False(t, gjson.GetBytes(out, "reasoning").Exists())
+	assert.False(t, gjson.GetBytes(out, "reasoning_effort").Exists())
+	assert.True(t, gjson.GetBytes(out, "stream").Bool(), "unrelated fields must survive")
+
+	_, changed = StripReasoning([]byte(`{"model":"m","stream":true}`))
+	assert.False(t, changed, "a request with no reasoning is left alone")
+}
+
+func TestIsInvalidReasoningError(t *testing.T) {
+	// The exact body the free tier answers with.
+	assert.True(t, IsInvalidReasoningError([]byte(`{"param":"reasoning","type":"invalid_request_error","message":"Upstream request failed: [invalid_reasoning] reasoning must be an object with optional effort (string), max_tokens (positive integer), exclude and enabled (booleans)."}`)))
+	assert.False(t, IsInvalidReasoningError([]byte(`{"error":{"message":"rate limit exceeded"}}`)))
+	assert.False(t, IsInvalidReasoningError(nil))
+}
+
+// TestAdapter_RetriesWithoutReasoningOnInvalidReasoning covers the intermittent
+// free-tier refusal: the same request is accepted on one attempt and refused
+// with `[invalid_reasoning]` on the next. The client asked for a thinking level
+// it cannot act on, so the gateway answers it anyway.
+func TestAdapter_RetriesWithoutReasoningOnInvalidReasoning(t *testing.T) {
+	var mu sync.Mutex
+	var bodies [][]byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, body)
+		mu.Unlock()
+		if gjson.GetBytes(body, "reasoning").Exists() || gjson.GetBytes(body, "reasoning_effort").Exists() {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"param":"reasoning","type":"invalid_request_error","message":"Upstream request failed: [invalid_reasoning] reasoning must be an object with optional effort (string), max_tokens (positive integer), exclude and enabled (booleans)."}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	adapter := NewAdapter(&mockClientPool{client: server.Client()}, &mockBreaker{allowed: true}, Config{})
+	target := &domain.Target{
+		Upstream:      &domain.Upstream{Name: "test-oc", BaseURL: server.URL + "/zen/v1"},
+		UpstreamModel: "mimo-v2.6-flash",
+	}
+	req := ports.ForwardRequest{
+		Method:    http.MethodPost,
+		Path:      "/chat/completions",
+		BodyBytes: []byte(`{"model":"mimo-v2.6-flash","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}`),
+	}
+
+	rec := httptest.NewRecorder()
+	require.NoError(t, adapter.Forward(context.Background(), target, req, rec))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "ok")
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, bodies, 2, "the refused request is retried exactly once")
+	assert.True(t, gjson.GetBytes(bodies[0], "reasoning").Exists(), "the first attempt carried the sanitized reasoning")
+	assert.False(t, gjson.GetBytes(bodies[1], "reasoning").Exists())
+	assert.False(t, gjson.GetBytes(bodies[1], "reasoning_effort").Exists())
+}
+
+// A 400 that is not the reasoning refusal is the client's own mistake and must
+// reach it unchanged, with no second attempt billed to the upstream.
+func TestAdapter_DoesNotRetryOtherBadRequests(t *testing.T) {
+	var mu sync.Mutex
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"context length exceeded","type":"invalid_request_error"}}`))
+	}))
+	defer server.Close()
+
+	adapter := NewAdapter(&mockClientPool{client: server.Client()}, &mockBreaker{allowed: true}, Config{})
+	target := &domain.Target{
+		Upstream:      &domain.Upstream{Name: "test-oc", BaseURL: server.URL + "/zen/v1"},
+		UpstreamModel: "mimo-v2.6-flash",
+	}
+	req := ports.ForwardRequest{
+		Method:    http.MethodPost,
+		Path:      "/chat/completions",
+		BodyBytes: []byte(`{"model":"mimo-v2.6-flash","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}`),
+	}
+
+	rec := httptest.NewRecorder()
+	_ = adapter.Forward(context.Background(), target, req, rec)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, 1, calls, "an unrelated 400 must not be retried")
 }
 
 func TestTransformChatToResponses(t *testing.T) {
@@ -939,4 +1202,64 @@ func TestAdapter_LiveMuseSparkForward(t *testing.T) {
 		assert.Equal(t, "auto", gjson.GetBytes(out, "reasoning.summary").String())
 		assert.False(t, gjson.GetBytes(out, "reasoning_effort").Exists())
 	})
+}
+
+func TestSessionCounter(t *testing.T) {
+	// A descending identifier carries ~(ms<<12 | counter) as 12 hex characters,
+	// so the counter is recoverable as (0xFFFFFFFFFFFF - hex) & 0xFFF.
+	id := GenerateSessionID()
+	counter, ok := SessionCounter(id)
+	require.True(t, ok)
+	assert.LessOrEqual(t, counter, int64(upstream.OpenCodeSessionCounterMax))
+
+	// A full 0xFFF window is syntactically fine but sits above the bound the
+	// free-tier gate enforces, so such an id must never be preserved or minted.
+	highCounter := "ses_" + fmt.Sprintf("%012x", 0xFFFFFFFFFFFF-700) + "00000000000000"
+	counter, ok = SessionCounter(highCounter)
+	require.True(t, ok)
+	assert.Equal(t, int64(700), counter)
+	assert.False(t, IsValidSessionID(highCounter), "counter above the gate window must be rejected")
+
+	// Wrong length / prefix are not decodable at all.
+	for _, bad := range []string{"", "ses_0fffffffffff", "msg_0fffffffffff00000000000000", id + "x"} {
+		_, ok := SessionCounter(bad)
+		assert.False(t, ok, "%q should not decode", bad)
+	}
+}
+
+func TestIsValidSessionID_CounterWindow(t *testing.T) {
+	// Every generated id must be one the free-tier gate accepts.
+	for i := 0; i < 200; i++ {
+		assert.True(t, IsValidSessionID(GenerateSessionID()))
+	}
+
+	// A syntactically perfect canonical id whose encoded counter sits above the
+	// gate's window is exactly the shape that earns a 403 FreeTierError.
+	overWindow := "ses_" + fmt.Sprintf("%012x", 0xFFFFFFFFFFFF-300) + "0abcdefghijklm"
+	assert.True(t, len(overWindow) == 30)
+	assert.False(t, IsValidSessionID(overWindow))
+
+	// The same id with an in-window counter is accepted.
+	inWindow := "ses_" + fmt.Sprintf("%012x", 0xFFFFFFFFFFFF-30) + "0abcdefghijklm"
+	assert.True(t, IsValidSessionID(inWindow))
+}
+
+func TestApplySessionHeaders(t *testing.T) {
+	const id = "ses_0fffffffffff00000000000000"
+	h := http.Header{}
+	ApplySessionHeaders(h, id)
+	// The gate reads x-opencode-session-id only, but all four are written so the
+	// request has the shape a real CLI produces.
+	assert.Equal(t, id, h.Get(HeaderSessionID))
+	assert.Equal(t, id, h.Get(HeaderSession))
+	assert.Equal(t, id, h.Get(HeaderSessionAffinity))
+	assert.Equal(t, id, h.Get(HeaderSessionLegacy))
+}
+
+func TestResolveSessionID_ReadsGateHeader(t *testing.T) {
+	h := http.Header{}
+	// A client sending only the header the gate attests must still be honored.
+	h.Set(HeaderSessionID, "ses_0fffffffffff00000000000000")
+	id := ResolveSessionID(h, "tenant", "req")
+	assert.True(t, IsValidSessionID(id))
 }

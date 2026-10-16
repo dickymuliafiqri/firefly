@@ -33,7 +33,7 @@ type Status struct {
 	// fires, which used to publish 0001-01-01 as the last rotation date.
 	RotatedAt time.Time `json:"last_rotated_at,omitzero"`
 
-	// AutoRotateIntervalSeconds reports the automated rotation schedule in seconds (e.g. 300 for 5 minutes).
+	// AutoRotateIntervalSeconds reports the automated rotation schedule in seconds.
 	// A value of 0 indicates that automated periodic rotation is disabled.
 	AutoRotateIntervalSeconds int `json:"auto_rotate_interval_seconds,omitempty"`
 

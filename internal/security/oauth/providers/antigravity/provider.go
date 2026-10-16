@@ -16,6 +16,7 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
 	"github.com/dickymuliafiqri/firefly/internal/security/oauth"
+	"github.com/dickymuliafiqri/firefly/internal/supervisor"
 	"github.com/tidwall/gjson"
 )
 
@@ -257,6 +258,7 @@ func (p *Provider) ExchangeCode(ctx context.Context, code string, session *ports
 	baseURL := p.prodBaseURL
 	token := tokResp.AccessToken
 	go func() {
+		defer supervisor.Guard("oauth.antigravity-onboard")()
 		bgCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		_, _ = OnboardUser(bgCtx, client, token, baseURL, tierID, DefaultOnboardMaxAttempts)

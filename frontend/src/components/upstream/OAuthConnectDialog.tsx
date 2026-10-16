@@ -156,7 +156,7 @@ export function OAuthConnectDialog({
     }
     const state = params.get('state') || sessionState || '';
     if (!state) {
-      setManualError('No OAuth state found in the URL — it does not belong to this session.');
+      setManualError('No OAuth state found in the URL. It does not belong to this session.');
       return;
     }
 
@@ -334,7 +334,7 @@ export function OAuthConnectDialog({
                 }}
               />
               <span style={{ color: 'var(--faint)', fontSize: 12 }}>
-                Initiating authorization session...
+                Initiating authorization session…
               </span>
             </div>
           )}
@@ -401,7 +401,7 @@ export function OAuthConnectDialog({
                     flexShrink: 0,
                   }}
                 />
-                <span>Waiting for authorization to complete in browser...</span>
+                <span>Waiting for authorization to complete in the browser…</span>
               </div>
 
               {/* Manual callback verification — server deployments where the
@@ -422,8 +422,8 @@ export function OAuthConnectDialog({
                   <span style={{ color: 'var(--faint)', fontSize: 11, lineHeight: 1.5 }}>
                     Callback never reached this server (e.g. the login redirected to{' '}
                     <span style={{ fontFamily: '"JetBrains Mono", monospace' }}>localhost</span>
-                    )? Copy the full callback URL from the browser address bar — the page may
-                    show a connection error — and paste it below to verify manually.
+                    )? Copy the full callback URL from the browser address bar (the page may
+                    show a connection error) and paste it below to verify manually.
                   </span>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                     <input

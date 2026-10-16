@@ -15,6 +15,7 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
 	"github.com/dickymuliafiqri/firefly/internal/observability/resmon"
 	"github.com/dickymuliafiqri/firefly/internal/pricing"
+	"github.com/dickymuliafiqri/firefly/internal/supervisor"
 )
 
 // Config holds server-level tuning. Zero values fall back to defaults.
@@ -180,6 +181,7 @@ func (s *Server) serveUntilDone(ln net.Listener, ctx context.Context) error {
 	}()
 	errCh := make(chan error, 1)
 	go func() {
+		defer supervisor.Guard("server.http-serve")()
 		s.logger.Info("http server listening", "addr", ln.Addr().String())
 		err := s.http.Serve(ln)
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {

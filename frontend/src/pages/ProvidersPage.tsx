@@ -202,7 +202,7 @@ function KeysDrawer({
       <QueryGate isLoading={keys.isLoading} error={keys.error}>
         <div style={{ marginBottom: 20 }}>
           <Field
-            label="Batch upsert keys (satu secret per baris)"
+            label="Batch upsert keys (one secret per line)"
             htmlFor="p-bulk"
           >
             <textarea

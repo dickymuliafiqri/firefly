@@ -730,7 +730,7 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 		httpReq.Header.Set("x-opencode-client", "desktop")
 		httpReq.Header.Set("x-opencode-project", "global")
 		httpReq.Header.Set("x-opencode-request", opencode.GenerateRequestID())
-		httpReq.Header.Set("x-opencode-session", opencode.GenerateSessionID())
+		opencode.ApplySessionHeaders(httpReq.Header, opencode.GenerateSessionID())
 		httpReq.Header.Set("anthropic-version", "2023-06-01")
 		if effectiveKey == "public" {
 			httpReq.Header.Set("Accept", "text/event-stream")
@@ -1303,7 +1303,7 @@ func (deps RouterDeps) handleFetchUpstreamModels(w http.ResponseWriter, r *http.
 		httpReq.Header.Set("x-opencode-client", "cli")
 		httpReq.Header.Set("x-opencode-project", "global")
 		httpReq.Header.Set("x-opencode-request", opencode.GenerateRequestID())
-		httpReq.Header.Set("x-opencode-session", opencode.ResolveSessionID(nil, "", ""))
+		opencode.ApplySessionHeaders(httpReq.Header, opencode.ResolveSessionID(nil, "", ""))
 	} else {
 		if apiKey != "" {
 			httpReq.Header.Set("Authorization", "Bearer "+apiKey)

@@ -75,7 +75,7 @@ export function LoginPage() {
                   </button>
                 </div>
                 <button type="submit" className="btn btn-primary" disabled={loading || !password.trim()}>
-                  {loading ? 'Verifying…' : 'Unlock'}
+                  {loading ? 'Verifying…' : 'Sign in'}
                   {!loading && <ArrowRight style={{ width: 14, height: 14 }} />}
                 </button>
               </div>

@@ -9,6 +9,7 @@ import (
 
 	"github.com/dickymuliafiqri/firefly/internal/notify"
 	"github.com/dickymuliafiqri/firefly/internal/observability/metrics"
+	"github.com/dickymuliafiqri/firefly/internal/supervisor"
 	"github.com/dickymuliafiqri/firefly/internal/transport/httpx"
 )
 
@@ -29,6 +30,10 @@ type TelemetryDTO struct {
 	// Notifications carries the webhook dispatcher counters. Nil when no
 	// dispatcher is wired, which is the case for every unit test.
 	Notifications *notify.Stats `json:"notifications,omitempty"`
+	// Workers reports every supervised background loop: whether it is running,
+	// how many times it panicked, and the function/file:line of the last panic.
+	// Admin only, like the resource monitor: it exposes internal structure.
+	Workers []supervisor.Status `json:"workers,omitempty"`
 }
 
 // ResourceMonitorDTO mirrors resmon.Stats for the wire. See that package for
@@ -442,13 +447,15 @@ func (deps RouterDeps) handleGetTelemetry(w http.ResponseWriter, r *http.Request
 		ResourceMonitor: resmonDTO,
 	}
 
-	// Notification dispatcher counters. Admin only, alongside the resource
-	// monitor: an operator needs to see that events are being dropped.
+	// Notification dispatcher counters and the supervised-worker report. Admin
+	// only, alongside the resource monitor: an operator needs to see that events
+	// are being dropped, and which background loop panicked and where.
 	if isAdmin {
 		if stats, ok := deps.Notifier.(interface{ Stats() notify.Stats }); ok {
 			s := stats.Stats()
 			out.Notifications = &s
 		}
+		out.Workers = supervisor.Snapshot()
 	}
 
 	_ = json.NewEncoder(w).Encode(out)

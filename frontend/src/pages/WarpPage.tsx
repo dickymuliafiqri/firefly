@@ -70,14 +70,16 @@ export function WarpPage() {
   const badgeText = live ? 'ONLINE' : d?.error ? 'UNAVAILABLE' : 'STANDBY';
 
   const intervalText = d?.auto_rotate_interval_seconds
-    ? `${Math.max(1, Math.round(d.auto_rotate_interval_seconds / 60))}m`
+    ? d.auto_rotate_interval_seconds < 60
+      ? `${d.auto_rotate_interval_seconds}s`
+      : `${Math.max(1, Math.round(d.auto_rotate_interval_seconds / 60))}m`
     : 'disabled';
 
   return (
     <div className="page-col">
       <PageHeader
         title="Warp"
-        description="Cloudflare WARP egress pool — live slots, rotation, and draining connections."
+        description="Cloudflare WARP egress pool: live slots, rotation, and draining connections."
         actions={
           <div className="flex items-center gap-2">
             <Badge tone={badgeTone} title={d?.error || undefined}>
@@ -127,7 +129,7 @@ export function WarpPage() {
                   {ips.length === 0 ? (
                     <tr>
                       <td colSpan={3} className="faint">
-                        No active sessions — the pool dials on first use.
+                        No active sessions. The pool dials on first use.
                       </td>
                     </tr>
                   ) : (

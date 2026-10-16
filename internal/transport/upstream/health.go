@@ -18,6 +18,7 @@ import (
 
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
+	"github.com/dickymuliafiqri/firefly/internal/supervisor"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -215,12 +216,12 @@ func (h *HealthChecker) getUpstreams() []*domain.Upstream {
 }
 
 func (h *HealthChecker) probeOne(ctx context.Context, u *domain.Upstream) {
-	defer func() {
-		if rec := recover(); rec != nil {
-			h.logger.Error("panic recovered during upstream probe", "upstream", u.Name, "panic", rec)
-			h.reportOutcome(u.Name, false, errors.New("panic during probe"), 0)
-		}
-	}()
+	// A panic in a probe is a bug in this component, never evidence that the
+	// upstream host is down. It is recorded (with its location) by the
+	// supervisor and NOT reported to the circuit breaker — reporting it opened
+	// the breaker for a perfectly healthy upstream, turning one nil dereference
+	// into a sustained false outage.
+	defer supervisor.Guard("upstream.health-probe")()
 
 	if !isNil(h.breakers) {
 		if err := h.breakers.Allow(u.Name); err != nil && errors.Is(err, ErrCircuitOpen) {
