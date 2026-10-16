@@ -5,6 +5,19 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.44.15] - 2026-10-16
+
+### Added
+
+- **The WARP pool size is an operator setting, not a rebuild (`internal/config/warp.go`, `internal/transport/warp`, `internal/server/warp_handlers.go`, `cmd/firefly`, `frontend/src/pages/WarpPage.tsx`)**: how many concurrent WARP slots the gateway keeps active could only be changed with `-warp-pool-size` / `FIREFLY_WARP_POOL_SIZE` and a restart, so tuning the egress fleet against a provider's per-IP limits meant editing a unit file and dropping every in-flight SSE stream to apply it. The Warp page now carries a **Pool settings** card whose **Max pool size** field is saved in place: `POST /api/warp/pool-size` (admin-guarded) validates the value, persists it, and applies it to the running engine. Nothing is dialled — rotation still adds exactly one slot per tick, so a raised ceiling fills over the following intervals instead of registering a burst of sessions that would trip Cloudflare 429s.
+  - **The window lives in the engine, and the dashboard reads it.** `warp.MinPoolSize` / `warp.MaxPoolSize` (1–64) are the single source of truth: `warp.ValidPoolSize` gates the API — a hand-crafted request for 900 slots is rejected with `400` — and `Status` publishes `pool_size_min` / `pool_size_max` so the input's bounds and its rejection message come from the engine rather than from a copy that could drift. `SetPoolSize` deliberately keeps clamping only the lower bound: `-warp-pool-size=100` is an explicit operator choice and is not silently truncated behind their back.
+  - **The choice survives a restart.** `config.SaveWarp` / `LoadWarp` round-trip `warp.json` atomically (temp file + `rename`, as `tunnel.json` does, but with normal config permissions because it holds no credential), and `main` resolves the size as flag > `FIREFLY_WARP_POOL_SIZE` > `warp.json` > default. The file is written **before** the in-memory value is applied, so a failed save leaves the engine on the size it actually has instead of on one that would quietly revert at the next boot; an out-of-range or malformed file is logged and ignored rather than aborting startup.
+  - The field is a draft that mirrors the server until the first keystroke and is released after a successful save, so the 5-second status poll cannot erase what is being typed; an invalid value (empty, fractional, or outside 1–64) keeps **Save** disabled and says why in place.
+
+### Changed
+
+- **The default WARP pool size is 25, not 5 (`internal/transport/warp`, `cmd/firefly`)**: the pool is a ceiling that fills one slot per rotation tick, so the previous default left the fleet far narrower than the round-robin spread it exists to provide. A fresh install with no flag, no environment variable and no `warp.json` now runs 25 concurrent slots.
+
 ## [1.44.14] - 2026-10-16
 
 ### Added

@@ -1,7 +1,11 @@
+import { useState, type FormEvent } from 'react';
+
 import { Badge } from '@/components/ui/Badge';
+import { Field } from '@/components/ui/Controls';
 import { KpiCard, KpiGrid, PageHeader } from '@/components/ui/PageHeader';
 import { QueryGate } from '@/components/ui/QueryGate';
-import { useRotateWarpMutation, useWarpStatusQuery } from '@/services/api';
+import { useRotateWarpMutation, useSetWarpPoolSizeMutation, useWarpStatusQuery } from '@/services/api';
+import type { WarpStatusDTO } from '@/services/schema';
 import { useUiStore } from '@/state/store';
 
 /**
@@ -54,6 +58,106 @@ function CopyIp({ ip }: { ip: string }) {
     >
       Copy
     </button>
+  );
+}
+
+/** Bounds used only when the server status predates the pool_size_min/max fields. */
+const POOL_MIN_FALLBACK = 1;
+const POOL_MAX_FALLBACK = 64;
+
+/**
+ * Pool size is the one WARP knob an operator tunes while watching the pool.
+ * It is a steady-state ceiling rather than a dial: rotation adds a single slot
+ * per tick, so raising it empty-fills over the following intervals instead of
+ * registering a burst of sessions that would trip Cloudflare 429s.
+ */
+function WarpPoolSizeCard({ status }: { status?: WarpStatusDTO }) {
+  const save = useSetWarpPoolSizeMutation();
+  const pushToast = useUiStore((s) => s.pushToast);
+
+  const min = status?.pool_size_min ?? POOL_MIN_FALLBACK;
+  const max = status?.pool_size_max ?? POOL_MAX_FALLBACK;
+  const current = status?.pool_size && status.pool_size > 0 ? status.pool_size : null;
+
+  // null means "mirror the server". The status query re-polls every 5s, so an
+  // effect that copied the server value into state would erase what is being
+  // typed mid-edit; the draft takes over on the first keystroke and is released
+  // again once the save lands.
+  const [draft, setDraft] = useState<string | null>(null);
+  const shown = draft ?? (current != null ? String(current) : '');
+
+  const parsed = Number(shown);
+  const wellFormed = shown.trim() !== '' && Number.isInteger(parsed);
+  const inRange = wellFormed && parsed >= min && parsed <= max;
+  const dirty = inRange && parsed !== current;
+
+  const hint =
+    shown.trim() === ''
+      ? `Enter a value between ${min} and ${max}.`
+      : !wellFormed
+        ? 'Enter a whole number.'
+        : !inRange
+          ? `Must be between ${min} and ${max}.`
+          : `Currently active: ${status?.active_sessions ?? '—'} of ${current ?? '—'} slots.`;
+
+  function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (!dirty || save.isPending) return;
+    save.mutate(parsed, {
+      onSuccess: (next) => {
+        setDraft(null);
+        pushToast({
+          type: 'success',
+          title: 'WARP pool size saved',
+          message: `Ceiling set to ${next.pool_size ?? parsed}. Slots are added one per rotation.`,
+        });
+      },
+      onError: (err) => {
+        pushToast({
+          type: 'error',
+          title: 'Could not save pool size',
+          message: err instanceof Error ? err.message : 'Unknown',
+        });
+      },
+    });
+  }
+
+  return (
+    <div className="card">
+      <div className="card-header">
+        <h2>Pool settings</h2>
+        <span className="hint">
+          One slot is added per rotation, so a larger pool fills gradually
+        </span>
+      </div>
+      <div className="card-body">
+        <form onSubmit={handleSubmit}>
+          <Field
+            label="Max pool size"
+            htmlFor="warp-pool-size"
+            hint={`Concurrent WARP slots to keep active (${min}–${max}).`}
+          >
+            <input
+              id="warp-pool-size"
+              type="number"
+              min={min}
+              max={max}
+              step={1}
+              inputMode="numeric"
+              value={shown}
+              disabled={save.isPending}
+              onChange={(e) => setDraft(e.target.value)}
+            />
+          </Field>
+          <div className="form-row form-row-end" style={{ marginTop: 14 }}>
+            <span className="hint">{hint}</span>
+            <button type="submit" className="btn btn-secondary" disabled={!dirty || save.isPending}>
+              {save.isPending ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
   );
 }
 
@@ -155,6 +259,7 @@ export function WarpPage() {
               </table>
             </div>
           </div>
+          <WarpPoolSizeCard status={d} />
           <div className="card">
             <div className="card-header">
               <h2>Connection &amp; rotation</h2>

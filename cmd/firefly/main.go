@@ -108,7 +108,7 @@ func run() error {
 		tursoSyncInterval    = flag.Duration("turso-sync-interval", turso.DefaultSyncInterval, "interval to pull changes from Turso cloud after an observed change (defaults to $FIREFLY_TURSO_SYNC_INTERVAL)")
 		tursoSyncMaxInterval = flag.Duration("turso-sync-max-interval", turso.DefaultSyncMaxInterval, "upper bound for the idle pull backoff; consecutive change-free pulls double the delay until it reaches this (defaults to $FIREFLY_TURSO_SYNC_MAX_INTERVAL)")
 		warpRotateInterval   = flag.Duration("warp-rotate-interval", warp.DefaultAutoRotateInterval, "interval between automatic periodic Cloudflare WARP IP rotations (0 disables; defaults to $FIREFLY_WARP_ROTATE_INTERVAL or 30s)")
-		warpPoolSize         = flag.Int("warp-pool-size", warp.DefaultPoolSize, "number of concurrent Cloudflare WARP slots kept active for round-robin egress; the pool grows one slot per rotation until it reaches this size (defaults to $FIREFLY_WARP_POOL_SIZE or 5)")
+		warpPoolSize         = flag.Int("warp-pool-size", warp.DefaultPoolSize, "number of concurrent Cloudflare WARP slots kept active for round-robin egress; the pool grows one slot per rotation until it reaches this size (defaults to $FIREFLY_WARP_POOL_SIZE, then warp.json, else 25)")
 		quotaPollInterval    = flag.Duration("quota-poll-interval", server.DefaultQuotaPollInterval, "interval between background provider-quota refreshes for OAuth connections (0 disables; quota stays on-demand only)")
 		tunnelMode           = flag.String("tunnel", "", "Cloudflare Tunnel mode: quick|named (empty disables; defaults to $FIREFLY_TUNNEL)")
 		tunnelToken          = flag.String("tunnel-token", "", "Cloudflare Tunnel token for named tunnels (defaults to $FIREFLY_TUNNEL_TOKEN)")
@@ -260,6 +260,23 @@ func run() error {
 		}
 		if *tunnelBinDir == "" {
 			*tunnelBinDir = tCfg.BinDir
+		}
+	}
+
+	// warp.json persists the WARP pool size chosen from the dashboard, so a
+	// restart keeps the tuned pool instead of reverting to the built-in default.
+	// Flag and environment win: when the flag still carries its default value and
+	// the environment did not override it, the file supplies the size. A value
+	// outside the engine's supported range is ignored with a warning rather than
+	// failing the boot, matching how a malformed tunnel.json is treated.
+	if wCfg, err := config.LoadWarp(*configDir); err != nil {
+		logger.Warn("could not read warp config", "err", err)
+	} else if wCfg.PoolSize > 0 && *warpPoolSize == warp.DefaultPoolSize {
+		if warp.ValidPoolSize(wCfg.PoolSize) {
+			*warpPoolSize = wCfg.PoolSize
+		} else {
+			logger.Warn("ignoring out-of-range warp pool size",
+				"pool_size", wCfg.PoolSize, "min", warp.MinPoolSize, "max", warp.MaxPoolSize)
 		}
 	}
 

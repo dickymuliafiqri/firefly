@@ -62,7 +62,21 @@ const (
 	// retires the oldest slot per tick — one Cloudflare registration per interval
 	// — so the fleet is never registered in a burst that trips 429s, while spread
 	// requests round-robin across the live slots.
-	DefaultPoolSize = 5
+	DefaultPoolSize = 25
+
+	// MinPoolSize is the smallest usable pool: a single tunnel, which is the
+	// pre-pool behaviour and the reason a lower value is clamped instead of
+	// rejected.
+	MinPoolSize = 1
+
+	// MaxPoolSize is the ceiling the dashboard and the admin API enforce. Each
+	// slot is a full WireGuard tunnel plus a gVisor netstack, so the ceiling
+	// protects the host from a fat-fingered value. The -warp-pool-size flag is
+	// deliberately NOT bounded by it: a flag is an operator's explicit choice
+	// made with the host in front of them, and silently ignoring part of it
+	// would be worse than honouring it. Out-of-range flag values simply show up
+	// in Status() as-is.
+	MaxPoolSize = 64
 
 	defaultRotateTimeout = 30 * time.Second
 	defaultProbeTimeout  = 5 * time.Second
@@ -288,16 +302,28 @@ func (m *Manager) SetAutoRotateInterval(d time.Duration) {
 	m.autoRotateInterval = d
 }
 
+// ValidPoolSize reports whether n is a pool size an operator may choose from the
+// dashboard. The bound lives here, beside the setting it governs, so the API
+// handler, the UI and any future caller cannot drift apart.
+func ValidPoolSize(n int) bool {
+	return n >= MinPoolSize && n <= MaxPoolSize
+}
+
 // SetPoolSize configures how many WARP slots stay active at once. Rotation grows
 // the pool one slot per tick until this size is reached, then retires the oldest
-// slot per tick, so the size is a steady-state ceiling. Values below 1 are
-// clamped to 1 (a single tunnel, the pre-pool behaviour).
+// slot per tick, so the size is a steady-state ceiling. Values below MinPoolSize
+// are clamped to it (a single tunnel, the pre-pool behaviour).
+//
+// Only the lower bound is clamped: the ceiling is enforced by the callers that
+// accept operator input (the admin API rejects it with 400), and clamping here
+// too would let a `-warp-pool-size` larger than MaxPoolSize be silently
+// truncated to something other than what the operator asked for.
 func (m *Manager) SetPoolSize(n int) {
 	if m == nil {
 		return
 	}
-	if n < 1 {
-		n = 1
+	if n < MinPoolSize {
+		n = MinPoolSize
 	}
 	m.poolSize.Store(int64(n))
 }
@@ -1283,6 +1309,8 @@ func (m *Manager) Status() Status {
 		ActiveConnections:         int(m.connTotal.Load()),
 		DrainingSessions:          int(m.draining.Load()),
 		PoolSize:                  int(m.poolSize.Load()),
+		PoolSizeMin:               MinPoolSize,
+		PoolSizeMax:               MaxPoolSize,
 		ActiveSessions:            len(pool),
 		RotatedAt:                 rotatedTime,
 		AutoRotateIntervalSeconds: autoRotateSec,

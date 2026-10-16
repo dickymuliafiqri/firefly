@@ -368,6 +368,8 @@ func (s *Server) buildHandler(deps RouterDeps) http.Handler {
 	// Cloudflare WARP Userspace Egress API
 	mux.HandleFunc("OPTIONS /api/warp/status", deps.handleOptionsSettings)
 	mux.HandleFunc("GET /api/warp/status", deps.handleGetWarpStatus)
+	mux.HandleFunc("OPTIONS /api/warp/pool-size", deps.handleOptionsSettings)
+	mux.HandleFunc("POST /api/warp/pool-size", deps.handleSetWarpPoolSize)
 	mux.HandleFunc("OPTIONS /api/warp/rotate", deps.handleOptionsSettings)
 	mux.HandleFunc("POST /api/warp/rotate", deps.handleRotateWarp)
 

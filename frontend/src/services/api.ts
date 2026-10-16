@@ -377,6 +377,17 @@ export async function fetchWarpStatus(): Promise<WarpStatusDTO> {
 export async function rotateWarp() {
   return request<{ status: string }>("/api/warp/rotate", { method: "POST" });
 }
+
+/**
+ * Sets the steady-state size of the WARP egress pool. Nothing is dialled here:
+ * rotation adds one slot per tick, so a larger pool fills gradually.
+ */
+export async function setWarpPoolSize(poolSize: number): Promise<WarpStatusDTO> {
+  return request<WarpStatusDTO>("/api/warp/pool-size", {
+    method: "POST",
+    body: JSON.stringify({ pool_size: poolSize }),
+  });
+}
 export interface TunnelStatusDTO {
   enabled: boolean;
   running: boolean;
@@ -958,6 +969,16 @@ export function useRotateWarpMutation() {
   return useMutation({
     mutationFn: rotateWarp,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["warp"] }),
+  });
+}
+
+export function useSetWarpPoolSizeMutation() {
+  return useMutation({
+    mutationFn: setWarpPoolSize,
+    onSuccess: (data) => {
+      queryClient.setQueryData(["warp"], data);
+      queryClient.invalidateQueries({ queryKey: ["warp"] });
+    },
   });
 }
 
