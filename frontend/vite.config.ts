@@ -1,5 +1,13 @@
 import react from '@vitejs/plugin-react';
 import { defineConfig, type Plugin } from 'vite';
+import pkg from './package.json';
+
+/**
+ * Single source of truth for the displayed app version.
+ * `package.json` -> `__APP_VERSION__` -> `AppShell` (sidebar footer).
+ * Never hardcode the version string in a component again.
+ */
+const APP_VERSION = pkg.version;
 
 /**
  * `vite build` empties the output directory (emptyOutDir defaults to true),
@@ -26,6 +34,9 @@ const GO_GATEWAY = process.env.FIREFLY_GATEWAY ?? 'http://127.0.0.1:8080';
 
 export default defineConfig({
   plugins: [react(), keepDistGitkeep()],
+  define: {
+    __APP_VERSION__: JSON.stringify(APP_VERSION),
+  },
   resolve: {
     alias: {
       '@': '/src',

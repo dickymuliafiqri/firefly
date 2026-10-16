@@ -42,6 +42,21 @@ jobs:
             bun install
           fi
 
+      # The Go binary's main.Version comes from the git tag (see the
+      # build-backend job below), so stamp the same value into package.json
+      # before the build: vite.config.ts injects it as __APP_VERSION__ and the
+      # sidebar footer renders it. This keeps the embedded SPA and the binary
+      # from ever disagreeing on the release version.
+      - name: Stamp Frontend Version from Release Tag
+        working-directory: ./frontend
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          if [ -z "$VERSION" ]; then
+            echo "Error: RELEASE_TAG is empty"; exit 1
+          fi
+          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.version=process.argv[1];fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')" "$VERSION"
+          echo "frontend/package.json version -> $(node -p \"require('./package.json').version\")"
+
       - name: Build Frontend Bundle
         working-directory: ./frontend
         run: bun run build

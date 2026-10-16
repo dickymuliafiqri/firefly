@@ -7,7 +7,11 @@ import { PendingChangesBar } from "@/components/shell/PendingChangesBar";
 import { ToastHost } from "@/components/ui/ToastHost";
 import { SIDEBAR_GROUPS } from "@/registry";
 
-const VERSION = "v1.44.9";
+// Injected at build time from package.json (see vite.config.ts `define`).
+// CI stamps package.json from the release tag, so this mirrors `firefly -version`.
+// A semver value gets the `v` prefix; an already-tagged value (e.g. `dev-abc123`)
+// is shown verbatim, matching the Go binary's string exactly.
+const VERSION = /^\d/.test(__APP_VERSION__) ? `v${__APP_VERSION__}` : __APP_VERSION__;
 
 interface AppShellProps {
   page: PageDef;

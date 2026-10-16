@@ -24,7 +24,15 @@ RUN bun install --frozen-lockfile
 
 # Build the SPA -> produces frontend/dist (index.html + assets/)
 COPY frontend/ ./
-RUN bun run build \
+
+# Stamp the SPA with the same release version the Go binary gets via
+# -ldflags below, so the embedded sidebar footer can never drift from
+# `firefly -version`. vite.config.ts injects package.json's version as
+# __APP_VERSION__. Declared per-stage because ARG scope is stage-local.
+ARG VERSION=dev
+RUN VERSION="${VERSION#v}" \
+    && node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.version=process.argv[1];fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')" "$VERSION" \
+    && bun run build \
     && test -f dist/index.html
 
 # -----------------------------------------------------------------------------
