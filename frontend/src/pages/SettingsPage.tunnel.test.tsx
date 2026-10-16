@@ -41,6 +41,16 @@ vi.mock("@/services/api", async (importOriginal) => {
     ...actual,
     useTunnelStatusQuery: () => ({ data: tunnelStatus, isPending: false }),
     useToggleTunnelMutation: () => ({ mutate, isPending: false }),
+    // Settings now hosts the Update card first; it must not reach for a real
+    // query client in this bare (provider-less) render harness.
+    useUpdateStatusQuery: () => ({
+      data: undefined,
+      error: null,
+      isPending: false,
+      isFetching: false,
+      refetch: vi.fn(),
+    }),
+    useApplyUpdateMutation: () => ({ mutate: vi.fn(), isPending: false }),
     useSettingsQuery: () => ({ data: undefined, isPending: false, error: null }),
     useWarpStatusQuery: () => ({ data: undefined, isPending: false }),
     useTestTursoMutation: () => ({ mutate: vi.fn(), isPending: false }),

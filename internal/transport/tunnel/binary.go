@@ -77,10 +77,15 @@ func DownloadBinary(ctx context.Context, destPath string, logger *slog.Logger) e
 		return err
 	}
 
+	archive := binx.ArchiveNone
+	if isTarGz {
+		archive = binx.ArchiveTarGz
+	}
+
 	return binx.Download(ctx, binx.DownloadOptions{
 		URL:         assetURL,
 		DestPath:    destPath,
-		IsTarGz:     isTarGz,
+		Archive:     archive,
 		ArchiveName: "cloudflared",
 		UserAgent:   "firefly-tunnel-installer",
 		Logger:      logger,

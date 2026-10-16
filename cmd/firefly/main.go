@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -51,6 +52,7 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/pricing"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
 	"github.com/dickymuliafiqri/firefly/internal/security/auth"
+	"github.com/dickymuliafiqri/firefly/internal/selfupdate"
 	"github.com/dickymuliafiqri/firefly/internal/server"
 	"github.com/dickymuliafiqri/firefly/internal/storage/turso"
 	"github.com/dickymuliafiqri/firefly/internal/supervisor"
@@ -716,6 +718,15 @@ func run() error {
 		}
 	})
 
+	// A dashboard-triggered update swaps the binary in place; the staging file
+	// and the Windows backup a previous run left behind are collected here,
+	// because this is the first moment the old process is guaranteed to be gone.
+	selfupdate.CleanupStale(logger)
+
+	// Set when the dashboard installs an update and asks the process to come
+	// back up. It is read once, after the whole shutdown sequence has drained.
+	var restartRequested atomic.Bool
+
 	deps := server.RouterDeps{
 		Snapshots:     reg,
 		Registry:      reg,
@@ -746,6 +757,22 @@ func run() error {
 		// In-memory models.dev catalog cache for the pricing dashboard.
 		// Never a runtime dependency of cost tracking.
 		PricingCatalog: pricing.NewCatalogCache(),
+
+		// Dashboard-triggered self-update. The restart hook follows exactly the
+		// signal path: cancel the root context so the server drains in-flight
+		// streams within ShutdownGrace, and relaunch once run() has finished
+		// tearing everything else down.
+		SelfUpdate: server.NewUpdateManager(server.UpdateConfig{
+			CurrentVersion: Version,
+			CurrentCommit:  Commit,
+			BuildDate:      BuildDate,
+			Logger:         logger,
+			Restart: func(reason string) {
+				logger.Info("restart requested for a self-update", "reason", reason)
+				restartRequested.Store(true)
+				stop()
+			},
+		}),
 	}
 	graceDuration := time.Duration(*graceSecs) * time.Second
 
@@ -819,6 +846,16 @@ func run() error {
 	}
 
 	logger.Info("bye")
+
+	// Only now is it safe to replace the process: the listeners are closed, the
+	// buffers are flushed, and every worker has been joined. On Unix this call
+	// never returns; elsewhere the caller exits as soon as it does.
+	if restartRequested.Load() {
+		if err := selfupdate.Relaunch(deps.SelfUpdate.Environment(), logger); err != nil {
+			logger.Error("the update is installed but the process could not relaunch; restart Firefly manually", "err", err)
+			return err
+		}
+	}
 	return nil
 }
 

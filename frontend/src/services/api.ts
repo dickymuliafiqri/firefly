@@ -409,6 +409,115 @@ export async function toggleTunnel(
   });
 }
 
+// ---- Self-update (`/api/update/*`, admin only) ----
+//
+// The gateway owns the whole lifecycle: it resolves the newest upstream
+// release, refuses hosts that must not self-update (a container, an unwritable
+// install directory), downloads the archive for its own platform, verifies the
+// published SHA-256, swaps the binary, and restarts itself. The dashboard only
+// asks and watches.
+
+export interface UpdateEnvironmentDTO {
+  available: boolean;
+  /** Why self-update is refused here; empty when it is available. */
+  reason?: string;
+  container: boolean;
+  supervisor?: string;
+  executable?: string;
+  dir?: string;
+  writable: boolean;
+  restart_behavior?: string;
+}
+
+export interface UpdateReleaseDTO {
+  tag: string;
+  name?: string;
+  url?: string;
+  notes?: string;
+  published_at?: string;
+  prerelease: boolean;
+  /** The archive this instance would install (its own OS/arch). */
+  asset?: string;
+  asset_size?: number;
+}
+
+export interface UpdateInstallDTO {
+  running: boolean;
+  done: boolean;
+  stage?: string;
+  message?: string;
+  written?: number;
+  total?: number;
+  percent: number;
+  error?: string;
+  previous?: string;
+  installed?: string;
+  path?: string;
+  /** Set once the install succeeded and the process is about to come back. */
+  restarting: boolean;
+  started_at?: string;
+  finished_at?: string;
+}
+
+export interface UpdateStatusDTO {
+  repository: string;
+  current_version: string;
+  current_commit?: string;
+  build_date?: string;
+  platform: string;
+  update_available: boolean;
+  latest?: UpdateReleaseDTO;
+  environment: UpdateEnvironmentDTO;
+  checked_at?: string;
+  /** The release shown could not be refreshed from GitHub; check_error says why. */
+  stale?: boolean;
+  check_error?: string;
+  install?: UpdateInstallDTO;
+}
+
+export async function fetchUpdateStatus(): Promise<UpdateStatusDTO> {
+  return request<UpdateStatusDTO>("/api/update/status");
+}
+
+/**
+ * No mock fallback: a fabricated "up to date" would be worse than an error, and
+ * this panel exists to tell the operator the truth about what is deployed.
+ */
+export function useUpdateStatusQuery() {
+  return useQuery({
+    queryKey: ["update", "status"],
+    queryFn: fetchUpdateStatus,
+    // Idle polls are rare because each one can cost one GitHub API call on the
+    // server; while an install runs, the panel wants every stage as it happens.
+    refetchInterval: (query) =>
+      query.state.data?.install?.running ? 1000 : 60000,
+  });
+}
+
+export interface UpdateApplyResponse {
+  accepted: boolean;
+  install?: UpdateInstallDTO;
+}
+
+export async function applyUpdate(): Promise<UpdateApplyResponse> {
+  return request<UpdateApplyResponse>("/api/update/apply", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export function useApplyUpdateMutation() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: applyUpdate,
+    onSuccess: () => {
+      // The install is already running server-side; re-read so the progress
+      // bar starts from the real stage instead of a guess.
+      void client.invalidateQueries({ queryKey: ["update", "status"] });
+    },
+  });
+}
+
 export async function fetchOAuthProviders(): Promise<ProviderInfoDTO[]> {
   return request<ProviderInfoDTO[]>("/api/oauth/providers");
 }

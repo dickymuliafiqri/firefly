@@ -2,15 +2,20 @@ package binx_test
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/dickymuliafiqri/firefly/internal/binx"
@@ -147,7 +152,7 @@ func TestDownload_RawAndArchive(t *testing.T) {
 	err = binx.Download(context.Background(), binx.DownloadOptions{
 		URL:         srv.URL + "/archive.tgz",
 		DestPath:    archiveTarget,
-		IsTarGz:     true,
+		Archive:     binx.ArchiveTarGz,
 		ArchiveName: "my-app",
 	})
 	if err != nil {
@@ -159,5 +164,191 @@ func TestDownload_RawAndArchive(t *testing.T) {
 	}
 	if !bytes.Equal(data, archiveContent) {
 		t.Fatalf("got archive content %q, want %q", string(data), string(archiveContent))
+	}
+}
+
+// zipArchive builds an in-memory zip holding one entry, mimicking the
+// `zip -j` Windows release asset.
+func zipArchive(t *testing.T, entryName string, content []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.Create(entryName)
+	if err != nil {
+		t.Fatalf("create zip entry: %v", err)
+	}
+	if _, err := w.Write(content); err != nil {
+		t.Fatalf("write zip entry: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close zip: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// sha256Hex is the digest the release publishes in checksums.txt.
+func sha256Hex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// Download must unpack a zip asset and match the target entry by its base name,
+// with the .exe suffix ignored on both sides. This is the Windows release asset
+// path, which has no tar.gz equivalent.
+func TestDownload_ZipArchive(t *testing.T) {
+	content := []byte("windows-binary-content")
+	archive := zipArchive(t, "firefly.exe", content)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(archive)
+	}))
+	defer srv.Close()
+
+	target := filepath.Join(t.TempDir(), "firefly.exe")
+	err := binx.Download(context.Background(), binx.DownloadOptions{
+		URL:            srv.URL,
+		DestPath:       target,
+		Archive:        binx.ArchiveZip,
+		ArchiveName:    "firefly",
+		ExpectedSHA256: sha256Hex(archive),
+	})
+	if err != nil {
+		t.Fatalf("Download zip failed: %v", err)
+	}
+
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read extracted binary: %v", err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Fatalf("got %q, want %q", string(got), string(content))
+	}
+}
+
+// A checksum mismatch must be reported and must leave DestPath untouched: a
+// failed update may not replace a working binary with an unverified one.
+func TestDownload_ChecksumMismatchKeepsDestination(t *testing.T) {
+	content := []byte("new-content")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(content)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "firefly")
+	original := []byte("existing-binary")
+	if err := os.WriteFile(target, original, 0755); err != nil {
+		t.Fatalf("seed destination: %v", err)
+	}
+
+	err := binx.Download(context.Background(), binx.DownloadOptions{
+		URL:            srv.URL,
+		DestPath:       target,
+		ExpectedSHA256: sha256Hex([]byte("something-else")),
+	})
+	if err == nil {
+		t.Fatal("expected a checksum mismatch error, got nil")
+	}
+	if !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("error = %v, want a checksum mismatch", err)
+	}
+
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read destination: %v", err)
+	}
+	if !bytes.Equal(got, original) {
+		t.Fatalf("destination was modified: got %q, want %q", string(got), string(original))
+	}
+
+	// No staging residue may survive a failed attempt.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	if len(entries) != 1 {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("leftover files after failure: %v", names)
+	}
+}
+
+// The digest is checked over the archive bytes, not the extracted binary, which
+// is what checksums.txt covers.
+func TestDownload_ChecksumVerifiedAgainstArchiveBytes(t *testing.T) {
+	content := []byte("binary-content")
+	archive := zipArchive(t, "firefly.exe", content)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(archive)
+	}))
+	defer srv.Close()
+
+	target := filepath.Join(t.TempDir(), "firefly.exe")
+	err := binx.Download(context.Background(), binx.DownloadOptions{
+		URL:            srv.URL,
+		DestPath:       target,
+		Archive:        binx.ArchiveZip,
+		ArchiveName:    "firefly",
+		ExpectedSHA256: sha256Hex(content),
+	})
+	if err == nil {
+		t.Fatal("expected mismatch against the inner binary digest, got nil")
+	}
+}
+
+// ExtractZip reports a missing entry instead of silently producing an empty file.
+func TestExtractZip_MissingEntry(t *testing.T) {
+	archive := zipArchive(t, "present.exe", []byte("x"))
+	var out bytes.Buffer
+	err := binx.ExtractZip(bytes.NewReader(archive), int64(len(archive)), "absent", &out)
+	if err == nil {
+		t.Fatal("expected an error for a missing entry, got nil")
+	}
+	if !strings.Contains(err.Error(), "did not contain") {
+		t.Fatalf("error = %v, want a missing-entry error", err)
+	}
+}
+
+// Download reports transfer progress while streaming, ending on the full size so
+// the dashboard's progress bar can reach 100%.
+func TestDownload_ReportsProgress(t *testing.T) {
+	content := bytes.Repeat([]byte("firefly-"), 4096)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(len(content)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(content)
+	}))
+	defer srv.Close()
+
+	var mu sync.Mutex
+	var calls [][2]int64
+	err := binx.Download(context.Background(), binx.DownloadOptions{
+		URL:      srv.URL,
+		DestPath: filepath.Join(t.TempDir(), "firefly"),
+		Progress: func(written, total int64) {
+			mu.Lock()
+			calls = append(calls, [2]int64{written, total})
+			mu.Unlock()
+		},
+	})
+	if err != nil {
+		t.Fatalf("Download failed: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) == 0 {
+		t.Fatal("expected at least one progress callback")
+	}
+	last := calls[len(calls)-1]
+	if last[0] != int64(len(content)) || last[1] != int64(len(content)) {
+		t.Fatalf("final progress = %v, want %d/%d", last, len(content), len(content))
 	}
 }

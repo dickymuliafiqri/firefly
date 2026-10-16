@@ -54,6 +54,12 @@ type RouterDeps struct {
 	WarpManager   *warp.Manager
 	TunnelManager *tunnel.Manager
 
+	// SelfUpdate backs the dashboard's update panel: it looks up the newest
+	// release, probes whether this host may install one, and runs the single
+	// in-flight install. If nil, /api/update/* answers 503 and the panel is
+	// hidden.
+	SelfUpdate *UpdateManager
+
 	// ResMon samples host/process resources (CPU, memory, network, goroutines)
 	// for the dashboard resource monitor. If nil, a default sampler is created
 	// in New(); sampling happens lazily inside GET /api/telemetry (admin only).
@@ -370,6 +376,13 @@ func (s *Server) buildHandler(deps RouterDeps) http.Handler {
 	mux.HandleFunc("GET /api/tunnel/status", deps.handleGetTunnelStatus)
 	mux.HandleFunc("OPTIONS /api/tunnel/toggle", deps.handleOptionsSettings)
 	mux.HandleFunc("POST /api/tunnel/toggle", deps.handleToggleTunnel)
+
+	// Self-update API (admin only: the status discloses the executable path and
+	// whether the process runs in a container).
+	mux.HandleFunc("OPTIONS /api/update/status", deps.handleOptionsSettings)
+	mux.HandleFunc("GET /api/update/status", deps.handleGetUpdateStatus)
+	mux.HandleFunc("OPTIONS /api/update/apply", deps.handleOptionsSettings)
+	mux.HandleFunc("POST /api/update/apply", deps.handleApplyUpdate)
 
 	// /v1/models is auth-protected but needs no upstream.
 	mux.Handle("GET /v1/models", deps.protected(http.HandlerFunc(deps.handleListModels)))
