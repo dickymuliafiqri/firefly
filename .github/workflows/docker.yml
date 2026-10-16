@@ -106,10 +106,16 @@ jobs:
             VERSION=${{ steps.build-meta.outputs.VERSION }}
             COMMIT=${{ steps.build-meta.outputs.COMMIT }}
             BUILD_DATE=${{ steps.build-meta.outputs.BUILD_DATE }}
+          # The registry cache can only be written by a run that holds registry
+          # credentials, and the login step above is skipped on pull_request. An
+          # unconditional `cache-to` therefore tried to push the cache to ghcr.io
+          # anonymously and failed the entire build with "403 Forbidden" on every
+          # PR (while every push run succeeded), even though the image itself had
+          # built. Keep reading the cache everywhere, but write it only when the
+          # run can authenticate — and never let a cache export fail a build.
           cache-from: |
             type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
-          cache-to: |
-            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref={0}/{1}:buildcache,mode=max,ignore-error=true', env.REGISTRY, env.IMAGE_NAME) || '' }}
           provenance: true
           sbom: true
 

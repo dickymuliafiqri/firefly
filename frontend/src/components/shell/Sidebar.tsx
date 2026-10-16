@@ -3,6 +3,7 @@ import { Menu } from 'lucide-react';
 import type { PageDef } from '@/registry';
 import { navigate } from '@/lib/router';
 import { useUiStore } from '@/state/store';
+import { useUpdateStatusQuery } from '@/services/api';
 
 interface SidebarProps {
   groups: Array<{ label: string; pages: PageDef[] }>;
@@ -14,6 +15,13 @@ export function Sidebar({ groups, activeId, version }: SidebarProps) {
   const sidebarOpen = useUiStore((s) => s.sidebarOpen);
   const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
   const closeSidebar = useUiStore((s) => s.closeSidebar);
+
+  // The update check is the one signal worth carrying on every page: it is the
+  // only place the operator learns the deployed binary is behind. Shares its
+  // query key with the Settings card, so neither refetches for the other.
+  const update = useUpdateStatusQuery();
+  const updateAvailable = update.data?.update_available === true;
+  const latestTag = update.data?.latest?.tag;
 
   return (
     <>
@@ -59,7 +67,25 @@ export function Sidebar({ groups, activeId, version }: SidebarProps) {
         </nav>
 
         <div className="sidebar-foot">
-          {version}
+          <span>{version}</span>
+          {updateAvailable ? (
+            <button
+              type="button"
+              className="badge warn"
+              style={{ marginLeft: 8, cursor: 'pointer' }}
+              title={
+                latestTag
+                  ? `Firefly ${latestTag} is available — open Settings → Update`
+                  : 'A newer Firefly release is available — open Settings → Update'
+              }
+              onClick={() => {
+                navigate('settings');
+                closeSidebar();
+              }}
+            >
+              Update
+            </button>
+          ) : null}
         </div>
       </aside>
 

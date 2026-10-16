@@ -4,8 +4,11 @@ package binx
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -128,20 +131,102 @@ func ExtractTarGz(r io.Reader, targetName string, w io.Writer) error {
 	return fmt.Errorf("archive did not contain expected binary %q", targetName)
 }
 
+// ExtractZip extracts an entry named targetName from a zip archive into w.
+//
+// Unlike a tar.gz, a zip central directory is at the end of the file, so this
+// needs random access and therefore takes a ReaderAt (an *os.File or
+// bytes.Reader) plus the archive size instead of a plain io.Reader. Callers
+// that only have a stream must spool it to a temporary file first — buffering a
+// multi-megabyte release archive in memory to avoid that is not acceptable.
+func ExtractZip(r io.ReaderAt, size int64, targetName string, w io.Writer) error {
+	zr, err := zip.NewReader(r, size)
+	if err != nil {
+		return fmt.Errorf("open zip archive: %w", err)
+	}
+
+	targetBase := strings.TrimSuffix(strings.ToLower(filepath.Base(targetName)), ".exe")
+
+	for _, f := range zr.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		entryBase := strings.TrimSuffix(strings.ToLower(filepath.Base(f.Name)), ".exe")
+		if entryBase != targetBase {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return fmt.Errorf("open zip entry %q: %w", f.Name, err)
+		}
+		_, copyErr := io.Copy(w, rc)
+		closeErr := rc.Close()
+		if copyErr != nil {
+			return fmt.Errorf("extract archive entry: %w", copyErr)
+		}
+		if closeErr != nil {
+			return fmt.Errorf("close zip entry %q: %w", f.Name, closeErr)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("archive did not contain expected binary %q", targetName)
+}
+
+// Archive identifies the container format of a release asset.
+//
+// It is an enum rather than a pair of booleans so "tar.gz and zip" is not a
+// representable state: Download used to take a lone IsTarGz flag, and adding a
+// second flag for Windows assets would have made that invalid combination the
+// caller's problem to avoid.
+type Archive string
+
+const (
+	// ArchiveNone means the response body is the executable itself.
+	ArchiveNone Archive = ""
+	// ArchiveTarGz means a gzip-compressed tar containing the executable.
+	ArchiveTarGz Archive = "tar.gz"
+	// ArchiveZip means a zip containing the executable (Windows release assets).
+	ArchiveZip Archive = "zip"
+)
+
 // DownloadOptions configures the binary download and installation process.
 type DownloadOptions struct {
 	URL         string
 	DestPath    string
-	IsTarGz     bool
+	Archive     Archive
 	ArchiveName string
 	UserAgent   string
 	Timeout     time.Duration
 	Logger      *slog.Logger
+
+	// ExpectedSHA256, when set, is the lowercase hex digest the downloaded
+	// archive (or raw binary) must match. Verification happens before anything
+	// is written to DestPath, so a corrupt, truncated, or substituted payload
+	// never becomes a runnable file. It is the checksum the release publishes
+	// in checksums.txt; an empty value disables the check.
+	ExpectedSHA256 string
+
+	// Progress, when set, is invoked while the payload is streaming with the
+	// number of bytes written so far and the expected total (0 when the server
+	// does not send a Content-Length). It is rate-limited to roughly ten calls
+	// per second, so a long download does not turn into a callback storm.
+	Progress func(written, total int64)
 }
 
-// Download fetches an executable from a remote URL and writes it atomically to DestPath.
-// If IsTarGz is true, it unpacks the archive and extracts ArchiveName (or DestPath's basename).
-// On Unix platforms, the resulting file is granted 0755 executable permissions.
+// Download fetches an executable from a remote URL and writes it atomically to
+// DestPath. When Archive is ArchiveTarGz or ArchiveZip, the archive is unpacked
+// and the ArchiveName entry (or DestPath's basename) is extracted. On Unix
+// platforms the resulting file is granted 0755 executable permissions.
+//
+// The transfer is two-phase so verification cannot race publication:
+//
+//  1. the response body is streamed to DestPath+".download", hashed while it is
+//     written, and checked against ExpectedSHA256;
+//  2. only then is the executable materialized at DestPath+".tmp", synced, and
+//     renamed over DestPath.
+//
+// A digest mismatch, a truncated body, or an unparsable archive therefore leaves
+// DestPath exactly as it was.
 func Download(ctx context.Context, opts DownloadOptions) error {
 	if opts.URL == "" {
 		return errors.New("download url is required")
@@ -169,16 +254,62 @@ func Download(ctx context.Context, opts DownloadOptions) error {
 		opts.Logger.Info("downloading release binary", "url", opts.URL, "target", opts.DestPath)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, opts.URL, nil)
+	// Phase 1: spool the payload to disk while hashing it. Spooling (rather than
+	// extracting from the stream) is what makes zip assets work at all — a zip
+	// central directory sits at the end of the file — and it keeps the checksum
+	// check ahead of every write to DestPath.
+	stagePath := opts.DestPath + ".download"
+	if err := fetchToFile(ctx, opts.URL, stagePath, userAgent, timeout, opts.ExpectedSHA256, opts.Progress); err != nil {
+		_ = os.Remove(stagePath)
+		return err
+	}
+	defer os.Remove(stagePath)
+
+	// Phase 2: materialize the executable next to DestPath, then publish it.
+	tmpPath := opts.DestPath + ".tmp"
+	published := false
+	defer func() {
+		if !published {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if err := writeExecutable(stagePath, tmpPath, opts); err != nil {
+		return err
+	}
+
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(tmpPath, 0755); err != nil {
+			return fmt.Errorf("chmod binary: %w", err)
+		}
+	}
+
+	// Remove destination first to handle Windows in-place replace semantics.
+	_ = os.Remove(opts.DestPath)
+
+	if err := os.Rename(tmpPath, opts.DestPath); err != nil {
+		return fmt.Errorf("replace binary: %w", err)
+	}
+	published = true
+
+	if opts.Logger != nil {
+		opts.Logger.Info("binary downloaded and verified successfully", "path", opts.DestPath)
+	}
+	return nil
+}
+
+// fetchToFile streams url into path, returning once the body has been fully
+// written and — when wantSHA256 is non-empty — confirmed against the digest.
+// A Content-Length mismatch is rejected before the digest so a truncated
+// transfer reports as such instead of as a checksum failure.
+func fetchToFile(ctx context.Context, url, path, userAgent string, timeout time.Duration, wantSHA256 string, progress func(written, total int64)) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return fmt.Errorf("build download request: %w", err)
 	}
 	req.Header.Set("User-Agent", userAgent)
 
-	client := &http.Client{
-		Timeout: timeout,
-	}
-
+	client := &http.Client{Timeout: timeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("download failed: %w", err)
@@ -189,55 +320,122 @@ func Download(ctx context.Context, opts DownloadOptions) error {
 		return fmt.Errorf("download server returned %s", resp.Status)
 	}
 
-	tmpFile := opts.DestPath + ".tmp"
-	f, err := os.OpenFile(tmpFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return fmt.Errorf("create staging file: %w", err)
+	}
+
+	hash := sha256.New()
+	total := resp.ContentLength
+	if total < 0 {
+		total = 0
+	}
+	sink := &progressWriter{w: io.MultiWriter(f, hash), fn: progress, total: total}
+	_, copyErr := io.Copy(sink, resp.Body)
+	written := sink.written
+	syncErr := f.Sync()
+	closeErr := f.Close()
+
+	if copyErr != nil {
+		return fmt.Errorf("write download: %w", copyErr)
+	}
+	if progress != nil && written > 0 {
+		progress(written, sink.total)
+	}
+	if syncErr != nil {
+		return fmt.Errorf("sync download: %w", syncErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close download: %w", closeErr)
+	}
+	if resp.ContentLength >= 0 && written != resp.ContentLength {
+		return fmt.Errorf("truncated download: got %d bytes, expected %d", written, resp.ContentLength)
+	}
+	if wantSHA256 != "" {
+		got := hex.EncodeToString(hash.Sum(nil))
+		if !strings.EqualFold(got, wantSHA256) {
+			return fmt.Errorf("checksum mismatch: got %s, expected %s", got, wantSHA256)
+		}
+	}
+	return nil
+}
+
+// progressWriter counts the bytes passing through it and reports them to fn,
+// throttled to roughly ten calls per second so a large archive does not produce
+// a callback per 32 KiB network chunk. A total of 0 means "size unknown".
+type progressWriter struct {
+	w       io.Writer
+	fn      func(written, total int64)
+	total   int64
+	written int64
+	last    time.Time
+}
+
+func (p *progressWriter) Write(b []byte) (int, error) {
+	n, err := p.w.Write(b)
+	p.written += int64(n)
+	if p.fn != nil && n > 0 {
+		now := time.Now()
+		if now.Sub(p.last) >= 100*time.Millisecond {
+			p.last = now
+			p.fn(p.written, p.total)
+		}
+	}
+	return n, err
+}
+
+// writeExecutable turns the verified staging file at stagePath into an
+// executable at tmpPath according to opts.Archive.
+func writeExecutable(stagePath, tmpPath string, opts DownloadOptions) error {
+	switch opts.Archive {
+	case ArchiveNone:
+		if err := os.Rename(stagePath, tmpPath); err != nil {
+			return fmt.Errorf("stage binary: %w", err)
+		}
+		return nil
+	case ArchiveTarGz, ArchiveZip:
+		// handled below
+	default:
+		return fmt.Errorf("unsupported archive format %q", opts.Archive)
+	}
+
+	targetEntry := opts.ArchiveName
+	if targetEntry == "" {
+		targetEntry = filepath.Base(opts.DestPath)
+	}
+
+	src, err := os.Open(stagePath)
+	if err != nil {
+		return fmt.Errorf("open staged archive: %w", err)
+	}
+	defer src.Close()
+
+	dst, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
 	if err != nil {
 		return fmt.Errorf("create temporary binary file: %w", err)
 	}
 
-	writeSuccess := false
-	defer func() {
-		_ = f.Close()
-		if !writeSuccess {
-			_ = os.Remove(tmpFile)
+	extractErr := func() error {
+		if opts.Archive == ArchiveTarGz {
+			return ExtractTarGz(src, targetEntry, dst)
 		}
+		info, err := src.Stat()
+		if err != nil {
+			return fmt.Errorf("stat staged archive: %w", err)
+		}
+		return ExtractZip(src, info.Size(), targetEntry, dst)
 	}()
-
-	if opts.IsTarGz {
-		targetEntry := opts.ArchiveName
-		if targetEntry == "" {
-			targetEntry = filepath.Base(opts.DestPath)
-		}
-		if err := ExtractTarGz(resp.Body, targetEntry, f); err != nil {
-			return err
-		}
-	} else {
-		if _, err := io.Copy(f, resp.Body); err != nil {
-			return fmt.Errorf("write binary: %w", err)
-		}
+	if extractErr != nil {
+		_ = dst.Close()
+		return extractErr
 	}
 
-	if err := f.Sync(); err != nil {
+	if err := dst.Sync(); err != nil {
+		_ = dst.Close()
 		return fmt.Errorf("sync binary file: %w", err)
 	}
-	_ = f.Close()
-
-	if runtime.GOOS != "windows" {
-		if err := os.Chmod(tmpFile, 0755); err != nil {
-			return fmt.Errorf("chmod binary: %w", err)
-		}
-	}
-
-	// Remove destination first to handle Windows in-place replace semantics
-	_ = os.Remove(opts.DestPath)
-
-	if err := os.Rename(tmpFile, opts.DestPath); err != nil {
-		return fmt.Errorf("replace binary: %w", err)
-	}
-	writeSuccess = true
-
-	if opts.Logger != nil {
-		opts.Logger.Info("binary downloaded and verified successfully", "path", opts.DestPath)
+	if err := dst.Close(); err != nil {
+		return fmt.Errorf("close binary file: %w", err)
 	}
 	return nil
 }

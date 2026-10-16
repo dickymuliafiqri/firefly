@@ -303,6 +303,10 @@ export interface WarpStatusDTO {
   next_rotation_at?: string;
   /** Configured number of concurrent WARP slots (0 until a pool exists). */
   pool_size?: number;
+  /** Lowest pool size the dashboard may set (engine-enforced window). */
+  pool_size_min?: number;
+  /** Highest pool size the dashboard may set (engine-enforced window). */
+  pool_size_max?: number;
   /** Slots currently usable for new dials. */
   active_sessions?: number;
   /** Public egress address of each active slot, free of duplicates. */

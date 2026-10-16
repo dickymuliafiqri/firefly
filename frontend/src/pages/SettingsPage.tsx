@@ -16,6 +16,7 @@ import {
 } from "@/services/api";
 import { useDraftStore, useSettingsView } from "@/state/draftStore";
 import { NotificationsCard } from "@/components/NotificationsCard";
+import { UpdateCard } from "@/components/UpdateCard";
 import { handleSessionInvalid } from "@/lib/session";
 
 interface DiffRow {
@@ -1194,6 +1195,7 @@ export function SettingsPage() {
       </div>
 
       <div className="stack">
+        <UpdateCard />
         <AccessCard />
         <PasswordCard />
         <TokenSaverCard />

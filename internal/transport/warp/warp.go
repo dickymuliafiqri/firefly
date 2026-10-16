@@ -25,6 +25,11 @@ type Status struct {
 	DrainingSessions int `json:"draining_sessions,omitempty"`
 	// PoolSize is the configured number of concurrent WARP slots.
 	PoolSize int `json:"pool_size,omitempty"`
+	// PoolSizeMin and PoolSizeMax bound the size an operator may choose from the
+	// dashboard. They travel in the status so the UI renders the engine's real
+	// window instead of mirroring a copy of it that could drift.
+	PoolSizeMin int `json:"pool_size_min,omitempty"`
+	PoolSizeMax int `json:"pool_size_max,omitempty"`
 	// ActiveSessions is the number of slots currently usable for new dials.
 	ActiveSessions int `json:"active_sessions,omitempty"`
 	// EgressIPs lists the public egress address of each active slot.

@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -51,6 +52,7 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/pricing"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
 	"github.com/dickymuliafiqri/firefly/internal/security/auth"
+	"github.com/dickymuliafiqri/firefly/internal/selfupdate"
 	"github.com/dickymuliafiqri/firefly/internal/server"
 	"github.com/dickymuliafiqri/firefly/internal/storage/turso"
 	"github.com/dickymuliafiqri/firefly/internal/supervisor"
@@ -106,7 +108,7 @@ func run() error {
 		tursoSyncInterval    = flag.Duration("turso-sync-interval", turso.DefaultSyncInterval, "interval to pull changes from Turso cloud after an observed change (defaults to $FIREFLY_TURSO_SYNC_INTERVAL)")
 		tursoSyncMaxInterval = flag.Duration("turso-sync-max-interval", turso.DefaultSyncMaxInterval, "upper bound for the idle pull backoff; consecutive change-free pulls double the delay until it reaches this (defaults to $FIREFLY_TURSO_SYNC_MAX_INTERVAL)")
 		warpRotateInterval   = flag.Duration("warp-rotate-interval", warp.DefaultAutoRotateInterval, "interval between automatic periodic Cloudflare WARP IP rotations (0 disables; defaults to $FIREFLY_WARP_ROTATE_INTERVAL or 30s)")
-		warpPoolSize         = flag.Int("warp-pool-size", warp.DefaultPoolSize, "number of concurrent Cloudflare WARP slots kept active for round-robin egress; the pool grows one slot per rotation until it reaches this size (defaults to $FIREFLY_WARP_POOL_SIZE or 5)")
+		warpPoolSize         = flag.Int("warp-pool-size", warp.DefaultPoolSize, "number of concurrent Cloudflare WARP slots kept active for round-robin egress; the pool grows one slot per rotation until it reaches this size (defaults to $FIREFLY_WARP_POOL_SIZE, then warp.json, else 25)")
 		quotaPollInterval    = flag.Duration("quota-poll-interval", server.DefaultQuotaPollInterval, "interval between background provider-quota refreshes for OAuth connections (0 disables; quota stays on-demand only)")
 		tunnelMode           = flag.String("tunnel", "", "Cloudflare Tunnel mode: quick|named (empty disables; defaults to $FIREFLY_TUNNEL)")
 		tunnelToken          = flag.String("tunnel-token", "", "Cloudflare Tunnel token for named tunnels (defaults to $FIREFLY_TUNNEL_TOKEN)")
@@ -258,6 +260,23 @@ func run() error {
 		}
 		if *tunnelBinDir == "" {
 			*tunnelBinDir = tCfg.BinDir
+		}
+	}
+
+	// warp.json persists the WARP pool size chosen from the dashboard, so a
+	// restart keeps the tuned pool instead of reverting to the built-in default.
+	// Flag and environment win: when the flag still carries its default value and
+	// the environment did not override it, the file supplies the size. A value
+	// outside the engine's supported range is ignored with a warning rather than
+	// failing the boot, matching how a malformed tunnel.json is treated.
+	if wCfg, err := config.LoadWarp(*configDir); err != nil {
+		logger.Warn("could not read warp config", "err", err)
+	} else if wCfg.PoolSize > 0 && *warpPoolSize == warp.DefaultPoolSize {
+		if warp.ValidPoolSize(wCfg.PoolSize) {
+			*warpPoolSize = wCfg.PoolSize
+		} else {
+			logger.Warn("ignoring out-of-range warp pool size",
+				"pool_size", wCfg.PoolSize, "min", warp.MinPoolSize, "max", warp.MaxPoolSize)
 		}
 	}
 
@@ -716,6 +735,15 @@ func run() error {
 		}
 	})
 
+	// A dashboard-triggered update swaps the binary in place; the staging file
+	// and the Windows backup a previous run left behind are collected here,
+	// because this is the first moment the old process is guaranteed to be gone.
+	selfupdate.CleanupStale(logger)
+
+	// Set when the dashboard installs an update and asks the process to come
+	// back up. It is read once, after the whole shutdown sequence has drained.
+	var restartRequested atomic.Bool
+
 	deps := server.RouterDeps{
 		Snapshots:     reg,
 		Registry:      reg,
@@ -746,6 +774,22 @@ func run() error {
 		// In-memory models.dev catalog cache for the pricing dashboard.
 		// Never a runtime dependency of cost tracking.
 		PricingCatalog: pricing.NewCatalogCache(),
+
+		// Dashboard-triggered self-update. The restart hook follows exactly the
+		// signal path: cancel the root context so the server drains in-flight
+		// streams within ShutdownGrace, and relaunch once run() has finished
+		// tearing everything else down.
+		SelfUpdate: server.NewUpdateManager(server.UpdateConfig{
+			CurrentVersion: Version,
+			CurrentCommit:  Commit,
+			BuildDate:      BuildDate,
+			Logger:         logger,
+			Restart: func(reason string) {
+				logger.Info("restart requested for a self-update", "reason", reason)
+				restartRequested.Store(true)
+				stop()
+			},
+		}),
 	}
 	graceDuration := time.Duration(*graceSecs) * time.Second
 
@@ -819,6 +863,16 @@ func run() error {
 	}
 
 	logger.Info("bye")
+
+	// Only now is it safe to replace the process: the listeners are closed, the
+	// buffers are flushed, and every worker has been joined. On Unix this call
+	// never returns; elsewhere the caller exits as soon as it does.
+	if restartRequested.Load() {
+		if err := selfupdate.Relaunch(deps.SelfUpdate.Environment(), logger); err != nil {
+			logger.Error("the update is installed but the process could not relaunch; restart Firefly manually", "err", err)
+			return err
+		}
+	}
 	return nil
 }
 
