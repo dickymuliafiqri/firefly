@@ -120,7 +120,7 @@ function ModelForm({ editing, onClose }: ModelFormProps) {
     if (!effectiveBaseUrl) {
       pushToast({
         type: "error",
-        title: "Empty Base URL",
+        title: "Empty base URL",
         message: "This upstream has no Base URL configured.",
       });
       return;
@@ -689,7 +689,7 @@ function ComboForm({
       <div className="field">
         <label>
           Member models ({selectedModels.length} selected)
-          {strategy === "failover" ? " — first model is primary" : ""}
+          {strategy === "failover" ? " (first model is primary)" : ""}
         </label>
 
         {/* Selected ordered chips */}
@@ -820,7 +820,7 @@ function ComboForm({
         ) : (
           <span className="faint" style={{ fontSize: 11 }}>
             {allCatalogModels.length === 0
-              ? "No catalog models exist yet — create models first."
+              ? "No catalog models exist yet. Create models first."
               : "All catalog models are already in this combo."}
           </span>
         )}

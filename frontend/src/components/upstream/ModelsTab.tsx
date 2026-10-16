@@ -147,7 +147,7 @@ export function ModelsTab({
     if (!effectiveBaseUrl) {
       pushToast({
         type: "error",
-        title: "Empty Base URL",
+        title: "Empty base URL",
         message: "Specify a Base URL to fetch model list.",
       });
       return;
@@ -227,7 +227,7 @@ export function ModelsTab({
     pushToast({
       type: "success",
       title: "Model added",
-      message: `${id} — run Check to verify it against the upstream.`,
+      message: `${id}. Run Check to verify it against the upstream.`,
     });
   }
 
@@ -259,7 +259,7 @@ export function ModelsTab({
     if (!effectiveBaseUrl) {
       pushToast({
         type: "error",
-        title: "Empty Base URL",
+        title: "Empty base URL",
         message: "Specify a Base URL before checking health.",
       });
       return null;
@@ -624,7 +624,7 @@ export function ModelsTab({
                               <Badge
                                 tone="warn"
                                 className="text-[10px] py-0 px-1.5"
-                                title="Added by hand — not verified yet. Use Check to probe it against the upstream."
+                                title="Added by hand, not verified yet. Run Check to probe it against the upstream."
                               >
                                 MANUAL
                               </Badge>
@@ -646,8 +646,8 @@ export function ModelsTab({
                               Also routed on{" "}
                               {registeredElsewhere
                                 .map((cm) => cm.upstream)
-                                .join(", ")}{" "}
-                              — adding here will namespace the name.
+                                .join(", ")}
+                              . Adding it here namespaces the name.
                             </div>
                           ) : null}
                         </td>

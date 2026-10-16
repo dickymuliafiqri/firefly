@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"testing"
@@ -98,21 +99,81 @@ func TestOpenCodeID_DecodedValuesMatch(t *testing.T) {
 }
 
 func TestOpenCodeID_ClampAtMaxCounter(t *testing.T) {
-	// Under extreme gateway concurrency (>4095 IDs in one millisecond),
-	// the counter must clamp at 0x0FFF rather than carrying into the
-	// timestamp field and corrupting the decoded millisecond value.
+	// The free-tier gate validates the counter embedded in a session id
+	// ((0xFFFFFFFFFFFF - hex) & 0xFFF) and rejects anything above
+	// OpenCodeSessionCounterMax. Under gateway concurrency (>63 IDs in one
+	// millisecond) the counter must therefore clamp at that bound rather than
+	// carrying into the timestamp field or minting an ID the gate refuses.
 	fixedMs := int64(1791895000000)
 	openCodeIDCounter.Lock()
 	openCodeIDCounter.lastMs = fixedMs
-	openCodeIDCounter.counter = 0x0FFE
+	openCodeIDCounter.counter = OpenCodeSessionCounterMax - 1
 	openCodeIDCounter.Unlock()
 
 	c1 := nextOpenCodeIDCounter(fixedMs)
-	if c1 != 0x0FFF {
-		t.Fatalf("expected counter to reach 0x0FFF, got 0x%03x", c1)
+	if c1 != OpenCodeSessionCounterMax {
+		t.Fatalf("expected counter to reach %d, got %d", OpenCodeSessionCounterMax, c1)
 	}
 	c2 := nextOpenCodeIDCounter(fixedMs)
-	if c2 != 0x0FFF {
-		t.Fatalf("expected counter to clamp at 0x0FFF, got 0x%03x", c2)
+	if c2 != OpenCodeSessionCounterMax {
+		t.Fatalf("expected counter to clamp at %d, got %d", OpenCodeSessionCounterMax, c2)
+	}
+
+	// The default User-Agent must itself satisfy the gate's end-anchored pattern.
+	if !IsOpenCodeUserAgent(OpenCodeUserAgent) {
+		t.Fatalf("default User-Agent %q is not accepted by the free-tier gate", OpenCodeUserAgent)
+	}
+}
+
+func TestIsOpenCodeUserAgent(t *testing.T) {
+	accepted := []string{
+		"opencode/2.0.29",
+		"opencode/1.18.31",
+		"opencode/latest/2.0.29/cli",
+		"opencode/latest/2.0.29/desktop",
+		"OpenCodeClient/1.0 opencode/2.0.29/cli",
+		"  opencode/2.0.29  ",
+	}
+	for _, ua := range accepted {
+		if !IsOpenCodeUserAgent(ua) {
+			t.Errorf("expected %q to be accepted", ua)
+		}
+	}
+	// The legacy literal carried a trailing ai-sdk/runtime suffix, which breaks
+	// the gate's end-anchored match — that is why keyless traffic was answered
+	// with 403 FreeTierError even though it started with "opencode/".
+	rejected := []string{
+		"",
+		"opencode/1.18.31 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14",
+		"opencode/2.0.29/",
+		"opencode/2.0",
+		"curl/8.7.1",
+		"opencode",
+	}
+	for _, ua := range rejected {
+		if IsOpenCodeUserAgent(ua) {
+			t.Errorf("expected %q to be rejected", ua)
+		}
+	}
+}
+
+func TestSetOpenCodeSessionHeaders(t *testing.T) {
+	const id = "ses_0fffffffffff00000000000000"
+	h := http.Header{}
+	SetOpenCodeSessionHeaders(h, id)
+	for _, key := range []string{
+		OpenCodeSessionIDHeader, "x-opencode-session", "x-session-affinity", "x-session-id",
+	} {
+		if got := h.Get(key); got != id {
+			t.Errorf("header %s = %q, want %q", key, got, id)
+		}
+	}
+
+	// A missing id must leave the header set untouched instead of writing empty
+	// values the gate would read as a malformed attestation.
+	empty := http.Header{}
+	SetOpenCodeSessionHeaders(empty, "")
+	if len(empty) != 0 {
+		t.Errorf("expected no headers for an empty id, got %v", empty)
 	}
 }

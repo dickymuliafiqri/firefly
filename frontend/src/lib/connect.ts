@@ -34,7 +34,7 @@ export interface GatewayEndpoint {
 
 /** The inbound data plane, mirrored from `internal/server/router.go`. */
 export const GATEWAY_ENDPOINTS: GatewayEndpoint[] = [
-  { method: 'POST', path: '/v1/chat/completions', note: 'Chat completions — the route every AI agent calls.' },
+  { method: 'POST', path: '/v1/chat/completions', note: 'Chat completions: the route every AI agent calls.' },
   { method: 'POST', path: '/v1/completions', note: 'Legacy text completions.' },
   { method: 'POST', path: '/v1/embeddings', note: 'Embeddings.' },
   { method: 'POST', path: '/v1/compress', note: 'Standalone Token Saver prompt / tool-output compression.' },
@@ -252,7 +252,7 @@ export const CLIENT_PRESETS: ClientPreset[] = [
     kind: 'IDE extension',
     docs: 'https://docs.continue.dev/customize/model-providers/openai',
     summary:
-      'Add this entry to ~/.continue/config.json — it powers the Continue chat, edit and autocomplete models.',
+      'Add this entry to ~/.continue/config.json. It powers the Continue chat, edit and autocomplete models.',
     fields: [{ label: 'Config file', value: () => '~/.continue/config.json' }],
     code: {
       label: 'config.json',
@@ -355,7 +355,7 @@ export const CLIENT_PRESETS: ClientPreset[] = [
     kind: 'SDK',
     docs: 'https://platform.openai.com/docs/libraries/node-js-library',
     summary:
-      'The same contract from JavaScript/TypeScript — `baseURL` (capital URL) is the only change.',
+      'The same contract from JavaScript/TypeScript. `baseURL` (capital URL) is the only change.',
     code: {
       label: 'streaming-chat.mjs',
       language: 'javascript',

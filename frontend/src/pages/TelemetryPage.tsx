@@ -12,7 +12,7 @@ export function TelemetryPage() {
     <div className="page-col">
       <PageHeader
         title="Telemetry"
-        description="Realtime throughput & latency percentiles from the gateway."
+        description="Real-time throughput and latency percentiles from the gateway."
       />
 
       <KpiGrid>

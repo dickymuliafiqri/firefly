@@ -293,6 +293,43 @@ func buildEndpointURL(u *domain.Upstream, isResponses, isMessages, isFree bool) 
 	return base + "/chat/completions"
 }
 
+// retryWithoutReasoning re-sends a refused request without its reasoning fields
+// and returns the replacement response. It returns the original response — with
+// its body restored, since the refusal had to be read to be recognized — when
+// the answer was not the `[invalid_reasoning]` refusal, the request carried no
+// reasoning to drop, or the retry itself failed; the caller then reports exactly
+// what the upstream said.
+func (a *Adapter) retryWithoutReasoning(ctx context.Context, u *domain.Upstream, orig *http.Request, resp *http.Response, body []byte) *http.Response {
+	buf, _ := openai.RelayBuffered(resp.Body, a.maxBytes())
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(buf))
+
+	if !IsInvalidReasoningError(buf) {
+		return resp
+	}
+	retryBody, ok := StripReasoning(body)
+	if !ok {
+		return resp
+	}
+
+	retryReq := orig.Clone(ctx)
+	retryReq.Body = io.NopCloser(bytes.NewReader(retryBody))
+	retryReq.ContentLength = int64(len(retryBody))
+	retryReq.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(retryBody)), nil
+	}
+
+	retryResp, err := a.pool.Client(u).Do(retryReq)
+	if err != nil {
+		a.logger.Warn("opencode: reasoning-free retry failed", "upstream", u.Name, "error", err)
+		return resp
+	}
+	a.logger.Info("opencode: upstream refused the reasoning field, retried without it",
+		"upstream", u.Name, "status", retryResp.StatusCode)
+	return retryResp
+}
+
 func (a *Adapter) attempt(ctx context.Context, u *domain.Upstream, req ports.ForwardRequest, t *domain.Target, body []byte, w http.ResponseWriter) attemptResult {
 	if a.pool == nil {
 		return attemptResult{err: errors.New("opencode adapter: nil client pool")}
@@ -368,7 +405,7 @@ func (a *Adapter) attempt(ctx context.Context, u *domain.Upstream, req ports.For
 	}
 
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
-	httpReq.Header.Set(HeaderSession, sessionID)
+	ApplySessionHeaders(httpReq.Header, sessionID)
 	httpReq.Header.Set(HeaderRequest, ResolveRequestID(clientHeaders))
 
 	projVal := clientHeaders.Get(HeaderProject)
@@ -389,11 +426,14 @@ func (a *Adapter) attempt(ctx context.Context, u *domain.Upstream, req ports.For
 		httpReq.Header.Set("Authorization", "Bearer "+secret)
 	}
 
+	// The free-tier gate anchors its User-Agent regex at the END of the value, so
+	// a client UA is only forwarded when it already satisfies that shape — a
+	// plausible-looking but non-conforming UA ("opencode/1.2 (linux)", a
+	// browser string) is replaced by the canonical one instead of being relayed
+	// into a 403.
 	ua := OpenCodeUserAgent
-	if clientUA := clientHeaders.Get("User-Agent"); clientUA != "" {
-		if strings.Contains(strings.ToLower(clientUA), "opencode/") {
-			ua = clientUA
-		}
+	if clientUA := clientHeaders.Get("User-Agent"); upstream.IsOpenCodeUserAgent(clientUA) {
+		ua = strings.TrimSpace(clientUA)
 	}
 	httpReq.Header.Set("User-Agent", ua)
 
@@ -405,6 +445,17 @@ func (a *Adapter) attempt(ctx context.Context, u *domain.Upstream, req ports.For
 	if err != nil {
 		return attemptResult{err: err}
 	}
+
+	// The free tier validates the reasoning field against a schema its own
+	// backend does not always honour: a request accepted on one attempt comes
+	// back as `400 [invalid_reasoning]` on the next, and the client has no way to
+	// act on that — its thinking level is a hint, not a requirement. Re-send once
+	// without the reasoning fields so the answer arrives either way. A 400 is
+	// refused before generation, so the second attempt costs no tokens.
+	if resp.StatusCode == http.StatusBadRequest {
+		resp = a.retryWithoutReasoning(ctx, u, httpReq, resp, outboundBody)
+	}
+
 	defer func() {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()

@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 
@@ -52,6 +53,7 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/security/auth"
 	"github.com/dickymuliafiqri/firefly/internal/server"
 	"github.com/dickymuliafiqri/firefly/internal/storage/turso"
+	"github.com/dickymuliafiqri/firefly/internal/supervisor"
 	"github.com/dickymuliafiqri/firefly/internal/transport/httpx"
 	"github.com/dickymuliafiqri/firefly/internal/transport/tunnel"
 	"github.com/dickymuliafiqri/firefly/internal/transport/upstream"
@@ -103,7 +105,7 @@ func run() error {
 		tursoLocalPath       = flag.String("turso-local-path", "data/firefly.db", "local embedded replica database path (defaults to $FIREFLY_TURSO_LOCAL_PATH)")
 		tursoSyncInterval    = flag.Duration("turso-sync-interval", turso.DefaultSyncInterval, "interval to pull changes from Turso cloud after an observed change (defaults to $FIREFLY_TURSO_SYNC_INTERVAL)")
 		tursoSyncMaxInterval = flag.Duration("turso-sync-max-interval", turso.DefaultSyncMaxInterval, "upper bound for the idle pull backoff; consecutive change-free pulls double the delay until it reaches this (defaults to $FIREFLY_TURSO_SYNC_MAX_INTERVAL)")
-		warpRotateInterval   = flag.Duration("warp-rotate-interval", warp.DefaultAutoRotateInterval, "interval between automatic periodic Cloudflare WARP IP rotations (0 disables; defaults to $FIREFLY_WARP_ROTATE_INTERVAL or 2m)")
+		warpRotateInterval   = flag.Duration("warp-rotate-interval", warp.DefaultAutoRotateInterval, "interval between automatic periodic Cloudflare WARP IP rotations (0 disables; defaults to $FIREFLY_WARP_ROTATE_INTERVAL or 30s)")
 		warpPoolSize         = flag.Int("warp-pool-size", warp.DefaultPoolSize, "number of concurrent Cloudflare WARP slots kept active for round-robin egress; the pool grows one slot per rotation until it reaches this size (defaults to $FIREFLY_WARP_POOL_SIZE or 5)")
 		quotaPollInterval    = flag.Duration("quota-poll-interval", server.DefaultQuotaPollInterval, "interval between background provider-quota refreshes for OAuth connections (0 disables; quota stays on-demand only)")
 		tunnelMode           = flag.String("tunnel", "", "Cloudflare Tunnel mode: quick|named (empty disables; defaults to $FIREFLY_TUNNEL)")
@@ -266,6 +268,18 @@ func run() error {
 	// metrics: private Prometheus registry, exposed on the admin plane only.
 	mx := metrics.New()
 
+	// Every background loop runs under internal/supervisor: a recovered panic is
+	// logged with the panicking file:line, counted in Prometheus and reported on
+	// GET /api/telemetry, and the loop is restarted with backoff instead of a
+	// single nil dereference taking the whole process — and every in-flight
+	// stream — down with it. Configure points the process-wide registry at this
+	// logger and metrics instance.
+	supervisor.Configure(logger, mx)
+
+	// A panic on a goroutine nobody recovered is still fatal; make sure the
+	// evidence survives the container restart it causes.
+	installCrashSafetyNet(filepath.Join(*configDir, "data", "crash.log"), logger)
+
 	// 1. Load config and build the initial snapshot. If no configuration exists,
 	//    or if initial configuration fails validation (e.g. unconfigured env vars),
 	//    firefly starts up with an empty snapshot and remains running so it can
@@ -323,6 +337,22 @@ func run() error {
 	//    goroutine still holding a signal registration or a file watcher.
 	var wg sync.WaitGroup
 
+	// supervise starts one named worker under internal/supervisor and keeps it in
+	// the shutdown WaitGroup: a panic restarts the loop with backoff instead of
+	// killing the process, while a cancelled context still lets main join it
+	// before the resources it holds (the turso client, the tunnel process) are
+	// closed. The fn may be re-entered several times, so nothing that must happen
+	// exactly once belongs inside it — the WaitGroup bookkeeping lives here, on
+	// the channel that closes only when the supervisor really stops driving it.
+	supervise := func(name string, fn func(context.Context)) {
+		wg.Add(1)
+		done := supervisor.Go(ctx, name, supervisor.DefaultPolicy(), fn)
+		go func() {
+			defer wg.Done()
+			<-done
+		}()
+	}
+
 	if tursoClient != nil {
 		syncer := turso.NewSyncer(tursoClient, tursoStore, reg, turso.SyncerConfig{
 			Interval:    *tursoSyncInterval,
@@ -333,22 +363,18 @@ func run() error {
 		})
 		initialRev, _ := tursoStore.GetCatalogRevision(ctx)
 		syncer.SetInitialRevision(initialRev)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		supervise("turso.syncer", func(ctx context.Context) {
 			if err := syncer.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				logger.Error("turso syncer stopped", "err", err)
 			}
-		}()
+		})
 	} else {
 		// 2a. Hot-reload watcher (fsnotify + poll + SIGHUP). The reload callback
 		//     delegates to the registry, which is fail-closed: a bad reload keeps
 		//     the previous snapshot serving.
 		src := config.NewFileConfigSource(*configDir)
 		w := watch.New(watch.Options{Dir: *configDir, Logger: logger}, reg)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		supervise("config.watcher", func(ctx context.Context) {
 			reload := func(rctx context.Context) error {
 				warnings, err := reg.BuildAndStore(rctx, src, os.LookupEnv)
 				if err != nil {
@@ -363,7 +389,7 @@ func run() error {
 			if err := w.Run(ctx, reload); err != nil && !errors.Is(err, context.Canceled) {
 				logger.Error("watcher stopped", "err", err)
 			}
-		}()
+		})
 	}
 
 	// 2b. Usage flusher / exporter
@@ -374,19 +400,15 @@ func run() error {
 	if tursoStore != nil {
 		usageFlusher = turso.NewUsageFlusher(tursoStore, counters, 30*time.Second, logger)
 		usageRecorder = usageFlusher
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		supervise("usage.flusher", func(ctx context.Context) {
 			usageFlusher.Run(ctx)
-		}()
+		})
 	}
 
 	exporter := &usage.Exporter{Counters: counters, Interval: 30 * time.Second, Logger: logger, Metrics: mx}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	supervise("usage.exporter", func(ctx context.Context) {
 		exporter.Run(ctx)
-	}()
+	})
 
 	// 3. Outbound transport: per-upstream client pool + circuit breakers.
 	warpLicense := os.Getenv("FIREFLY_WARP_LICENSE")
@@ -428,11 +450,16 @@ func run() error {
 	// rotation observers above are registered. Skipped when automatic rotation is
 	// off: `-warp-rotate-interval=0` requests no autonomous WARP work at all.
 	if *warpRotateInterval > 0 {
-		go func() {
+		// A warm-up is one-shot, so cap its restarts: a panic retries a few times
+		// and then leaves the tunnel lazy rather than crash-looping until the
+		// underlying fault is fixed. The launch stays fire-and-forget — the process
+		// must not block shutdown on a cold start, which is why this one is not
+		// registered with the shutdown WaitGroup.
+		supervisor.Go(ctx, "warp.warm-up", supervisor.Policy{MaxRestarts: 3}, func(ctx context.Context) {
 			if err := warpManager.WarmUp(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				logger.Warn("warp cold-start warm-up failed; the tunnel stays lazy", "err", err)
 			}
-		}()
+		})
 	}
 	breakers := upstream.NewBreakerRegistry(upstream.BreakerConfig{
 		FailureThreshold: 5,
@@ -457,11 +484,9 @@ func run() error {
 		Logger:       logger,
 	})
 	breakers.SetEmitter(notifyMgr)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	supervise("notify.dispatcher", func(ctx context.Context) {
 		notifyMgr.Run(ctx)
-	}()
+	})
 
 	// 3a. Active health checker prober (periodic, bounded concurrency via errgroup).
 	if *healthInterval > 0 {
@@ -470,13 +495,11 @@ func run() error {
 			Logger:   logger,
 		}, reg, pool, breakers, usageFlusher)
 		healthChecker.SetEmitter(notifyMgr)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		supervise("upstream.health-checker", func(ctx context.Context) {
 			if err := healthChecker.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				logger.Error("health checker stopped", "err", err)
 			}
-		}()
+		})
 	}
 
 	openAIAdapter := openai.NewAdapter(pool, breakers, openai.Config{
@@ -539,11 +562,9 @@ func run() error {
 	refresher := oauth.NewRefresher(oauthMgr, oauth.RefresherConfig{
 		Logger: logger,
 	})
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	supervise("oauth.refresher", func(ctx context.Context) {
 		refresher.Run(ctx)
-	}()
+	})
 
 	antigravityAdapter := antigravity.NewAdapter(pool, breakers, antigravity.Config{
 		TokenResolver:    oauthMgr.ResolveToken,
@@ -637,11 +658,9 @@ func run() error {
 			}
 		}
 	}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	supervise("analytics.store", func(ctx context.Context) {
 		analyticsStore.Start(ctx, 3*time.Second)
-	}()
+	})
 
 	// 5. Authentication and HTTP server with the full middleware chain.
 	authMgr := auth.NewManager(*configDir, *adminToken, *dashboardPassword)
@@ -691,13 +710,11 @@ func run() error {
 		BinDir:   *tunnelBinDir,
 		Logger:   logger,
 	})
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	supervise("tunnel.runner", func(ctx context.Context) {
 		if err := tunnelManager.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			logger.Error("cloudflare tunnel stopped", "err", err)
 		}
-	}()
+	})
 
 	deps := server.RouterDeps{
 		Snapshots:     reg,
@@ -756,24 +773,20 @@ func run() error {
 	}); err != nil {
 		logger.Warn("could not start auto TLS; Firefly remains available on its HTTP listener", "err", err)
 	}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	supervise("server.autotls", func(ctx context.Context) {
 		autoTLS.Run(ctx)
-	}()
+	})
 
 	// 5. Admin plane (/metrics + guarded /debug/*), drained alongside the data
 	//    plane. Only started when an address is configured.
 	var admin *server.Admin
 	if *adminAddr != "" {
 		admin = server.NewAdmin(*adminAddr, *adminToken, mx.Handler(), logger, graceDuration)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		supervise("server.admin", func(ctx context.Context) {
 			if err := admin.Serve(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				logger.Error("admin server stopped", "err", err)
 			}
-		}()
+		})
 	}
 
 	// 6. Serve the data plane; returns once ctx is cancelled and the server has
@@ -807,6 +820,39 @@ func run() error {
 
 	logger.Info("bye")
 	return nil
+}
+
+// installCrashSafetyNet makes an unrecovered panic leave evidence that outlives
+// the container restart it causes. A worker panic is handled by
+// internal/supervisor; this is the net for everything the supervisor does not
+// own — a panic in a short-lived goroutine, and the runtime's own fatal errors.
+//
+// Both steps are best-effort: a read-only config directory must not keep the
+// gateway from starting, and an unhandled panic stays visible on stderr anyway.
+func installCrashSafetyNet(path string, logger *slog.Logger) {
+	// Print every goroutine on a fatal error, not only the one that died; the
+	// cause is usually a different goroutine from the one that tripped it.
+	debug.SetTraceback("all")
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		logger.Warn("crash log directory unavailable; crash dumps stay on stderr",
+			"dir", filepath.Dir(path), "err", err)
+		return
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		logger.Warn("crash log unavailable; crash dumps stay on stderr", "path", path, "err", err)
+		return
+	}
+	// SetCrashOutput duplicates the descriptor, so this handle is closed right
+	// away; the runtime keeps writing through its own copy.
+	if err := debug.SetCrashOutput(f, debug.CrashOptions{}); err != nil {
+		_ = f.Close()
+		logger.Warn("could not redirect crash output; crash dumps stay on stderr", "path", path, "err", err)
+		return
+	}
+	_ = f.Close()
+	logger.Info("crash dumps are appended to a file as well as stderr", "path", path)
 }
 
 // notifyChannelsFromSettings maps the snapshot's notification channels onto the

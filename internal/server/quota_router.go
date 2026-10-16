@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/dickymuliafiqri/firefly/internal/domain"
+	"github.com/dickymuliafiqri/firefly/internal/supervisor"
 )
 
 // Quota-aware routing.
@@ -154,6 +155,7 @@ func (deps RouterDeps) noteQuotaRateLimit(ref string) {
 	}
 	// Refetch in the background: the failing request must not wait on Google.
 	go func() {
+		defer supervisor.Guard("server.quota-refetch")()
 		ctx, cancel := context.WithTimeout(context.Background(), quotaFetchTimeout)
 		defer cancel()
 		conn, err := deps.OAuthManager.ResolveConnection(ctx, oauthRefPrefix+id)
@@ -177,7 +179,10 @@ func (deps RouterDeps) StartQuotaPoller(ctx context.Context, interval time.Durat
 	if logger == nil {
 		logger = slog.Default()
 	}
-	go func() {
+	// A panic in the poller must not kill the process; it is restarted with
+	// backoff so a transient fault heals and a persistent one stays visible on
+	// GET /api/telemetry.
+	supervisor.Go(ctx, "server.quota-poller", supervisor.DefaultPolicy(), func(ctx context.Context) {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -188,7 +193,7 @@ func (deps RouterDeps) StartQuotaPoller(ctx context.Context, interval time.Durat
 				deps.refreshAllQuota(ctx, logger)
 			}
 		}
-	}()
+	})
 }
 
 // refreshAllQuota polls every connection whose provider has a quota client.

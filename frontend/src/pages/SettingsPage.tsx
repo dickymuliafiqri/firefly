@@ -251,7 +251,7 @@ function TokenSaverCard() {
       </div>
       <div className="card-body">
         <SwitchRow
-          title="Token Saver — master switch"
+          title="Master switch"
           description="Token optimization suite: tool output compression, concise responses, minimal code, and context pruning."
           checked={ts?.enabled ?? false}
           onChange={(v) =>
@@ -260,7 +260,7 @@ function TokenSaverCard() {
           ariaLabel="Enable Token Saver"
         />
         <SwitchRow
-          title="RTK — tool output compression"
+          title="RTK: tool output compression"
           description="ANSI stripping, log dedup, git diff compact, head/tail truncation."
           checked={ts?.compress_tool_output ?? false}
           onChange={(v) =>
@@ -270,7 +270,7 @@ function TokenSaverCard() {
           ariaLabel="Enable RTK"
         />
         <SwitchRow
-          title="Caveman — brevity prompt injection"
+          title="Caveman: brevity prompt injection"
           description="Forces terse assistant responses to save output tokens."
           checked={ts?.terse_output ?? false}
           onChange={(v) =>
@@ -279,7 +279,7 @@ function TokenSaverCard() {
           ariaLabel="Enable Caveman"
         />
         <SwitchRow
-          title="Ponytail — minimal code bias"
+          title="Ponytail: minimal code bias"
           description="Biases responses toward minimal, patch-style code output."
           checked={ts?.minimal_code ?? false}
           onChange={(v) =>
@@ -288,7 +288,7 @@ function TokenSaverCard() {
           ariaLabel="Enable Ponytail"
         />
         <SwitchRow
-          title="Headroom — middle context pruning"
+          title="Headroom: middle context pruning"
           description="Prunes middle conversation turns beyond the token budget."
           checked={ts?.compress_context ?? false}
           onChange={(v) =>
@@ -406,7 +406,7 @@ function TunnelCard() {
   const copyUrl = () => {
     if (!d?.public_url) return;
     navigator.clipboard.writeText(d.public_url);
-    pushToast({ type: "success", title: "URL Copied", message: d.public_url });
+    pushToast({ type: "success", title: "URL copied", message: d.public_url });
   };
 
   /**
@@ -420,10 +420,10 @@ function TunnelCard() {
     if (target !== "named" || d?.token_configured || token.trim()) return false;
     setShowConfig(true);
     const msg =
-      "A named tunnel needs a Cloudflare Tunnel token. Paste it below and switch again — nothing has been changed yet.";
+      "A named tunnel needs a Cloudflare Tunnel token. Paste it below and switch again. Nothing has been changed yet.";
     setErrorMessage(msg);
     if (notify) {
-      pushToast({ type: "error", title: "Token Required", message: msg });
+      pushToast({ type: "error", title: "Token required", message: msg });
     }
     return true;
   };
@@ -442,7 +442,7 @@ function TunnelCard() {
           if (res.running) {
             pushToast({
               type: "success",
-              title: "Tunnel Enabled",
+              title: "Tunnel enabled",
               message:
                 res.mode === "quick"
                   ? "Starting quick tunnel (trycloudflare.com)..."
@@ -451,7 +451,7 @@ function TunnelCard() {
           } else {
             pushToast({
               type: "info",
-              title: "Tunnel Disabled",
+              title: "Tunnel disabled",
               message: "Tunnel ingress successfully disabled.",
             });
           }
@@ -461,7 +461,7 @@ function TunnelCard() {
           setErrorMessage(msg);
           pushToast({
             type: "error",
-            title: "Failed to Change Tunnel Status",
+            title: "Failed to change tunnel status",
             message: msg,
           });
         },
@@ -504,7 +504,7 @@ function TunnelCard() {
           setToken("");
           pushToast({
             type: "success",
-            title: opts?.connect ? "Tunnel Reconnected" : "Tunnel Mode Switched",
+            title: opts?.connect ? "Tunnel reconnected" : "Tunnel mode switched",
             message:
               res.mode === "named"
                 ? "Reconnected as a named tunnel."
@@ -518,7 +518,7 @@ function TunnelCard() {
           setErrorMessage(msg);
           pushToast({
             type: "error",
-            title: "Failed to Switch Tunnel Mode",
+            title: "Failed to switch tunnel mode",
             message: msg,
           });
         },
@@ -540,7 +540,7 @@ function TunnelCard() {
       <div className="card-body">
         <SwitchRow
           title="Enable Cloudflare Tunnel"
-          description="Enable instant public access via Cloudflare Tunnel for remote AI coding agents without port forwarding."
+          description="Expose the gateway through Cloudflare Tunnel so remote AI coding agents can reach it without port forwarding."
           checked={d?.running ?? false}
           onChange={handleToggle}
           ariaLabel="Toggle Cloudflare Tunnel"
@@ -550,16 +550,17 @@ function TunnelCard() {
           <div className="info">
             <h3>Tunnel Mode</h3>
             <p>
-              <strong>Quick</strong> — instant{" "}
-              <code>trycloudflare.com</code> hostname, no configuration needed;
-              the hostname is random, changes on every restart, and SSE
-              streaming is not supported. <strong>Named</strong> — a stable
-              hostname from your Cloudflare ingress rule with streaming enabled;
-              it needs a tunnel token.
+              <strong>Quick</strong>: a <code>trycloudflare.com</code> hostname
+              with no configuration. It is random, changes on every restart,
+              and does not support SSE streaming.
+            </p>
+            <p>
+              <strong>Named</strong>: a stable hostname from your Cloudflare
+              ingress rule with streaming enabled. It needs a tunnel token.
             </p>
             <p>
               {modePending
-                ? `Selected, waiting for a tunnel token — the tunnel is still running in ${(
+                ? `Selected, waiting for a tunnel token. The tunnel is still running in ${(
                     d?.mode ?? ""
                   ).toUpperCase()} mode.`
                 : d?.running
@@ -597,7 +598,7 @@ function TunnelCard() {
             <span>
               The <code>trycloudflare.com</code> hostname is random and will
               change on every restart, and streaming (SSE) responses are not
-              supported — long-running AI completions will not stream. To pin a
+              supported. Long-running AI completions will not stream. To pin a
               stable hostname and enable streaming, save a Cloudflare Tunnel
               token and switch to <strong>Named Tunnel</strong>; the saved
               configuration is reused automatically after a restart.
@@ -676,7 +677,7 @@ function TunnelCard() {
                 </span>
               ) : isNamed && d?.running ? (
                 <span style={{ color: "var(--color-text-muted, #888)" }}>
-                  Defined by your Cloudflare ingress rule — a named tunnel does
+                  Defined by your Cloudflare ingress rule. A named tunnel does
                   not announce its hostname.
                 </span>
               ) : (
@@ -727,7 +728,7 @@ function TunnelCard() {
                 htmlFor="tunnel-token"
                 hint={
                   d?.token_configured
-                    ? "Used by named mode only. A token is already stored on the server — leave this empty to reuse it, or paste a new token to replace it."
+                    ? "Used by named mode only. A token is already stored on the server. Leave this empty to reuse it, or paste a new token to replace it."
                     : undefined
                 }
               >

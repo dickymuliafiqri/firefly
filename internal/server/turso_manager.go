@@ -13,6 +13,7 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/config"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
 	"github.com/dickymuliafiqri/firefly/internal/storage/turso"
+	"github.com/dickymuliafiqri/firefly/internal/supervisor"
 )
 
 // TursoManager manages the lifecycle of the active Turso embedded sync client and store.
@@ -118,11 +119,11 @@ func (m *TursoManager) startSyncerLocked(client *turso.Client, store *turso.Stor
 	syncer.SetInitialRevision(initialRev)
 	m.syncer = syncer
 
-	go func() {
+	supervisor.Go(ctx, "server.turso-syncer", supervisor.DefaultPolicy(), func(ctx context.Context) {
 		if err := syncer.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			m.logger.Warn("turso background syncer encountered warning", "err", err)
 		}
-	}()
+	})
 }
 
 // TriggerSync runs one pull-and-reload cycle immediately instead of waiting for

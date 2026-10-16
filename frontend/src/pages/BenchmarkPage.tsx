@@ -89,7 +89,7 @@ export function BenchmarkPage() {
       pushToast({
         type: 'info',
         title: 'Benchmark requires backend',
-        message: 'This origin is not running a Firefly gateway — start the Go gateway and access the dashboard from there.',
+        message: 'This origin is not running a Firefly gateway. Start the Go gateway and access the dashboard from there.',
       });
       return;
     }

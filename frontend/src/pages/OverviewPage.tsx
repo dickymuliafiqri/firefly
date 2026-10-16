@@ -38,7 +38,7 @@ function NotificationsPanel({ stats }: { stats?: { queued: number; dropped: numb
         </KpiGrid>
         {stats.dropped > 0 ? (
           <p className="hint" style={{ marginTop: 10, fontSize: 12, color: 'var(--faint)' }}>
-            Events are being dropped because the queue is full — a channel is too slow or
+            Events are being dropped because the queue is full. A channel is too slow or
             unreachable. Raise the queue size or fix the channel in Settings → Notifications.
           </p>
         ) : null}

@@ -103,7 +103,7 @@ function ModelTagPicker({
           <span className="tag tag-all">All models (*)</span>
         ) : selected.length === 0 ? (
           <span className="tag-picker-empty">
-            No restriction — every catalog model is allowed
+            No restriction: every catalog model is allowed
           </span>
         ) : (
           selected.map((name) => (
@@ -379,7 +379,7 @@ function TenantForm({ editing, onClose }: TenantFormProps) {
       <Field
         label="API key"
         htmlFor="t-key"
-        hint="Randomly generated in browser. Copy now — dashboard only displays a masked hint after this."
+        hint="Randomly generated in the browser. Copy it now. The dashboard only shows a masked hint afterwards."
       >
         <div style={{ display: "flex", gap: 8 }}>
           <input

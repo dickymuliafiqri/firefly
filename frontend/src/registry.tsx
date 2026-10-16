@@ -67,7 +67,7 @@ export interface PageDef {
 }
 
 export const PAGES: Record<PageId, PageDef> = {
-  overview:   { id: 'overview',   title: 'Overview',   description: 'Gateway health at a glance.',                     group: 'MONITORING',    icon: Gauge,         element: () => <OverviewPage /> },
+  overview:   { id: 'overview',   title: 'Overview',   description: 'Live health, throughput, and request counters.',   group: 'MONITORING',    icon: Gauge,         element: () => <OverviewPage /> },
   telemetry:  { id: 'telemetry',  title: 'Telemetry',  description: 'Historical throughput & latency.',                group: 'MONITORING',    icon: Activity,      element: () => <TelemetryPage /> },
   usage:      { id: 'usage',      title: 'Usage',      description: 'Token ledger per tenant, model, and credential.', group: 'MONITORING',    icon: Coins,         element: () => <UsagePage /> },
   upstreams:  { id: 'upstreams',  title: 'Upstreams',  description: 'Provider fleet and circuit breakers.',            group: 'SERVICES',      icon: Server,        element: () => <UpstreamsPage /> },

@@ -211,7 +211,7 @@ export function VisualizerPage() {
                 {filtered.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="viz-sub">
-                      No traces yet — send a request through the gateway.
+                      No traces yet. Send a request through the gateway.
                     </td>
                   </tr>
                 ) : (

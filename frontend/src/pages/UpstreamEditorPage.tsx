@@ -211,8 +211,8 @@ export function UpstreamEditorPage() {
       title: "Route staged",
       message:
         publicName === sanitizeModelName(modelName)
-          ? `Model ${publicName} added to pending changes — commit to register it.`
-          : `Model ${publicName} namespaced (${modelName} is taken by another upstream) — commit to register it.`,
+          ? `Model ${publicName} added to pending changes. Commit to register it.`
+          : `Model ${publicName} namespaced (${modelName} is taken by another upstream) and added to pending changes. Commit to register it.`,
     });
   }
 
@@ -300,7 +300,7 @@ export function UpstreamEditorPage() {
     if (!resolvedBaseUrl) {
       pushToast({
         type: "error",
-        title: "Empty Base URL",
+        title: "Empty base URL",
         message: "Base URL is required.",
       });
       return;
@@ -381,7 +381,7 @@ export function UpstreamEditorPage() {
     pushToast({
       type: "info",
       title: "Upstream staged",
-      message: `Upstream '${payload.name}' added to pending changes — commit to apply it.`,
+      message: `Upstream '${payload.name}' added to pending changes. Commit to apply it.`,
     });
     navigate("upstreams");
   }

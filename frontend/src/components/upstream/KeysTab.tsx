@@ -258,7 +258,7 @@ export function KeysTab({
               onChange={(e) => onProviderChange(e.target.value ? Number(e.target.value) : null)}
               style={{ flex: 1 }}
             >
-              <option value="">-- No Database Binding (Use Manual Keys below) --</option>
+              <option value="">-- None (use manual keys below) --</option>
               {(tursoProviders.data?.providers ?? []).map((p) => (
                 <option key={p.id} value={p.id}>
                   #{p.id} {p.name} ({p.active_keys} active keys) — {p.base_url}

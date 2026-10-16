@@ -87,7 +87,7 @@ export function PendingChangesBar() {
       pushToast({
         type: 'info',
         title: 'Demo mode',
-        message: 'Gateway unreachable — changes applied to the local browser cache only.',
+        message: 'Gateway unreachable. Changes applied to the local browser cache only.',
       });
     }
   }
@@ -196,10 +196,10 @@ export function PendingChangesBar() {
             title={status === 'error' ? (error ?? '') : undefined}
           >
             {status === 'error'
-              ? (error ?? 'Unknown error — retry or discard.')
+              ? (error ?? 'Unknown error. Retry or discard.')
               : summary.length > 0
                 ? summary.map((s) => `${s.label} ${s.before}→${s.after}`).join(' · ')
-                : 'Configuration edited — not committed yet.'}
+                : 'Configuration edited. Not committed yet.'}
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8, marginLeft: 'auto', flexShrink: 0 }}>
@@ -249,15 +249,15 @@ export function PendingChangesBar() {
               </p>
               <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: 'var(--muted)' }}>
                 <li>
-                  <strong>Overwrite server</strong> — replaces the server configuration with your
+                  <strong>Overwrite server</strong>: replaces the server configuration with your
                   staged draft, including everything it does not have.
                 </li>
                 <li>
-                  <strong>Discard my changes</strong> — keeps the current server configuration and
+                  <strong>Discard my changes</strong>: keeps the current server configuration and
                   drops the staged draft.
                 </li>
                 <li>
-                  <strong>Keep editing</strong> — close this dialog and decide later; nothing is
+                  <strong>Keep editing</strong>: close this dialog and decide later; nothing is
                   saved until you commit.
                 </li>
               </ul>

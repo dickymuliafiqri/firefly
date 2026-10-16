@@ -6,6 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/dickymuliafiqri/firefly/internal/supervisor"
 )
 
 // drainGrace bounds how long a shutting-down worker keeps delivering events
@@ -79,7 +81,12 @@ func (d *Dispatcher) Run(ctx context.Context) {
 	d.running.Store(true)
 	d.wg.Add(d.workers)
 	for i := 0; i < d.workers; i++ {
-		go d.work(ctx)
+		go func() {
+			// A panic in one delivery worker must not take the process (and every
+			// other worker) down with it.
+			defer supervisor.Guard("notify.worker")()
+			d.work(ctx)
+		}()
 	}
 	<-ctx.Done()
 	d.running.Store(false)

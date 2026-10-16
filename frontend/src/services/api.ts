@@ -1417,8 +1417,8 @@ function mocks() {
     latency_ms: 8.4,
     active_connections: 3,
     draining_sessions: 0,
-    auto_rotate_interval_seconds: 1800,
-    next_rotation_at: new Date(now + 22 * 60_000).toISOString(),
+    auto_rotate_interval_seconds: 30,
+    next_rotation_at: new Date(now + 30_000).toISOString(),
   };
 
   const tunnelMock: TunnelStatusDTO = {
