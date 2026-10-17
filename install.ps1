@@ -17,11 +17,27 @@
     adds a per-user Startup shortcut instead of a task, adds no firewall rule,
     and never asks for elevation. Force it with -User.
 
+    Run it with no action in an interactive shell and it asks what to do -
+    Install, Update or Uninstall - so one script covers the whole lifecycle:
+
+      [1] Install    download a release, bootstrap the configuration, set up autostart
+      [2] Update     stop the gateway, replace the binaries, keep the configuration
+      [3] Uninstall  stop and remove the autostart entry and the installed binaries
+
     Quick install (admin shell for machine scope, normal shell for user scope):
       irm https://raw.githubusercontent.com/dickymuliafiqri/firefly/main/install.ps1 | iex
 
-    Or with the cmd bootstrap:
-      curl.exe -fsSL -o install.cmd https://raw.githubusercontent.com/dickymuliafiqri/firefly/main/install.cmd && install.cmd
+    Non-interactive runs (CI, piped input) never wait for the prompt and must pick
+    the action up front:
+      .\install.ps1 -Action install
+      .\install.ps1 -Action update
+      .\install.ps1 -Action uninstall -Purge
+
+.PARAMETER Action
+    What to do: install, update, or uninstall. Update stops the running gateway,
+    replaces the binaries with the newest release, and leaves the configuration
+    directory untouched. When omitted and the shell is interactive, a menu asks;
+    when omitted and the shell is not interactive, it defaults to install.
 
 .PARAMETER Version
     Release tag to install (e.g. v1.44.10). Defaults to $env:FIREFLY_VERSION or the latest release.
@@ -64,7 +80,8 @@
     Reinstall even when binaries already exist.
 
 .PARAMETER Uninstall
-    Stop and remove the scheduled task, firewall rule, and installed binaries.
+    Shorthand for -Action uninstall: stop and remove the autostart entry, the
+    firewall rule, and the installed binaries.
 
 .PARAMETER Purge
     With -Uninstall, also delete the configuration directory.
@@ -85,7 +102,10 @@
     .\install.ps1 -Addr 0.0.0.0:9000 -AdminToken 'sk-admin-secret'
 
 .EXAMPLE
-    .\install.ps1 -Uninstall -Purge
+    .\install.ps1 -Action update
+
+.EXAMPLE
+    .\install.ps1 -Action uninstall -Purge
 #>
 [CmdletBinding()]
 param(
@@ -105,7 +125,9 @@ param(
     [switch] $Uninstall,
     [switch] $Purge,
     [switch] $User,
-    [switch] $Machine
+    [switch] $Machine,
+    [ValidateSet('install', 'update', 'uninstall')]
+    [string] $Action
 )
 
 $ErrorActionPreference = 'Stop'
@@ -149,11 +171,89 @@ function Test-DirectoryWritable {
     }
 }
 
+# A run is interactive when it owns a real console. A piped or redirected run
+# (CI, `pwsh -File script.ps1 < /dev/null`, `curl | powershell`) must never block
+# on Read-Host, so it is treated as non-interactive and gets the default action.
+function Test-InteractiveHost {
+    try {
+        if (-not [Environment]::UserInteractive) { return $false }
+        if ([Console]::IsInputRedirected) { return $false }
+    } catch {
+        return $false
+    }
+    return $true
+}
+
+# Reads the version an already-installed binary reports, or $null when there is
+# nothing installed at that path.
+function Get-FireflyVersionAtPath {
+    param([string] $BinaryPath)
+
+    if (-not (Test-Path -LiteralPath $BinaryPath)) { return $null }
+    try {
+        $output = & $BinaryPath -version 2>$null
+        if ($output -match 'firefly\s+(\S+)') { return $Matches[1] }
+    } catch { }
+    return $null
+}
+
+# Interactive action picker used only when no -Action was supplied.
+function Read-FireflyAction {
+    param([bool] $Installed, [string] $Version)
+
+    Write-Host ''
+    if ($Installed) {
+        if ($Version) { Write-Host "  Firefly $Version is already installed." -ForegroundColor White }
+        else { Write-Host '  Firefly is already installed.' -ForegroundColor White }
+    } else {
+        Write-Host '  Firefly is not installed yet.' -ForegroundColor White
+    }
+    Write-Host ''
+    Write-Host '  What would you like to do?' -ForegroundColor White
+    Write-Host '    [1] Install    download a release and set up autostart'
+    Write-Host '    [2] Update     stop the gateway, replace the binaries, keep the configuration'
+    Write-Host '    [3] Uninstall  stop and remove the autostart entry and the binaries'
+    Write-Host '    [4] Quit'
+    Write-Host ''
+
+    $default = if ($Installed) { '2' } else { '1' }
+    while ($true) {
+        $choice = $null
+        try { $choice = (Read-Host "  Choice [1-4] (default $default)").Trim() } catch { return 'install' }
+        if (-not $choice) { $choice = $default }
+        switch ($choice) {
+            '1' { return 'install' }
+            '2' { return 'update' }
+            '3' { return 'uninstall' }
+            '4' { return 'quit' }
+            { $_ -in 'q', 'quit', 'exit' } { return 'quit' }
+            default { Write-Warn 'Please enter 1, 2, 3 or 4.' }
+        }
+    }
+}
+
 # Modern GitHub endpoints reject TLS 1.0, which is what Windows PowerShell 5.1
 # negotiates by default.
 try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 } catch { }
+
+function Show-FireflyBanner {
+    $banner = @'
+  _____ _           __ _
+ |  ___(_)_ __ ___ / _| |_   _
+ | |_  | | '__/ _ \ |_| | | | |
+ |  _| | | | |  __/  _| | |_| |
+ |_|   |_|_|  \___|_| |_|\__, |
+                         |___/
+'@
+    Write-Host ''
+    Write-Host $banner -ForegroundColor Cyan
+    Write-Host ' Firefly High-Concurrency AI Gateway Installer (Windows)' -ForegroundColor White
+    Write-Host ''
+}
+
+Show-FireflyBanner
 
 # -----------------------------------------------------------------------------
 # Install scope: machine-wide (needs admin) or per-user (never needs admin)
@@ -183,11 +283,55 @@ $machineConfigDir = Join-Path $env:ProgramData 'Firefly'
 $userInstallDir = Join-Path $env:LOCALAPPDATA 'Programs\Firefly'
 $userConfigDir = Join-Path $env:APPDATA 'Firefly'
 
+# -----------------------------------------------------------------------------
+# Action: install | update | uninstall
+#
+# The historical -Uninstall switch still works and maps onto -Action uninstall.
+# With neither, an interactive shell is asked; a non-interactive run (CI, piped
+# input) defaults to install so it never blocks waiting for a prompt.
+# -----------------------------------------------------------------------------
+if ($Uninstall -and $Action -and $Action -ne 'uninstall') {
+    Write-Err "-Uninstall conflicts with -Action $Action. Use one or the other."
+    exit 1
+}
+if ($Uninstall) { $Action = 'uninstall' }
+
+$probeInstallDir = $InstallDir
+if (-not $probeInstallDir) { $probeInstallDir = $env:FIREFLY_INSTALL_DIR }
+if (-not $probeInstallDir) {
+    if ($Scope -eq 'machine') { $probeInstallDir = $machineInstallDir } else { $probeInstallDir = $userInstallDir }
+}
+
+if (-not $Action) {
+    if ($Scope -eq 'machine' -and -not $isAdmin -and -not $PSCommandPath) {
+        # A piped run (irm ... | iex) cannot relaunch itself elevated, so the menu
+        # question would only end in an error. Fail with the fix instead.
+        Write-Err 'Administrator privileges are required for machine scope.'
+        Write-Info 'Open PowerShell with "Run as Administrator" and run the installer again, or install'
+        Write-Info 'per-user instead (no admin needed): .\install.ps1 -User'
+        exit 1
+    }
+
+    $probeVersion = Get-FireflyVersionAtPath -BinaryPath (Join-Path $probeInstallDir 'firefly.exe')
+    if (Test-InteractiveHost) {
+        $Action = Read-FireflyAction -Installed ([bool] $probeVersion) -Version $probeVersion
+    } else {
+        Write-Info 'No -Action given in a non-interactive shell; defaulting to install.'
+        Write-Info 'Pass -Action update or -Action uninstall to choose another action.'
+        $Action = 'install'
+    }
+}
+
+if ($Action -eq 'quit') {
+    Write-Info 'Cancelled - nothing was changed.'
+    exit 0
+}
+
 # An uninstall with no explicit scope removes whichever installation exists; if
 # both exist, the per-user one is removed (a non-elevated shell can only do that
 # one anyway) and the run says so.
 $scopeAmbiguous = $false
-if ($Uninstall -and -not ($User -or $Machine)) {
+if ($Action -eq 'uninstall' -and -not ($User -or $Machine)) {
     if ($InstallDir) { $probe = $InstallDir }
     elseif ($env:FIREFLY_INSTALL_DIR) { $probe = $env:FIREFLY_INSTALL_DIR }
     else { $probe = $null }
@@ -216,6 +360,9 @@ if ($Scope -eq 'machine' -and -not $isAdmin) {
             $relaunch += [string] $value
         }
     }
+    # An action chosen from the menu is not in PSBoundParameters; carry it across
+    # the elevation so the elevated run does not ask again.
+    if (-not $PSBoundParameters.ContainsKey('Action')) { $relaunch += @('-Action', $Action) }
     $elevated = Start-Process -FilePath (Get-Process -Id $PID).Path -Verb RunAs `
         -ArgumentList $relaunch -Wait -PassThru
     exit $elevated.ExitCode
@@ -616,12 +763,12 @@ function Remove-FireflyStartupEntry {
 }
 
 # Starts the launcher detached, with no console window and no dependency on the
-# console that is running this installer. Start-Process alone is not enough: the
-# installer runs inside a cmd window (install.cmd), and closing that window sends
-# CTRL_CLOSE_EVENT to every process in the console group, which kills the gateway
-# moments after the install reports success. Win32_Process.Create is owned by the
-# WMI provider instead, so the gateway survives; it still runs as the invoking
-# user in that user's session.
+# console that is running this installer. Start-Process alone is not enough:
+# the installer runs in a console window that the operator may close as soon as
+# it reports success, and closing that window sends CTRL_CLOSE_EVENT to every
+# process in the console group, which kills the gateway moments later.
+# Win32_Process.Create is owned by the WMI provider instead, so the gateway
+# survives; it still runs as the invoking user in that user's session.
 function Start-FireflyLauncher {
     param([string] $LauncherPath)
 
@@ -652,6 +799,35 @@ function Stop-FireflyProcess {
             Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
             Write-Ok "Stopped running process (PID $($_.ProcessId))"
         }
+}
+
+# True when a gateway is already running from exactly $BinaryPath.
+function Test-FireflyProcess {
+    param([string] $BinaryPath)
+
+    $match = Get-CimInstance Win32_Process -Filter "Name='firefly.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.ExecutablePath -and ($_.ExecutablePath -ieq $BinaryPath) } |
+        Select-Object -First 1
+    return [bool] $match
+}
+
+# Stops the autostart entry and the running gateway before its binaries are
+# replaced: Windows refuses to overwrite a running executable, and a Scheduled
+# Task left in a failed state would be restarted by its own retry policy in the
+# middle of the copy. The scheduled task is only stopped for machine scope - a
+# per-user update must not touch the machine-wide task of a different install.
+function Stop-FireflyService {
+    param([string] $BinaryPath, [switch] $Machine)
+
+    if ($Machine -and (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue)) {
+        try {
+            Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+            Write-Info "Stopped scheduled task '$TaskName'"
+        } catch {
+            Write-Warn "Could not stop scheduled task '$TaskName': $($_.Exception.Message)"
+        }
+    }
+    Stop-FireflyProcess -BinaryPath $BinaryPath
 }
 
 function Test-FireflyHealth {
@@ -720,20 +896,7 @@ function Uninstall-Firefly {
 # Main Execution Flow
 # -----------------------------------------------------------------------------
 function Invoke-Main {
-    $banner = @'
-  _____ _           __ _
- |  ___(_)_ __ ___ / _| |_   _
- | |_  | | '__/ _ \ |_| | | | |
- |  _| | | | |  __/  _| | |_| |
- |_|   |_|_|  \___|_| |_|\__, |
-                         |___/
-'@
-    Write-Host ''
-    Write-Host $banner -ForegroundColor Cyan
-    Write-Host ' Firefly High-Concurrency AI Gateway Installer (Windows)' -ForegroundColor White
-    Write-Host ''
-
-    if ($Uninstall) {
+    if ($Action -eq 'uninstall') {
         if ($scopeAmbiguous) {
             Write-Warn 'Both a machine-wide and a per-user install exist; this run removes the per-user one. Pass -Machine or -User to choose.'
         }
@@ -753,9 +916,28 @@ function Invoke-Main {
         Write-Info 'Install scope: per-user (no admin required)'
     }
 
-    if ((Test-Path $BinaryPath) -and -not $Force) {
-        Write-Warn "Firefly is already installed at $BinaryPath (use -Force to reinstall)"
+    $binaryExists = Test-Path -LiteralPath $BinaryPath
+    $installedVersion = Get-FireflyVersionAtPath -BinaryPath $BinaryPath
+
+    if ($Action -eq 'update' -and -not $binaryExists) {
+        Write-Warn "No Firefly installation was found at $BinaryPath - installing instead."
+        $Action = 'install'
+    }
+
+    if ($Action -eq 'update') {
+        $fromLabel = if ($installedVersion) { " (installed: $installedVersion)" } else { '' }
+        Write-Step "Updating Firefly$fromLabel - stopping the running gateway first..."
+        Stop-FireflyService -BinaryPath $BinaryPath -Machine:($Scope -eq 'machine')
+        $Version = Resolve-FireflyVersion -Requested $Version
+        Install-FireflyBinaries -Version $Version -Arch $arch -InstallDir $InstallDir
+    } elseif ($binaryExists -and -not $Force) {
+        Write-Warn "Firefly is already installed at $BinaryPath"
+        Write-Info 'Use -Action update to upgrade it, or -Force to reinstall the same version.'
     } else {
+        if ($binaryExists) {
+            Write-Info 'Stopping the running gateway before replacing its binaries...'
+            Stop-FireflyService -BinaryPath $BinaryPath -Machine:($Scope -eq 'machine')
+        }
         $Version = Resolve-FireflyVersion -Requested $Version
         Install-FireflyBinaries -Version $Version -Arch $arch -InstallDir $InstallDir
     }
@@ -782,6 +964,8 @@ function Invoke-Main {
             Write-Step 'Starting Firefly in the background...'
             if ($Scope -eq 'machine') {
                 Start-ScheduledTask -TaskName $TaskName
+            } elseif (Test-FireflyProcess -BinaryPath $BinaryPath) {
+                Write-Info 'Firefly is already running; it picks up the new binaries on the next restart.'
             } else {
                 Start-FireflyLauncher -LauncherPath $LauncherPath
             }
@@ -798,10 +982,11 @@ function Invoke-Main {
 
     $hostIp = Get-PrimaryIP
     $scopeLabel = if ($Scope -eq 'machine') { 'machine-wide (Scheduled Task, starts at boot as SYSTEM)' } else { 'per-user (Startup shortcut, starts at logon)' }
+    $doneVerb = if ($Action -eq 'update') { 'updated' } else { 'installed' }
 
     Write-Host ''
     Write-Host '==================================================================' -ForegroundColor Green
-    Write-Host '  Firefly has been installed successfully!' -ForegroundColor Green
+    Write-Host "  Firefly has been $doneVerb successfully!" -ForegroundColor Green
     Write-Host '==================================================================' -ForegroundColor Green
     Write-Host ''
     Write-Host "  Install scope:      $scopeLabel"
@@ -826,7 +1011,8 @@ function Invoke-Main {
         Write-Host "    Stop:      Stop-ScheduledTask -TaskName $TaskName"
         Write-Host "    Restart:   Stop-ScheduledTask -TaskName $TaskName; Start-ScheduledTask -TaskName $TaskName"
         Write-Host "    Logs:      Get-Content `"$LogPath`" -Wait -Tail 50"
-        Write-Host '    Uninstall: .\install.ps1 -Uninstall [-Purge]'
+        Write-Host '    Update:    .\install.ps1 -Action update'
+        Write-Host '    Uninstall: .\install.ps1 -Action uninstall [-Purge]'
         Write-Host ''
     } elseif (-not $SkipService) {
         Write-Host '  Service Controls (PowerShell):' -ForegroundColor White
@@ -835,7 +1021,8 @@ function Invoke-Main {
         Write-Host "    Stop:      Stop-Process -Name firefly"
         Write-Host "    Autostart: $(Get-FireflyShortcutPath) (delete this shortcut to disable)"
         Write-Host "    Logs:      Get-Content `"$LogPath`" -Wait -Tail 50"
-        Write-Host '    Uninstall: .\install.ps1 -Uninstall -User [-Purge]'
+        Write-Host '    Update:    .\install.ps1 -Action update -User'
+        Write-Host '    Uninstall: .\install.ps1 -Action uninstall -User [-Purge]'
         Write-Host ''
     }
     Write-Host '  Quick Concurrency Test:' -ForegroundColor White

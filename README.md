@@ -95,16 +95,26 @@ Once installed, Firefly starts automatically:
 Install and run Firefly as an automatic background service:
 
 ```powershell
-curl.exe -fsSL -o install.cmd https://raw.githubusercontent.com/dickymuliafiqri/firefly/main/install.cmd && .\install.cmd
+irm https://raw.githubusercontent.com/dickymuliafiqri/firefly/main/install.ps1 | iex
 ```
 
-Or fetch the same bootstrap from PowerShell:
+Run with no action from an interactive shell, `install.ps1` asks what to do — **Install**,
+**Update**, or **Uninstall** — so the same script covers the whole lifecycle:
+
+```
+  [1] Install    download a release and set up autostart
+  [2] Update     stop the gateway, replace the binaries, keep the configuration
+  [3] Uninstall  stop and remove the autostart entry and the binaries
+```
+
+Non-interactive runs (CI, piped input) never wait for the prompt and default to `install`, so pass
+`-Action update` or `-Action uninstall` explicitly. To read the script before running it:
 
 ```powershell
-irm https://raw.githubusercontent.com/dickymuliafiqri/firefly/main/install.cmd -OutFile "$env:TEMP\firefly-install.cmd"; & "$env:TEMP\firefly-install.cmd"
+irm https://raw.githubusercontent.com/dickymuliafiqri/firefly/main/install.ps1 -OutFile "$env:TEMP\firefly-install.ps1"; & "$env:TEMP\firefly-install.ps1"
 ```
 
-The bootstrap downloads `install.ps1` and runs it. The installer picks one of two scopes:
+The installer picks one of two scopes:
 
 | | Machine scope | User scope |
 | :--- | :--- | :--- |
@@ -133,10 +143,11 @@ that machine only. To open the port for other machines, run this from an elevate
 netsh advfirewall firewall add rule name="Firefly AI Gateway" dir=in action=allow protocol=TCP localport=8080
 ```
 
-Useful installer switches (also accepted by `install.cmd`, which forwards every argument):
+Useful installer switches:
 
 | Switch | Purpose |
 | :--- | :--- |
+| `-Action <install\|update\|uninstall>` | What the installer does. `update` stops the running gateway, replaces the binaries, and keeps the configuration directory. Omit it in an interactive shell to pick from a menu. |
 | `-Addr <host:port>` | Listen address for traffic and the dashboard (default `0.0.0.0:8080`). Equivalent env var: `FIREFLY_ADDR`. |
 | `-Version <tag>` | Release tag to install (default: latest). Equivalent env var: `FIREFLY_VERSION`. |
 | `-User` / `-Machine` | Force per-user scope (no elevation) or machine-wide scope (elevates through UAC). |
@@ -144,8 +155,8 @@ Useful installer switches (also accepted by `install.cmd`, which forwards every 
 | `-AdminToken` / `-DashboardPassword` / `-SessionSecret` | Pre-seed credentials into `firefly.env` instead of editing it afterwards. |
 | `-TursoURL` / `-TursoToken` | Enable Turso cloud persistence. |
 | `-SkipFirewall` / `-SkipService` | Skip the firewall rule / the autostart entry (binaries-only install). |
-| `-Force` | Overwrite an existing installation. |
-| `-Uninstall` / `-Uninstall -Purge` | Remove the autostart entry and binaries, keeping (or deleting) the configuration directory. |
+| `-Force` | Overwrite an existing installation (reinstall the same version). |
+| `-Action uninstall` / `-Uninstall` | Remove the autostart entry and binaries, keeping (or deleting with `-Purge`) the configuration directory. `-Uninstall` is the shorthand spelling. |
 
 Manage the service (Windows):
 
@@ -164,13 +175,21 @@ Get-Content "$env:ProgramData\Firefly\logs\firefly.log" -Wait -Tail 50   # machi
 Get-Content "$env:APPDATA\Firefly\logs\firefly.log" -Wait -Tail 50       # user scope log
 ```
 
+Upgrade to the newest release at any time — the configuration directory is preserved:
+
+```powershell
+.\install.ps1 -Action update           # or: irm ... | iex  and pick [2] Update
+```
+
 Remove it again at any time:
 
 ```powershell
-.\install.cmd -Uninstall           # keep configuration
-.\install.cmd -Uninstall -Purge    # delete configuration too
-.\install.cmd -Uninstall -User     # remove a per-user install without admin
+.\install.ps1 -Action uninstall           # keep configuration
+.\install.ps1 -Action uninstall -Purge    # delete configuration too
+.\install.ps1 -Action uninstall -User     # remove a per-user install without admin
 ```
+
+`-Uninstall` is accepted as a shorthand for `-Action uninstall`.
 
 Both scopes run the generated `run-firefly.ps1` launcher, which loads every `KEY=VALUE` pair from
 `firefly.env` and appends the gateway's stdout and stderr to `logs\firefly.log`. The installer starts
