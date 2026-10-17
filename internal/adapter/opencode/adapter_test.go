@@ -292,54 +292,81 @@ func TestStripReasoning(t *testing.T) {
 func TestIsInvalidReasoningError(t *testing.T) {
 	// The exact body the free tier answers with.
 	assert.True(t, IsInvalidReasoningError([]byte(`{"param":"reasoning","type":"invalid_request_error","message":"Upstream request failed: [invalid_reasoning] reasoning must be an object with optional effort (string), max_tokens (positive integer), exclude and enabled (booleans)."}`)))
+	// A model that declares no reasoning member answers with the decoder's
+	// unknown-field error instead of the validator's message.
+	assert.True(t, IsInvalidReasoningError([]byte(`{"param":"reasoning","type":"invalid_request_error","message":"Upstream request failed: [unknown_parameter] invalid request body: json: unknown field \"reasoning\""}`)))
+	// An unknown parameter on any other field is the client's own mistake and
+	// must keep its error.
+	assert.False(t, IsInvalidReasoningError([]byte(`{"param":"temperature","type":"invalid_request_error","message":"Upstream request failed: [unknown_parameter] invalid request body: json: unknown field \"temperature\""}`)))
 	assert.False(t, IsInvalidReasoningError([]byte(`{"error":{"message":"rate limit exceeded"}}`)))
 	assert.False(t, IsInvalidReasoningError(nil))
 }
 
-// TestAdapter_RetriesWithoutReasoningOnInvalidReasoning covers the intermittent
-// free-tier refusal: the same request is accepted on one attempt and refused
-// with `[invalid_reasoning]` on the next. The client asked for a thinking level
-// it cannot act on, so the gateway answers it anyway.
-func TestAdapter_RetriesWithoutReasoningOnInvalidReasoning(t *testing.T) {
-	var mu sync.Mutex
-	var bodies [][]byte
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		mu.Lock()
-		bodies = append(bodies, body)
-		mu.Unlock()
-		if gjson.GetBytes(body, "reasoning").Exists() || gjson.GetBytes(body, "reasoning_effort").Exists() {
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"param":"reasoning","type":"invalid_request_error","message":"Upstream request failed: [invalid_reasoning] reasoning must be an object with optional effort (string), max_tokens (positive integer), exclude and enabled (booleans)."}`))
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
-	}))
-	defer server.Close()
-
-	adapter := NewAdapter(&mockClientPool{client: server.Client()}, &mockBreaker{allowed: true}, Config{})
-	target := &domain.Target{
-		Upstream:      &domain.Upstream{Name: "test-oc", BaseURL: server.URL + "/zen/v1"},
-		UpstreamModel: "mimo-v2.6-flash",
-	}
-	req := ports.ForwardRequest{
-		Method:    http.MethodPost,
-		Path:      "/chat/completions",
-		BodyBytes: []byte(`{"model":"mimo-v2.6-flash","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}`),
+// TestAdapter_RetriesWithoutReasoningOnRefusal covers the two ways an upstream
+// refuses the reasoning directive. The free tier validates it against a schema
+// its own backend does not always honour — the same request is accepted on one
+// attempt and refused with `[invalid_reasoning]` on the next — while a model
+// whose schema has no reasoning member at all (`glm-*`) rejects it outright with
+// `[unknown_parameter] ... json: unknown field "reasoning"`. The client asked
+// for a thinking level it cannot act on, so the gateway answers it anyway.
+func TestAdapter_RetriesWithoutReasoningOnRefusal(t *testing.T) {
+	refusals := []struct {
+		name string
+		body string
+	}{
+		{
+			"invalid_reasoning",
+			`{"param":"reasoning","type":"invalid_request_error","message":"Upstream request failed: [invalid_reasoning] reasoning must be an object with optional effort (string), max_tokens (positive integer), exclude and enabled (booleans)."}`,
+		},
+		{
+			"unknown_parameter",
+			`{"param":"reasoning","type":"invalid_request_error","message":"Upstream request failed: [unknown_parameter] invalid request body: json: unknown field \"reasoning\""}`,
+		},
 	}
 
-	rec := httptest.NewRecorder()
-	require.NoError(t, adapter.Forward(context.Background(), target, req, rec))
-	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Contains(t, rec.Body.String(), "ok")
+	for _, refusal := range refusals {
+		t.Run(refusal.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var bodies [][]byte
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				mu.Lock()
+				bodies = append(bodies, body)
+				mu.Unlock()
+				if gjson.GetBytes(body, "reasoning").Exists() || gjson.GetBytes(body, "reasoning_effort").Exists() {
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = w.Write([]byte(refusal.body))
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+			}))
+			defer server.Close()
 
-	mu.Lock()
-	defer mu.Unlock()
-	require.Len(t, bodies, 2, "the refused request is retried exactly once")
-	assert.True(t, gjson.GetBytes(bodies[0], "reasoning").Exists(), "the first attempt carried the sanitized reasoning")
-	assert.False(t, gjson.GetBytes(bodies[1], "reasoning").Exists())
-	assert.False(t, gjson.GetBytes(bodies[1], "reasoning_effort").Exists())
+			adapter := NewAdapter(&mockClientPool{client: server.Client()}, &mockBreaker{allowed: true}, Config{})
+			target := &domain.Target{
+				Upstream:      &domain.Upstream{Name: "test-oc", BaseURL: server.URL + "/zen/v1"},
+				UpstreamModel: "glm-5.3-flash-free",
+			}
+			req := ports.ForwardRequest{
+				Method:    http.MethodPost,
+				Path:      "/chat/completions",
+				BodyBytes: []byte(`{"model":"glm-5.3-flash-free","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}`),
+			}
+
+			rec := httptest.NewRecorder()
+			require.NoError(t, adapter.Forward(context.Background(), target, req, rec))
+			assert.Equal(t, http.StatusOK, rec.Code)
+			assert.Contains(t, rec.Body.String(), "ok")
+
+			mu.Lock()
+			defer mu.Unlock()
+			require.Len(t, bodies, 2, "the refused request is retried exactly once")
+			assert.True(t, gjson.GetBytes(bodies[0], "reasoning").Exists(), "the first attempt carried the sanitized reasoning")
+			assert.False(t, gjson.GetBytes(bodies[1], "reasoning").Exists())
+			assert.False(t, gjson.GetBytes(bodies[1], "reasoning_effort").Exists())
+		})
+	}
 }
 
 // A 400 that is not the reasoning refusal is the client's own mistake and must
