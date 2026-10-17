@@ -69,6 +69,14 @@ type UpstreamDTO struct {
 	KeyErrorRules         []KeyErrorRuleDTO `json:"key_error_rules,omitempty"`
 	ProbeModel            string            `json:"probe_model,omitempty"`
 
+	// AlwaysAvailable pins this upstream open: no key cooldown, no key
+	// revocation, no consecutive-error threshold action, and no circuit breaker
+	// for it (domain.Upstream.AlwaysAvailable). A pointer so an explicit `false`
+	// is distinguishable from "unset", which keeps the keyless OpenCode free
+	// tier's default (on) from being silently re-enabled by a dashboard save that
+	// never touched the switch.
+	AlwaysAvailable *bool `json:"always_available,omitempty"`
+
 	EgressMode string `json:"egress_mode,omitempty"`
 	ProxyURL   string `json:"proxy_url,omitempty"`
 	// WarpAutoRotateOn429 is deprecated and ignored. WARP rotation is now

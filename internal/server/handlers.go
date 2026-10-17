@@ -545,7 +545,16 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string, ing ingress) http.Ha
 		keyRef := target.CredentialRef
 		if target.KeySlot != nil && target.KeySlot.Ref != "" {
 			keyRef = target.KeySlot.Ref
-			releaseCred, err = deps.Limiter.AcquireKeySlot(target.KeySlot)
+			// An AlwaysAvailable upstream is exempt from the slot's revocation and
+			// cooldown state (see domain.Upstream.AlwaysAvailable): reserving
+			// capacity must not re-introduce the rejection the resolver just
+			// bypassed, or the request dies here with a 429 that no upstream ever
+			// saw. RPS and concurrency still apply.
+			if target.Upstream.AlwaysAvailable {
+				releaseCred, err = deps.Limiter.AcquireKeySlotLenient(target.KeySlot)
+			} else {
+				releaseCred, err = deps.Limiter.AcquireKeySlot(target.KeySlot)
+			}
 		} else {
 			releaseCred, err = deps.Limiter.AcquireCredential(
 				target.CredentialRef,

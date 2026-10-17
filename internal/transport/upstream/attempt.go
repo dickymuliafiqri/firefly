@@ -130,9 +130,7 @@ func ProcessAttemptOutcome(
 	// Counter bookkeeping is left to HandleKeyOutcome (a cancel is a non-key
 	// error, so it resets the counter there), keeping reset logic in one place.
 	if isClientCancel(outcome) {
-		if breaker != nil {
-			breaker.Report(u.Name, true) // healthy: do not trip the breaker
-		}
+		reportBreaker(breaker, u, true) // healthy: do not trip the breaker
 		HandleKeyOutcome(u, target.KeySlot, outcome.Status, "", notifier, logger)
 		return AttemptDecision{StopCommitted: true}
 	}
@@ -141,9 +139,7 @@ func ProcessAttemptOutcome(
 
 	// Report the breaker on every attempt: success or host failure. Key/quota
 	// errors report success (ok=true) so they never trip the host breaker.
-	if breaker != nil {
-		breaker.Report(u.Name, !hostFailure)
-	}
+	reportBreaker(breaker, u, !hostFailure)
 
 	// Success path.
 	if outcome.Err == nil && outcome.Status > 0 && outcome.Status < 400 {
@@ -189,6 +185,22 @@ func ProcessAttemptOutcome(
 	return AttemptDecision{Fail: true, IsHostFailure: hostFailure}
 }
 
+// reportBreaker feeds the host circuit breaker for one attempt, except for an
+// upstream marked AlwaysAvailable: such an upstream is pinned open, so the
+// breaker must not be told about it at all. Reporting a success would be
+// harmless, but reporting a failure is not — a host 5xx (or a transport drop)
+// would eventually open the breaker, and AllowUpstream would then have to
+// special-case the gate *and* the health prober would see an open breaker for an
+// upstream that must keep taking traffic. Not reporting keeps the breaker's state
+// honest: it simply never describes this upstream. Failures remain visible in
+// request logs, metrics, and the trace recorder.
+func reportBreaker(breaker BreakerReporter, u *domain.Upstream, ok bool) {
+	if breaker == nil || u == nil || u.AlwaysAvailable {
+		return
+	}
+	breaker.Report(u.Name, ok)
+}
+
 // selectNextKey picks another available key slot when the ring has an available
 // key different from the current one, updating target in place. It reports
 // whether a new slot was selected.
@@ -196,7 +208,11 @@ func selectNextKey(u *domain.Upstream, target *domain.Target) bool {
 	if u.KeyRing == nil || u.KeyRing.SlotCount() == 0 {
 		return false
 	}
-	nextSlot, err := u.KeyRing.SelectKey(time.Now().UnixNano())
+	// An always-available upstream rotates across the ring but ignores the
+	// cooldown/revocation a previous attempt may have recorded — otherwise
+	// rotating away from the answered key and back finds every slot ineligible
+	// and failover stops, even though the ring holds usable credentials.
+	nextSlot, err := SelectKeyForUpstream(u, time.Now().UnixNano())
 	if err != nil || nextSlot == nil {
 		return false
 	}

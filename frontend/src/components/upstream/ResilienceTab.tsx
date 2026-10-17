@@ -1,12 +1,14 @@
 import { Plus, Trash2 } from 'lucide-react';
-import { Field } from '@/components/ui/Controls';
+import { Field, SwitchRow } from '@/components/ui/Controls';
 import type { KeyErrorRuleDTO } from '@/services/schema';
 
 interface ResilienceTabProps {
+  alwaysAvailable: boolean;
   keyErrorAction: 'cooldown' | 'deactivate' | 'delete';
   keyErrorThreshold: number;
   keyCooldownDurationMs: number;
   keyErrorRules: KeyErrorRuleDTO[];
+  onAlwaysAvailableChange: (v: boolean) => void;
   onActionChange: (action: 'cooldown' | 'deactivate' | 'delete') => void;
   onThresholdChange: (threshold: number) => void;
   onCooldownChange: (ms: number) => void;
@@ -14,10 +16,12 @@ interface ResilienceTabProps {
 }
 
 export function ResilienceTab({
+  alwaysAvailable,
   keyErrorAction,
   keyErrorThreshold,
   keyCooldownDurationMs,
   keyErrorRules,
+  onAlwaysAvailableChange,
   onActionChange,
   onThresholdChange,
   onCooldownChange,
@@ -25,6 +29,26 @@ export function ResilienceTab({
 }: ResilienceTabProps) {
   return (
     <div className="stack" style={{ marginTop: 0 }}>
+      <div className="card">
+        <div className="card-header">
+          <h2>Availability</h2>
+        </div>
+        <div className="card-body">
+          <SwitchRow
+            title="Always available"
+            ariaLabel="Always available"
+            checked={alwaysAvailable}
+            onChange={onAlwaysAvailableChange}
+            description="Keep this upstream open despite key errors: a 429 never cools the key, a 401 or 403 never revokes it, no consecutive-error action runs, and the breaker never sees it. Use it when the provider meters your network instead of the key, like the keyless OpenCode Free tier whose 'public' key follows your egress IP. Failures are still logged, traffic still rotates to another key, and RPS and concurrency limits still apply."
+          />
+          {alwaysAvailable ? (
+            <p className="hint" style={{ marginTop: 12 }}>
+              The Layer 1 policy below is inactive while this is on.
+            </p>
+          ) : null}
+        </div>
+      </div>
+
       <div className="card">
         <div className="card-header">
           <h2>Layer 1: Key Error Policy</h2>

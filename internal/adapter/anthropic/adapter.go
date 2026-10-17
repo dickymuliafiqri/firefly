@@ -133,7 +133,7 @@ func (a *Adapter) Forward(ctx context.Context, t *domain.Target, req ports.Forwa
 		}
 
 		if a.breaker != nil {
-			if err := a.breaker.Allow(u.Name); err != nil {
+			if err := upstream.AllowUpstream(a.breaker, u); err != nil {
 				return &openai.ErrUpstream{Status: http.StatusServiceUnavailable, Cause: err}
 			}
 		}

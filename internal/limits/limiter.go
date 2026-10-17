@@ -144,14 +144,30 @@ func (l *Limiter) AcquireCredential(credentialRef string, rps float64, maxConcur
 // counter in the Limiter, preventing transient over-admission during config reloads.
 // The returned ReleaseFunc is guaranteed idempotent via sync.OnceFunc.
 func (l *Limiter) AcquireKeySlot(slot *domain.KeySlot) (ReleaseFunc, error) {
+	return l.acquireKeySlot(slot, false)
+}
+
+// AcquireKeySlotLenient is AcquireKeySlot for an upstream marked
+// AlwaysAvailable (domain.Upstream.AlwaysAvailable): the slot's revocation and
+// cooldown are ignored, because the gateway is not allowed to close that
+// upstream on its own and a penalty recorded earlier would otherwise reject
+// every request here with ErrRateLimited before it is even attempted. RPS and
+// concurrency still apply — they bound the account, they do not judge its health.
+func (l *Limiter) AcquireKeySlotLenient(slot *domain.KeySlot) (ReleaseFunc, error) {
+	return l.acquireKeySlot(slot, true)
+}
+
+func (l *Limiter) acquireKeySlot(slot *domain.KeySlot, lenient bool) (ReleaseFunc, error) {
 	if l == nil || slot == nil {
 		return noopRelease, nil
 	}
-	if slot.Revoked.Load() {
-		return noopRelease, ErrRateLimited
-	}
-	if slot.IsInCooldown(time.Now().UnixNano()) {
-		return noopRelease, ErrRateLimited
+	if !lenient {
+		if slot.Revoked.Load() {
+			return noopRelease, ErrRateLimited
+		}
+		if slot.IsInCooldown(time.Now().UnixNano()) {
+			return noopRelease, ErrRateLimited
+		}
 	}
 
 	// 1. Enforce RPS if configured

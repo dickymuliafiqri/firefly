@@ -68,6 +68,13 @@ export function UpstreamEditorPage() {
   const [modelsLatency, setModelsLatency] = useState<number | null>(null);
 
   // Tab 4 state
+  // undefined = the operator has not expressed a choice: the save payload then
+  // omits the field and the server applies its per-protocol default (on for the
+  // keyless OpenCode free tier — see config.Build). Any value the server sent
+  // for an existing upstream is kept and written back verbatim.
+  const [alwaysAvailable, setAlwaysAvailable] = useState<boolean | undefined>(
+    undefined,
+  );
   const [keyErrorAction, setKeyErrorAction] = useState<
     "cooldown" | "deactivate" | "delete"
   >("cooldown");
@@ -124,6 +131,7 @@ export function UpstreamEditorPage() {
         "cooldown",
     );
     setKeyErrorThreshold(target.key_error_threshold ?? 0);
+    setAlwaysAvailable(target.always_available ?? undefined);
     setKeyCooldownDurationMs(target.key_cooldown_duration_ms ?? 30000);
     setKeyErrorRules(target.key_error_rules ?? []);
 
@@ -357,6 +365,10 @@ export function UpstreamEditorPage() {
       key_error_threshold: keyErrorThreshold,
       key_cooldown_duration_ms: keyCooldownDurationMs,
       key_error_rules: keyErrorRules,
+      // undefined (never touched) is omitted from the request by JSON.stringify,
+      // which is what lets the server keep deciding the default for a keyless
+      // OpenCode free-tier upstream instead of the form pinning it off.
+      always_available: alwaysAvailable,
       enabled: existingTarget ? existingTarget.enabled : true,
     };
 
@@ -385,6 +397,20 @@ export function UpstreamEditorPage() {
     });
     navigate("upstreams");
   }
+
+  // What the switch renders. `alwaysAvailable` is the operator's own choice once
+  // made (or the effective value GET /api/settings reported for a saved
+  // upstream). Until then there is nothing to render but the default the server
+  // will apply, mirrored here for display only: config.Build turns
+  // AlwaysAvailable on for an upstream that has no credential of its own and
+  // speaks OpenCode — its key is the literal string 'public' and its quota
+  // follows the egress IP. The mirror never reaches the payload: an untouched
+  // switch stays `undefined` and the field is omitted, so the server keeps
+  // deciding.
+  const keylessOpenCode =
+    canonicalProtocol(general.protocol) === "opencode" &&
+    keys.every((k) => (k.secret ?? "").trim() === "");
+  const alwaysAvailableEffective = alwaysAvailable ?? keylessOpenCode;
 
   return (
     <div className="page-col" style={{ paddingBottom: "90px" }}>
@@ -512,10 +538,12 @@ export function UpstreamEditorPage() {
 
       {activeTab === "resilience" && (
         <ResilienceTab
+          alwaysAvailable={alwaysAvailableEffective}
           keyErrorAction={keyErrorAction}
           keyErrorThreshold={keyErrorThreshold}
           keyCooldownDurationMs={keyCooldownDurationMs}
           keyErrorRules={keyErrorRules ?? []}
+          onAlwaysAvailableChange={setAlwaysAvailable}
           onActionChange={setKeyErrorAction}
           onThresholdChange={setKeyErrorThreshold}
           onCooldownChange={setKeyCooldownDurationMs}

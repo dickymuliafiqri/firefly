@@ -130,7 +130,7 @@ func (a *Adapter) Forward(ctx context.Context, t *domain.Target, req ports.Forwa
 
 		// Breaker check before network call
 		if a.breaker != nil {
-			if bErr := a.breaker.Allow(u.Name); bErr != nil {
+			if bErr := upstream.AllowUpstream(a.breaker, u); bErr != nil {
 				return bErr
 			}
 		}

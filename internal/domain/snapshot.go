@@ -285,6 +285,27 @@ type TargetCandidate struct {
 // misleading "no upstream available".
 var ErrProviderQuotaExhausted = errors.New("provider quota exhausted for every candidate")
 
+// selectSlotFor picks a credential for up, honoring the AlwaysAvailable
+// exemption: such an upstream keeps receiving traffic even when its only slot
+// still carries a cooldown or a revocation, so the resolver must not report it
+// as exhausted on the strength of a penalty the gateway is not allowed to
+// enforce. Every other upstream keeps the strict health-aware selection.
+func selectSlotFor(up *Upstream, nowNano int64) (*KeySlot, error) {
+	if up.AlwaysAvailable {
+		return up.KeyRing.SelectKeyLenient(nowNano)
+	}
+	return up.KeyRing.SelectKey(nowNano)
+}
+
+// slotAvailableFor is the single-slot counterpart of selectSlotFor, used when a
+// tenant pins an explicit credential ref.
+func slotAvailableFor(up *Upstream, slot *KeySlot, nowNano int64) bool {
+	if up.AlwaysAvailable {
+		return slot.IsAvailableLenient(nowNano)
+	}
+	return slot.IsAvailable(nowNano)
+}
+
 // ResolveTargetWithCandidates is ResolveTargetWithBreaker plus a candidate-level
 // veto. The two filters are kept separate on purpose: canUseUpstream is about
 // host reachability (breaker) and decides the failure kind, while
@@ -327,7 +348,7 @@ func (s *CatalogSnapshot) ResolveTargetWithCandidates(
 			if !ok || up.Disabled {
 				return nil, false, false
 			}
-			if canUseUpstream != nil && !canUseUpstream(up.Name) {
+			if canUseUpstream != nil && !up.AlwaysAvailable && !canUseUpstream(up.Name) {
 				return nil, false, false
 			}
 
@@ -335,7 +356,7 @@ func (s *CatalogSnapshot) ResolveTargetWithCandidates(
 			var slot *KeySlot
 			if cred == "" {
 				if up.KeyRing != nil && up.KeyRing.SlotCount() > 0 {
-					selectedSlot, err := up.KeyRing.SelectKey(nowNano)
+					selectedSlot, err := selectSlotFor(up, nowNano)
 					if err != nil {
 						return nil, true, false
 					}
@@ -346,14 +367,14 @@ func (s *CatalogSnapshot) ResolveTargetWithCandidates(
 				}
 			} else if up.KeyRing != nil {
 				slot = up.KeyRing.SlotByRef(cred)
-				if slot != nil && !slot.IsAvailable(nowNano) {
+				if slot != nil && !slotAvailableFor(up, slot, nowNano) {
 					return nil, true, false
 				}
 			}
 
 			// The account-level veto runs last, on the fully resolved
 			// credential, so it sees the same triple the request would use.
-			if canUseCandidate != nil && !canUseCandidate(TargetCandidate{
+			if canUseCandidate != nil && !up.AlwaysAvailable && !canUseCandidate(TargetCandidate{
 				Upstream:      up.Name,
 				UpstreamModel: entry.UpstreamModel,
 				CredentialRef: cred,
@@ -455,7 +476,7 @@ func (s *CatalogSnapshot) ResolveTargetWithCandidates(
 	if !ok || up.Disabled {
 		return nil, false, &ResolveError{Kind: ResolveUpstreamUnavailable, Model: publicName}
 	}
-	if canUseUpstream != nil && !canUseUpstream(up.Name) {
+	if canUseUpstream != nil && !up.AlwaysAvailable && !canUseUpstream(up.Name) {
 		return nil, false, &ResolveError{Kind: ResolveUpstreamUnavailable, Model: publicName}
 	}
 
@@ -464,7 +485,7 @@ func (s *CatalogSnapshot) ResolveTargetWithCandidates(
 	var slot *KeySlot
 	if cred == "" {
 		if up.KeyRing != nil && up.KeyRing.SlotCount() > 0 {
-			selectedSlot, err := up.KeyRing.SelectKey(nowNano)
+			selectedSlot, err := selectSlotFor(up, nowNano)
 			if err != nil {
 				return nil, false, ErrAllKeysExhausted
 			}
@@ -475,14 +496,14 @@ func (s *CatalogSnapshot) ResolveTargetWithCandidates(
 		}
 	} else if up.KeyRing != nil {
 		slot = up.KeyRing.SlotByRef(cred)
-		if slot != nil && !slot.IsAvailable(nowNano) {
+		if slot != nil && !slotAvailableFor(up, slot, nowNano) {
 			return nil, false, ErrAllKeysExhausted
 		}
 	}
 
 	// A direct model has no second candidate: a quota veto is the final answer,
 	// reported as such instead of as an unavailable upstream.
-	if canUseCandidate != nil && !canUseCandidate(TargetCandidate{
+	if canUseCandidate != nil && !up.AlwaysAvailable && !canUseCandidate(TargetCandidate{
 		Upstream:      up.Name,
 		UpstreamModel: entry.UpstreamModel,
 		CredentialRef: cred,
