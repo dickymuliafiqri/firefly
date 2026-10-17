@@ -56,6 +56,7 @@ func sanitizePublicSettings(src config.SettingsDTO) config.SettingsDTO {
 			KeyErrorAction:        u.KeyErrorAction,
 			KeyCooldownDurationMs: u.KeyCooldownDurationMs,
 			KeyErrorRules:         u.KeyErrorRules,
+			AlwaysAvailable:       u.AlwaysAvailable,
 			Enabled:               u.Enabled,
 			EgressMode:            u.EgressMode,
 			ProxyURL:              u.ProxyURL,
@@ -178,6 +179,27 @@ func (deps RouterDeps) handleGetSettings(w http.ResponseWriter, r *http.Request)
 	// served to settings callers so hand-edited files, Turso rows, and the API can
 	// never surface unpinned endpoints or legacy aliases.
 	config.PinOAuthManagedEndpoints(settings.Upstreams)
+
+	// Report the effective AlwaysAvailable instead of "unset". The setting is
+	// tri-state on purpose (absent = the per-protocol default, decided once in
+	// config.Build, which turns it on for the keyless OpenCode free tier), but a
+	// dashboard cannot render a third state: an absent field would draw the
+	// switch off while the gateway happily keeps the upstream open. The value is
+	// read back from the built snapshot — the same object the request path
+	// consults — so the dashboard shows, and re-saves, what is actually applied
+	// rather than a second copy of the rule.
+	if snap != nil {
+		for i := range settings.Upstreams {
+			u := &settings.Upstreams[i]
+			if u.AlwaysAvailable != nil {
+				continue
+			}
+			if up, ok := snap.Upstream(u.Name); ok && up != nil {
+				v := up.AlwaysAvailable
+				u.AlwaysAvailable = &v
+			}
+		}
+	}
 
 	if !isAdmin {
 		publicSettings := sanitizePublicSettings(settings)

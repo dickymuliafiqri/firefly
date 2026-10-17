@@ -61,6 +61,25 @@ func (kr *KeyRing) SelectKeyAt(nowNano int64) (*domain.KeySlot, error) {
 	return kr.KeyRing.SelectKey(nowNano)
 }
 
+// SelectKeyForUpstream picks a slot for u, honoring the AlwaysAvailable
+// exemption: an upstream the operator pinned open keeps being routed to even
+// when its slots still carry a cooldown or a revocation, so neither the data
+// plane (selectNextKey) nor the health prober may call KeyRing.SelectKey
+// directly and then treat "all keys exhausted" as final for such an upstream.
+// A nil ring returns ErrAllKeysExhausted, exactly like SelectKey.
+func SelectKeyForUpstream(u *domain.Upstream, nowNano int64) (*domain.KeySlot, error) {
+	if u == nil {
+		return nil, ErrAllKeysExhausted
+	}
+	if u.AlwaysAvailable && u.KeyRing != nil {
+		return u.KeyRing.SelectKeyLenient(nowNano)
+	}
+	if u.KeyRing == nil {
+		return nil, ErrAllKeysExhausted
+	}
+	return u.KeyRing.SelectKey(nowNano)
+}
+
 // MarkCooldown sets a cooldown penalty on the slot with the given ref using the wall clock.
 func (kr *KeyRing) MarkCooldown(ref string, duration time.Duration) {
 	kr.MarkCooldownAt(ref, duration, time.Now().UnixNano())

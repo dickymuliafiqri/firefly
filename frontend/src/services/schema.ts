@@ -280,6 +280,13 @@ export interface UpstreamDTO {
   key_cooldown_duration_ms?: number | null;
   key_error_rules?: KeyErrorRuleDTO[] | null;
   probe_model?: string;
+  /**
+   * Pins the upstream open: no key cooldown, no key revocation, no
+   * consecutive-error action, and no circuit breaker for it. Absent means
+   * "let the server decide" (its per-protocol default, on for the keyless
+   * OpenCode free tier); GET /api/settings always reports the effective value.
+   */
+  always_available?: boolean | null;
   egress_mode?: 'direct' | 'warp' | 'proxy' | string;
   proxy_url?: string;
   enabled?: boolean | null;

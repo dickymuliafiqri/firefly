@@ -223,11 +223,11 @@ func (h *HealthChecker) probeOne(ctx context.Context, u *domain.Upstream) {
 	// into a sustained false outage.
 	defer supervisor.Guard("upstream.health-probe")()
 
-	if !isNil(h.breakers) {
-		if err := h.breakers.Allow(u.Name); err != nil && errors.Is(err, ErrCircuitOpen) {
-			// Breaker is open and cooldown has not elapsed yet; skip probing until cooldown elapses
-			return
-		}
+	if err := AllowUpstream(h.breakers, u); err != nil && errors.Is(err, ErrCircuitOpen) {
+		// Breaker is open and cooldown has not elapsed yet; skip probing until cooldown elapses.
+		// AlwaysAvailable upstreams are exempt (AllowUpstream), so they keep being
+		// probed even if an open breaker was recorded before the flag was enabled.
+		return
 	}
 
 	// Antigravity (Google Cloud Code) serves exactly one verb,
@@ -247,7 +247,7 @@ func (h *HealthChecker) probeOne(ctx context.Context, u *domain.Upstream) {
 	var activeSlot *domain.KeySlot
 
 	if u.KeyRing != nil && u.KeyRing.SlotCount() > 0 {
-		activeSlot, _ = u.KeyRing.SelectKey(time.Now().UnixNano())
+		activeSlot, _ = SelectKeyForUpstream(u, time.Now().UnixNano())
 		if activeSlot == nil {
 			activeSlot = u.KeyRing.PrimarySlot()
 			if activeSlot != nil && activeSlot.Revoked.Load() {
@@ -395,7 +395,7 @@ func (h *HealthChecker) probeOne(ctx context.Context, u *domain.Upstream) {
 	}
 
 	if err != nil {
-		h.reportOutcome(u.Name, false, err, 0)
+		h.reportOutcome(u, false, err, 0)
 		return
 	}
 
@@ -442,7 +442,7 @@ func (h *HealthChecker) probeOne(ctx context.Context, u *domain.Upstream) {
 		if canProbeModel && h.probeHostFallback(ctx, client, u, trimmedBase, isOpenCode, keySecret) {
 			return
 		}
-		h.reportOutcome(u.Name, false, err, 0)
+		h.reportOutcome(u, false, err, 0)
 		return
 	}
 
@@ -468,7 +468,7 @@ func (h *HealthChecker) probeOne(ctx context.Context, u *domain.Upstream) {
 			return
 		}
 	}
-	h.reportOutcome(u.Name, isHealthy, nil, resp.StatusCode)
+	h.reportOutcome(u, isHealthy, nil, resp.StatusCode)
 }
 
 // handleProbeKeyOutcome feeds a background-probe result for the selected key
@@ -481,9 +481,14 @@ func (h *HealthChecker) handleProbeKeyOutcome(
 	statusCode int,
 	retryAfterHeader string,
 ) {
-	if u == nil || slot == nil || isFreeOpenCode {
+	if u == nil || slot == nil || isFreeOpenCode || u.AlwaysAvailable {
 		return
 	}
+	// The free-tier exemption above is a protocol-level special case; this is the
+	// operator-level one, and it is deliberately broader: an AlwaysAvailable
+	// upstream is never cooled down, revoked, or thresholded from the probe path
+	// either, so marking the slot revoked here (as the 401/403 branch below does)
+	// cannot close an upstream the operator pinned open.
 	if slot.Ref == "opencode-free-public" || strings.EqualFold(slot.Secret, "public") {
 		return
 	}
@@ -556,14 +561,21 @@ func (h *HealthChecker) probeHostFallback(
 
 	if resp.StatusCode < 500 {
 		h.logger.Debug("upstream host alive via fallback probe despite model probe failure", "upstream", u.Name, "status", resp.StatusCode)
-		h.reportOutcome(u.Name, true, nil, resp.StatusCode)
+		h.reportOutcome(u, true, nil, resp.StatusCode)
 		return true
 	}
 	return false
 }
 
-func (h *HealthChecker) reportOutcome(name string, ok bool, err error, status int) {
-	if !isNil(h.breakers) {
+func (h *HealthChecker) reportOutcome(u *domain.Upstream, ok bool, err error, status int) {
+	if u == nil {
+		return
+	}
+	name := u.Name
+	// AlwaysAvailable upstreams are never reported to the breaker: they are
+	// pinned open, so a probe failure must not be able to trip the very gate
+	// that keeps them routable. The probe result is still logged and emitted.
+	if !isNil(h.breakers) && !u.AlwaysAvailable {
 		h.breakers.Report(name, ok)
 	}
 	if !ok {

@@ -10,6 +10,16 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/ports"
 )
 
+// isKeyStatus reports whether a status code describes the credential itself
+// (quota/auth) as opposed to the host or the client. Only these are Layer 1
+// (key) events; see HandleKeyOutcome.
+func isKeyStatus(statusCode int) bool {
+	return statusCode == http.StatusTooManyRequests ||
+		statusCode == http.StatusUnauthorized ||
+		statusCode == http.StatusPaymentRequired ||
+		statusCode == http.StatusForbidden
+}
+
 // HandleKeyOutcome evaluates a key attempt's status code against the upstream's
 // key error policy, tracking consecutive errors atomically, applying cooldown or
 // revocation/deletion, and notifying database sinks if configured.
@@ -40,6 +50,28 @@ func HandleKeyOutcome(
 	if u == nil || slot == nil {
 		return false, false
 	}
+
+	// AlwaysAvailable (domain.Upstream.AlwaysAvailable): the operator has
+	// declared that this upstream must never be closed by the gateway, because
+	// the credential is not what is being limited — an OpenCode Free key is a
+	// literal "public" whose quota is keyed to the egress IP, so a 429 describes
+	// the network, not the credential, and cooling the only slot down converts a
+	// retryable upstream answer into a local "all upstream credentials
+	// exhausted" for the whole cooldown window.
+	//
+	// The counter is still reset on anything that is not a credential error (so a
+	// stale count cannot survive), but no cooldown, revocation, or threshold
+	// action (deactivate/delete) is applied. Rotation still happens:
+	// failoverEligible stays true for credential errors so a ring with several
+	// credentials keeps moving traffic off the answered one.
+	if u.AlwaysAvailable {
+		if !isKeyStatus(statusCode) {
+			slot.ConsecutiveErrors.Store(0)
+			return false, false
+		}
+		return false, true
+	}
+
 	emitter := firstEmitter(emitters)
 	deduper := sharedKeyDeduper
 
@@ -49,10 +81,7 @@ func HandleKeyOutcome(
 	// key's fault and MUST reset the consecutive-error counter. Resetting on any
 	// non-key-error is what keeps transient 429s from slowly accumulating to the
 	// deactivate/delete threshold on a perfectly healthy key.
-	isKeyError := (statusCode == http.StatusTooManyRequests ||
-		statusCode == http.StatusUnauthorized ||
-		statusCode == http.StatusPaymentRequired ||
-		statusCode == http.StatusForbidden)
+	isKeyError := isKeyStatus(statusCode)
 
 	if !isKeyError {
 		slot.ConsecutiveErrors.Store(0)

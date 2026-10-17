@@ -5,6 +5,16 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.44.17] - 2026-10-17
+
+### Added
+
+- **An upstream can be pinned always-available so a credential error never closes it (`internal/domain/domain.go`, `internal/domain/snapshot.go`, `internal/transport/upstream/policy.go`, `internal/transport/upstream/breaker.go`, `internal/transport/upstream/health.go`, `internal/server/handlers.go`, `frontend/src/components/upstream/ResilienceTab.tsx`)**: OpenCode's free tier authenticates with the literal key `public` and its allowance follows the caller's egress IP, yet a single `429` from it put that key into cooldown through the same Layer 1 path every paid key uses, so the next request failed locally with `429 all upstream credentials exhausted; retry shortly` while the upstream was perfectly reachable. The upstream field `always_available` (dashboard: upstream editor → **Resilience** → **Always available**) pins an upstream open.
+  - **What the pin switches off.** `HandleKeyOutcome` returns before any `429` cooldown, `401`/`402`/`403` revocation, or consecutive-error threshold/rule action; `Upstream.AlwaysAvailable` makes the resolver ignore both the circuit-breaker veto and the provider-quota veto; `Breaker.Report` is never called for the upstream (the health prober's `reportOutcome` skips it too), so its breaker can neither open nor be consulted by `AllowUpstream`; and `Limiter.AcquireKeySlotLenient` drops the second revoked-or-cooldown check for a key the resolver already chose deliberately.
+  - **What still applies.** Key rotation and the per-credential RPS and `MaxConcurrent` ceiling are untouched: they are the operator's guard, not a health judgement, so a pinned upstream with several keys still spreads across them. Failures remain in request logs, metrics, and the trace recorder.
+  - **The default follows the credential, not the protocol name.** `config.Build` defaults the field on only for the keyless OpenCode free slot it auto-provisions (`opencode-free-public`, secret `public`) and off everywhere else, and an explicit operator value always wins, so OpenCode Go and every other protocol keep today's behaviour unless opted in.
+  - **Stored tri-state so a default is never mistaken for a decision.** `upstreams.always_available` is a nullable column (NULL = let `config.Build` decide, `0` = an explicit keep-closing-it), so loading an existing database does not silently flip a paid upstream into pinned mode; `GET /api/settings` reports the effective resolved value.
+
 ## [1.44.16] - 2026-10-17
 
 ### Added

@@ -308,6 +308,7 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 		       COALESCE(key_cooldown_duration_ms, 300000),
 		       COALESCE(key_error_rules, '[]'),
 		       COALESCE(probe_model, ''),
+		       always_available,
 		       COALESCE(egress_mode, 'direct'),
 		       COALESCE(proxy_url, ''),
 		       enabled
@@ -345,6 +346,7 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 			keyErrorThreshold, keyCooldownMs              sql.NullInt64
 			keyErrorAction, probeModel                    sql.NullString
 			keyErrorRulesJSON                             sql.NullString
+			alwaysAvailable                               sql.NullInt64
 			egressMode, proxyURL                          sql.NullString
 		)
 
@@ -354,6 +356,7 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 			&maxIdleConns, &maxConns, &extraHeadersJSON, &allowInsecure,
 			&credRPS, &credMaxConcur,
 			&keyErrorThreshold, &keyErrorAction, &keyCooldownMs, &keyErrorRulesJSON, &probeModel,
+			&alwaysAvailable,
 			&egressMode, &proxyURL,
 			&enabled,
 		)
@@ -382,8 +385,8 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 			cRPS      *float64
 			cMaxC     *int
 			pID       *int64
-			isAllowIn = allowInsecure != 0
-			isEn      = enabled != 0
+			isAllowIn      = allowInsecure != 0
+			isEn           = enabled != 0
 		)
 
 		if timeoutMs.Valid {
@@ -422,6 +425,15 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 		allBaseURLs := []string{baseURL}
 		if len(fallbacks) > 0 {
 			allBaseURLs = append(allBaseURLs, fallbacks...)
+		}
+
+		// NULL means "unset" and lets the builder apply its per-protocol default
+		// (on for the keyless OpenCode free tier); 0 is an explicit "off" from the
+		// dashboard, which must not be re-defaulted back to on.
+		var alwaysAvailablePtr *bool
+		if alwaysAvailable.Valid {
+			v := alwaysAvailable.Int64 != 0
+			alwaysAvailablePtr = &v
 		}
 
 		var (
@@ -471,6 +483,7 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 			KeyCooldownDurationMs:   kCoolMs,
 			KeyErrorRules:           keyErrRules,
 			ProbeModel:              probeModel.String,
+			AlwaysAvailable:         alwaysAvailablePtr,
 			EgressMode:              egressMode.String,
 			ProxyURL:                proxyURL.String,
 		}
@@ -945,6 +958,16 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 		if u.AllowInsecure != nil && *u.AllowInsecure {
 			allowInsecureInt = 1
 		}
+		// NULL when the payload never mentioned the setting, so the tri-state
+		// survives a round trip: unset -> protocol default, false/true -> explicit.
+		var alwaysAvailableInt any
+		if u.AlwaysAvailable != nil {
+			if *u.AlwaysAvailable {
+				alwaysAvailableInt = 1
+			} else {
+				alwaysAvailableInt = 0
+			}
+		}
 
 		keyErrorThresholdVal := 0
 		if u.KeyErrorThreshold != nil {
@@ -983,6 +1006,7 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 					key_error_threshold = ?, key_error_action = ?, key_cooldown_duration_ms = ?,
 					key_error_rules = ?,
 					probe_model = ?,
+					always_available = ?,
 					egress_mode = ?, proxy_url = ?,
 					enabled = ?, version = version + 1, updated_at = ?
 				WHERE id = ?
@@ -993,6 +1017,7 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 				keyErrorThresholdVal, keyErrorActionVal, keyCooldownMsVal,
 				keyErrorRulesVal,
 				u.ProbeModel,
+				alwaysAvailableInt,
 				egressModeVal, proxyURLVal,
 				enabledInt, now, existingID)
 			if err != nil {
@@ -1007,9 +1032,9 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 					allow_insecure, credential_rps, credential_max_concur,
 					key_error_threshold, key_error_action, key_cooldown_duration_ms,
 					key_error_rules,
-					probe_model, egress_mode, proxy_url,
+					probe_model, always_available, egress_mode, proxy_url,
 					enabled, version, created_at, updated_at
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
 			`, u.Name, u.Protocol, u.BaseURL, fallbacksJSON, u.KeyStrategy,
 				u.ProviderID, u.CredentialRef, u.TimeoutMs, u.IdleTimeoutMs, u.StreamIdleTimeoutMs,
 				u.MaxIdleConnsPerHost, u.MaxConnsPerHost, headersJSON,
@@ -1017,6 +1042,7 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 				keyErrorThresholdVal, keyErrorActionVal, keyCooldownMsVal,
 				keyErrorRulesVal,
 				u.ProbeModel,
+				alwaysAvailableInt,
 				egressModeVal, proxyURLVal,
 				enabledInt, now, now)
 			if err != nil {

@@ -636,6 +636,15 @@ func translateUpstream(i int, d UpstreamDTO, envLookup func(string) (string, boo
 
 	// Keyless Free tier auto-provisioning: automatically injects a "opencode-free-public"
 	// key slot (KeySlot.Secret = "public") for OpenCode protocol when no credentials are provided.
+	//
+	// The keyless tier is also the case where AlwaysAvailable must default to ON:
+	// the credential is the literal string "public" and the provider meters the
+	// egress IP, so a 429 describes the network rather than the key. Letting that
+	// 429 cool the only slot down made the gateway answer "all upstream
+	// credentials exhausted" for the whole cooldown window instead of forwarding
+	// the retryable answer. An explicit `always_available` in the payload still
+	// wins (see pickBool below).
+	freePublicSlot := false
 	if (domain.Protocol(proto) == domain.ProtocolOpenCode || domain.Protocol(proto) == domain.ProtocolOpenCodeGo) && len(slots) == 0 {
 		slots = append(slots, &domain.KeySlot{
 			Ref:           "opencode-free-public",
@@ -643,6 +652,7 @@ func translateUpstream(i int, d UpstreamDTO, envLookup func(string) (string, boo
 			RPS:           pickFloat(d.CredentialRPS, 0),
 			MaxConcurrent: pickInt(d.CredentialMaxConcurrent, 0),
 		})
+		freePublicSlot = true
 	}
 
 	// Note: an upstream with no credential material at all is allowed. It is
@@ -771,6 +781,7 @@ func translateUpstream(i int, d UpstreamDTO, envLookup func(string) (string, boo
 		KeyCooldownDurationMs:   pickInt(d.KeyCooldownDurationMs, 300000),
 		KeyErrorRules:           keyErrorRules,
 		ProbeModel:              strings.TrimSpace(d.ProbeModel),
+		AlwaysAvailable:         pickBool(d.AlwaysAvailable, freePublicSlot),
 		EgressMode:              egressMode,
 		ProxyURL:                proxyURL,
 	}, nil

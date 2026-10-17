@@ -189,7 +189,7 @@ func (a *Adapter) Forward(ctx context.Context, t *domain.Target, req ports.Forwa
 		// Breaker gate: fail fast when the upstream is known-bad. A nil breaker
 		// (mis-wire) means "always allow" rather than a nil-deref panic.
 		if a.breaker != nil {
-			if err := a.breaker.Allow(u.Name); err != nil {
+			if err := upstream.AllowUpstream(a.breaker, u); err != nil {
 				return &ErrUpstream{Status: http.StatusServiceUnavailable, Cause: err}
 			}
 		}

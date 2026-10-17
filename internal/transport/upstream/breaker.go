@@ -5,6 +5,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/dickymuliafiqri/firefly/internal/domain"
 )
 
 // ErrCircuitOpen is returned when the breaker for an upstream is open and the
@@ -256,6 +258,31 @@ func (r *BreakerRegistry) For(name string) *Breaker {
 
 // Allow satisfies openai.BreakerLookup by delegating to the named breaker.
 func (r *BreakerRegistry) Allow(name string) error { return r.For(name).Allow() }
+
+// UpstreamGate is the subset of the circuit breaker an adapter needs before it
+// attempts a request: the registry, or any equivalent injected test double.
+type UpstreamGate interface {
+	Allow(name string) error
+}
+
+// AllowUpstream is the per-attempt circuit-breaker gate every adapter must use
+// instead of calling Allow directly. An upstream marked AlwaysAvailable is never
+// gated: the breaker exists to stop traffic to a host the gateway has concluded
+// is down, whereas this upstream is one the operator has declared must keep
+// receiving traffic, so an open breaker — left behind by an earlier state, or by
+// the health prober running before the operator enabled the flag — must not be
+// able to refuse the request. Because reportBreaker never reports these
+// upstreams, the gate is normally already closed; the exemption guarantees the
+// outcome instead of relying on that invariant.
+func AllowUpstream(gate UpstreamGate, u *domain.Upstream) error {
+	if u == nil || u.AlwaysAvailable {
+		return nil
+	}
+	if isNil(gate) {
+		return nil
+	}
+	return gate.Allow(u.Name)
+}
 
 // Report satisfies openai.BreakerLookup.
 func (r *BreakerRegistry) Report(name string, ok bool) { r.For(name).Report(ok) }

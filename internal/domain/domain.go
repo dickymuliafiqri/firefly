@@ -164,6 +164,20 @@ func (ks *KeySlot) IsAvailable(nowNano int64) bool {
 	return true
 }
 
+// IsAvailableLenient is IsAvailable for an upstream marked AlwaysAvailable: the
+// credential-health gates (revocation, cooldown) are ignored, because the
+// gateway is not allowed to close that upstream on its own. The concurrency
+// ceiling is still honored — it is the operator's own guard against
+// over-subscribing the account, not a judgement about the upstream's health, and
+// ignoring it would turn every request into a burst the provider can only answer
+// with a rate limit.
+func (ks *KeySlot) IsAvailableLenient(nowNano int64) bool {
+	if ks.MaxConcurrent > 0 && ks.Inflight.Load() >= int64(ks.MaxConcurrent) {
+		return false
+	}
+	return true
+}
+
 // keyRingState stores the immutable generation state of slots and ref lookup
 // so concurrent readers never lock and never race with dynamic slot removal.
 type keyRingState struct {
@@ -319,6 +333,22 @@ func (kr *KeyRing) RemoveSlot(ref string) bool {
 // SelectKey picks an available KeySlot according to the configured Strategy.
 // It is lock-free and allocation-free on the happy path.
 func (kr *KeyRing) SelectKey(nowNano int64) (*KeySlot, error) {
+	return kr.selectKey(nowNano, false)
+}
+
+// SelectKeyLenient picks a KeySlot for an upstream marked AlwaysAvailable,
+// ignoring cooldown and revocation (see KeySlot.IsAvailableLenient). It exists
+// so an upstream that must stay open cannot be reported as exhausted because a
+// slot still carries a penalty recorded before the upstream was marked — the
+// gateway would otherwise refuse to send a request the operator explicitly
+// asked it to keep sending.
+func (kr *KeyRing) SelectKeyLenient(nowNano int64) (*KeySlot, error) {
+	return kr.selectKey(nowNano, true)
+}
+
+// selectKey is the shared implementation behind SelectKey/SelectKeyLenient;
+// lenient swaps the slot-eligibility predicate.
+func (kr *KeyRing) selectKey(nowNano int64, lenient bool) (*KeySlot, error) {
 	if kr == nil {
 		return nil, ErrAllKeysExhausted
 	}
@@ -327,22 +357,31 @@ func (kr *KeyRing) SelectKey(nowNano int64) (*KeySlot, error) {
 		return nil, ErrAllKeysExhausted
 	}
 
+	available := isAvailableStrict
+	if lenient {
+		available = isAvailableLenient
+	}
+
 	switch kr.Strategy {
 	case KeyStrategyLeastInflight:
-		return kr.selectLeastInflight(st, nowNano)
+		return kr.selectLeastInflight(st, nowNano, available)
 	default:
-		return kr.selectRoundRobin(st, nowNano)
+		return kr.selectRoundRobin(st, nowNano, available)
 	}
 }
 
-func (kr *KeyRing) selectRoundRobin(st *keyRingState, nowNano int64) (*KeySlot, error) {
+func isAvailableStrict(slot *KeySlot, nowNano int64) bool { return slot.IsAvailable(nowNano) }
+
+func isAvailableLenient(slot *KeySlot, nowNano int64) bool { return slot.IsAvailableLenient(nowNano) }
+
+func (kr *KeyRing) selectRoundRobin(st *keyRingState, nowNano int64, available func(*KeySlot, int64) bool) (*KeySlot, error) {
 	n := len(st.slots)
 	if n == 0 {
 		return nil, ErrAllKeysExhausted
 	}
 	if n == 1 {
 		slot := st.slots[0]
-		if slot != nil && slot.IsAvailable(nowNano) {
+		if slot != nil && available(slot, nowNano) {
 			return slot, nil
 		}
 		return nil, ErrAllKeysExhausted
@@ -352,21 +391,21 @@ func (kr *KeyRing) selectRoundRobin(st *keyRingState, nowNano int64) (*KeySlot, 
 	for i := 0; i < n; i++ {
 		idx := (start + uint64(i)) % uint64(n)
 		slot := st.slots[idx]
-		if slot != nil && slot.IsAvailable(nowNano) {
+		if slot != nil && available(slot, nowNano) {
 			return slot, nil
 		}
 	}
 	return nil, ErrAllKeysExhausted
 }
 
-func (kr *KeyRing) selectLeastInflight(st *keyRingState, nowNano int64) (*KeySlot, error) {
+func (kr *KeyRing) selectLeastInflight(st *keyRingState, nowNano int64, available func(*KeySlot, int64) bool) (*KeySlot, error) {
 	n := len(st.slots)
 	if n == 0 {
 		return nil, ErrAllKeysExhausted
 	}
 	if n == 1 {
 		slot := st.slots[0]
-		if slot != nil && slot.IsAvailable(nowNano) {
+		if slot != nil && available(slot, nowNano) {
 			return slot, nil
 		}
 		return nil, ErrAllKeysExhausted
@@ -379,7 +418,7 @@ func (kr *KeyRing) selectLeastInflight(st *keyRingState, nowNano int64) (*KeySlo
 	for i := 0; i < n; i++ {
 		idx := (start + uint64(i)) % uint64(n)
 		slot := st.slots[idx]
-		if slot == nil || !slot.IsAvailable(nowNano) {
+		if slot == nil || !available(slot, nowNano) {
 			continue
 		}
 		inflight := slot.Inflight.Load()
@@ -541,6 +580,22 @@ type Upstream struct {
 	CredentialMaxConcurrent int
 	Disabled                bool
 	Inflight                atomic.Int64
+
+	// AlwaysAvailable pins this upstream open: the gateway never closes it on
+	// its own. It exists for upstreams whose limit is not the credential but the
+	// caller's network identity — an OpenCode Free key is a literal "public" and
+	// its quota is keyed to the egress IP, so a 429 says nothing about the key
+	// and a cooldown only guarantees the next request fails locally instead of
+	// being answered. When set, four local closers are disabled for this
+	// upstream:
+	//   - no key cooldown on 429 and no revocation on 401/402/403 (Layer 1),
+	//   - no consecutive-error threshold action (deactivate/delete/cooldown),
+	//   - no circuit-breaker reporting, so the host breaker can never open it
+	//     (Layer 2),
+	//   - no provider-quota veto during routing.
+	// Key rotation across a ring with several credentials still happens, and the
+	// per-credential concurrency ceiling still applies.
+	AlwaysAvailable bool
 
 	// KeyErrorThreshold is the number of consecutive 4xx/quota errors before
 	// triggering KeyErrorAction on an individual key slot. 0 = disabled.
