@@ -296,7 +296,7 @@ func buildEndpointURL(u *domain.Upstream, isResponses, isMessages, isFree bool) 
 // retryWithoutReasoning re-sends a refused request without its reasoning fields
 // and returns the replacement response. It returns the original response — with
 // its body restored, since the refusal had to be read to be recognized — when
-// the answer was not the `[invalid_reasoning]` refusal, the request carried no
+// the answer was not a reasoning refusal, the request carried no
 // reasoning to drop, or the retry itself failed; the caller then reports exactly
 // what the upstream said.
 func (a *Adapter) retryWithoutReasoning(ctx context.Context, u *domain.Upstream, orig *http.Request, resp *http.Response, body []byte) *http.Response {
@@ -446,12 +446,15 @@ func (a *Adapter) attempt(ctx context.Context, u *domain.Upstream, req ports.For
 		return attemptResult{err: err}
 	}
 
-	// The free tier validates the reasoning field against a schema its own
-	// backend does not always honour: a request accepted on one attempt comes
-	// back as `400 [invalid_reasoning]` on the next, and the client has no way to
-	// act on that — its thinking level is a hint, not a requirement. Re-send once
-	// without the reasoning fields so the answer arrives either way. A 400 is
-	// refused before generation, so the second attempt costs no tokens.
+	// The reasoning field is refused in two different ways, and the client can act
+	// on neither. The free tier validates it against a schema its own backend does
+	// not always honour: a request accepted on one attempt comes back as
+	// `400 [invalid_reasoning]` on the next. A model whose schema has no reasoning
+	// member at all (`glm-*`) rejects it outright with `[unknown_parameter] ...
+	// json: unknown field "reasoning"`. In both cases the thinking level is a hint,
+	// not a requirement, so the request is re-sent once without the reasoning
+	// fields and the answer arrives either way. A 400 is refused before
+	// generation, so the second attempt costs no tokens.
 	if resp.StatusCode == http.StatusBadRequest {
 		resp = a.retryWithoutReasoning(ctx, u, httpReq, resp, outboundBody)
 	}

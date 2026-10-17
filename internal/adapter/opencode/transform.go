@@ -198,10 +198,31 @@ func StripReasoning(body []byte) ([]byte, bool) {
 // the marker is what is matched.
 const invalidReasoningMarker = "invalid_reasoning"
 
-// IsInvalidReasoningError reports whether an upstream error body is the
-// `[invalid_reasoning]` refusal of the reasoning field.
+// unknownParameterMarker is the token a backend puts in a 400 body when its JSON
+// decoder meets a field the target model does not define. Not every model behind
+// the gateway declares a reasoning member — `glm-*` on the free tier does not —
+// and those answer the sanitized request with
+//
+//	[unknown_parameter] invalid request body: json: unknown field "reasoning"
+//
+// instead of validating the value, so the refusal has to be recognized in this
+// second dialect too.
+const unknownParameterMarker = "unknown_parameter"
+
+// IsInvalidReasoningError reports whether an upstream error body is a refusal of
+// the reasoning field. Two dialects say it: OpenCode's `[invalid_reasoning]`
+// validation error and an `[unknown_parameter]` rejection naming `reasoning`.
+// Both mean the client asked for a thinking level this model cannot express, so
+// both are answered by the retry that drops the field and asks again.
 func IsInvalidReasoningError(body []byte) bool {
-	return bytes.Contains(body, []byte(invalidReasoningMarker))
+	if bytes.Contains(body, []byte(invalidReasoningMarker)) {
+		return true
+	}
+	// Both halves are required: an unknown parameter on any other field — or a
+	// complaint that does not name reasoning — is the client's own mistake and
+	// must keep its error rather than have the request silently re-sent.
+	return bytes.Contains(body, []byte(unknownParameterMarker)) &&
+		bytes.Contains(body, []byte(`"reasoning"`))
 }
 
 // normalizeEffort lowercases an effort value and maps the aliases callers derive

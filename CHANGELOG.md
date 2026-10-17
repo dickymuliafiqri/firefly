@@ -5,6 +5,23 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.44.16] - 2026-10-17
+
+### Added
+
+- **The Windows installer covers the whole lifecycle, not just a first install (`install.ps1`, `README.md`)**: the script could only install, so replacing an existing release meant re-running it blind and removing one meant hand-deleting a scheduled task and a directory. `-Action install|update|uninstall` now decides what it does, and an interactive shell with no `-Action` gets a menu — Install, Update, Uninstall — defaulting to `update` when a release is already there. `update` stops the autostart entry and the running gateway, downloads the newest release, replaces both binaries and **keeps the configuration directory**; an update that finds nothing installed falls back to a fresh install. Non-interactive runs (CI, piped input such as `irm … | iex`) never wait on a prompt and default to `install`, so the documented one-liner still needs no flags.
+  - **Installing over a running gateway no longer half-succeeds.** Windows refuses to replace a running `.exe`, so `install` stops the autostart entry and the gateway first — reporting the version it is replacing — and the summary banner distinguishes `installed` from `updated` so the operator can tell which of the two happened.
+  - **The choice survives elevation and the per-user path is not collateral damage.** `-Uninstall` stays as a shorthand for `-Action uninstall` (a conflicting `-Uninstall -Action install` is rejected before anything runs), the menu decision is carried across the UAC re-launch, the scheduled task is only stopped for machine scope so a per-user update cannot kill a machine-wide install, and a user-scope start no longer spawns a second gateway when one is already running.
+
+### Changed
+
+- **`install.cmd` is gone; PowerShell is the only bootstrap (`install.ps1`, `install.cmd`, `README.md`)**: the batch wrapper existed only to forward its arguments to `install.ps1`, so every documented command was `curl … -o install.cmd && .\install.cmd` to reach a second script that had to sit next to it. The README now documents `irm https://raw.githubusercontent.com/dickymuliafiqri/firefly/main/install.ps1 | iex` and the `-Action` / scope switches directly.
+
+### Fixed
+
+- **A model that does not declare a `reasoning` member no longer fails the request (`internal/adapter/opencode`)**: `glm-5.3-flash-free` answered the free-tier path with `400 [unknown_parameter] invalid request body: json: unknown field "reasoning"`. `NormalizeReasoning` had already folded the client's `reasoning_effort` into the `reasoning: {…}` object OpenCode validates, but the only refusal `IsInvalidReasoningError` recognized was the validator's `[invalid_reasoning]` message, so this one matched nothing and reached the client verbatim — no answer at all, for a request whose only offence was a thinking level the model cannot express.
+  - **Both dialects of the refusal now trigger the existing one-shot retry.** `IsInvalidReasoningError` matches `[invalid_reasoning]` as before, and now also an `[unknown_parameter]` rejection that names `reasoning`; the request is re-sent once through `StripReasoning` with `reasoning`/`reasoning_effort` removed. Both halves of that second match are required, so an unknown parameter on any other field (`temperature`, `stream_options`, …) still surfaces its own error instead of being silently re-sent, and every other `400` is refused untouched as before. A refusal happens before generation, so the second attempt bills nothing — the cost is one extra round trip, not one extra completion.
+
 ## [1.44.15] - 2026-10-16
 
 ### Added
