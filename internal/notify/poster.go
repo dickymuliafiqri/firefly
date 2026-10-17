@@ -135,14 +135,17 @@ func Sign(secret string, body []byte, now time.Time) string {
 	return fmt.Sprintf("t=%d,v1=%s", ts, hex.EncodeToString(mac.Sum(nil)))
 }
 
-// redactURL keeps the scheme and host for diagnostics and drops everything
-// after the path, because webhook URLs routinely embed a token.
+// redactURL keeps the scheme and host for diagnostics and drops the path,
+// query and fragment, because a webhook URL routinely embeds its credential in
+// the path: Slack is /services/<team>/<bot>/<token>, Discord is
+// /api/webhooks/<id>/<token>, Telegram is /bot<token>/sendMessage. Keeping the
+// path leaked a usable credential into the log on every failed delivery.
 func redactURL(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
 		return "[unparseable-url]"
 	}
-	return u.Scheme + "://" + u.Host + u.Path
+	return u.Scheme + "://" + u.Host
 }
 
 // Post renders the event for the channel's format and delivers it, retrying

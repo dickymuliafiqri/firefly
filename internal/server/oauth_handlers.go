@@ -3,12 +3,14 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"html"
 	"net"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
+	"github.com/dickymuliafiqri/firefly/internal/textx"
 )
 
 // ProviderInfoDTO describes an available OAuth provider for frontend display.
@@ -167,11 +169,38 @@ func (deps RouterDeps) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reque
 	})
 }
 
+// oauthErrorExcerptBytes bounds a provider error echoed back to an authenticated
+// caller. A token endpoint's failure body can be a whole HTML page, and the
+// message is stored by whoever reads it.
+const oauthErrorExcerptBytes = 300
+
+// writeOAuthHTML renders the small result page the provider's browser redirect
+// lands on. Both fields are escaped: the page is served from the gateway's own
+// origin in the operator's browser, and the values can originate from a provider
+// response.
+func writeOAuthHTML(w http.ResponseWriter, status int, title, message string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	_, _ = fmt.Fprintf(w, "<html><body><h2>%s</h2><p>%s</p></body></html>",
+		html.EscapeString(title), html.EscapeString(message))
+}
+
 func (deps RouterDeps) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	if deps.OAuthManager == nil {
 		openai.WriteError(w, http.StatusServiceUnavailable, openai.TypeAPI, "oauth subsystem is not configured")
+		return
+	}
+
+	// The browser redirect the provider performs cannot carry an Authorization
+	// header, so that single path stays reachable on capability alone: a valid
+	// provider code plus a live session (ExchangeCallback rejects an unknown
+	// state). Every programmatic caller is the dashboard and does carry the admin
+	// token, so it must present one.
+	wantsHTML := r.Method == http.MethodGet && !strings.Contains(r.Header.Get("Accept"), "application/json")
+	if !wantsHTML && !deps.authorizeAdmin(r) {
+		openai.WriteError(w, http.StatusUnauthorized, openai.TypeAuthentication, "unauthorized")
 		return
 	}
 
@@ -194,10 +223,8 @@ func (deps RouterDeps) handleOAuthCallback(w http.ResponseWriter, r *http.Reques
 	}
 
 	if code == "" {
-		if r.Method == http.MethodGet && !strings.Contains(r.Header.Get("Accept"), "application/json") {
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = fmt.Fprintf(w, "<html><body><h2>OAuth Connection Failed</h2><p>Missing authorization code</p></body></html>")
+		if wantsHTML {
+			writeOAuthHTML(w, http.StatusBadRequest, "OAuth Connection Failed", "Missing authorization code")
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -207,19 +234,25 @@ func (deps RouterDeps) handleOAuthCallback(w http.ResponseWriter, r *http.Reques
 
 	conn, err := deps.OAuthManager.ExchangeCallback(r.Context(), state, code)
 	if err != nil {
-		if r.Method == http.MethodGet && !strings.Contains(r.Header.Get("Accept"), "application/json") {
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = fmt.Fprintf(w, "<html><body><h2>OAuth Connection Failed</h2><p>%s</p></body></html>", err.Error())
+		if wantsHTML {
+			// The reason is deliberately not rendered: ExchangeCallback's cause can
+			// carry the token endpoint's own response body, and this page is rendered
+			// unauthenticated on the gateway's origin. The operator reads the reason
+			// from the server log.
+			writeOAuthHTML(w, http.StatusBadRequest, "OAuth Connection Failed",
+				"The authorization code could not be exchanged. See the gateway log for the provider's response.")
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		openai.WriteError(w, http.StatusBadRequest, openai.TypeInvalidRequest, "oauth exchange failed: "+err.Error())
+		openai.WriteError(w, http.StatusBadRequest, openai.TypeInvalidRequest,
+			"oauth exchange failed: "+textx.Excerpt([]byte(err.Error()), oauthErrorExcerptBytes))
 		return
 	}
 
 	// If browser redirect GET request, render success HTML that communicates back to opener window
-	if r.Method == http.MethodGet && !strings.Contains(r.Header.Get("Accept"), "application/json") {
+	if wantsHTML {
+		providerJS, _ := json.Marshal(conn.Provider)
+		idJS, _ := json.Marshal(conn.ID)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprintf(w, `<!DOCTYPE html>
@@ -231,12 +264,12 @@ func (deps RouterDeps) handleOAuthCallback(w http.ResponseWriter, r *http.Reques
   <p>You may close this window.</p>
   <script>
     if (window.opener) {
-      window.opener.postMessage({ type: 'oauth_complete', provider: %q, id: %q }, '*');
+      window.opener.postMessage({ type: 'oauth_complete', provider: %s, id: %s }, '*');
       setTimeout(() => window.close(), 1200);
     }
   </script>
 </body>
-</html>`, conn.Provider, conn.Email, conn.Provider, conn.ID)
+</html>`, html.EscapeString(conn.Provider), html.EscapeString(conn.Email), providerJS, idJS)
 		return
 	}
 
@@ -265,6 +298,11 @@ func (deps RouterDeps) handleOAuthPoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !deps.authorizeAdmin(r) {
+		openai.WriteError(w, http.StatusUnauthorized, openai.TypeAuthentication, "unauthorized")
+		return
+	}
+
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	defer r.Body.Close()
 
@@ -285,7 +323,8 @@ func (deps RouterDeps) handleOAuthPoll(w http.ResponseWriter, r *http.Request) {
 
 	conn, pending, err := deps.OAuthManager.PollAuth(r.Context(), state)
 	if err != nil {
-		openai.WriteError(w, http.StatusBadRequest, openai.TypeInvalidRequest, "oauth poll failed: "+err.Error())
+		openai.WriteError(w, http.StatusBadRequest, openai.TypeInvalidRequest,
+			"oauth poll failed: "+textx.Excerpt([]byte(err.Error()), oauthErrorExcerptBytes))
 		return
 	}
 

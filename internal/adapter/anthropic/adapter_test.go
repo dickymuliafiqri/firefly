@@ -1,9 +1,11 @@
 package anthropic
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -376,5 +378,42 @@ func TestAnthropicAdapter_MultiKeyFailover(t *testing.T) {
 	}
 	if len(usedKeys) != 2 || usedKeys[0] != "sk-anth-1" || usedKeys[1] != "sk-anth-2" {
 		t.Fatalf("keys used = %v", usedKeys)
+	}
+}
+
+// TestRelayAnthropicSSE_LogsOneTranslationFailurePerStream pins the bounded log
+// shape: a malformed upstream stream used to emit one Warn per chunk, so a fast
+// stream produced thousands of lines and every distinct message opened its own
+// log group. The failures must now be counted and reported once, when the stream
+// ends, with the count preserved so the fault stays visible.
+func TestRelayAnthropicSSE_LogsOneTranslationFailurePerStream(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	adapter := NewAdapter(
+		fixedPool{c: http.DefaultClient},
+		&allowAllBreaker{},
+		Config{Logger: logger},
+	)
+
+	const badChunks = 50
+	var sb strings.Builder
+	for i := 0; i < badChunks; i++ {
+		sb.WriteString("event: content_block_delta\ndata: {not json}\n\n")
+	}
+
+	rec := httptest.NewRecorder()
+	if _, err := adapter.relayAnthropicSSE(context.Background(), rec, strings.NewReader(sb.String()), "claude-3-5-sonnet"); err != nil {
+		t.Fatalf("relayAnthropicSSE returned %v", err)
+	}
+
+	out := buf.String()
+	if got := strings.Count(out, "chunk translation failed"); got != 1 {
+		t.Fatalf("expected exactly one translation warning per stream, got %d:\n%s", got, out)
+	}
+	if !strings.Contains(out, "errors=50") {
+		t.Fatalf("expected the failure count in the warning, got:\n%s", out)
 	}
 }

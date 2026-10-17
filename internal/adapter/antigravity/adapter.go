@@ -458,6 +458,21 @@ func (a *Adapter) relayAntigravitySSE(ctx context.Context, w http.ResponseWriter
 	var written int64
 	state := &StreamState{Model: publicModel}
 
+	// A malformed upstream chunk must not become one log line per chunk. A bad
+	// stream would otherwise emit a warning at token rate, and because each
+	// message embeds the upstream's own text, every one would open its own log
+	// group. Count them and report once, when the stream ends.
+	var (
+		translateErrs int
+		firstErr      error
+	)
+	defer func() {
+		if translateErrs > 0 && a.cfg.Logger != nil {
+			a.cfg.Logger.Warn("antigravity chunk translation failed; affected chunks were dropped",
+				"errors", translateErrs, "err", firstErr)
+		}
+	}()
+
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
@@ -470,8 +485,9 @@ func (a *Adapter) relayAntigravitySSE(ctx context.Context, w http.ResponseWriter
 			dataStr := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 			chunks, isDone, err := TranslateAntigravityChunkToOpenAI([]byte(dataStr), publicModel, state)
 			if err != nil {
-				if a.cfg.Logger != nil {
-					a.cfg.Logger.Warn("antigravity chunk translation error", "err", err)
+				translateErrs++
+				if firstErr == nil {
+					firstErr = err
 				}
 				continue
 			}

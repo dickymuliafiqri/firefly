@@ -120,3 +120,68 @@ func TestWriteUpstreamFailure_Mapping(t *testing.T) {
 		})
 	}
 }
+
+// The 504 body used to append ue.Cause.Error(); for a transport timeout that is
+// a *url.Error carrying the full upstream URL, and for the openai/anthropic
+// protocols the base_url is operator-chosen (Azure, vLLM, self-hosted) and may
+// embed a credential in its query string or userinfo. The tenant must learn the
+// upstream timed out and nothing about where it lives.
+func TestWriteUpstreamFailure_504DoesNotLeakUpstreamURL(t *testing.T) {
+	t.Parallel()
+
+	const upstreamURL = "https://user:s3cr3t@internal-vllm.example.com:8443/v1/responses?api-version=2024-10-21&key=sk-live-abc123"
+
+	rec := httptest.NewRecorder()
+	writeUpstreamFailure(rec, &openai.ErrUpstream{
+		Status: 0,
+		Cause:  &url.Error{Op: "Post", URL: upstreamURL, Err: timeoutNetErr{}},
+	})
+
+	assert.Equal(t, http.StatusGatewayTimeout, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "did not start responding in time")
+	for _, secret := range []string{
+		"internal-vllm.example.com", "s3cr3t", "api-version", "sk-live-abc123",
+		"/v1/responses", "user:",
+	} {
+		assert.NotContains(t, body, secret, "504 body leaked %q", secret)
+	}
+}
+
+// sanitizeUpstreamError is the single sanitizer behind both the log line and the
+// persisted dashboard record, so its contract is asserted directly.
+func TestSanitizeUpstreamError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "nil is empty",
+			err:  nil,
+			want: "",
+		},
+		{
+			name: "url credentials and query are dropped",
+			err: &url.Error{
+				Op:  "Post",
+				URL: "https://user:pass@host.example.com/v1/chat/completions?key=abc",
+				Err: errors.New("dial tcp: connection refused"),
+			},
+			want: "Post https://host.example.com/v1/chat/completions: dial tcp: connection refused",
+		},
+		{
+			name: "non url error passes through unchanged",
+			err:  errors.New("boom"),
+			want: "boom",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, sanitizeUpstreamError(tc.err))
+		})
+	}
+}

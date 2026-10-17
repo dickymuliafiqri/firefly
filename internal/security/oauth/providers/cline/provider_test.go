@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -167,4 +168,63 @@ func TestProvider_RefreshToken(t *testing.T) {
 	assert.Equal(t, "refreshed-access-token", tok.AccessToken)
 	assert.Equal(t, "new-refresh-token", tok.RefreshToken)
 	assert.False(t, tok.IsExpired(0))
+}
+
+// errorBodyServer answers every request with a 500 and a body far larger than
+// the excerpt bound, so a regression that embeds the raw body is visible.
+func errorBodyServer(t *testing.T, path string) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, path, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(strings.Repeat("A", 200_000)))
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// TestProvider_ExchangeCode_BoundsErrorBody pins the truncation: the token
+// endpoint's error body is not a value we control, and the message reaches an
+// HTTP response and the server log. Before the fix the whole body was embedded.
+func TestProvider_ExchangeCode_BoundsErrorBody(t *testing.T) {
+	t.Parallel()
+
+	server := errorBodyServer(t, "/auth/token")
+	p := New(
+		WithEndpoints("", server.URL+"/auth/token", ""),
+		WithHTTPClient(server.Client()),
+	)
+
+	sess := &ports.AuthSession{Provider: "cline", RedirectURI: "http://localhost:8080/callback"}
+	_, err := p.ExchangeCode(context.Background(), "standard-oauth-code", sess)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "token exchange failed (status 500)")
+	assert.LessOrEqual(t, len(err.Error()), maxErrorBodyChars+64)
+}
+
+// TestProvider_RefreshToken_BoundsErrorBody is the refresh-path twin.
+func TestProvider_RefreshToken_BoundsErrorBody(t *testing.T) {
+	t.Parallel()
+
+	server := errorBodyServer(t, "/auth/refresh")
+	p := New(
+		WithEndpoints("", "", server.URL+"/auth/refresh"),
+		WithHTTPClient(server.Client()),
+	)
+
+	conn := &domain.OAuthConnection{
+		ID:       "cline-user@example.com",
+		Provider: "cline",
+		Token: domain.OAuthToken{
+			AccessToken:  "old-access-token",
+			RefreshToken: "old-refresh-token",
+			ExpiresAt:    time.Now().Add(-10 * time.Minute),
+		},
+	}
+
+	_, err := p.RefreshToken(context.Background(), conn)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "token refresh failed (status 500)")
+	assert.LessOrEqual(t, len(err.Error()), maxErrorBodyChars+64)
 }

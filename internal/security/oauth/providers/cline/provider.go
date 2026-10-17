@@ -16,6 +16,7 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
 	"github.com/dickymuliafiqri/firefly/internal/security/oauth"
+	"github.com/dickymuliafiqri/firefly/internal/textx"
 	"github.com/tidwall/gjson"
 )
 
@@ -26,6 +27,16 @@ const (
 	defaultTokenURL     = "https://api.cline.bot/api/v1/auth/token"
 	defaultRefreshURL   = "https://api.cline.bot/api/v1/auth/refresh"
 )
+
+// maxErrorBodyChars bounds the token endpoint body embedded in an error message.
+// The cause can reach an HTTP response and the server log, and an error body is
+// not a value we control.
+const maxErrorBodyChars = 256
+
+// maxTokenResponseBytes bounds the body read into memory while parsing a token
+// response. A token payload is a few hundred bytes; the ceiling only stops a
+// hostile or broken endpoint from streaming an unbounded body into us.
+const maxTokenResponseBytes = 64 << 10
 
 // Provider implements ports.OAuthProvider for Cline.
 type Provider struct {
@@ -237,13 +248,13 @@ func (p *Provider) exchangeHTTP(ctx context.Context, code, redirectURI string) (
 	}
 	defer resp.Body.Close()
 
-	respBytes, err := io.ReadAll(resp.Body)
+	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxTokenResponseBytes))
 	if err != nil {
 		return nil, fmt.Errorf("read token response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token exchange failed (status %d): %s", resp.StatusCode, string(respBytes))
+		return nil, fmt.Errorf("token exchange failed (status %d): %s", resp.StatusCode, textx.Excerpt(respBytes, maxErrorBodyChars))
 	}
 
 	dataObj := gjson.GetBytes(respBytes, "data")
@@ -327,13 +338,13 @@ func (p *Provider) RefreshToken(ctx context.Context, conn *domain.OAuthConnectio
 	}
 	defer resp.Body.Close()
 
-	respBytes, err := io.ReadAll(resp.Body)
+	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxTokenResponseBytes))
 	if err != nil {
 		return nil, fmt.Errorf("read refresh response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token refresh failed (status %d): %s", resp.StatusCode, string(respBytes))
+		return nil, fmt.Errorf("token refresh failed (status %d): %s", resp.StatusCode, textx.Excerpt(respBytes, maxErrorBodyChars))
 	}
 
 	dataObj := gjson.GetBytes(respBytes, "data")

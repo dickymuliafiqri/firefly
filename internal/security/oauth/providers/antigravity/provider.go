@@ -17,10 +17,16 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/ports"
 	"github.com/dickymuliafiqri/firefly/internal/security/oauth"
 	"github.com/dickymuliafiqri/firefly/internal/supervisor"
+	"github.com/dickymuliafiqri/firefly/internal/textx"
 	"github.com/tidwall/gjson"
 )
 
 var _ ports.OAuthProvider = (*Provider)(nil)
+
+// maxErrorBodyChars bounds the token endpoint body embedded in an error message.
+// The cause can reach an HTTP response and the server log, and an error body is
+// not a value we control.
+const maxErrorBodyChars = 256
 
 func defaultClientID() string {
 	if v := os.Getenv("ANTIGRAVITY_CLIENT_ID"); v != "" {
@@ -216,7 +222,7 @@ func (p *Provider) ExchangeCode(ctx context.Context, code string, session *ports
 		return nil, fmt.Errorf("read token exchange response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("token exchange failed (HTTP %d): %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("token exchange failed (HTTP %d): %s", resp.StatusCode, textx.Excerpt(body, maxErrorBodyChars))
 	}
 
 	var tokResp tokenExchangeResponse
@@ -327,7 +333,7 @@ func (p *Provider) RefreshToken(ctx context.Context, conn *domain.OAuthConnectio
 		return nil, fmt.Errorf("read token refresh response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("token refresh failed (HTTP %d): %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("token refresh failed (HTTP %d): %s", resp.StatusCode, textx.Excerpt(body, maxErrorBodyChars))
 	}
 
 	var tokResp tokenExchangeResponse

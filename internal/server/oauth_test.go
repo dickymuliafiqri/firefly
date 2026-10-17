@@ -136,6 +136,7 @@ func TestServer_OAuthEndpoints(t *testing.T) {
 	// 4. POST /api/oauth/callback
 	cbReqBody := []byte(fmt.Sprintf(`{"state": "%s", "code": "valid-code"}`, state))
 	req = httptest.NewRequest(http.MethodPost, "/api/oauth/callback", bytes.NewReader(cbReqBody))
+	req.Header.Set("Authorization", adminAuth)
 	req.Header.Set("Content-Type", "application/json")
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -183,13 +184,27 @@ func TestServer_OAuthEndpoints(t *testing.T) {
 func TestServer_OAuthCallback_ManualVerify(t *testing.T) {
 	t.Parallel()
 
-	handler, _, _ := setupOAuthServer(t)
+	handler, _, authMgr := setupOAuthServer(t)
 
-	// Unknown/stale state: fail closed with a JSON 400.
+	session, err := authMgr.Authenticate(context.Background(), "admin-secret-pass")
+	require.NoError(t, err)
+	adminAuth := "Bearer " + session.Token
+
+	// The dashboard always carries the admin token on this path; without one the
+	// handler must refuse before it can touch the OAuth session table.
 	req := httptest.NewRequest(http.MethodPost, "/api/oauth/callback",
 		bytes.NewReader([]byte(`{"state":"stale-state","code":"valid-code"}`)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+
+	// Unknown/stale state: fail closed with a JSON 400.
+	req = httptest.NewRequest(http.MethodPost, "/api/oauth/callback",
+		bytes.NewReader([]byte(`{"state":"stale-state","code":"valid-code"}`)))
+	req.Header.Set("Authorization", adminAuth)
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	require.True(t, gjson.ValidBytes(rec.Body.Bytes()))
@@ -198,6 +213,7 @@ func TestServer_OAuthCallback_ManualVerify(t *testing.T) {
 	// Missing authorization code: fail closed with a JSON 400.
 	req = httptest.NewRequest(http.MethodPost, "/api/oauth/callback",
 		bytes.NewReader([]byte(`{"state":"stale-state"}`)))
+	req.Header.Set("Authorization", adminAuth)
 	req.Header.Set("Content-Type", "application/json")
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -331,6 +347,7 @@ func TestServer_OAuthPoll(t *testing.T) {
 	// 2. Poll 1: Pending
 	pollBody := []byte(fmt.Sprintf(`{"state": "%s"}`, state))
 	req = httptest.NewRequest(http.MethodPost, "/api/oauth/poll", bytes.NewReader(pollBody))
+	req.Header.Set("Authorization", adminAuth)
 	req.Header.Set("Content-Type", "application/json")
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -340,6 +357,7 @@ func TestServer_OAuthPoll(t *testing.T) {
 
 	// 3. Poll 2: Succeeded
 	req = httptest.NewRequest(http.MethodPost, "/api/oauth/poll", bytes.NewReader(pollBody))
+	req.Header.Set("Authorization", adminAuth)
 	req.Header.Set("Content-Type", "application/json")
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -350,6 +368,7 @@ func TestServer_OAuthPoll(t *testing.T) {
 
 	// 4. Poll 3: State no longer exists (already exchanged)
 	req = httptest.NewRequest(http.MethodPost, "/api/oauth/poll", bytes.NewReader(pollBody))
+	req.Header.Set("Authorization", adminAuth)
 	req.Header.Set("Content-Type", "application/json")
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -396,6 +415,7 @@ func TestServer_OAuthCallback_StatelessCline(t *testing.T) {
 	// 2. Poll before user authorizes in browser (Cline is non-device provider, should report pending)
 	pollBody := []byte(fmt.Sprintf(`{"state": "%s"}`, state))
 	req = httptest.NewRequest(http.MethodPost, "/api/oauth/poll", bytes.NewReader(pollBody))
+	req.Header.Set("Authorization", adminAuth)
 	req.Header.Set("Content-Type", "application/json")
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -420,6 +440,7 @@ func TestServer_OAuthCallback_StatelessCline(t *testing.T) {
 
 	// 4. Poll again: Frontend should now immediately receive the completed connection!
 	req = httptest.NewRequest(http.MethodPost, "/api/oauth/poll", bytes.NewReader(pollBody))
+	req.Header.Set("Authorization", adminAuth)
 	req.Header.Set("Content-Type", "application/json")
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -432,6 +453,7 @@ func TestServer_OAuthCallback_StatelessCline(t *testing.T) {
 
 	// 5. Subsequent poll fails because session was consumed
 	req = httptest.NewRequest(http.MethodPost, "/api/oauth/poll", bytes.NewReader(pollBody))
+	req.Header.Set("Authorization", adminAuth)
 	req.Header.Set("Content-Type", "application/json")
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)

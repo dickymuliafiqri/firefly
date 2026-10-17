@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 
 	"sync"
@@ -736,7 +737,7 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string, ing ingress) http.Ha
 
 		var errStr string
 		if fwdErr != nil {
-			errStr = fwdErr.Error()
+			errStr = sanitizeUpstreamError(fwdErr)
 		}
 		tokensOut := 0
 		cachedRead, cacheWrite := 0, 0
@@ -914,8 +915,15 @@ func writeUpstreamFailure(w http.ResponseWriter, err error) {
 			// queued. Reporting it as a plain 502 hid the single most common
 			// antigravity failure; naming the timeout points the operator at the
 			// upstream's time budget instead of a nonexistent gateway bug.
+			//
+			// The cause is deliberately not appended: a transport error from
+			// http.Client.Do is a *url.Error whose Error() embeds the full request
+			// URL, and for the openai/anthropic protocols that URL is an
+			// operator-chosen base_url which may carry a credential in its query
+			// string or userinfo. The sanitized cause stays in the server log; the
+			// client only learns that the upstream timed out.
 			openai.WriteError(w, http.StatusGatewayTimeout, openai.TypeAPI,
-				"upstream did not start responding in time: "+ue.Cause.Error())
+				"upstream did not start responding in time")
 			return
 		default:
 			openai.WriteError(w, http.StatusBadGateway, openai.TypeAPI,
@@ -924,6 +932,39 @@ func writeUpstreamFailure(w http.ResponseWriter, err error) {
 		}
 	}
 	openai.WriteError(w, http.StatusBadGateway, openai.TypeAPI, "upstream request failed")
+}
+
+// sanitizeUpstreamError renders a forwarding error for a log line or a
+// persisted dashboard record. A transport error from http.Client.Do is a
+// *url.Error whose Error() embeds the full request URL; for the openai and
+// anthropic protocols that URL is an operator-chosen base_url which may carry a
+// credential in its query string or userinfo (https://user:pass@host/v1?key=…).
+// Credentials are stripped here rather than at each call site so no error path
+// can reintroduce them; the scheme, host and path are kept because they are
+// what makes the line actionable and they carry no secret.
+func sanitizeUpstreamError(err error) string {
+	if err == nil {
+		return ""
+	}
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return ue.Op + " " + redactURLCredentials(ue.URL) + ": " + ue.Err.Error()
+	}
+	return err.Error()
+}
+
+// redactURLCredentials drops the userinfo, query and fragment of a URL.
+func redactURLCredentials(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "[unparseable-url]"
+	}
+	u.User = nil
+	u.RawQuery = ""
+	u.ForceQuery = false
+	u.Fragment = ""
+	u.RawFragment = ""
+	return u.String()
 }
 
 // isUpstreamTimeout reports whether a transport error was a timeout — the wait
@@ -961,7 +1002,7 @@ func (deps RouterDeps) logForwardFailure(ctx context.Context, t *domain.Target, 
 		"upstream", t.Upstream.Name,
 		"upstream_model", t.UpstreamModel,
 		"duration_ms", elapsed.Milliseconds(),
-		"err", err.Error(),
+		"err", sanitizeUpstreamError(err),
 	}
 	if errors.Is(err, context.Canceled) {
 		deps.Logger.Debug("client disconnected during forward", attrs...)
