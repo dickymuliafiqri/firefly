@@ -45,6 +45,11 @@ type Metrics struct {
 
 	workerPanics   *prometheus.CounterVec
 	workerRestarts *prometheus.CounterVec
+
+	singboxRefresh     *prometheus.CounterVec
+	singboxNodes       prometheus.Gauge
+	singboxReady       prometheus.Gauge
+	singboxNodeLatency *prometheus.HistogramVec
 }
 
 // durationBuckets cover the full range of gateway latency: sub-millisecond
@@ -115,6 +120,23 @@ func New() *Metrics {
 			Name: "firefly_worker_restarts_total",
 			Help: "Total background-worker restarts performed after a panic (internal/supervisor).",
 		}, []string{"worker"}),
+		singboxRefresh: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "firefly_singbox_refresh_total",
+			Help: "Total sing-box subscription refreshes, by result (ok|error).",
+		}, []string{"result"}),
+		singboxNodes: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "firefly_singbox_nodes",
+			Help: "Number of outbound nodes currently loaded from the sing-box subscription.",
+		}),
+		singboxReady: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "firefly_singbox_ready",
+			Help: "1 when the sing-box box is started and dials go through it; 0 when egress fails open to direct.",
+		}),
+		singboxNodeLatency: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "firefly_singbox_node_latency_seconds",
+			Help:    "URL-test probe latency per sing-box outbound node.",
+			Buckets: []float64{0.05, 0.1, 0.25, 0.5, 1, 2.5, 5},
+		}, []string{"tag"}),
 	}
 	reg.MustRegister(
 		m.httpRequests,
@@ -130,6 +152,10 @@ func New() *Metrics {
 		m.globalInflight,
 		m.workerPanics,
 		m.workerRestarts,
+		m.singboxRefresh,
+		m.singboxNodes,
+		m.singboxReady,
+		m.singboxNodeLatency,
 		prometheus.NewGoCollector(),
 		prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}),
 	)
@@ -270,6 +296,43 @@ func (m *Metrics) WorkerRestart(worker string) {
 		return
 	}
 	m.workerRestarts.WithLabelValues(worker).Inc()
+}
+
+// ObserveSingboxRefresh counts one subscription refresh attempt, by result.
+func (m *Metrics) ObserveSingboxRefresh(result string) {
+	if m == nil {
+		return
+	}
+	m.singboxRefresh.WithLabelValues(result).Inc()
+}
+
+// SetSingboxNodes sets the number of loaded outbound nodes.
+func (m *Metrics) SetSingboxNodes(n int) {
+	if m == nil {
+		return
+	}
+	m.singboxNodes.Set(float64(n))
+}
+
+// SetSingboxReady sets the fail-open gauge: 1 when the Box is started, 0 when
+// egress falls back to direct dialling.
+func (m *Metrics) SetSingboxReady(ready bool) {
+	if m == nil {
+		return
+	}
+	if ready {
+		m.singboxReady.Set(1)
+	} else {
+		m.singboxReady.Set(0)
+	}
+}
+
+// ObserveSingboxNodeLatency records a URL-test probe latency for one node.
+func (m *Metrics) ObserveSingboxNodeLatency(tag string, d time.Duration) {
+	if m == nil || tag == "" {
+		return
+	}
+	m.singboxNodeLatency.WithLabelValues(tag).Observe(d.Seconds())
 }
 
 // Upstream call outcomes.

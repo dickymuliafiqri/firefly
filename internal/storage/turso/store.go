@@ -340,6 +340,7 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 		       always_available,
 		       COALESCE(egress_mode, 'direct'),
 		       COALESCE(proxy_url, ''),
+		       COALESCE(singbox_outbound_tag, ''),
 		       enabled
 		FROM upstreams
 		ORDER BY id ASC
@@ -377,6 +378,7 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 			keyErrorRulesJSON                             sql.NullString
 			alwaysAvailable                               sql.NullInt64
 			egressMode, proxyURL                          sql.NullString
+			singboxOutboundTag                            sql.NullString
 		)
 
 		err := upRows.Scan(
@@ -387,6 +389,7 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 			&keyErrorThreshold, &keyErrorAction, &keyCooldownMs, &keyErrorRulesJSON, &probeModel,
 			&alwaysAvailable,
 			&egressMode, &proxyURL,
+			&singboxOutboundTag,
 			&enabled,
 		)
 		if err != nil {
@@ -414,8 +417,8 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 			cRPS      *float64
 			cMaxC     *int
 			pID       *int64
-			isAllowIn      = allowInsecure != 0
-			isEn           = enabled != 0
+			isAllowIn = allowInsecure != 0
+			isEn      = enabled != 0
 		)
 
 		if timeoutMs.Valid {
@@ -515,6 +518,7 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 			AlwaysAvailable:         alwaysAvailablePtr,
 			EgressMode:              egressMode.String,
 			ProxyURL:                proxyURL.String,
+			SingboxOutboundTag:      singboxOutboundTag.String,
 		}
 
 		upstreams = append(upstreams, dto)
@@ -1064,6 +1068,7 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 			egressModeVal = "direct"
 		}
 		proxyURLVal := strings.TrimSpace(u.ProxyURL)
+		singboxOutboundTagVal := strings.TrimSpace(u.SingboxOutboundTag)
 
 		existingID, exists := upstreamNameToID[u.Name]
 		if exists {
@@ -1078,7 +1083,7 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 					key_error_rules = ?,
 					probe_model = ?,
 					always_available = ?,
-					egress_mode = ?, proxy_url = ?,
+					egress_mode = ?, proxy_url = ?, singbox_outbound_tag = ?,
 					enabled = ?, version = version + 1, updated_at = ?
 				WHERE id = ?
 			`, u.Protocol, u.BaseURL, fallbacksJSON, u.KeyStrategy,
@@ -1089,7 +1094,7 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 				keyErrorRulesVal,
 				u.ProbeModel,
 				alwaysAvailableInt,
-				egressModeVal, proxyURLVal,
+				egressModeVal, proxyURLVal, singboxOutboundTagVal,
 				enabledInt, now, existingID)
 			if err != nil {
 				return fmt.Errorf("update upstream %q: %w", u.Name, err)
@@ -1103,9 +1108,9 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 					allow_insecure, credential_rps, credential_max_concur,
 					key_error_threshold, key_error_action, key_cooldown_duration_ms,
 					key_error_rules,
-					probe_model, always_available, egress_mode, proxy_url,
+					probe_model, always_available, egress_mode, proxy_url, singbox_outbound_tag,
 					enabled, version, created_at, updated_at
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
 			`, u.Name, u.Protocol, u.BaseURL, fallbacksJSON, u.KeyStrategy,
 				u.ProviderID, u.CredentialRef, u.TimeoutMs, u.IdleTimeoutMs, u.StreamIdleTimeoutMs,
 				u.MaxIdleConnsPerHost, u.MaxConnsPerHost, headersJSON,
@@ -1114,7 +1119,7 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 				keyErrorRulesVal,
 				u.ProbeModel,
 				alwaysAvailableInt,
-				egressModeVal, proxyURLVal,
+				egressModeVal, proxyURLVal, singboxOutboundTagVal,
 				enabledInt, now, now)
 			if err != nil {
 				return fmt.Errorf("insert upstream %q: %w", u.Name, err)

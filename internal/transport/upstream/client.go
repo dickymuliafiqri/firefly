@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/dickymuliafiqri/firefly/internal/domain"
+	"github.com/dickymuliafiqri/firefly/internal/transport/singbox"
 	"github.com/dickymuliafiqri/firefly/internal/transport/warp"
 )
 
@@ -31,13 +32,21 @@ type Pool struct {
 	mu      sync.RWMutex
 	clients map[string]pooledClient
 	warpMgr *warp.Manager
+	// singboxMgr backs upstreams whose egress_mode is "singbox". It is optional;
+	// when nil, sing-box upstreams fall back to direct dial (the manager itself
+	// also fails open to direct when its Box is not ready).
+	singboxMgr *singbox.Manager
 }
 
-// NewPool returns a new Pool, optionally wired with an embedded WARP manager.
-func NewPool(warpMgr ...*warp.Manager) *Pool {
+// NewPool returns a new Pool, optionally wired with an embedded WARP manager
+// and/or an embedded sing-box manager.
+func NewPool(warpMgr *warp.Manager, singboxMgr ...*singbox.Manager) *Pool {
 	p := &Pool{clients: make(map[string]pooledClient)}
-	if len(warpMgr) > 0 {
-		p.warpMgr = warpMgr[0]
+	if warpMgr != nil {
+		p.warpMgr = warpMgr
+	}
+	if len(singboxMgr) > 0 && singboxMgr[0] != nil {
+		p.singboxMgr = singboxMgr[0]
 	}
 	return p
 }
@@ -75,6 +84,7 @@ func (p *Pool) Client(u *domain.Upstream) *http.Client {
 	p.mu.RLock()
 	entry, ok := p.clients[u.Name]
 	wm := p.warpMgr
+	sm := p.singboxMgr
 	p.mu.RUnlock()
 	if ok {
 		return entry.client
@@ -85,7 +95,7 @@ func (p *Pool) Client(u *domain.Upstream) *http.Client {
 	if entry, ok := p.clients[u.Name]; ok { // lost the race; reuse
 		return entry.client
 	}
-	c := buildClient(u, wm)
+	c := buildClient(u, wm, sm)
 	p.clients[u.Name] = pooledClient{
 		client:     c,
 		warpEgress: warp.IsWarpEgress(u.EgressMode) && wm != nil,
@@ -105,7 +115,7 @@ func (p *Pool) Client(u *domain.Upstream) *http.Client {
 // the ENTIRE request including response body read, which would truncate long
 // SSE streams. Instead we bound connection establishment (dial/header) via the
 // transport and leave body streaming to per-request context deadlines.
-func buildClient(u *domain.Upstream, warpMgr *warp.Manager) *http.Client {
+func buildClient(u *domain.Upstream, warpMgr *warp.Manager, singboxMgr *singbox.Manager) *http.Client {
 	idle := time.Duration(u.IdleTimeoutMs) * time.Millisecond
 	if idle <= 0 {
 		idle = 90 * time.Second
@@ -142,11 +152,23 @@ func buildClient(u *domain.Upstream, warpMgr *warp.Manager) *http.Client {
 		ForceAttemptHTTP2:     true,
 	}
 
+	var singboxDialer warp.Dialer
+	if singboxMgr != nil && warp.IsSingboxEgress(u.EgressMode) {
+		// A per-upstream tag dials its own outbound; an empty tag falls back to
+		// the manager's default tag (auto/urltest), which itself fails open to
+		// direct when the Box is not ready.
+		if tag := u.SingboxOutboundTag; tag != "" {
+			singboxDialer = singboxMgr.TaggedDialer(tag)
+		} else {
+			singboxDialer = singboxMgr
+		}
+	}
 	warp.ConfigureTransportEgress(tr, warp.EgressConfig{
-		Mode:        u.EgressMode,
-		ProxyURL:    u.ProxyURL,
-		WarpDialer:  warpMgr,
-		DialTimeout: 30 * time.Second,
+		Mode:          u.EgressMode,
+		ProxyURL:      u.ProxyURL,
+		WarpDialer:    warpMgr,
+		SingboxDialer: singboxDialer,
+		DialTimeout:   30 * time.Second,
 	})
 
 	var rt http.RoundTripper = tr

@@ -27,6 +27,8 @@ import type {
   PollRequestDTO,
   PollResponseDTO,
   WarpStatusDTO,
+  SingboxStatusDTO,
+  SingboxNodeDTO,
   TenantTopupRequestDTO,
   TenantTopupResponseDTO,
   ProviderListResponse,
@@ -386,6 +388,53 @@ export async function setWarpPoolSize(poolSize: number): Promise<WarpStatusDTO> 
   return request<WarpStatusDTO>("/api/warp/pool-size", {
     method: "POST",
     body: JSON.stringify({ pool_size: poolSize }),
+  });
+}
+
+export async function fetchSingboxStatus(): Promise<SingboxStatusDTO> {
+  return request<SingboxStatusDTO>("/api/singbox/status");
+}
+
+export async function refreshSingbox(): Promise<SingboxStatusDTO> {
+  return request<SingboxStatusDTO>("/api/singbox/refresh", {
+    method: "POST",
+  });
+}
+
+export async function fetchSingboxNodes(): Promise<{
+  nodes: SingboxNodeDTO[];
+  count: number;
+  default_tag?: string;
+}> {
+  return request("/api/singbox/nodes");
+}
+
+export async function updateSingboxSubscription(payload: {
+  subscription_url: string;
+  refresh_interval_s?: number;
+}): Promise<SingboxStatusDTO> {
+  return request<SingboxStatusDTO>("/api/singbox/subscription", {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateSingboxDefaultTag(
+  defaultTag: string,
+): Promise<SingboxStatusDTO> {
+  return request<SingboxStatusDTO>("/api/singbox/default-tag", {
+    method: "POST",
+    body: JSON.stringify({ default_tag: defaultTag }),
+  });
+}
+
+/** Switch the node-selection strategy: "urltest" or "round_robin". */
+export async function updateSingboxStrategy(
+  strategy: string,
+): Promise<SingboxStatusDTO> {
+  return request<SingboxStatusDTO>("/api/singbox/strategy", {
+    method: "PUT",
+    body: JSON.stringify({ strategy }),
   });
 }
 export interface TunnelStatusDTO {
@@ -914,6 +963,11 @@ export function useWarpStatusQuery() {
   return fallbackQuery(["warp"], fetchWarpStatus, warpMock, 5000);
 }
 
+export function useSingboxStatusQuery() {
+  const { singboxMock } = mocks();
+  return fallbackQuery(["singbox"], fetchSingboxStatus, singboxMock, 5000);
+}
+
 export function useTunnelStatusQuery() {
   const { tunnelMock } = mocks();
   return fallbackQuery(["tunnel"], fetchTunnelStatus, tunnelMock, 5000);
@@ -978,6 +1032,46 @@ export function useSetWarpPoolSizeMutation() {
     onSuccess: (data) => {
       queryClient.setQueryData(["warp"], data);
       queryClient.invalidateQueries({ queryKey: ["warp"] });
+    },
+  });
+}
+
+export function useRefreshSingboxMutation() {
+  return useMutation({
+    mutationFn: refreshSingbox,
+    onSuccess: (data) => {
+      queryClient.setQueryData(["singbox"], data);
+      queryClient.invalidateQueries({ queryKey: ["singbox"] });
+    },
+  });
+}
+
+export function useUpdateSingboxSubscriptionMutation() {
+  return useMutation({
+    mutationFn: updateSingboxSubscription,
+    onSuccess: (data) => {
+      queryClient.setQueryData(["singbox"], data);
+      queryClient.invalidateQueries({ queryKey: ["singbox"] });
+    },
+  });
+}
+
+export function useUpdateSingboxDefaultTagMutation() {
+  return useMutation({
+    mutationFn: updateSingboxDefaultTag,
+    onSuccess: (data) => {
+      queryClient.setQueryData(["singbox"], data);
+      queryClient.invalidateQueries({ queryKey: ["singbox"] });
+    },
+  });
+}
+
+export function useUpdateSingboxStrategyMutation() {
+  return useMutation({
+    mutationFn: updateSingboxStrategy,
+    onSuccess: (data) => {
+      queryClient.setQueryData(["singbox"], data);
+      queryClient.invalidateQueries({ queryKey: ["singbox"] });
     },
   });
 }
@@ -1558,6 +1652,35 @@ function mocks() {
     token_configured: false,
   };
 
+  const singboxMock: SingboxStatusDTO = {
+    running: true,
+    box_created: true,
+    ready: true,
+    node_count: 6,
+    default_tag: "auto",
+    subscription_url: "https://example.com/sub?token=demo",
+    subscription_configured: true,
+    refresh_interval: 3_600_000_000_000,
+    strategy: "round_robin",
+    last_refresh_at: new Date(now - 60_000).toISOString(),
+    nodes: [
+      { tag: "node-hk-1", type: "vless", server: "hk1.example.com", port: 443 },
+      {
+        tag: "node-sg-1",
+        type: "trojan",
+        server: "sg1.example.com",
+        port: 443,
+        cooling: true,
+        cooldown_until: new Date(now + 42_000).toISOString(),
+        failures: 2,
+      },
+      { tag: "node-jp-1", type: "hysteria2", server: "jp1.example.com", port: 8443 },
+      { tag: "node-us-1", type: "vmess", server: "us1.example.com", port: 443 },
+      { tag: "node-de-1", type: "tuic", server: "de1.example.com", port: 443 },
+      { tag: "node-fr-1", type: "shadowsocks", server: "fr1.example.com", port: 8388 },
+    ],
+  };
+
   const providersMock: ProviderListResponse = {
     count: 4,
     storage: "turso",
@@ -1636,6 +1759,7 @@ function mocks() {
     telemetryMock,
     warpMock,
     tunnelMock,
+    singboxMock,
     providersMock,
     keysMock,
   };

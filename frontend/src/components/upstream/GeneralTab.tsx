@@ -8,8 +8,9 @@ export interface GeneralState {
   protocol: string;
   baseUrl: string;
   fallbackUrls: string[];
-  egressMode: "direct" | "warp" | "proxy";
+  egressMode: "direct" | "warp" | "proxy" | "singbox";
   proxyUrl: string;
+  singboxOutboundTag: string;
   allowInsecure: boolean;
   timeoutMs: number;
   idleTimeoutMs: number;
@@ -217,6 +218,7 @@ export function GeneralTab({ state, isEdit, onChange }: GeneralTabProps) {
                 <option value="direct">direct</option>
                 <option value="warp">warp</option>
                 <option value="proxy">proxy</option>
+                <option value="singbox">singbox</option>
               </select>
             </Field>
             {state.egressMode === "proxy" && (
@@ -228,6 +230,20 @@ export function GeneralTab({ state, isEdit, onChange }: GeneralTabProps) {
                   value={state.proxyUrl}
                   placeholder="socks5://127.0.0.1:1080"
                   onChange={(e) => onChange({ proxyUrl: e.target.value })}
+                />
+              </Field>
+            )}
+            {state.egressMode === "singbox" && (
+              <Field label="Sing-box outbound tag" htmlFor="u-singbox-tag">
+                <input
+                  id="u-singbox-tag"
+                  type="text"
+                  className="mono"
+                  value={state.singboxOutboundTag}
+                  placeholder="default / URL-test group"
+                  onChange={(e) =>
+                    onChange({ singboxOutboundTag: e.target.value })
+                  }
                 />
               </Field>
             )}

@@ -688,16 +688,18 @@ func translateUpstream(i int, d UpstreamDTO, envLookup func(string) (string, boo
 
 	egressMode := strings.ToLower(strings.TrimSpace(d.EgressMode))
 	if egressMode == "" {
-		egressMode = "direct"
+		egressMode = domain.EgressModeDirect
 	}
-	if egressMode != "direct" && egressMode != "warp" && egressMode != "proxy" {
+	switch egressMode {
+	case domain.EgressModeDirect, domain.EgressModeWarp, domain.EgressModeProxy, domain.EgressModeSingbox:
+	default:
 		return nil, &ValidationError{
 			Field: fmt.Sprintf("upstreams[%d].egress_mode", i),
-			Msg:   "invalid egress_mode (must be 'direct', 'warp', or 'proxy')",
+			Msg:   "invalid egress_mode (must be 'direct', 'warp', 'proxy', or 'singbox')",
 		}
 	}
 	proxyURL := strings.TrimSpace(d.ProxyURL)
-	if egressMode == "proxy" {
+	if egressMode == domain.EgressModeProxy {
 		if proxyURL == "" {
 			return nil, &ValidationError{
 				Field: fmt.Sprintf("upstreams[%d].proxy_url", i),
@@ -710,6 +712,18 @@ func translateUpstream(i int, d UpstreamDTO, envLookup func(string) (string, boo
 				Field: fmt.Sprintf("upstreams[%d].proxy_url", i),
 				Msg:   "proxy_url must be a valid http, https, socks5, or socks5h URL",
 			}
+		}
+	}
+
+	// The sing-box tag is optional (empty = the manager's default URLTest group),
+	// but a non-empty value is rejected unless it satisfies the shared tag charset
+	// (domain.ValidSingboxTag). Validating here, not at dial time, is what keeps a
+	// typo from silently sending traffic out of the wrong node — or direct.
+	singboxOutboundTag := strings.TrimSpace(d.SingboxOutboundTag)
+	if egressMode == domain.EgressModeSingbox && singboxOutboundTag != "" && !domain.ValidSingboxTag(singboxOutboundTag) {
+		return nil, &ValidationError{
+			Field: fmt.Sprintf("upstreams[%d].singbox_outbound_tag", i),
+			Msg:   "invalid singbox_outbound_tag (letters, digits, '.', '_', '-' only; must start alphanumeric; max 64 chars)",
 		}
 	}
 
@@ -784,6 +798,7 @@ func translateUpstream(i int, d UpstreamDTO, envLookup func(string) (string, boo
 		AlwaysAvailable:         pickBool(d.AlwaysAvailable, freePublicSlot),
 		EgressMode:              egressMode,
 		ProxyURL:                proxyURL,
+		SingboxOutboundTag:      singboxOutboundTag,
 	}, nil
 }
 

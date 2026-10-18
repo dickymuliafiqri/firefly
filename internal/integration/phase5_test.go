@@ -161,7 +161,7 @@ func TestPhase5_PrometheusKeyAndUpstreamSaturationMetrics(t *testing.T) {
 	build(t, reg, dir)
 
 	mx := metrics.New()
-	pool := upstream.NewPool()
+	pool := upstream.NewPool(nil)
 	breakers := upstream.NewBreakerRegistry(upstream.BreakerConfig{
 		FailureThreshold: 5,
 		SuccessThreshold: 2,
@@ -272,7 +272,7 @@ func TestPhase5_SecretMaskingAndSecurityAudit(t *testing.T) {
 	build(t, reg, dir)
 
 	mx := metrics.New()
-	pool := upstream.NewPool()
+	pool := upstream.NewPool(nil)
 	breakers := upstream.NewBreakerRegistry(upstream.BreakerConfig{
 		FailureThreshold: 5,
 		SuccessThreshold: 2,

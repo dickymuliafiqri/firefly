@@ -79,6 +79,10 @@ type UpstreamDTO struct {
 
 	EgressMode string `json:"egress_mode,omitempty"`
 	ProxyURL   string `json:"proxy_url,omitempty"`
+	// SingboxOutboundTag picks which sing-box outbound carries this upstream's
+	// traffic when egress_mode is "singbox". Empty means the manager's default
+	// URLTest group ("auto").
+	SingboxOutboundTag string `json:"singbox_outbound_tag,omitempty"`
 	// WarpAutoRotateOn429 is deprecated and ignored. WARP rotation is now
 	// purely time-based (see -warp-rotate-interval / FIREFLY_WARP_ROTATE_INTERVAL,
 	// default 30s). Kept so old configs with this key still decode.

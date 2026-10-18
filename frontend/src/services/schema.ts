@@ -287,9 +287,47 @@ export interface UpstreamDTO {
    * OpenCode free tier); GET /api/settings always reports the effective value.
    */
   always_available?: boolean | null;
-  egress_mode?: 'direct' | 'warp' | 'proxy' | string;
+  egress_mode?: 'direct' | 'warp' | 'proxy' | 'singbox' | string;
   proxy_url?: string;
+  /** sing-box outbound tag this upstream dials (egress_mode 'singbox'). Empty = the manager's default (URL-test group `auto`). */
+  singbox_outbound_tag?: string;
   enabled?: boolean | null;
+}
+
+export interface SingboxNodeDTO {
+  tag: string;
+  type: string;
+  server: string;
+  port: number;
+  /** True while the health gate keeps this node out of the rotation. */
+  cooling?: boolean;
+  /** RFC3339 expiry of the current cooldown (present when cooling). */
+  cooldown_until?: string;
+  /** Current consecutive-failure count behind the cooldown. */
+  failures?: number;
+}
+
+export interface SingboxStatusDTO {
+  running: boolean;
+  box_created: boolean;
+  ready: boolean;
+  node_count: number;
+  default_tag?: string;
+  /**
+   * Only present for an authenticated caller: the subscription URL is a
+   * token-bearing credential, so the public status response omits it and
+   * reports `subscription_configured` instead.
+   */
+  subscription_url?: string;
+  subscription_configured?: boolean;
+  /** Refresh interval in nanoseconds (Go time.Duration JSON encoding). */
+  refresh_interval?: number;
+  last_refresh_at?: string;
+  last_refresh_error?: string;
+  nodes?: SingboxNodeDTO[];
+  /** Node-selection mode: "urltest" (fastest) or "round_robin" (rotating). */
+  strategy?: string;
+  error?: string;
 }
 
 export interface WarpStatusDTO {
@@ -330,6 +368,7 @@ export interface UpstreamModelsRequest {
   timeout_ms?: number;
   egress_mode?: string;
   proxy_url?: string;
+  singbox_outbound_tag?: string;
 }
 
 export interface UpstreamModelsResponse {

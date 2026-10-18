@@ -208,7 +208,12 @@ export function UpstreamDrawer({
           {entry?.egress_mode ? (
             <div>
               <span className="k">Egress mode</span>
-              <span className="v mono">{entry.egress_mode}</span>
+              <span className="v mono">
+                {entry.egress_mode}
+                {entry.egress_mode === "singbox" && entry.singbox_outbound_tag
+                  ? ` · ${entry.singbox_outbound_tag}`
+                  : ""}
+              </span>
             </div>
           ) : null}
           {entry?.credential_pool ? (

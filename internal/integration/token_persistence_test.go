@@ -46,7 +46,7 @@ func TestTokenTelemetryAndPersistence_Integration(t *testing.T) {
 	reg := registry.New()
 	build(t, reg, dir)
 
-	pool := upstream.NewPool()
+	pool := upstream.NewPool(nil)
 	breakers := upstream.NewBreakerRegistry(upstream.BreakerConfig{
 		FailureThreshold: 5,
 		SuccessThreshold: 2,
@@ -202,7 +202,7 @@ func TestTokenTelemetry_Streaming_Integration(t *testing.T) {
 	reg := registry.New()
 	build(t, reg, dir)
 
-	pool := upstream.NewPool()
+	pool := upstream.NewPool(nil)
 	breakers := upstream.NewBreakerRegistry(upstream.BreakerConfig{
 		FailureThreshold: 5,
 		SuccessThreshold: 2,
