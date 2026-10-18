@@ -184,7 +184,7 @@ func StartMockHarness() (*MockHarness, error) {
 
 	// 3. Assemble Firefly router dependencies
 	discardLogger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	clientPool := upstream.NewPool()
+	clientPool := upstream.NewPool(nil)
 	breakers := upstream.NewBreakerRegistry(upstream.BreakerConfig{
 		FailureThreshold: 5,
 		SuccessThreshold: 2,

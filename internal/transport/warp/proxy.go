@@ -11,19 +11,27 @@ import (
 
 	"golang.org/x/net/proxy"
 
+	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/supervisor"
 )
 
 // EgressConfig specifies the outbound routing parameters.
 type EgressConfig struct {
-	Mode        string
-	ProxyURL    string
-	WarpDialer  Dialer
-	DialTimeout time.Duration
+	Mode       string
+	ProxyURL   string
+	WarpDialer Dialer
+	// SingboxDialer carries traffic for Mode == "singbox". It is a per-upstream
+	// dialer already bound to the upstream's outbound tag, so the transport does
+	// not need to know which node group a request belongs to.
+	SingboxDialer Dialer
+	DialTimeout   time.Duration
 }
 
 // EgressModeWarp selects the embedded WARP tunnel.
-const EgressModeWarp = "warp"
+//
+// It is an alias of domain.EgressModeWarp so that the config validator, the
+// transport router, and the dashboard compare the same literal.
+const EgressModeWarp = domain.EgressModeWarp
 
 // IsWarpEgress reports whether mode selects the WARP tunnel. It lives next to the
 // dialer selection it mirrors so that callers reasoning about a client's egress —
@@ -33,8 +41,15 @@ func IsWarpEgress(mode string) bool {
 	return strings.EqualFold(strings.TrimSpace(mode), EgressModeWarp)
 }
 
+// IsSingboxEgress reports whether mode routes through the embedded sing-box pool.
+// It mirrors IsWarpEgress and lives beside the router that consumes it so the two
+// cannot disagree.
+func IsSingboxEgress(mode string) bool {
+	return strings.EqualFold(strings.TrimSpace(mode), domain.EgressModeSingbox)
+}
+
 // ConfigureTransportEgress configures the outbound dialer and proxy function on the provided http.Transport
-// according to the specified egress mode (direct, warp, or socks5/http proxy).
+// according to the specified egress mode (direct, warp, socks5/http proxy, or sing-box).
 func ConfigureTransportEgress(tr *http.Transport, cfg EgressConfig) {
 	if tr == nil {
 		return
@@ -60,7 +75,15 @@ func ConfigureTransportEgress(tr *http.Transport, cfg EgressConfig) {
 			dialContext = cfg.WarpDialer.DialContext
 			proxyFunc = nil
 		}
-	case mode == "proxy":
+	case IsSingboxEgress(mode):
+		// Same contract as WARP: no dialer means no pool to route through, so
+		// the environment proxy stays in place instead of being disabled. The
+		// manager itself fails open to a direct dial when its Box is not ready.
+		if cfg.SingboxDialer != nil {
+			dialContext = cfg.SingboxDialer.DialContext
+			proxyFunc = nil
+		}
+	case mode == domain.EgressModeProxy:
 		trimmedURL := strings.TrimSpace(cfg.ProxyURL)
 		if trimmedURL != "" {
 			lowerURL := strings.ToLower(trimmedURL)

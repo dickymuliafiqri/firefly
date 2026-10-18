@@ -83,7 +83,7 @@ func TestPhase3_UpstreamFallbackChain(t *testing.T) {
 	reg := registry.New()
 	build(t, reg, dir)
 
-	pool := upstream.NewPool()
+	pool := upstream.NewPool(nil)
 	breakers := upstream.NewBreakerRegistry(upstream.BreakerConfig{
 		FailureThreshold: 1,
 		Cooldown:         time.Hour,
@@ -210,7 +210,7 @@ func TestPhase3_MultiKeyRetryLoop(t *testing.T) {
 		t.Fatalf("build: %v", err)
 	}
 
-	pool := upstream.NewPool()
+	pool := upstream.NewPool(nil)
 	breakers := upstream.NewBreakerRegistry(upstream.BreakerConfig{FailureThreshold: 5})
 
 	openAIAdapter := openai.NewAdapter(pool, breakers, openai.Config{
@@ -325,7 +325,7 @@ func TestPhase3_AnthropicTransparentTranslation(t *testing.T) {
 		t.Fatalf("build: %v", err)
 	}
 
-	pool := upstream.NewPool()
+	pool := upstream.NewPool(nil)
 	breakers := upstream.NewBreakerRegistry(upstream.BreakerConfig{FailureThreshold: 5})
 
 	anthropicAdapter := anthropic.NewAdapter(pool, breakers, anthropic.Config{

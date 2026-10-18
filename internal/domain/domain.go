@@ -615,13 +615,36 @@ type Upstream struct {
 
 	// EgressMode defines the outbound transport routing for this upstream:
 	// "direct" (default host interface), "warp" (built-in Cloudflare WARP),
-	// or "proxy" (custom HTTP/SOCKS5 proxy URL).
+	// "proxy" (custom HTTP/SOCKS5 proxy URL), or "singbox" (node selected
+	// from an embedded sing-box outbound pool).
 	EgressMode string
 
 	// ProxyURL is the target proxy endpoint when EgressMode is "proxy"
 	// (e.g. "socks5://user:pass@host:port" or "http://host:port").
 	ProxyURL string
+
+	// SingboxOutboundTag selects which sing-box outbound carries this
+	// upstream's traffic when EgressMode is "singbox". It accepts a node tag
+	// from the subscription, or one of the programmatic group tags: "auto"
+	// (URLTest — fastest live node, the default when empty) or "select"
+	// (manual selector). An unknown tag is rejected at config build time so a
+	// typo cannot silently send traffic direct.
+	SingboxOutboundTag string
 }
+
+// Egress modes select how an upstream's outbound traffic leaves the host.
+// They are the single source of truth shared by config validation, the
+// transport egress router, and the dashboard.
+const (
+	// EgressModeDirect uses the host's default network interface.
+	EgressModeDirect = "direct"
+	// EgressModeWarp routes through the embedded Cloudflare WARP tunnel.
+	EgressModeWarp = "warp"
+	// EgressModeProxy routes through an operator-supplied HTTP/SOCKS5 proxy URL.
+	EgressModeProxy = "proxy"
+	// EgressModeSingbox routes through a node from the embedded sing-box pool.
+	EgressModeSingbox = "singbox"
+)
 
 // RoutingStrategy dictates how requests for a model are distributed across candidate upstreams.
 type RoutingStrategy string

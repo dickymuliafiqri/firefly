@@ -60,6 +60,7 @@ func sanitizePublicSettings(src config.SettingsDTO) config.SettingsDTO {
 			Enabled:               u.Enabled,
 			EgressMode:            u.EgressMode,
 			ProxyURL:              u.ProxyURL,
+			SingboxOutboundTag:    u.SingboxOutboundTag,
 		})
 	}
 
@@ -935,6 +936,13 @@ func settingsDTOFromSnapshot(snap *domain.CatalogSnapshot) config.SettingsDTO {
 		cRPS := u.CredentialRPS
 		cMax := u.CredentialMaxConcurrent
 		en := !u.Disabled
+		// Routing/resilience fields are re-emitted losslessly: every caller of
+		// this reconstruction (pricing CRUD, pricing import, tenant admin,
+		// notification admin) persists the WHOLE payload authored by
+		// persistSettings, so anything omitted here is silently reset to its
+		// zero value. AlwaysAvailable is deliberately NOT emitted (see below).
+		keThreshold := u.KeyErrorThreshold
+		keCooldownMs := u.KeyCooldownDurationMs
 
 		settings.Upstreams = append(settings.Upstreams, config.UpstreamDTO{
 			Name:                    u.Name,
@@ -956,6 +964,18 @@ func settingsDTOFromSnapshot(snap *domain.CatalogSnapshot) config.SettingsDTO {
 			CredentialRPS:           &cRPS,
 			CredentialMaxConcurrent: &cMax,
 			Enabled:                 &en,
+			KeyErrorThreshold:       &keThreshold,
+			KeyErrorAction:          u.KeyErrorAction,
+			KeyCooldownDurationMs:   &keCooldownMs,
+			KeyErrorRules:           keyErrorRuleDTOsFromDomain(u.KeyErrorRules),
+			ProbeModel:              u.ProbeModel,
+			EgressMode:              u.EgressMode,
+			ProxyURL:                u.ProxyURL,
+			SingboxOutboundTag:      u.SingboxOutboundTag,
+			// AlwaysAvailable is intentionally left unset. domain.Upstream holds
+			// the RESOLVED bool, so emitting it would turn a NULL ("let
+			// config.Build decide", which keeps the keyless OpenCode free tier
+			// pinned open) into an explicit false on the next reload.
 		})
 	}
 
@@ -998,6 +1018,30 @@ func settingsDTOFromSnapshot(snap *domain.CatalogSnapshot) config.SettingsDTO {
 	}
 
 	return settings
+}
+
+// keyErrorRuleDTOsFromDomain reverses the config.builder conversion so a
+// reconstructed settings payload carries the same per-status key error rules
+// the live snapshot routes by. A zero cooldown duration is emitted as absent
+// rather than an explicit 0, matching what a hand-written upstreams.json holds.
+func keyErrorRuleDTOsFromDomain(rules []domain.KeyErrorRule) []config.KeyErrorRuleDTO {
+	if len(rules) == 0 {
+		return nil
+	}
+	dtos := make([]config.KeyErrorRuleDTO, 0, len(rules))
+	for _, r := range rules {
+		dto := config.KeyErrorRuleDTO{
+			StatusCode: r.StatusCode,
+			Threshold:  r.Threshold,
+			Action:     r.Action,
+		}
+		if r.CooldownDurationS > 0 {
+			cooldownS := r.CooldownDurationS
+			dto.CooldownDurationS = &cooldownS
+		}
+		dtos = append(dtos, dto)
+	}
+	return dtos
 }
 
 // ringHasSecret reports whether secret is one of the live keyring's plaintext

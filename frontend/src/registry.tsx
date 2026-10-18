@@ -9,6 +9,7 @@ import {
   Layers,
   Lock,
   MessageCircle,
+  Network,
   Plug,
   Radar,
   Server,
@@ -32,6 +33,7 @@ import { QuotaPage } from '@/pages/QuotaPage';
 import { ConsolePage } from '@/pages/ConsolePage';
 import { VisualizerPage } from '@/pages/VisualizerPage';
 import { WarpPage } from '@/pages/WarpPage';
+import { SingboxPage } from '@/pages/SingboxPage';
 import { PricingPage } from '@/pages/PricingPage';
 
 import { LoginPage } from '@/pages/LoginPage';
@@ -53,6 +55,7 @@ export type PageId =
   | 'console'
   | 'visualizer'
   | 'warp'
+  | 'singbox'
   | 'pricing'
   | 'login'
   | 'upstream-editor';
@@ -77,6 +80,7 @@ export const PAGES: Record<PageId, PageDef> = {
   connect:    { id: 'connect',    title: 'Connect',    description: 'Wire AI agents to this gateway.',                 group: 'SERVICES',      icon: Plug,          element: () => <ConnectPage /> },
   settings:   { id: 'settings',   title: 'Settings',   description: 'Global gateway configuration.',                   group: 'CONFIGURATION', icon: Sliders,       element: () => <SettingsPage /> },
   warp:      { id: 'warp',      title: 'Warp',      description: 'Cloudflare WARP egress pool & rotation.',           group: 'PROXIES',      icon: Globe,         element: () => <WarpPage /> },
+  singbox:   { id: 'singbox',   title: 'Singbox',   description: 'sing-box egress pool & subscription.',              group: 'PROXIES',      icon: Network,       element: () => <SingboxPage /> },
   chat:       { id: 'chat',       title: 'Chat',       description: 'SSE chat tester with stream inspector.',          group: 'TOOLS',         icon: MessageCircle, element: () => <ChatPage /> },
   benchmark:  { id: 'benchmark',  title: 'Benchmark',  description: 'Gateway throughput benchmarking.',                group: 'TOOLS',         icon: Zap,           element: () => <BenchmarkPage /> },
   quota:      { id: 'quota',      title: 'Quota',      description: 'Tenant quota tracker with top-up.',               group: 'MONITORING',    icon: Coins,         element: () => <QuotaPage /> },

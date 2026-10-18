@@ -365,7 +365,7 @@ func TestPool_WarpRetryTransportWiring(t *testing.T) {
 		},
 		{
 			name:     "warp egress without manager",
-			pool:     NewPool(),
+			pool:     NewPool(nil),
 			upstream: &domain.Upstream{Name: "w", EgressMode: "warp"},
 			wrapped:  false,
 		},

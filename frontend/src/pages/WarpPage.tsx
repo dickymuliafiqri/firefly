@@ -3,6 +3,7 @@ import { useState, type FormEvent } from 'react';
 import { Badge } from '@/components/ui/Badge';
 import { Field } from '@/components/ui/Controls';
 import { KpiCard, KpiGrid, PageHeader } from '@/components/ui/PageHeader';
+import { Pagination } from '@/components/ui/Pagination';
 import { QueryGate } from '@/components/ui/QueryGate';
 import { useRotateWarpMutation, useSetWarpPoolSizeMutation, useWarpStatusQuery } from '@/services/api';
 import type { WarpStatusDTO } from '@/services/schema';
@@ -167,6 +168,14 @@ export function WarpPage() {
   const live = Boolean(d?.enabled);
   const ips = d?.egress_ips ?? [];
 
+  // The pool can hold up to 64 slots; paginate the list so a full pool stays
+  // scannable instead of turning the card into a scroll wall.
+  const [poolPage, setPoolPage] = useState(1);
+  const POOL_PAGE_SIZE = 20;
+  const poolTotalPages = Math.max(1, Math.ceil(ips.length / POOL_PAGE_SIZE));
+  const safePoolPage = Math.min(poolPage, poolTotalPages);
+  const pagedIps = ips.slice((safePoolPage - 1) * POOL_PAGE_SIZE, safePoolPage * POOL_PAGE_SIZE);
+
   // Three states, not two: a warm-up that never reached Cloudflare is neither a
   // live pool nor a healthy idle engine, so it is reported as UNAVAILABLE with
   // the recorded reason instead of the neutral STANDBY badge.
@@ -230,16 +239,16 @@ export function WarpPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {ips.length === 0 ? (
+                  {pagedIps.length === 0 ? (
                     <tr>
                       <td colSpan={3} className="faint">
                         No active sessions. The pool dials on first use.
                       </td>
                     </tr>
                   ) : (
-                    ips.map((ip, i) => (
-                      <tr key={`${ip}-${i}`}>
-                        <td className="num">#{i + 1}</td>
+                    pagedIps.map((ip, i) => (
+                      <tr key={`${ip}-${safePoolPage}`}>
+                        <td className="num">#{(safePoolPage - 1) * POOL_PAGE_SIZE + i + 1}</td>
                         <td>
                           <span
                             className="inline-flex items-center gap-2"
@@ -257,6 +266,16 @@ export function WarpPage() {
                   )}
                 </tbody>
               </table>
+            </div>
+            <div className="card-body tight" style={{ paddingTop: 0 }}>
+              <Pagination
+                total={ips.length}
+                page={safePoolPage}
+                pageSize={POOL_PAGE_SIZE}
+                totalPages={poolTotalPages}
+                onPageChange={setPoolPage}
+                unit="slot"
+              />
             </div>
           </div>
           <WarpPoolSizeCard status={d} />
