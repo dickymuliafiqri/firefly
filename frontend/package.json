@@ -2,6 +2,7 @@
   "name": "firefly-frontend",
   "private": true,
   "version": "1.44.17",
+  "license": "GPL-3.0-or-later",
   "type": "module",
   "scripts": {
     "dev": "vite",
