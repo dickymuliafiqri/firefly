@@ -24,6 +24,7 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/storage/analytics"
 	"github.com/dickymuliafiqri/firefly/internal/storage/turso"
 	"github.com/dickymuliafiqri/firefly/internal/transport/httpx"
+	"github.com/dickymuliafiqri/firefly/internal/transport/singbox"
 	"github.com/dickymuliafiqri/firefly/internal/transport/tunnel"
 	"github.com/dickymuliafiqri/firefly/internal/transport/warp"
 )
@@ -53,6 +54,11 @@ type RouterDeps struct {
 	TursoManager  *TursoManager
 	WarpManager   *warp.Manager
 	TunnelManager *tunnel.Manager
+	// SingboxManager backs the Sing-box egress option (subscription-based
+	// outbound pool). It is nil when sing-box is not configured; in that case
+	// /api/singbox/* reports a graceful "not initialized" and upstreams with
+	// egress_mode "singbox" fall back to direct dial.
+	SingboxManager *singbox.Manager
 
 	// SelfUpdate backs the dashboard's update panel: it looks up the newest
 	// release, probes whether this host may install one, and runs the single
@@ -372,6 +378,19 @@ func (s *Server) buildHandler(deps RouterDeps) http.Handler {
 	mux.HandleFunc("POST /api/warp/pool-size", deps.handleSetWarpPoolSize)
 	mux.HandleFunc("OPTIONS /api/warp/rotate", deps.handleOptionsSettings)
 	mux.HandleFunc("POST /api/warp/rotate", deps.handleRotateWarp)
+	mux.HandleFunc("OPTIONS /api/singbox/status", deps.handleOptionsSettings)
+	mux.HandleFunc("GET /api/singbox/status", deps.handleGetSingboxStatus)
+	mux.HandleFunc("OPTIONS /api/singbox/refresh", deps.handleOptionsSettings)
+	mux.HandleFunc("POST /api/singbox/refresh", deps.handleSingboxRefresh)
+	mux.HandleFunc("OPTIONS /api/singbox/subscription", deps.handleOptionsSettings)
+	mux.HandleFunc("GET /api/singbox/subscription", deps.handleGetSingboxSubscription)
+	mux.HandleFunc("PUT /api/singbox/subscription", deps.handleSetSingboxSubscription)
+	mux.HandleFunc("OPTIONS /api/singbox/default-tag", deps.handleOptionsSettings)
+	mux.HandleFunc("POST /api/singbox/default-tag", deps.handleSetSingboxDefaultTag)
+	mux.HandleFunc("OPTIONS /api/singbox/strategy", deps.handleOptionsSettings)
+	mux.HandleFunc("PUT /api/singbox/strategy", deps.handleSetSingboxStrategy)
+	mux.HandleFunc("OPTIONS /api/singbox/nodes", deps.handleOptionsSettings)
+	mux.HandleFunc("GET /api/singbox/nodes", deps.handleListSingboxNodes)
 
 	// Cloudflare Tunnel Ingress API
 	mux.HandleFunc("OPTIONS /api/tunnel/status", deps.handleOptionsSettings)

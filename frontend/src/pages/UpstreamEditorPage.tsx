@@ -49,6 +49,7 @@ export function UpstreamEditorPage() {
     fallbackUrls: [],
     egressMode: "direct",
     proxyUrl: "",
+    singboxOutboundTag: "",
     allowInsecure: false,
     timeoutMs: 30000,
     idleTimeoutMs: 60000,
@@ -109,6 +110,7 @@ export function UpstreamEditorPage() {
       egressMode:
         (target.egress_mode as GeneralState["egressMode"]) ?? "direct",
       proxyUrl: target.proxy_url ?? "",
+      singboxOutboundTag: target.singbox_outbound_tag ?? "",
       allowInsecure: target.allow_insecure ?? false,
       timeoutMs: target.timeout_ms ?? 30000,
       idleTimeoutMs: target.idle_timeout_ms ?? 60000,
@@ -350,6 +352,10 @@ export function UpstreamEditorPage() {
       proxy_url:
         general.egressMode === "proxy"
           ? general.proxyUrl.trim() || undefined
+          : undefined,
+      singbox_outbound_tag:
+        general.egressMode === "singbox"
+          ? general.singboxOutboundTag.trim() || undefined
           : undefined,
       allow_insecure: general.allowInsecure,
       timeout_ms: general.timeoutMs > 0 ? general.timeoutMs : undefined,

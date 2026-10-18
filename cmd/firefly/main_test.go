@@ -234,10 +234,17 @@ func TestDefaultConfigsWithoutEnvStartsCleanly(t *testing.T) {
 }
 
 // buildBinary compiles the command into a temp path.
+//
+// The build budget is deliberately generous: this compiles the whole gateway
+// from a cache the `-race` test run does not populate (race and non-race builds
+// are separate cache entries), and the embedded sing-box engine pulls in a
+// large graph (gVisor netstack, quic-go) that a slow CI runner needs minutes
+// for. 60s was enough before that engine existed and now kills the build
+// mid-flight (`build: signal: killed`) before any assertion runs.
 func buildBinary(t *testing.T) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "firefly-test")
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	build := exec.CommandContext(ctx, "go", "build", "-o", bin, ".")
 	build.Env = os.Environ()

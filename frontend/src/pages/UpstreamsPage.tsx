@@ -368,6 +368,21 @@ export function UpstreamsPage() {
                         </span>
                       </>
                     ) : null}
+                    {entry?.egress_mode === "singbox" ? (
+                      <>
+                        <span>&middot;</span>
+                        <span
+                          className="text-violet-400 font-mono text-[10px] font-medium"
+                          title={
+                            entry.singbox_outbound_tag
+                              ? `sing-box outbound: ${entry.singbox_outbound_tag}`
+                              : "sing-box egress (default outbound)"
+                          }
+                        >
+                          SINGBOX
+                        </span>
+                      </>
+                    ) : null}
                   </div>
                 </div>
 

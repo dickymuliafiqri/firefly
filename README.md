@@ -1,7 +1,7 @@
 # Firefly
 
 [![Go Version](https://img.shields.io/badge/go-1.22+-00ADD8?style=flat&logo=go)](https://go.dev/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](./LICENSE)
 [![CI Status](https://github.com/dickymuliafiqri/firefly/actions/workflows/ci.yml/badge.svg)](https://github.com/dickymuliafiqri/firefly/actions)
 [![Docker](https://github.com/dickymuliafiqri/firefly/actions/workflows/docker.yml/badge.svg)](https://github.com/dickymuliafiqri/firefly/actions/workflows/docker.yml)
 [![Concurrency](https://img.shields.io/badge/Concurrency-1%2C000%2B%20SSE%20Streams-emerald)](./docs/loadtest.md)
@@ -467,4 +467,4 @@ make build-loadtest
 - [Frontend Design System](./DESIGN.md)
 - [Release Changelog](./CHANGELOG.md)
 - [Contribution Guidelines](./CONTRIBUTING.md)
-- [License (MIT)](./LICENSE)
+- [License (GPL-3.0-or-later)](./LICENSE)

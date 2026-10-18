@@ -78,7 +78,7 @@ func newFakeUpstream(t *testing.T) *fakeUpstream {
 // breaker registry, with the upstream secret supplied via an injected lookup.
 func realAdapter() *openai.Adapter {
 	return openai.NewAdapter(
-		upstream.NewPool(),
+		upstream.NewPool(nil),
 		upstream.NewBreakerRegistry(upstream.BreakerConfig{FailureThreshold: 3, Cooldown: time.Second}),
 		openai.Config{
 			SecretLookup:     func(string) (string, bool) { return "sk-fake-upstream", true },

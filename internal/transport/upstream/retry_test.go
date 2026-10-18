@@ -61,7 +61,7 @@ func TestAttemptsReflectsPolicy(t *testing.T) {
 }
 
 func TestPoolReturnsStableClient(t *testing.T) {
-	pool := NewPool()
+	pool := NewPool(nil)
 	u := &domain.Upstream{Name: "u1", MaxIdleConnsPerHost: 10, MaxConnsPerHost: 20, TimeoutMs: 1000, IdleTimeoutMs: 1000}
 	c1 := pool.Client(u)
 	c2 := pool.Client(u)
@@ -76,7 +76,7 @@ func TestPoolReturnsStableClient(t *testing.T) {
 }
 
 func TestPoolNilUpstreamIsSafe(t *testing.T) {
-	pool := NewPool()
+	pool := NewPool(nil)
 	if pool.Client(nil) == nil {
 		t.Fatal("nil upstream should return a usable default client")
 	}
@@ -85,7 +85,7 @@ func TestPoolNilUpstreamIsSafe(t *testing.T) {
 func TestPool_EgressTransport_WarpAndProxy(t *testing.T) {
 	t.Parallel()
 
-	pool := NewPool()
+	pool := NewPool(nil)
 	// 1. Direct mode
 	uDirect := &domain.Upstream{Name: "direct", EgressMode: "direct"}
 	cDirect := pool.Client(uDirect)

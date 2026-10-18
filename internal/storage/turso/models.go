@@ -32,11 +32,11 @@ type UpstreamRecord struct {
 	ProbeModel          string            `json:"probe_model,omitempty"`
 	// AlwaysAvailable pins the upstream open: no key cooldown, no revocation, no
 	// threshold action, no circuit breaker (domain.Upstream.AlwaysAvailable).
-	AlwaysAvailable bool `json:"always_available,omitempty"`
-	Enabled             bool              `json:"enabled"`
-	Version             int               `json:"version"`
-	CreatedAt           int64             `json:"created_at"`
-	UpdatedAt           int64             `json:"updated_at"`
+	AlwaysAvailable bool  `json:"always_available,omitempty"`
+	Enabled         bool  `json:"enabled"`
+	Version         int   `json:"version"`
+	CreatedAt       int64 `json:"created_at"`
+	UpdatedAt       int64 `json:"updated_at"`
 }
 
 // UpstreamCredentialRecord represents a row in the upstream_credentials table.

@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS upstreams (
     always_available        INTEGER,
     egress_mode             VARCHAR(32) DEFAULT 'direct',
     proxy_url               VARCHAR(255),
+    singbox_outbound_tag    VARCHAR(64),
     warp_auto_rotate_on_429 INTEGER DEFAULT 0,
     enabled                 INTEGER NOT NULL DEFAULT 1,
     version                 INTEGER NOT NULL DEFAULT 1,
@@ -198,6 +199,7 @@ func MigrateSchema(ctx context.Context, db *sql.DB) error {
 	_, _ = db.ExecContext(ctx, "ALTER TABLE upstreams ADD COLUMN always_available INTEGER")
 	_, _ = db.ExecContext(ctx, "ALTER TABLE upstreams ADD COLUMN egress_mode VARCHAR(32) DEFAULT 'direct'")
 	_, _ = db.ExecContext(ctx, "ALTER TABLE upstreams ADD COLUMN proxy_url VARCHAR(255)")
+	_, _ = db.ExecContext(ctx, "ALTER TABLE upstreams ADD COLUMN singbox_outbound_tag VARCHAR(64)")
 	_, _ = db.ExecContext(ctx, "ALTER TABLE upstreams ADD COLUMN warp_auto_rotate_on_429 INTEGER DEFAULT 0")
 
 	// Upgrade models table if columns are not present
