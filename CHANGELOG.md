@@ -5,6 +5,27 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.45.0] - 2026-10-18
+
+### Added
+
+- **An upstream can egress through an embedded sing-box pool (`internal/transport/singbox/*`, `internal/config/singbox.go`, `internal/domain/singbox.go`, `internal/server/singbox_handlers.go`, `frontend/src/pages/SingboxPage.tsx`)**: `egress_mode: "singbox"` joins `direct` / `warp` / `proxy`, routing one upstream's outbound traffic through a proxy node from a subscription instead of the host's own IP. sing-box v1.14.3 is embedded as a Go library — one process-wide Box dialed per upstream `singbox_outbound_tag`, so tens of upstreams share one node pool rather than one engine each.
+  - **The node source is a subscription URL, not pasted config.** The parser handles base64 and plaintext subscriptions and the `ss`, `vmess`, `vless`, `hysteria2`, `tuic`, `socks`, and `http` schemes; a Reality or uTLS fingerprint is preserved, and `insecure`/`skip-cert-verify` is honored **only** when the subscription explicitly asks for it — it is never defaulted on.
+  - **Selection is `urltest` (fastest live node) or `round_robin` (rotate across healthy nodes)**, with a per-node cooldown that a node earns through consecutive dial failures; `Proxies → Singbox` renders the node list, the active strategy, and the refresh state.
+  - **Boot or refresh failures fail open to a direct dial**, so a bad subscription degrades one egress mode instead of the whole gateway. The engine is two supervised workers (`singbox.refresh`, `singbox.health`) that restart with a bounded policy and stop with the process.
+  - **Configured by flag, environment, or the dashboard**, in that order of precedence: `-singbox-subscription` / `FIREFLY_SINGBOX_SUBSCRIPTION_URL`, `-singbox-refresh-interval` / `FIREFLY_SINGBOX_REFRESH_INTERVAL` (a Go duration), `-singbox-default-tag` / `FIREFLY_SINGBOX_DEFAULT_TAG`, and `-singbox-strategy` / `FIREFLY_SINGBOX_STRATEGY`, falling back to `singbox.json`, which the dashboard writes owner-only because it holds the token-bearing URL.
+
+### Changed
+
+- **Firefly is relicensed from MIT to GPL-3.0-or-later (`LICENSE`, `README.md`)**: the sing-box egress engine embeds [sing-box](https://github.com/SagerNet/sing-box) as a library, and sing-box is GPLv3, so the combined work must carry a GPLv3-compatible license. Everything shipped before 1.45.0 was MIT and remains available under that license.
+
+### Fixed
+
+- **The sing-box dial path can no longer race or panic (`internal/transport/singbox/singbox.go`)**: `outbound()` read `m.box` without the lock while `Refresh` and `Stop` wrote it under the lock, and it then dereferenced a Box that could have been cleared in between — `Box.Outbound()` on a nil receiver panics, which a graceful shutdown or a failed refresh with dials in flight could reach. It now reads the active Box exactly once through the locked `currentBox()`. Regression-covered by `TestOutboundIsRaceFreeWithConcurrentStop`.
+- **Unauthenticated `GET /api/singbox/status` no longer returns the subscription URL (`internal/server/singbox_handlers.go`)**: the URL is a token-bearing credential — stored owner-only on disk and served only to an admin by `GET /api/singbox/subscription` — yet the public status endpoint echoed it, and a failed fetch could embed it in `last_refresh_error`. An unauthenticated caller now learns only that a subscription is configured (`subscription_configured`), and the error string is redacted; the dashboard's own poll still carries the URL because it authenticates.
+- **sing-box admin request bodies are bounded** by `http.MaxBytesReader`, matching the 64 KB–1 MB ceiling the other admin endpoints already apply.
+- **A dashboard save no longer drops upstream fields (`internal/server/settings.go`)**: `key_error_threshold`, `key_error_rules`, `probe_model`, `egress_mode`, `proxy_url`, and `singbox_outbound_tag` were omitted when the settings snapshot was rebuilt, so saving anything reset them to their defaults. `always_available` is still deliberately omitted to keep its NULL tri-state.
+
 ## [1.44.17] - 2026-10-17
 
 ### Added
