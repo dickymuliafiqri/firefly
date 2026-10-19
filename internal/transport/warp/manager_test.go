@@ -15,8 +15,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"golang.zx2c4.com/wireguard/tun/netstack"
 )
 
 const (
@@ -82,12 +80,12 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	return newHarnessWithProbe(t, func(*netstack.Net) (string, string) {
+	return newHarnessWithProbe(t, func(*Net) (string, string) {
 		return testPublicIP, testColo
 	})
 }
 
-func newHarnessWithProbe(t *testing.T, probe func(*netstack.Net) (string, string)) *harness {
+func newHarnessWithProbe(t *testing.T, probe func(*Net) (string, string)) *harness {
 	t.Helper()
 
 	h := &harness{}
@@ -247,7 +245,7 @@ func TestManager_ColdStartWithSavedIdentityBuildsOneTunnel(t *testing.T) {
 		t.Fatalf("GenerateKeyPair: %v", err)
 	}
 	var probes atomic.Int64
-	h.mgr.edgeProbe = func(*netstack.Net) (string, string) {
+	h.mgr.edgeProbe = func(*Net) (string, string) {
 		probes.Add(1)
 		return testPublicIP, testColo
 	}
@@ -493,7 +491,7 @@ func TestManager_RestoreDiscardsUnreachableIdentity(t *testing.T) {
 	h.mgr.saveIdentity(keys, registrationResponse(t))
 
 	var probes atomic.Int64
-	h.mgr.edgeProbe = func(*netstack.Net) (string, string) {
+	h.mgr.edgeProbe = func(*Net) (string, string) {
 		if probes.Add(1) == 1 {
 			return "", "" // the restored tunnel is dead
 		}
