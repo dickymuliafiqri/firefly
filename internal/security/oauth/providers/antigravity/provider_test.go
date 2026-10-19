@@ -7,7 +7,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
 )
 
@@ -133,6 +135,60 @@ func TestAntigravityProvider_EndToEnd(t *testing.T) {
 	}
 	if newTok.RefreshToken != "mock-1//refresh" {
 		t.Fatalf("expected preserved refresh token, got: %s", newTok.RefreshToken)
+	}
+}
+
+// TestAntigravityProvider_BoundsErrorBody pins the truncation on both the
+// exchange and the refresh path: the token endpoint's error body is not a value
+// we control, and the message reaches an HTTP response and the server log.
+func TestAntigravityProvider_BoundsErrorBody(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(strings.Repeat("A", 200_000)))
+	}))
+	defer server.Close()
+
+	prov := New(
+		WithCredentials("client-id-xyz", "client-secret-abc"),
+		WithAuthURLs(server.URL+"/auth", server.URL+"/token", server.URL+"/userinfo"),
+		WithProdBaseURL(server.URL),
+		WithHTTPClient(server.Client()),
+	)
+
+	ctx := context.Background()
+	session, err := prov.PrepareAuth(ctx, "http://localhost:8080/callback")
+	if err != nil {
+		t.Fatalf("PrepareAuth error: %v", err)
+	}
+
+	_, err = prov.ExchangeCode(ctx, "valid-google-code", session)
+	if err == nil {
+		t.Fatal("expected ExchangeCode to fail")
+	}
+	if !strings.Contains(err.Error(), "token exchange failed (HTTP 500)") {
+		t.Fatalf("unexpected error text: %s", err.Error())
+	}
+	if len(err.Error()) > maxErrorBodyChars+64 {
+		t.Fatalf("exchange error body not bounded: %d bytes", len(err.Error()))
+	}
+
+	_, err = prov.RefreshToken(ctx, &domain.OAuthConnection{
+		ID:       "antigravity-developer@gmail.com",
+		Provider: "antigravity",
+		Token: domain.OAuthToken{
+			AccessToken:  "stale-access-token",
+			RefreshToken: "mock-1//refresh",
+			ExpiresAt:    time.Now().Add(-10 * time.Minute),
+		},
+	})
+	if err == nil {
+		t.Fatal("expected RefreshToken to fail")
+	}
+	if len(err.Error()) > maxErrorBodyChars+64 {
+		t.Fatalf("refresh error body not bounded: %d bytes", len(err.Error()))
 	}
 }
 

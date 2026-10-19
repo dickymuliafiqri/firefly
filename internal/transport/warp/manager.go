@@ -23,7 +23,6 @@ import (
 
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
-	"golang.zx2c4.com/wireguard/tun/netstack"
 
 	"github.com/dickymuliafiqri/firefly/internal/singleflightx"
 	"github.com/dickymuliafiqri/firefly/internal/supervisor"
@@ -91,7 +90,7 @@ var errClosed = errors.New("warp manager is closed")
 // Session represents an active WireGuard connection to Cloudflare WARP.
 type Session struct {
 	Dev  *device.Device
-	TNet *netstack.Net
+	TNet *Net
 
 	// PublicIP is the egress address reported by the Cloudflare edge for this
 	// tunnel. It is empty until a probe succeeds: the WARP-assigned 172.16/12
@@ -224,7 +223,7 @@ type Manager struct {
 	// registrationURL and edgeProbe are seams for offline tests; production keeps
 	// the Cloudflare defaults.
 	registrationURL string
-	edgeProbe       func(tnet *netstack.Net) (publicIPv4, colo string)
+	edgeProbe       func(tnet *Net) (publicIPv4, colo string)
 
 	sessionGrace       time.Duration
 	autoRotateInterval time.Duration
@@ -527,7 +526,7 @@ func (m *Manager) buildSession(keys *KeyPair, reg *RegistrationResponse, start t
 		netip.MustParseAddr("1.0.0.1"),
 	}
 
-	tunDev, tnet, err := netstack.CreateNetTUN(localAddrs, dnsServers, 1420)
+	tunDev, tnet, err := CreateNetTUN(localAddrs, dnsServers, 1420)
 	if err != nil {
 		return nil, fmt.Errorf("create userspace net tun: %w", err)
 	}
@@ -1225,9 +1224,10 @@ func (m *Manager) rotationAllowed(now time.Time) bool {
 	}
 }
 
-// probeEdgeTrace reads https://cloudflare.com/cdn-cgi/trace through netstack to
-// learn the tunnel's public egress address and the edge cologne that served it.
-func (m *Manager) probeEdgeTrace(tnet *netstack.Net) (string, string) {
+// probeEdgeTrace reads https://cloudflare.com/cdn-cgi/trace through the tunnel's
+// userspace stack to learn the tunnel's public egress address and the edge
+// cologne that served it.
+func (m *Manager) probeEdgeTrace(tnet *Net) (string, string) {
 	if tnet == nil {
 		return "", ""
 	}

@@ -288,6 +288,21 @@ func (a *Adapter) relayAnthropicSSE(ctx context.Context, w http.ResponseWriter, 
 	var currentEvent string
 	var msgID string
 
+	// A malformed upstream chunk must not become one log line per chunk. A bad
+	// stream would otherwise emit a warning at token rate, and because each
+	// message embeds the upstream's own text, every one would open its own log
+	// group. Count them and report once, when the stream ends.
+	var (
+		translateErrs int
+		firstErr      error
+	)
+	defer func() {
+		if translateErrs > 0 && a.cfg.Logger != nil {
+			a.cfg.Logger.Warn("anthropic chunk translation failed; affected chunks were dropped",
+				"errors", translateErrs, "err", firstErr)
+		}
+	}()
+
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
@@ -304,8 +319,9 @@ func (a *Adapter) relayAnthropicSSE(ctx context.Context, w http.ResponseWriter, 
 			dataStr := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 			chunk, isDone, err := TranslateAnthropicChunkToOpenAI(currentEvent, []byte(dataStr), publicModel, &msgID)
 			if err != nil {
-				if a.cfg.Logger != nil {
-					a.cfg.Logger.Warn("anthropic chunk translation error", "event", currentEvent, "err", err)
+				translateErrs++
+				if firstErr == nil {
+					firstErr = err
 				}
 				continue
 			}

@@ -13,6 +13,7 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/adapter/antigravity"
 	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
 	"github.com/dickymuliafiqri/firefly/internal/domain"
+	"github.com/dickymuliafiqri/firefly/internal/supervisor"
 )
 
 // Provider-side quota for OAuth-connected providers (Services → Quota).
@@ -257,6 +258,11 @@ func (deps RouterDeps) handleListProviderQuota(w http.ResponseWriter, r *http.Re
 	for i, conn := range targets {
 		i, conn := i, conn
 		group.Go(func() error {
+			// errgroup does not recover panics, and RecoverMiddleware only guards
+			// the handler goroutine: an unguarded panic here (a malformed provider
+			// quota response reaching a decode stack) would take the whole process
+			// down, dropping every in-flight SSE stream with it.
+			defer supervisor.Guard("server.quota-fetch")()
 			results[i] = deps.fetchConnectionQuota(groupCtx, conn, now, force)
 			return nil
 		})

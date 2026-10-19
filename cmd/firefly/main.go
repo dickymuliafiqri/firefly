@@ -427,6 +427,10 @@ func run() error {
 		wg.Add(1)
 		done := supervisor.Go(ctx, name, supervisor.DefaultPolicy(), fn)
 		go func() {
+			// The joiner is a goroutine too: a panic here would be an unrecovered
+			// runtime crash. Guard runs after wg.Done() (defers unwind LIFO), so a
+			// panic still releases the WaitGroup main joins on.
+			defer supervisor.Guard("server.worker-joiner")()
 			defer wg.Done()
 			<-done
 		}()

@@ -18,6 +18,7 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/limits"
 	"github.com/dickymuliafiqri/firefly/internal/observability/usage"
+	"github.com/dickymuliafiqri/firefly/internal/supervisor"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
 	"github.com/dickymuliafiqri/firefly/internal/security/auth"
 	"github.com/dickymuliafiqri/firefly/internal/server"
@@ -235,6 +236,9 @@ func StartMockHarness() (*MockHarness, error) {
 	var serverWg sync.WaitGroup
 	serverWg.Add(1)
 	go func() {
+		// A panic in a bare goroutine is an unrecovered runtime crash; Guard runs
+		// after serverWg.Done() so the cleanup wait still completes.
+		defer supervisor.Guard("loadtest.mock-server")()
 		defer serverWg.Done()
 		_ = s.ServeOnListener(ln)
 	}()

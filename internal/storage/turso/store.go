@@ -196,6 +196,35 @@ func (s *Store) bumpCatalogRevisionLocked(ctx context.Context) (int64, error) {
 	return rev, nil
 }
 
+// bumpCatalogRevisionAfterCommit advances the catalog revision for a write that is
+// already committed, logging a failure instead of returning it.
+//
+// The write itself is durable, so the caller keeps its success result. But the
+// revision is what makes a watcher hot-reload, so a silent failure would leave
+// every peer serving stale configuration with no signal at all.
+func (s *Store) bumpCatalogRevisionAfterCommit(ctx context.Context, op string) {
+	if _, err := s.bumpCatalogRevisionLocked(ctx); err != nil {
+		s.getLogger().Warn("catalog revision bump failed after committed write; peers may serve stale configuration",
+			"op", op, "err", err)
+	}
+}
+
+// logPushAfterCommit flushes a write that is already committed to the cloud
+// replica, logging a failure instead of discarding it.
+//
+// The local replica holds the write and the next sync cycle retries it, so the
+// call site keeps its success result. But a push failure nobody records hides
+// replica divergence from the operator entirely, which is why it is logged
+// rather than dropped.
+func logPushAfterCommit(ctx context.Context, client *Client, logger *slog.Logger, op string) {
+	if client == nil {
+		return
+	}
+	if err := client.PushLocked(ctx); err != nil {
+		logger.Warn("push to turso cloud failed; local replica holds the write", "op", op, "err", err)
+	}
+}
+
 // LoadCatalogSnapshot reads configuration from the database tables,
 // resolves dynamic keys from providers/api_keys, builds a validated
 // CatalogSnapshot, and returns any validation warnings.
@@ -901,6 +930,48 @@ func pruneOrphanCredentials(ctx context.Context, tx *sql.Tx, upstreamID int64, k
 	return nil
 }
 
+// loadExistingIDs reads an id-keyed lookup table inside the save transaction.
+//
+// It is deliberately fail-closed. Every payload sweep in SaveSettings decides
+// what to DELETE from these maps, so a silently truncated map is a silent
+// data-loss bug in both directions: rows missing from the map are never deleted
+// (orphans survive), and an upstream whose name is missing from
+// upstreamNameToID skips the "still referenced by a surviving model" guard
+// entirely — `if name, ok := idToName[id]; ok && ...` fails open when `ok` is
+// false — so the upstream and its models are deleted even though the payload
+// still needs them. The earlier code discarded the QueryContext error with
+// `if err == nil`, and never checked rows.Err(), so a failed or partially
+// drained cursor produced exactly that truncated map while the save reported
+// success (the self-inflicted delete of CHANGELOG 1.24.1).
+//
+// keysOf receives the row's id and a scanner, and returns every identity the row
+// is indexed under — a tenant is indexed by both its plaintext key and its hash.
+func loadExistingIDs(ctx context.Context, tx *sql.Tx, query string, keysOf func(id *int64, scan rowScanner) ([]string, error)) (map[string]int64, error) {
+	rows, err := tx.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string]int64)
+	for rows.Next() {
+		var id int64
+		keys, err := keysOf(&id, rows)
+		if err != nil {
+			return nil, err
+		}
+		for _, k := range keys {
+			if k != "" {
+				out[k] = id
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SaveSettings writes the full SettingsDTO into the Turso database in an atomic
 // transaction, updates catalog revisions, and pushes changes to the cloud.
 func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) error {
@@ -924,21 +995,21 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 	now := time.Now().UnixMilli()
 
 	// 1. Process upstreams
-	upstreamNameToID := make(map[string]int64)
-	existingUpstreamIDs := make(map[int64]bool)
-
-	rows, err := tx.QueryContext(ctx, "SELECT id, name FROM upstreams")
+	upstreamNameToID, err := loadExistingIDs(ctx, tx, "SELECT id, name FROM upstreams",
+		func(id *int64, scan rowScanner) ([]string, error) {
+			var name string
+			if err := scan.Scan(id, &name); err != nil {
+				return nil, err
+			}
+			return []string{name}, nil
+		})
 	if err != nil {
 		return fmt.Errorf("query existing upstreams: %w", err)
 	}
-	for rows.Next() {
-		var id int64
-		var name string
-		_ = rows.Scan(&id, &name)
-		upstreamNameToID[name] = id
+	existingUpstreamIDs := make(map[int64]bool, len(upstreamNameToID))
+	for _, id := range upstreamNameToID {
 		existingUpstreamIDs[id] = true
 	}
-	rows.Close()
 
 	activeUpstreamIDs := make(map[int64]bool)
 
@@ -1119,22 +1190,26 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 			if name, ok := idToName[id]; ok && modelUpstreamsInUse[name] {
 				continue
 			}
-			_, _ = tx.ExecContext(ctx, "DELETE FROM models WHERE upstream_id = ?", id)
-			_, _ = tx.ExecContext(ctx, "DELETE FROM upstreams WHERE id = ?", id)
+			if _, err := tx.ExecContext(ctx, "DELETE FROM models WHERE upstream_id = ?", id); err != nil {
+				return fmt.Errorf("delete models of upstream %d: %w", id, err)
+			}
+			if _, err := tx.ExecContext(ctx, "DELETE FROM upstreams WHERE id = ?", id); err != nil {
+				return fmt.Errorf("delete upstream %d: %w", id, err)
+			}
 		}
 	}
 
 	// 2. Process models
-	existingModels := make(map[string]int64)
-	mRows, err := tx.QueryContext(ctx, "SELECT id, public_name FROM models")
-	if err == nil {
-		for mRows.Next() {
-			var id int64
+	existingModels, err := loadExistingIDs(ctx, tx, "SELECT id, public_name FROM models",
+		func(id *int64, scan rowScanner) ([]string, error) {
 			var pubName string
-			_ = mRows.Scan(&id, &pubName)
-			existingModels[pubName] = id
-		}
-		mRows.Close()
+			if err := scan.Scan(id, &pubName); err != nil {
+				return nil, err
+			}
+			return []string{pubName}, nil
+		})
+	if err != nil {
+		return fmt.Errorf("query existing models: %w", err)
 	}
 
 	activeModels := make(map[string]bool)
@@ -1193,22 +1268,24 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 	if len(settings.Models) > 0 || settings.ManageModels {
 		for pubName, id := range existingModels {
 			if !activeModels[pubName] {
-				_, _ = tx.ExecContext(ctx, "DELETE FROM models WHERE id = ?", id)
+				if _, err := tx.ExecContext(ctx, "DELETE FROM models WHERE id = ?", id); err != nil {
+					return fmt.Errorf("delete model %q: %w", pubName, err)
+				}
 			}
 		}
 	}
 
 	// 3. Process Combos
-	existingCombos := make(map[string]int64)
-	cRows, err := tx.QueryContext(ctx, "SELECT id, name FROM combos")
-	if err == nil {
-		for cRows.Next() {
-			var id int64
+	existingCombos, err := loadExistingIDs(ctx, tx, "SELECT id, name FROM combos",
+		func(id *int64, scan rowScanner) ([]string, error) {
 			var cname string
-			_ = cRows.Scan(&id, &cname)
-			existingCombos[cname] = id
-		}
-		cRows.Close()
+			if err := scan.Scan(id, &cname); err != nil {
+				return nil, err
+			}
+			return []string{cname}, nil
+		})
+	if err != nil {
+		return fmt.Errorf("query existing combos: %w", err)
 	}
 
 	activeCombos := make(map[string]bool)
@@ -1256,27 +1333,24 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 	if len(settings.Combos) > 0 || settings.ManageCombos {
 		for cname, id := range existingCombos {
 			if !activeCombos[cname] {
-				_, _ = tx.ExecContext(ctx, "DELETE FROM combos WHERE id = ?", id)
+				if _, err := tx.ExecContext(ctx, "DELETE FROM combos WHERE id = ?", id); err != nil {
+					return fmt.Errorf("delete combo %q: %w", cname, err)
+				}
 			}
 		}
 	}
 
 	// 4. Process Tenants
-	existingTenants := make(map[string]int64)
-	tRows, err := tx.QueryContext(ctx, "SELECT id, COALESCE(api_key, ''), COALESCE(key_hash, '') FROM tenants")
-	if err == nil {
-		for tRows.Next() {
-			var id int64
+	existingTenants, err := loadExistingIDs(ctx, tx, "SELECT id, COALESCE(api_key, ''), COALESCE(key_hash, '') FROM tenants",
+		func(id *int64, scan rowScanner) ([]string, error) {
 			var ak, kh string
-			_ = tRows.Scan(&id, &ak, &kh)
-			if ak != "" {
-				existingTenants[ak] = id
+			if err := scan.Scan(id, &ak, &kh); err != nil {
+				return nil, err
 			}
-			if kh != "" {
-				existingTenants[kh] = id
-			}
-		}
-		tRows.Close()
+			return []string{ak, kh}, nil
+		})
+	if err != nil {
+		return fmt.Errorf("query existing tenants: %w", err)
 	}
 
 	activeTenants := make(map[string]bool)
@@ -1393,7 +1467,11 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 	if len(settings.Tenants) > 0 || settings.ManageTenants {
 		for kh, id := range existingTenants {
 			if !activeTenants[kh] {
-				_, _ = tx.ExecContext(ctx, "DELETE FROM tenants WHERE id = ?", id)
+				// Only the row id is named: a tenant row is keyed by its plaintext
+				// gateway key as well as its hash, and that key must not reach a log.
+				if _, err := tx.ExecContext(ctx, "DELETE FROM tenants WHERE id = ?", id); err != nil {
+					return fmt.Errorf("delete tenant row %d: %w", id, err)
+				}
 			}
 		}
 	}
@@ -1524,10 +1602,8 @@ func (s *Store) SaveUpstream(ctx context.Context, u *UpstreamRecord) error {
 		u.UpdatedAt = now
 	}
 
-	_, _ = s.bumpCatalogRevisionLocked(ctx)
-	if s.client != nil {
-		_ = s.client.PushLocked(ctx)
-	}
+	s.bumpCatalogRevisionAfterCommit(ctx, "save upstream")
+	logPushAfterCommit(ctx, s.client, s.getLogger(), "save upstream")
 	return nil
 }
 
@@ -1545,10 +1621,8 @@ func (s *Store) DeleteUpstream(ctx context.Context, id int64) error {
 		return ErrNotFound
 	}
 
-	_, _ = s.bumpCatalogRevisionLocked(ctx)
-	if s.client != nil {
-		_ = s.client.PushLocked(ctx)
-	}
+	s.bumpCatalogRevisionAfterCommit(ctx, "delete upstream")
+	logPushAfterCommit(ctx, s.client, s.getLogger(), "delete upstream")
 	return nil
 }
 
@@ -1607,10 +1681,8 @@ func (s *Store) SaveModel(ctx context.Context, m *ModelRecord) error {
 		m.UpdatedAt = now
 	}
 
-	_, _ = s.bumpCatalogRevisionLocked(ctx)
-	if s.client != nil {
-		_ = s.client.PushLocked(ctx)
-	}
+	s.bumpCatalogRevisionAfterCommit(ctx, "save model")
+	logPushAfterCommit(ctx, s.client, s.getLogger(), "save model")
 	return nil
 }
 
@@ -1628,10 +1700,8 @@ func (s *Store) DeleteModel(ctx context.Context, id int64) error {
 		return ErrNotFound
 	}
 
-	_, _ = s.bumpCatalogRevisionLocked(ctx)
-	if s.client != nil {
-		_ = s.client.PushLocked(ctx)
-	}
+	s.bumpCatalogRevisionAfterCommit(ctx, "delete model")
+	logPushAfterCommit(ctx, s.client, s.getLogger(), "delete model")
 	return nil
 }
 
@@ -1685,10 +1755,8 @@ func (s *Store) SaveCombo(ctx context.Context, c *ComboRecord) error {
 		c.UpdatedAt = now
 	}
 
-	_, _ = s.bumpCatalogRevisionLocked(ctx)
-	if s.client != nil {
-		_ = s.client.PushLocked(ctx)
-	}
+	s.bumpCatalogRevisionAfterCommit(ctx, "save combo")
+	logPushAfterCommit(ctx, s.client, s.getLogger(), "save combo")
 	return nil
 }
 
@@ -1706,10 +1774,8 @@ func (s *Store) DeleteCombo(ctx context.Context, id int64) error {
 		return ErrNotFound
 	}
 
-	_, _ = s.bumpCatalogRevisionLocked(ctx)
-	if s.client != nil {
-		_ = s.client.PushLocked(ctx)
-	}
+	s.bumpCatalogRevisionAfterCommit(ctx, "delete combo")
+	logPushAfterCommit(ctx, s.client, s.getLogger(), "delete combo")
 	return nil
 }
 
@@ -1780,10 +1846,8 @@ func (s *Store) SaveTenant(ctx context.Context, t *TenantRecord) error {
 		t.UpdatedAt = now
 	}
 
-	_, _ = s.bumpCatalogRevisionLocked(ctx)
-	if s.client != nil {
-		_ = s.client.PushLocked(ctx)
-	}
+	s.bumpCatalogRevisionAfterCommit(ctx, "save tenant")
+	logPushAfterCommit(ctx, s.client, s.getLogger(), "save tenant")
 	return nil
 }
 
@@ -1801,10 +1865,8 @@ func (s *Store) DeleteTenant(ctx context.Context, id int64) error {
 		return ErrNotFound
 	}
 
-	_, _ = s.bumpCatalogRevisionLocked(ctx)
-	if s.client != nil {
-		_ = s.client.PushLocked(ctx)
-	}
+	s.bumpCatalogRevisionAfterCommit(ctx, "delete tenant")
+	logPushAfterCommit(ctx, s.client, s.getLogger(), "delete tenant")
 	return nil
 }
 
@@ -1863,16 +1925,18 @@ func (s *Store) DeactivateKey(ctx context.Context, keyID int64, reason string) e
 	if err != nil {
 		return fmt.Errorf("deactivate key %d: %w", keyID, err)
 	}
-	// Also mark matching upstream_credentials
-	_, _ = s.db.ExecContext(ctx, `
+	// Also mark matching upstream_credentials. This mirrors a primary write that
+	// already succeeded, so a failure is logged rather than returned — but a silent
+	// failure would leave the mirror reporting an active credential.
+	if _, err := s.db.ExecContext(ctx, `
 		UPDATE upstream_credentials
 		SET is_active = 0, status = 'deactivated', updated_at = ?
 		WHERE api_key_id = ?
-	`, now, keyID)
-
-	if s.client != nil {
-		_ = s.client.PushLocked(ctx)
+	`, now, keyID); err != nil {
+		s.getLogger().Warn("deactivate key: mirror update on upstream_credentials failed", "key_id", keyID, "err", err)
 	}
+
+	logPushAfterCommit(ctx, s.client, s.getLogger(), "deactivate key")
 	return nil
 }
 
@@ -1881,14 +1945,13 @@ func (s *Store) DeleteKey(ctx context.Context, keyID int64) error {
 	s.lock()
 	defer s.unlock()
 
-	_, _ = s.db.ExecContext(ctx, `DELETE FROM upstream_credentials WHERE api_key_id = ?`, keyID)
-	_, err := s.db.ExecContext(ctx, `DELETE FROM api_keys WHERE id = ?`, keyID)
-	if err != nil {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM upstream_credentials WHERE api_key_id = ?`, keyID); err != nil {
+		s.getLogger().Warn("delete key: mirror delete on upstream_credentials failed", "key_id", keyID, "err", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM api_keys WHERE id = ?`, keyID); err != nil {
 		return fmt.Errorf("delete key %d: %w", keyID, err)
 	}
 
-	if s.client != nil {
-		_ = s.client.PushLocked(ctx)
-	}
+	logPushAfterCommit(ctx, s.client, s.getLogger(), "delete key")
 	return nil
 }

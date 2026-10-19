@@ -5,6 +5,14 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.45.1] - 2026-10-20
+
+### Fixed
+
+- **WARP-egress upstreams no longer crash the gateway when two or more clients use them (`internal/transport/warp/netstack.go`, `internal/transport/warp/manager.go`, `internal/transport/warp/netstack_test.go`)**: the userspace tun handed every outbound packet to the WireGuard reader over an **unbuffered** channel (`incomingPacket`) and `netTun.Close()` closed that channel underneath the sender, while `Device.Close()` closes the tun *before* it stops the goroutines writing into it. Any session teardown — the 30-second rotation tick, a `429`/`503`-driven `evictSession`, a grace-expired `drainSession`, or shutdown — that landed while the tunnel was carrying packets therefore raised `panic: send on closed channel` inside `netTun.WriteNotify`. That goroutine belongs to the netstack, not to Firefly, so `supervisor` could not recover it: the process died and took every in-flight SSE stream with it. It surfaced only under real traffic, which is why one client looked fine and two or more did not — and the same handoff deadlocked `Close` itself once the tun reader was gone (`stack.Close()` → `endpoint.Abort()` → RST → nobody left to receive it), which hung `Manager.Close()`'s `drainWG.Wait()` and so graceful shutdown.
+  - The TUN half of `tun/netstack` is now vendored (`netstack.go`, with the upstream MIT attribution in its file header) and changes only the teardown: `incomingPacket` is buffered, every handoff is a `select` against a `done` channel that `Close` closes **first** so an unservable sender releases its view, `incomingPacket` is never closed (making "send on closed channel" unrepresentable), `Close` is idempotent through `sync.Once`, upstream's `stack.Wait()` teardown barrier is kept (it can no longer block), `Write`/`Read`/`DialContext` fail closed with `os.ErrClosed` once the stack is down, and views are released after `Read` (upstream leaked one packet chunk per read). Dialling, DNS resolution through the tunnel, and the WireGuard device contract are unchanged.
+  - Regression-covered without a Cloudflare account or any network: `TestNetTunTeardownUnderTrafficIsPanicFree`, `TestNetTunTeardownWithoutReaderReturns`, `TestNetTunCloseIsIdempotent`, `TestNetTunClosedDeviceFailsClosed`, `TestNetTunResolvesNumericHost` (`internal/transport/warp/netstack_test.go`). A panic in these paths crashes the test binary, so a green `-race` run is the assertion.
+
 ## [1.45.0] - 2026-10-18
 
 ### Added

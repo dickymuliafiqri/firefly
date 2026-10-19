@@ -16,6 +16,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/dickymuliafiqri/firefly/internal/supervisor"
 )
 
 // RequestResult records the outcome and timing of a single HTTP request.
@@ -143,6 +145,8 @@ func Execute(ctx context.Context, cfg RunConfig) (*SummaryStats, error) {
 
 	for workerID := 0; workerID < cfg.Concurrency; workerID++ {
 		go func(wid int) {
+			// A panic in a bare worker goroutine takes the whole load run down.
+			defer supervisor.Guard("loadtest.worker")()
 			defer doneWg.Done()
 
 			// Signal readiness for synchronized release

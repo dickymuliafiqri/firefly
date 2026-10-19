@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
@@ -38,6 +40,29 @@ func isMasked(s string) bool {
 	return textx.IsMasked(s)
 }
 
+// redactProxyURLForPublic keeps the scheme and host of an egress proxy URL for
+// the unauthenticated settings view and drops the userinfo, query and fragment.
+//
+// A proxy URL legitimately carries credentials (`socks5://user:pass@host:1080`),
+// and GET /api/settings serves this view to anonymous callers. A value that
+// cannot be parsed is not echoed back at all.
+func redactProxyURLForPublic(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	u.User = nil
+	u.RawQuery = ""
+	u.ForceQuery = false
+	u.Fragment = ""
+	u.RawFragment = ""
+	return u.String()
+}
+
 // sanitizePublicSettings extracts safe public metadata for dashboard display,
 // strictly redacting sensitive credentials (API keys, pool, tenants, turso, autoTLS).
 func sanitizePublicSettings(src config.SettingsDTO) config.SettingsDTO {
@@ -59,7 +84,7 @@ func sanitizePublicSettings(src config.SettingsDTO) config.SettingsDTO {
 			AlwaysAvailable:       u.AlwaysAvailable,
 			Enabled:               u.Enabled,
 			EgressMode:            u.EgressMode,
-			ProxyURL:              u.ProxyURL,
+			ProxyURL:              redactProxyURLForPublic(u.ProxyURL),
 			SingboxOutboundTag:    u.SingboxOutboundTag,
 		})
 	}

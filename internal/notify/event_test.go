@@ -64,11 +64,16 @@ func TestSeverityRankOrdering(t *testing.T) {
 }
 
 func TestRedactURL(t *testing.T) {
+	// The credential of every webhook format Firefly supports lives in the path
+	// (Slack/Discord) or the query, so only scheme and host may survive.
 	cases := []struct{ in, want string }{
-		{"https://discord.com/api/webhooks/123/secret-token", "https://discord.com/api/webhooks/123/secret-token"},
-		{"https://hooks.slack.com/services/T00/B00/XXXX?token=abc", "https://hooks.slack.com/services/T00/B00/XXXX"},
+		{"https://discord.com/api/webhooks/123/secret-token", "https://discord.com"},
+		{"https://hooks.slack.com/services/T00/B00/XXXX?token=abc", "https://hooks.slack.com"},
+		{"https://api.telegram.org/bot123456:AAHsecret/sendMessage", "https://api.telegram.org"},
+		{"https://user:pass@example.com/hook", "https://example.com"},
 		{"not a url", "[unparseable-url]"},
 		{"", "[unparseable-url]"},
+		{"/only/a/path", "[unparseable-url]"},
 	}
 	for _, tc := range cases {
 		if got := redactURL(tc.in); got != tc.want {

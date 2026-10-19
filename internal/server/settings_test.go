@@ -1092,3 +1092,76 @@ func TestSettingsPricingRoundTrip(t *testing.T) {
 		t.Fatalf("rejected payload must not touch the live sheet, got %+v", table)
 	}
 }
+
+// TestSanitizePublicSettings_RedactsProxyURLCredentials pins the fix for an
+// anonymous leak: GET /api/settings serves sanitizePublicSettings to callers
+// with no admin token, and proxy_url accepts socks5://user:pass@host, so the
+// credentials must not survive into the public view.
+func TestSanitizePublicSettings_RedactsProxyURLCredentials(t *testing.T) {
+	t.Parallel()
+
+	src := config.SettingsDTO{
+		Upstreams: []config.UpstreamDTO{
+			{
+				Name:       "proxied",
+				Protocol:   "openai",
+				EgressMode: "proxy",
+				ProxyURL:   "socks5://proxyuser:proxypass@127.0.0.1:1080?token=sk-leak#frag",
+			},
+			{
+				Name:       "direct",
+				Protocol:   "openai",
+				EgressMode: "direct",
+			},
+		},
+	}
+
+	public := sanitizePublicSettings(src)
+	if len(public.Upstreams) != 2 {
+		t.Fatalf("expected 2 upstreams in the public view, got %d", len(public.Upstreams))
+	}
+
+	got := public.Upstreams[0]
+	if strings.Contains(got.ProxyURL, "proxypass") || strings.Contains(got.ProxyURL, "proxyuser") ||
+		strings.Contains(got.ProxyURL, "sk-leak") || strings.Contains(got.ProxyURL, "frag") {
+		t.Fatalf("proxy credentials leaked into the public view: %q", got.ProxyURL)
+	}
+	if got.ProxyURL != "socks5://127.0.0.1:1080" {
+		t.Fatalf("expected scheme+host only, got %q", got.ProxyURL)
+	}
+	if got.EgressMode != "proxy" {
+		t.Fatalf("egress mode must stay visible, got %q", got.EgressMode)
+	}
+	if public.Upstreams[1].ProxyURL != "" {
+		t.Fatalf("empty proxy_url must stay empty, got %q", public.Upstreams[1].ProxyURL)
+	}
+}
+
+// TestRedactProxyURLForPublic covers the unparseable and empty inputs, which
+// must not be echoed back to an anonymous caller.
+func TestRedactProxyURLForPublic(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty", "", ""},
+		{"whitespace", "   ", ""},
+		{"no scheme", "127.0.0.1:1080", ""},
+		{"scheme without host", "socks5://", ""},
+		{"credentials", "socks5://u:p@h:1080", "socks5://h:1080"},
+		{"credentials and query", "http://u:p@h:8080/proxy?key=secret", "http://h:8080/proxy"},
+		{"plain", "http://127.0.0.1:8080", "http://127.0.0.1:8080"},
+		{"percent escaped userinfo", "socks5://user%40corp:pw@h:1080", "socks5://h:1080"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := redactProxyURLForPublic(tc.in); got != tc.want {
+				t.Fatalf("redactProxyURLForPublic(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}

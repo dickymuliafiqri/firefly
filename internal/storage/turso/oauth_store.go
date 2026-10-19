@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -168,9 +169,7 @@ func (s *OAuthStore) Save(ctx context.Context, conn *domain.OAuthConnection) err
 		return fmt.Errorf("save oauth connection: %w", err)
 	}
 
-	if s.client != nil {
-		_ = s.client.PushLocked(ctx)
-	}
+	logPushAfterCommit(ctx, s.client, slog.Default(), "save oauth connection")
 
 	return nil
 }
@@ -247,9 +246,7 @@ func (s *OAuthStore) Delete(ctx context.Context, id string) error {
 		return fmt.Errorf("delete oauth connection: %w", err)
 	}
 
-	if s.client != nil {
-		_ = s.client.PushLocked(ctx)
-	}
+	logPushAfterCommit(ctx, s.client, slog.Default(), "delete oauth connection")
 
 	return nil
 }
