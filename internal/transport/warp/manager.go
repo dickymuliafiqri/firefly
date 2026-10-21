@@ -63,6 +63,10 @@ const (
 	// requests round-robin across the live slots.
 	DefaultPoolSize = 25
 
+	// DefaultDrainedCooldown defines how long a superseded or evicted tunnel stays
+	// quarantined in the drained registry before it could ever re-enter the active pool (30m).
+	DefaultDrainedCooldown = 30 * time.Minute
+
 	// MinPoolSize is the smallest usable pool: a single tunnel, which is the
 	// pre-pool behaviour and the reason a lower value is clamped instead of
 	// rejected.
@@ -91,6 +95,11 @@ var errClosed = errors.New("warp manager is closed")
 type Session struct {
 	Dev  *device.Device
 	TNet *Net
+
+	// DeviceID is the Cloudflare WARP registration device ID.
+	DeviceID string
+	// PublicKey is the base64-encoded WireGuard public key of this tunnel.
+	PublicKey string
 
 	// PublicIP is the egress address reported by the Cloudflare edge for this
 	// tunnel. It is empty until a probe succeeds: the WARP-assigned 172.16/12
@@ -231,6 +240,11 @@ type Manager struct {
 	rotateTimeout      time.Duration
 	probeTimeout       time.Duration
 
+	// drainedCooldown bounds how long a retired or evicted tunnel stays quarantined.
+	drainedCooldown time.Duration
+	drainedMu       sync.RWMutex
+	drainedEntries  map[string]time.Time
+
 	connTotal atomic.Int64
 	draining  atomic.Int64
 	drainWG   sync.WaitGroup
@@ -281,6 +295,8 @@ func NewManager(logger *slog.Logger, licenseKey string, identityPath ...string) 
 		autoRotateInterval: DefaultAutoRotateInterval,
 		minRotateInterval:  DefaultMinRotateInterval,
 		egressLimit:        DefaultEgressLimit,
+		drainedCooldown:    DefaultDrainedCooldown,
+		drainedEntries:     make(map[string]time.Time),
 		rotateTimeout:      defaultRotateTimeout,
 		probeTimeout:       defaultProbeTimeout,
 		bgCtx:              ctx,
@@ -299,6 +315,98 @@ func (m *Manager) SetAutoRotateInterval(d time.Duration) {
 		return
 	}
 	m.autoRotateInterval = d
+}
+
+// SetDrainedCooldown configures how long a retired or evicted tunnel remains
+// quarantined from re-entering the active pool. Non-positive values restore DefaultDrainedCooldown (30m).
+func (m *Manager) SetDrainedCooldown(d time.Duration) {
+	if m == nil {
+		return
+	}
+	m.drainedMu.Lock()
+	defer m.drainedMu.Unlock()
+	if d <= 0 {
+		d = DefaultDrainedCooldown
+	}
+	m.drainedCooldown = d
+}
+
+// recordDrained registers a session into the drained quarantine registry for drainedCooldown.
+func (m *Manager) recordDrained(s *Session) {
+	if m == nil || s == nil {
+		return
+	}
+	m.drainedMu.Lock()
+	defer m.drainedMu.Unlock()
+
+	now := time.Now()
+	cooldown := m.drainedCooldown
+	if cooldown <= 0 {
+		cooldown = DefaultDrainedCooldown
+	}
+	expiresAt := now.Add(cooldown)
+
+	// Lazy cleanup of expired entries
+	for k, exp := range m.drainedEntries {
+		if now.After(exp) {
+			delete(m.drainedEntries, k)
+		}
+	}
+
+	m.drainedEntries[fmt.Sprintf("ptr:%p", s)] = expiresAt
+	if s.PublicKey != "" {
+		m.drainedEntries["pub:"+s.PublicKey] = expiresAt
+	}
+	if s.DeviceID != "" {
+		m.drainedEntries["dev:"+s.DeviceID] = expiresAt
+	}
+}
+
+// isDrainedCooldown reports whether a session is currently quarantined in the drained registry.
+func (m *Manager) isDrainedCooldown(s *Session) bool {
+	if m == nil || s == nil {
+		return false
+	}
+	m.drainedMu.RLock()
+	defer m.drainedMu.RUnlock()
+
+	now := time.Now()
+	if exp, ok := m.drainedEntries[fmt.Sprintf("ptr:%p", s)]; ok && now.Before(exp) {
+		return true
+	}
+	if s.PublicKey != "" {
+		if exp, ok := m.drainedEntries["pub:"+s.PublicKey]; ok && now.Before(exp) {
+			return true
+		}
+	}
+	if s.DeviceID != "" {
+		if exp, ok := m.drainedEntries["dev:"+s.DeviceID]; ok && now.Before(exp) {
+			return true
+		}
+	}
+	return false
+}
+
+// isIdentityDrained reports whether credentials match a quarantined drained tunnel.
+func (m *Manager) isIdentityDrained(deviceID, publicKey string) bool {
+	if m == nil {
+		return false
+	}
+	m.drainedMu.RLock()
+	defer m.drainedMu.RUnlock()
+
+	now := time.Now()
+	if publicKey != "" {
+		if exp, ok := m.drainedEntries["pub:"+publicKey]; ok && now.Before(exp) {
+			return true
+		}
+	}
+	if deviceID != "" {
+		if exp, ok := m.drainedEntries["dev:"+deviceID]; ok && now.Before(exp) {
+			return true
+		}
+	}
+	return false
 }
 
 // ValidPoolSize reports whether n is a pool size an operator may choose from the
@@ -586,9 +694,19 @@ func (m *Manager) buildSession(keys *KeyPair, reg *RegistrationResponse, start t
 		return nil, fmt.Errorf("start wireguard device: %w", err)
 	}
 
+	var devID, pubKey string
+	if reg != nil {
+		devID = reg.ID
+	}
+	if keys != nil {
+		pubKey = keys.PublicKeyB64
+	}
+
 	session := &Session{
 		Dev:          dev,
 		TNet:         tnet,
+		DeviceID:     devID,
+		PublicKey:    pubKey,
 		InternalIPv4: v4Str,
 		Endpoint:     peerEndpoint,
 		LatencyMs:    time.Since(start).Milliseconds(),
@@ -733,9 +851,12 @@ func (m *Manager) ensureSession(ctx context.Context) (*Session, error) {
 			if active := m.installSession(s); active != nil {
 				return active, nil
 			}
-			return nil, errClosed
+			if m.closed.Load() {
+				return nil, errClosed
+			}
+			m.logger.Info("cached warp identity was rejected (in drained cooldown); registering a fresh device")
 		}
-		if !errors.Is(err, os.ErrNotExist) {
+		if !errors.Is(err, os.ErrNotExist) && err != nil {
 			m.logger.Warn("could not reuse cached warp identity; registering a new device", "error", err)
 		}
 
@@ -766,6 +887,17 @@ func (m *Manager) restoreSession() (*Session, error) {
 	ident, err := m.loadSavedIdentity()
 	if err != nil {
 		return nil, err
+	}
+
+	var devID, pubKey string
+	if ident.Registration != nil {
+		devID = ident.Registration.ID
+	}
+	if ident.Keys != nil {
+		pubKey = ident.Keys.PublicKeyB64
+	}
+	if m.isIdentityDrained(devID, pubKey) {
+		return nil, errors.New("cached warp identity is in drained cooldown")
 	}
 
 	session, err := m.buildSession(ident.Keys, ident.Registration, time.Now())
@@ -804,6 +936,27 @@ func (m *Manager) installSession(s *Session) *Session {
 		return nil
 	}
 
+	// Never reinstall a session that is already quiesced or closed.
+	if s.Quiescing() || s.closed.Load() {
+		if m.logger != nil {
+			m.logger.Warn("rejected re-installing a quiesced or closed warp session",
+				"public_ip", s.PublicIP,
+				"device_id", s.DeviceID)
+		}
+		return nil
+	}
+
+	// Reject tunnels currently in the 30-minute drained cooldown quarantine.
+	if m.isDrainedCooldown(s) {
+		if m.logger != nil {
+			m.logger.Warn("rejected re-installing warp session currently in drained cooldown",
+				"public_ip", s.PublicIP,
+				"device_id", s.DeviceID)
+		}
+		s.Close()
+		return nil
+	}
+
 	m.publishMu.Lock()
 
 	if m.closed.Load() {
@@ -814,6 +967,15 @@ func (m *Manager) installSession(s *Session) *Session {
 
 	var drained *Session
 	cur := cloneActive(&m.active)
+
+	// Guard against duplicate active entry: if s is already active, do nothing.
+	for _, existing := range cur {
+		if existing == s {
+			m.publishMu.Unlock()
+			return s
+		}
+	}
+
 	if len(cur) < int(m.poolSize.Load()) {
 		// Growth phase: add a slot, retire nothing.
 		cur = append(cur, s)
@@ -927,6 +1089,12 @@ func newestSession(cur []*Session) *Session {
 // used to surface to clients as an upstream 502. When the grace expires with
 // connections still open the drain logs and re-arms instead of closing.
 func (m *Manager) drainSession(old *Session) {
+	if old == nil {
+		return
+	}
+	old.Quiesce()
+	m.recordDrained(old)
+
 	m.draining.Add(1)
 	m.drainWG.Add(1)
 

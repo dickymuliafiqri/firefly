@@ -933,3 +933,109 @@ func TestManager_AutoRotationObserverSkipsFailedRotation(t *testing.T) {
 		t.Fatalf("observer fired %d times for a failed rotation, want 0", got)
 	}
 }
+
+// When a tunnel is drained, it must not be able to re-enter the active pool
+// within the drained cooldown period (30 minutes by default), whether via
+// the same session instance or another session sharing the same credentials.
+func TestManager_DrainedTunnelCooldownRejectsReinstallation(t *testing.T) {
+	mgr := NewManager(quietLogger(), "")
+	defer mgr.Close()
+	mgr.SetPoolSize(2)
+	mgr.SetDrainedCooldown(30 * time.Minute)
+
+	s1 := &Session{DeviceID: "dev-1", PublicKey: "pub-1", PublicIP: "203.0.113.1", CreatedAt: time.Now()}
+	s2 := &Session{DeviceID: "dev-2", PublicKey: "pub-2", PublicIP: "203.0.113.2", CreatedAt: time.Now().Add(time.Second)}
+	if got := mgr.installSession(s1); got != s1 {
+		t.Fatalf("expected s1 to be installed, got %v", got)
+	}
+	if got := mgr.installSession(s2); got != s2 {
+		t.Fatalf("expected s2 to be installed, got %v", got)
+	}
+
+	// Drain s1 explicitly
+	mgr.drainSession(s1)
+
+	// 1. Attempt to reinstall s1 instance directly -> must be rejected
+	if got := mgr.installSession(s1); got != nil {
+		t.Fatal("expected drained session s1 to be rejected on reinstall")
+	}
+
+	// 2. Attempt to install a new session instance with the same DeviceID -> must be rejected
+	sDuplicateDev := &Session{DeviceID: "dev-1", PublicKey: "pub-diff", PublicIP: "203.0.113.3", CreatedAt: time.Now().Add(2 * time.Second)}
+	if got := mgr.installSession(sDuplicateDev); got != nil {
+		t.Fatal("expected session with matching drained DeviceID to be rejected")
+	}
+
+	// 3. Attempt to install a new session instance with the same PublicKey -> must be rejected
+	sDuplicateKey := &Session{DeviceID: "dev-diff", PublicKey: "pub-1", PublicIP: "203.0.113.4", CreatedAt: time.Now().Add(3 * time.Second)}
+	if got := mgr.installSession(sDuplicateKey); got != nil {
+		t.Fatal("expected session with matching drained PublicKey to be rejected")
+	}
+
+	// 4. A clean fresh session with different credentials must be accepted
+	sClean := &Session{DeviceID: "dev-3", PublicKey: "pub-3", PublicIP: "203.0.113.5", CreatedAt: time.Now().Add(4 * time.Second)}
+	if got := mgr.installSession(sClean); got != sClean {
+		t.Fatalf("expected clean fresh session to be installed, got %v", got)
+	}
+}
+
+// Once the cooldown period expires, a fresh session with those credentials can be re-installed.
+func TestManager_DrainedTunnelCooldownExpires(t *testing.T) {
+	mgr := NewManager(quietLogger(), "")
+	defer mgr.Close()
+	mgr.SetPoolSize(2)
+	mgr.SetDrainedCooldown(50 * time.Millisecond)
+
+	s := &Session{DeviceID: "dev-exp", PublicKey: "pub-exp", PublicIP: "203.0.113.1", CreatedAt: time.Now()}
+	mgr.installSession(s)
+	mgr.drainSession(s)
+
+	// During cooldown, a session with the same credentials is rejected
+	s2 := &Session{DeviceID: "dev-exp", PublicKey: "pub-exp", PublicIP: "203.0.113.1", CreatedAt: time.Now().Add(time.Second)}
+	if got := mgr.installSession(s2); got != nil {
+		t.Fatal("expected s2 to be rejected during cooldown")
+	}
+
+	// Wait for cooldown to expire
+	time.Sleep(100 * time.Millisecond)
+
+	// After cooldown, a fresh session with those credentials can be installed
+	s3 := &Session{DeviceID: "dev-exp", PublicKey: "pub-exp", PublicIP: "203.0.113.1", CreatedAt: time.Now().Add(2 * time.Second)}
+	if got := mgr.installSession(s3); got != s3 {
+		t.Fatalf("expected s3 to be accepted after cooldown expired, got %v", got)
+	}
+}
+
+// ensureSession must bypass a cached identity if it matches a tunnel in drained cooldown,
+// falling back to registering a fresh device.
+func TestManager_EnsureSessionBypassesQuarantinedIdentity(t *testing.T) {
+	h := newHarness(t)
+
+	dir := t.TempDir()
+	h.mgr.identityPath = filepath.Join(dir, "warp_identity.json")
+	keys, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	reg := registrationResponse(t)
+	h.mgr.saveIdentity(keys, reg)
+
+	// Put this saved identity's public key in drained cooldown.
+	dummySession := &Session{
+		PublicKey: keys.PublicKeyB64,
+	}
+	h.mgr.recordDrained(dummySession)
+
+	// ensureSession should detect the identity is in drained cooldown,
+	// bypass the cache, and register a fresh device.
+	sess, err := h.mgr.ensureSession(t.Context())
+	if err != nil {
+		t.Fatalf("ensureSession: %v", err)
+	}
+	if sess.PublicKey == keys.PublicKeyB64 {
+		t.Errorf("ensureSession must not return the quarantined public key %s", keys.PublicKeyB64)
+	}
+	if got := h.regCalls.Load(); got != 1 {
+		t.Errorf("expected fresh device registration when cached identity is quarantined, got %d", got)
+	}
+}
