@@ -116,12 +116,36 @@ type Session struct {
 	closed   atomic.Bool
 	quiesced atomic.Bool
 
+	latencyMs    atomic.Int64
+	lastCheckAt  atomic.Int64 // unix nano
+	lastCheckErr atomic.Value // string
+	lastSuccess  atomic.Bool
+
 	// limitedUntil is the unix-nano instant until which pick() skips this
 	// session because its egress IP recently returned a 429. Zero means not
 	// limited. It self-heals: once the instant passes the session is selectable
 	// again with no separate reaper, so a transient IP rate limit never
 	// permanently removes a healthy tunnel from the pool.
 	limitedUntil atomic.Int64
+}
+
+// Latency returns the round-trip latency in milliseconds. It prefers the
+// most recent health check measurement, falling back to initial handshake.
+func (s *Session) Latency() int64 {
+	if s == nil {
+		return 0
+	}
+	if v := s.latencyMs.Load(); v > 0 {
+		return v
+	}
+	return s.LatencyMs
+}
+
+func (s *Session) setLatency(ms int64) {
+	if s != nil {
+		s.latencyMs.Store(ms)
+		s.LatencyMs = ms
+	}
 }
 
 // limited reports whether the session is under a recent egress-IP penalty at now.
@@ -718,6 +742,9 @@ func (m *Manager) buildSession(keys *KeyPair, reg *RegistrationResponse, start t
 	} else {
 		session.PublicIP, session.Colo = m.probeEdgeTrace(tnet)
 	}
+	session.latencyMs.Store(session.LatencyMs)
+	session.lastCheckAt.Store(time.Now().UnixNano())
+	session.lastSuccess.Store(session.PublicIP != "")
 
 	return session, nil
 }
@@ -1492,6 +1519,39 @@ func (m *Manager) Status() Status {
 		}
 	}
 
+	now := time.Now().UnixNano()
+	for i, slot := range pool {
+		if slot == nil {
+			continue
+		}
+		slotStatus := "active"
+		if slot.limited(now) {
+			slotStatus = "cooling"
+		} else if !slot.lastSuccess.Load() && slot.lastCheckAt.Load() > 0 {
+			slotStatus = "unreachable"
+		}
+		isPrimary := session != nil && slot == session
+
+		var lastCheckTime time.Time
+		if lca := slot.lastCheckAt.Load(); lca > 0 {
+			lastCheckTime = time.Unix(0, lca)
+		}
+
+		st.Sessions = append(st.Sessions, SessionStatus{
+			ID:           i + 1,
+			PublicIP:     slot.PublicIP,
+			InternalIPv4: slot.InternalIPv4,
+			Colo:         slot.Colo,
+			Endpoint:     slot.Endpoint,
+			LatencyMs:    slot.Latency(),
+			ActiveConns:  slot.conns.Load(),
+			Status:       slotStatus,
+			CreatedAt:    slot.CreatedAt,
+			LastCheckAt:  lastCheckTime,
+			Primary:      isPrimary,
+		})
+	}
+
 	if session == nil {
 		return st
 	}
@@ -1503,6 +1563,98 @@ func (m *Manager) Status() Status {
 	st.Endpoint = session.Endpoint
 	st.HandshakeLatencyMs = session.LatencyMs
 	return st
+}
+
+// probeSession tests an active session's egress connectivity and measures response time.
+func (m *Manager) probeSession(ctx context.Context, s *Session) error {
+	if s == nil || s.TNet == nil || s.closed.Load() {
+		return errors.New("warp session closed")
+	}
+	start := time.Now()
+	var ip, colo string
+	if m.edgeProbe != nil {
+		ip, colo = m.edgeProbe(s.TNet)
+	} else {
+		ip, colo = m.probeEdgeTrace(s.TNet)
+	}
+	s.lastCheckAt.Store(time.Now().UnixNano())
+	if ip == "" {
+		s.lastSuccess.Store(false)
+		s.lastCheckErr.Store("trace probe failed: no response")
+		return errors.New("trace probe returned empty ip")
+	}
+	lat := time.Since(start).Milliseconds()
+	if lat <= 0 {
+		lat = 1
+	}
+	s.setLatency(lat)
+	s.lastSuccess.Store(true)
+	s.lastCheckErr.Store("")
+	if s.PublicIP == "" {
+		s.PublicIP = ip
+	}
+	if s.Colo == "" {
+		s.Colo = colo
+	}
+	return nil
+}
+
+// probeActiveSessions probes every active session in the pool concurrently.
+func (m *Manager) probeActiveSessions(ctx context.Context) {
+	pool := m.activeSessions()
+	if len(pool) == 0 {
+		return
+	}
+	sem := make(chan struct{}, 5)
+	var wg sync.WaitGroup
+	for _, s := range pool {
+		if s == nil || s.closed.Load() {
+			continue
+		}
+		wg.Add(1)
+		go func(sess *Session) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
+			}
+			_ = m.probeSession(ctx, sess)
+		}(s)
+	}
+	wg.Wait()
+}
+
+// HealthLoop periodically probes every session in the WARP pool and updates latency.
+func (m *Manager) HealthLoop(ctx context.Context) {
+	// Initial pause to allow initial warm-up/creation
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(3 * time.Second):
+	}
+	m.probeActiveSessions(ctx)
+
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if m.closed.Load() {
+				return
+			}
+			m.probeActiveSessions(ctx)
+		}
+	}
+}
+
+// CheckHealth triggers an on-demand probe of all active sessions in the WARP pool.
+func (m *Manager) CheckHealth(ctx context.Context) {
+	m.probeActiveSessions(ctx)
 }
 
 func (m *Manager) recordError(err error) {

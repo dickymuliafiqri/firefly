@@ -202,3 +202,34 @@ func TestHandleSetWarpPoolSize_RejectsUninitializedEngine(t *testing.T) {
 		t.Fatalf("warp.json must not be written when the engine is missing")
 	}
 }
+
+func TestHandleCheckWarp(t *testing.T) {
+	t.Parallel()
+
+	mgr := warp.NewManager(nil, "")
+	deps := RouterDeps{
+		AdminToken:  "secret-admin-token",
+		WarpManager: mgr,
+	}
+
+	// 1. Unauthorized
+	req := httptest.NewRequest(http.MethodPost, "/api/warp/check", nil)
+	rr := httptest.NewRecorder()
+	deps.handleCheckWarp(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized, got %d", rr.Code)
+	}
+
+	// 2. Authorized check
+	req = httptest.NewRequest(http.MethodPost, "/api/warp/check", nil)
+	req.Header.Set("Authorization", "Bearer secret-admin-token")
+	rr = httptest.NewRecorder()
+	deps.handleCheckWarp(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", rr.Code)
+	}
+	var st warp.Status
+	if err := json.Unmarshal(rr.Body.Bytes(), &st); err != nil {
+		t.Fatalf("unmarshal warp status: %v", err)
+	}
+}

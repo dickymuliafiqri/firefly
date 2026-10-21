@@ -305,6 +305,14 @@ export interface SingboxNodeDTO {
   cooldown_until?: string;
   /** Current consecutive-failure count behind the cooldown. */
   failures?: number;
+  /** Round-trip latency in milliseconds from the last health check. */
+  latency_ms?: number | null;
+  /** RFC3339 timestamp of the last health check probe. */
+  last_check_at?: string | null;
+  /** Node health status: 'active' | 'cooling' | 'unreachable' | 'idle'. */
+  status?: 'active' | 'cooling' | 'unreachable' | 'idle' | string;
+  /** Error message from the last failed health check or dial. */
+  last_error?: string;
 }
 
 export interface SingboxStatusDTO {
@@ -328,6 +336,20 @@ export interface SingboxStatusDTO {
   /** Node-selection mode: "urltest" (fastest) or "round_robin" (rotating). */
   strategy?: string;
   error?: string;
+}
+
+export interface WarpSessionDTO {
+  id: number;
+  public_ip: string;
+  internal_ip?: string;
+  colo?: string;
+  endpoint?: string;
+  latency_ms: number;
+  active_conns: number;
+  status: 'active' | 'cooling' | 'unreachable' | string;
+  created_at?: string;
+  last_check_at?: string;
+  primary?: boolean;
 }
 
 export interface WarpStatusDTO {
@@ -356,6 +378,8 @@ export interface WarpStatusDTO {
   active_sessions?: number;
   /** Public egress address of each active slot, free of duplicates. */
   egress_ips?: string[];
+  /** Detailed real-time status and latency for each session in the pool. */
+  sessions?: WarpSessionDTO[];
   error?: string;
 }
 

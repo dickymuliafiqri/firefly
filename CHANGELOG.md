@@ -5,6 +5,18 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.46.0] - 2026-10-21
+
+### Added
+
+- **Routine health check and latency tracking for sing-box nodes and WARP sessions (`internal/transport/singbox/`, `internal/transport/warp/`, `internal/server/`, `frontend/src/pages/`)**:
+  - **Sing-box Egress**: Added `HealthLoop` running in a supervised background worker (`singbox.health`) that regularly probes every registered node outbound over TCP with bounded concurrency (`maxConcurrentNodeProbes = 10`), tracking real response time (`latency_ms`), status (`active`, `cooling`, `unreachable`, `idle`), and failure errors. Unreachable nodes are automatically marked and temporarily cooled down.
+  - **Cloudflare WARP Egress**: Added `HealthLoop` running in a supervised background worker (`warp.health`) that regularly tests every active WARP pool session against Cloudflare trace endpoints to measure true handshake and network response time, exposing per-session status and latency in `Sessions []SessionStatus`.
+  - **On-Demand Health Check API**: Added `POST /api/singbox/check` and `POST /api/warp/check` endpoints to trigger immediate health probes across all proxies and sessions on demand.
+  - **Dashboard Visualization**:
+    - **Singbox page**: Added "Check health" action button, "Active nodes" ratio KPI card, and new table columns for node health status badge and response time in milliseconds with color-coded speed ranges.
+    - **Warp page**: Added "Check health" action button, real-time "Handshake latency" KPI card, and enhanced session pool table showing per-slot status, edge colo datacenter, response time, and active connections.
+
 ## [1.45.2] - 2026-10-21
 
 ### Fixed

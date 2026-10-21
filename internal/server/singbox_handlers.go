@@ -35,7 +35,7 @@ func (deps RouterDeps) buildSingboxDTO() config.SingboxDTO {
 // unauthenticated (mirroring /api/warp/status) so the dashboard can read it
 // before an admin session is established; it never exposes credentials.
 func (deps RouterDeps) handleGetSingboxStatus(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Origin", corsWildcard)
 	w.Header().Set("Content-Type", "application/json")
 
 	if deps.SingboxManager == nil {
@@ -55,7 +55,7 @@ func (deps RouterDeps) handleGetSingboxStatus(w http.ResponseWriter, r *http.Req
 
 // handleSingboxRefresh triggers an immediate on-demand subscription refresh.
 func (deps RouterDeps) handleSingboxRefresh(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Origin", corsWildcard)
 	w.Header().Set("Content-Type", "application/json")
 
 	if !deps.authorizeAdmin(r) {
@@ -79,7 +79,7 @@ func (deps RouterDeps) handleSingboxRefresh(w http.ResponseWriter, r *http.Reque
 // handleGetSingboxSubscription returns the current subscription URL. The URL is
 // not a credential, but it may contain a token, so it is admin-only.
 func (deps RouterDeps) handleGetSingboxSubscription(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Origin", corsWildcard)
 	w.Header().Set("Content-Type", "application/json")
 
 	if !deps.authorizeAdmin(r) {
@@ -100,7 +100,7 @@ func (deps RouterDeps) handleGetSingboxSubscription(w http.ResponseWriter, r *ht
 // first so a failed save never leaves the running engine on a value that would
 // silently revert at the next restart.
 func (deps RouterDeps) handleSetSingboxSubscription(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Origin", corsWildcard)
 	w.Header().Set("Content-Type", "application/json")
 
 	if !deps.authorizeAdmin(r) {
@@ -149,7 +149,7 @@ func (deps RouterDeps) handleSetSingboxSubscription(w http.ResponseWriter, r *ht
 // upstream without its own singbox_outbound_tag dials through). Persisted
 // first, then applied.
 func (deps RouterDeps) handleSetSingboxDefaultTag(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Origin", corsWildcard)
 	w.Header().Set("Content-Type", "application/json")
 
 	if !deps.authorizeAdmin(r) {
@@ -192,7 +192,7 @@ func (deps RouterDeps) handleSetSingboxDefaultTag(w http.ResponseWriter, r *http
 // endpoint: a failed save never leaves the running engine on a value that a
 // restart would silently revert.
 func (deps RouterDeps) handleSetSingboxStrategy(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Origin", corsWildcard)
 	w.Header().Set("Content-Type", "application/json")
 
 	if !deps.authorizeAdmin(r) {
@@ -233,7 +233,7 @@ func (deps RouterDeps) handleSetSingboxStrategy(w http.ResponseWriter, r *http.R
 // handleListSingboxNodes returns the parsed node list (tag/type/server/port)
 // without exposing outbound secrets.
 func (deps RouterDeps) handleListSingboxNodes(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Origin", corsWildcard)
 	w.Header().Set("Content-Type", "application/json")
 
 	if !deps.authorizeAdmin(r) {
@@ -248,4 +248,23 @@ func (deps RouterDeps) handleListSingboxNodes(w http.ResponseWriter, r *http.Req
 	}
 	status := deps.SingboxManager.Status()
 	_ = json.NewEncoder(w).Encode(map[string]any{"nodes": status.Nodes, "count": status.NodeCount, "default_tag": status.DefaultTag})
+}
+
+// handleCheckSingbox triggers an on-demand health probe across all registered nodes.
+func (deps RouterDeps) handleCheckSingbox(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", corsWildcard)
+	w.Header().Set("Content-Type", "application/json")
+
+	if !deps.authorizeAdmin(r) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+		return
+	}
+	if deps.SingboxManager == nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Sing-box engine is not initialized"})
+		return
+	}
+	deps.SingboxManager.CheckHealth(r.Context())
+	_ = json.NewEncoder(w).Encode(deps.SingboxManager.Status())
 }

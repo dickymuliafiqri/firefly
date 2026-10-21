@@ -5,7 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net"
-	"strconv"
+	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,9 +32,9 @@ const (
 	// urlTestTolerance is the latency tolerance (ms) before switching.
 	urlTestTolerance = 50
 	// healthProbeInterval is how often the singbox.health worker probes nodes.
-	healthProbeInterval = 5 * time.Minute
+	healthProbeInterval = 60 * time.Second
 	// healthProbeTimeout bounds a single node probe.
-	healthProbeTimeout = 10 * time.Second
+	healthProbeTimeout = 8 * time.Second
 )
 
 // Metrics is the narrow observability surface the Manager reports to. It is
@@ -92,6 +92,15 @@ type NodeStatus struct {
 	CooldownUntil time.Time `json:"cooldown_until,omitempty"`
 	// Failures is the current consecutive-failure count behind the cooldown.
 	Failures int `json:"failures,omitempty"`
+	// LatencyMs is the round-trip response time from the last health check.
+	LatencyMs *int64 `json:"latency_ms,omitempty"`
+	// LastCheckAt is when the last health probe was performed.
+	LastCheckAt *time.Time `json:"last_check_at,omitempty"`
+	// Status reports node health: "active" (healthy with response time),
+	// "cooling" (failing in cooldown), "unreachable" (probe failed), or "idle" (pending check).
+	Status string `json:"status"`
+	// LastError records the error message if the last probe or dial failed.
+	LastError string `json:"last_error,omitempty"`
 }
 
 // Manager owns a single sing-box Box and maps Firefly upstreams to outbound
@@ -129,6 +138,8 @@ type Manager struct {
 	rrCursor atomic.Uint64
 
 	metrics Metrics
+
+	nodeProbe func(ctx context.Context, tag string) (time.Duration, error)
 }
 
 // NewManager returns a new Manager. If logger is nil, slog.Default() is used.
@@ -139,11 +150,18 @@ func NewManager(logger *slog.Logger) *Manager {
 		logger = slog.Default()
 	}
 	// strategy is left unset here: Strategy() then reads the URLTest default.
-	return &Manager{
+	m := &Manager{
 		defaultTag: domain.SingboxDefaultOutboundTag,
 		logger:     logger.With("component", "singbox"),
 		health:     make(map[string]nodeHealthState),
 	}
+	m.nodeProbe = m.defaultNodeProbe
+	return m
+}
+
+// SetNodeProbeForTest overrides the probe function in tests.
+func (m *Manager) SetNodeProbeForTest(fn func(ctx context.Context, tag string) (time.Duration, error)) {
+	m.nodeProbe = fn
 }
 
 // SetMetrics wires an optional metrics observer. Safe to call before Run.
@@ -249,12 +267,35 @@ func (m *Manager) Status() Status {
 	st.Ready = st.Running
 	now := time.Now()
 	for _, n := range m.nodes {
-		ns := NodeStatus{Tag: n.Tag, Type: n.Type, Server: n.Server, Port: n.Port}
+		ns := NodeStatus{
+			Tag:    n.Tag,
+			Type:   n.Type,
+			Server: n.Server,
+			Port:   n.Port,
+			Status: "idle",
+		}
 		if h, ok := health[n.Tag]; ok {
 			ns.Failures = h.fails
 			if h.cooling(now) {
 				ns.Cooling = true
 				ns.CooldownUntil = h.until
+				ns.Status = "cooling"
+			}
+			if h.checked {
+				t := h.lastCheck
+				ns.LastCheckAt = &t
+				ns.LastError = h.lastErr
+				if h.lastErr != "" {
+					if !ns.Cooling {
+						ns.Status = "unreachable"
+					}
+				} else if h.latencyMs > 0 {
+					lat := h.latencyMs
+					ns.LatencyMs = &lat
+					if !ns.Cooling {
+						ns.Status = "active"
+					}
+				}
 			}
 		}
 		st.Nodes = append(st.Nodes, ns)
@@ -366,28 +407,35 @@ func (m *Manager) Run(ctx context.Context) {
 // HealthLoop periodically probes each node outbound and records per-tag latency
 // so the operator can see which nodes are actually reachable. It is the worker
 // wrapped by supervisor.Go as "singbox.health". The loop exits when ctx is
-// cancelled. Probes are TCP connects to the node's own server:port through the
-// node outbound, so a node that cannot be dialled records a failure without
-// touching the box's own routing.
+// cancelled.
 func (m *Manager) HealthLoop(ctx context.Context) {
 	// Stagger the first probe so it does not run before the initial refresh has
 	// had a chance to build the Box.
 	select {
 	case <-ctx.Done():
 		return
-	case <-time.After(30 * time.Second):
+	case <-time.After(2 * time.Second):
 	}
+	m.probeNodes(ctx)
+
+	ticker := time.NewTicker(healthProbeInterval)
+	defer ticker.Stop()
 	for {
-		m.probeNodes(ctx)
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(healthProbeInterval):
+		case <-ticker.C:
+			m.probeNodes(ctx)
 		}
 	}
 }
 
-// probeNodes dials each node outbound once and records the round-trip latency.
+// CheckHealth runs an on-demand health probe across all registered nodes.
+func (m *Manager) CheckHealth(ctx context.Context) {
+	m.probeNodes(ctx)
+}
+
+// probeNodes dials each node outbound concurrently and records the round-trip latency.
 func (m *Manager) probeNodes(ctx context.Context) {
 	if !m.ready.Load() {
 		return
@@ -396,22 +444,81 @@ func (m *Manager) probeNodes(ctx context.Context) {
 	nodes := make([]Node, len(m.nodes))
 	copy(nodes, m.nodes)
 	m.mu.RUnlock()
+	if len(nodes) == 0 {
+		return
+	}
+
+	sem := make(chan struct{}, 10)
+	var wg sync.WaitGroup
 	for _, n := range nodes {
 		if ctx.Err() != nil {
-			return
+			break
 		}
-		addr := net.JoinHostPort(n.Server, strconv.Itoa(int(n.Port)))
-		start := time.Now()
-		probeCtx, cancel := context.WithTimeout(ctx, healthProbeTimeout)
-		conn, err := m.DialTag(probeCtx, n.Tag, "tcp", addr)
-		cancel()
-		if err != nil {
-			m.logger.Debug("sing-box node probe failed", "tag", n.Tag, "err", err)
-			continue
-		}
-		_ = conn.Close()
-		m.withMetrics(func(mx Metrics) { mx.ObserveSingboxNodeLatency(n.Tag, time.Since(start)) })
+		wg.Add(1)
+		go func(node Node) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
+			}
+			probeCtx, cancel := context.WithTimeout(ctx, healthProbeTimeout)
+			defer cancel()
+			dur, err := m.nodeProbe(probeCtx, node.Tag)
+			m.recordNodeProbe(node.Tag, dur, err)
+			if err != nil {
+				m.logger.Debug("sing-box node probe failed", "tag", node.Tag, "err", err)
+				return
+			}
+			m.withMetrics(func(mx Metrics) { mx.ObserveSingboxNodeLatency(node.Tag, dur) })
+		}(n)
 	}
+	wg.Wait()
+}
+
+func (m *Manager) defaultNodeProbe(ctx context.Context, tag string) (time.Duration, error) {
+	start := time.Now()
+	tr := &http.Transport{
+		DialContext: func(dCtx context.Context, network, addr string) (net.Conn, error) {
+			return m.DialTag(dCtx, tag, network, addr)
+		},
+		DisableKeepAlives: true,
+	}
+	defer tr.CloseIdleConnections()
+
+	client := &http.Client{
+		Transport: tr,
+		Timeout:   healthProbeTimeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://cp.cloudflare.com/generate_204", nil)
+	if err == nil {
+		resp, doErr := client.Do(req)
+		if doErr == nil {
+			_ = resp.Body.Close()
+			dur := time.Since(start)
+			if dur <= 0 {
+				dur = time.Millisecond
+			}
+			return dur, nil
+		}
+	}
+
+	// Fallback: connect to DNS endpoint through the proxy
+	conn, err := m.DialTag(ctx, tag, "tcp", "1.1.1.1:53")
+	if err != nil {
+		return 0, err
+	}
+	_ = conn.Close()
+	dur := time.Since(start)
+	if dur <= 0 {
+		dur = time.Millisecond
+	}
+	return dur, nil
 }
 
 // Refresh fetches the subscription, parses it, rebuilds outbounds, and

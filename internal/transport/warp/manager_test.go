@@ -1039,3 +1039,71 @@ func TestManager_EnsureSessionBypassesQuarantinedIdentity(t *testing.T) {
 		t.Errorf("expected fresh device registration when cached identity is quarantined, got %d", got)
 	}
 }
+
+func TestManager_SessionStatusAndHealthCheck(t *testing.T) {
+	mgr := NewManager(quietLogger(), "")
+	defer mgr.Close()
+	mgr.SetPoolSize(2)
+
+	a := &Session{
+		PublicIP:     "203.0.113.10",
+		InternalIPv4: "172.16.0.2",
+		Colo:         "SIN",
+		Endpoint:     "162.159.192.1:2408",
+		LatencyMs:    45,
+		CreatedAt:    time.Now().Add(-time.Minute),
+	}
+	a.latencyMs.Store(45)
+	a.lastCheckAt.Store(time.Now().UnixNano())
+	a.lastSuccess.Store(true)
+
+	b := &Session{
+		PublicIP:     "203.0.113.20",
+		InternalIPv4: "172.16.0.3",
+		Colo:         "HKG",
+		Endpoint:     "162.159.192.2:2408",
+		LatencyMs:    80,
+		CreatedAt:    time.Now(),
+	}
+	b.latencyMs.Store(80)
+	b.lastCheckAt.Store(time.Now().UnixNano())
+	b.lastSuccess.Store(true)
+
+	mgr.installSession(a)
+	mgr.installSession(b)
+
+	st := mgr.Status()
+	if len(st.Sessions) != 2 {
+		t.Fatalf("expected 2 sessions in status, got %d", len(st.Sessions))
+	}
+
+	foundA := false
+	for _, sess := range st.Sessions {
+		if sess.PublicIP == "203.0.113.10" {
+			foundA = true
+			if sess.Colo != "SIN" {
+				t.Errorf("expected Colo SIN, got %q", sess.Colo)
+			}
+			if sess.LatencyMs != 45 {
+				t.Errorf("expected LatencyMs 45, got %d", sess.LatencyMs)
+			}
+			if sess.Status != "active" {
+				t.Errorf("expected status 'active', got %q", sess.Status)
+			}
+		}
+	}
+	if !foundA {
+		t.Error("expected to find session A in Status().Sessions")
+	}
+
+	// Test penalizing session A (marks it cooling)
+	a.limitedUntil.Store(time.Now().Add(time.Minute).UnixNano())
+	st = mgr.Status()
+	for _, sess := range st.Sessions {
+		if sess.PublicIP == "203.0.113.10" {
+			if sess.Status != "cooling" {
+				t.Errorf("expected status 'cooling' for penalized session, got %q", sess.Status)
+			}
+		}
+	}
+}

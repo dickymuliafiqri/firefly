@@ -507,6 +507,7 @@ func run() error {
 	warpManager.SetPoolSize(*warpPoolSize)
 	if *warpRotateInterval > 0 {
 		warpManager.StartAutoRotation()
+		supervisor.Go(ctx, "warp.health", supervisor.Policy{MaxRestarts: 3}, warpManager.HealthLoop)
 	}
 
 	// Sing-box egress: a subscription-backed outbound pool that upstreams can
@@ -518,16 +519,16 @@ func run() error {
 	singboxManager.SetMetrics(mx)
 	if *singboxSubscription != "" {
 		singboxManager.SetSubscriptionURL(*singboxSubscription, *singboxRefresh)
-		// Periodic refresh worker: initial fetch + Box start, then re-fetch on the
-		// configured interval. Best-effort — the manager fails open to direct when
-		// it errors, so a bad/unreachable subscription must not block boot.
-		supervisor.Go(ctx, "singbox.refresh", supervisor.Policy{MaxRestarts: 3}, singboxManager.Run)
-		// Health worker: probes every node outbound and records per-tag latency so
-		// the operator can see which nodes are actually usable.
-		supervisor.Go(ctx, "singbox.health", supervisor.Policy{MaxRestarts: 3}, singboxManager.HealthLoop)
 	} else {
-		logger.Info("sing-box egress disabled: no subscription URL configured")
+		logger.Info("sing-box egress idle: no subscription URL configured")
 	}
+	// Periodic refresh worker: initial fetch + Box start, then re-fetch on the
+	// configured interval. Best-effort — the manager fails open to direct when
+	// it errors, so a bad/unreachable subscription must not block boot.
+	supervisor.Go(ctx, "singbox.refresh", supervisor.Policy{MaxRestarts: 3}, singboxManager.Run)
+	// Health worker: probes every node outbound and records per-tag latency so
+	// the operator can see which nodes are actually usable.
+	supervisor.Go(ctx, "singbox.health", supervisor.Policy{MaxRestarts: 3}, singboxManager.HealthLoop)
 
 	pool := upstream.NewPool(warpManager, singboxManager)
 	// A rotation gives the tunnel a new egress address, but transports keep their
