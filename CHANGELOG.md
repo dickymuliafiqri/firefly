@@ -5,6 +5,17 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.45.2] - 2026-10-21
+
+### Fixed
+
+- **Drained WARP tunnels are quarantined for 30 minutes to prevent immediate re-entry into active rotation (`internal/transport/warp/manager.go`, `internal/transport/warp/manager_test.go`)**: during pool rotation or explicit eviction, superseded tunnels were retired to drain active connections, but could previously be re-installed or reloaded immediately into the active pool.
+  - Added `Session.DeviceID` and `Session.PublicKey` tracking to identify tunnels across instances and cached identities.
+  - Added a thread-safe `drainedEntries` quarantine registry in `Manager` with a 30-minute cooldown window (`DefaultDrainedCooldown = 30 * time.Minute`, configurable via `SetDrainedCooldown`).
+  - `installSession` rejects any session that is quiescing, closed, or present in the drained quarantine registry by instance pointer, device ID, or public key.
+  - `restoreSession` and `ensureSession` detect quarantined disk credentials and automatically bypass stale cache to register a clean, fresh Cloudflare WARP identity.
+  - Unit tests covering cooldown rejection, expiration, and cold-start fallback added in `manager_test.go`.
+
 ## [1.45.1] - 2026-10-20
 
 ### Fixed
