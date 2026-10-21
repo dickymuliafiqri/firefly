@@ -5,9 +5,45 @@ import { Field } from '@/components/ui/Controls';
 import { KpiCard, KpiGrid, PageHeader } from '@/components/ui/PageHeader';
 import { Pagination } from '@/components/ui/Pagination';
 import { QueryGate } from '@/components/ui/QueryGate';
-import { useRotateWarpMutation, useSetWarpPoolSizeMutation, useWarpStatusQuery } from '@/services/api';
+import { useCheckWarpMutation, useRotateWarpMutation, useSetWarpPoolSizeMutation, useWarpStatusQuery } from '@/services/api';
 import type { WarpStatusDTO } from '@/services/schema';
 import { useUiStore } from '@/state/store';
+
+/** Trigger on-demand health check across all active WARP sessions. */
+function CheckWarpButton({ live }: { live: boolean }) {
+  const check = useCheckWarpMutation();
+  const pushToast = useUiStore((s) => s.pushToast);
+
+  return (
+    <button
+      className="btn btn-secondary"
+      disabled={check.isPending || !live}
+      onClick={() =>
+        check.mutate(undefined, {
+          onSuccess: (next) => {
+            const sessions = next.sessions ?? [];
+            const active = sessions.filter((s) => s.status === 'active').length;
+            pushToast({
+              type: 'success',
+              title: 'WARP health check completed',
+              message: sessions.length
+                ? `${active} of ${sessions.length} sessions active (${next.latency_ms?.toFixed(1) ?? '—'} ms avg).`
+                : 'WARP health check passed.',
+            });
+          },
+          onError: (e) =>
+            pushToast({
+              type: 'error',
+              title: 'Health check failed',
+              message: e instanceof Error ? e.message : 'Unknown',
+            }),
+        })
+      }
+    >
+      {check.isPending ? 'Checking…' : 'Check health'}
+    </button>
+  );
+}
 
 /**
  * Manual rotation / cold start. The button lives on the page (not Settings) so
@@ -59,6 +95,58 @@ function CopyIp({ ip }: { ip: string }) {
     >
       Copy
     </button>
+  );
+}
+
+function WarpSessionStatusBadge({ status }: { status?: string }) {
+  if (status === 'cooling') {
+    return (
+      <Badge tone="warn" title="Cooldown triggered by rate limit or errors">
+        cooling
+      </Badge>
+    );
+  }
+  if (status === 'unreachable') {
+    return (
+      <Badge tone="danger" title="Egress probe failed">
+        unreachable
+      </Badge>
+    );
+  }
+  if (status === 'active') {
+    return <Badge tone="ok">active</Badge>;
+  }
+  return <Badge tone="neutral">{status || 'idle'}</Badge>;
+}
+
+function WarpLatencyDisplay({
+  latencyMs,
+  lastCheckAt,
+}: {
+  latencyMs?: number | null;
+  lastCheckAt?: string | null;
+}) {
+  if (latencyMs == null || latencyMs <= 0) {
+    return <span className="hint">—</span>;
+  }
+
+  let color = 'var(--text-color, currentColor)';
+  if (latencyMs < 100) {
+    color = 'var(--success, #10b981)';
+  } else if (latencyMs < 250) {
+    color = 'var(--warning, #f59e0b)';
+  } else {
+    color = 'var(--danger, #ef4444)';
+  }
+
+  const title = lastCheckAt
+    ? `Latency: ${latencyMs.toFixed(1)} ms · Checked at ${new Date(lastCheckAt).toLocaleTimeString()}`
+    : `Latency: ${latencyMs.toFixed(1)} ms`;
+
+  return (
+    <span className="mono font-semibold" style={{ color }} title={title}>
+      {latencyMs.toFixed(1)} ms
+    </span>
   );
 }
 
@@ -167,13 +255,16 @@ export function WarpPage() {
   const d = warp.data;
   const live = Boolean(d?.enabled);
   const ips = d?.egress_ips ?? [];
+  const sessions = d?.sessions ?? [];
+  const totalItems = sessions.length > 0 ? sessions.length : ips.length;
 
   // The pool can hold up to 64 slots; paginate the list so a full pool stays
   // scannable instead of turning the card into a scroll wall.
   const [poolPage, setPoolPage] = useState(1);
   const POOL_PAGE_SIZE = 20;
-  const poolTotalPages = Math.max(1, Math.ceil(ips.length / POOL_PAGE_SIZE));
+  const poolTotalPages = Math.max(1, Math.ceil(totalItems / POOL_PAGE_SIZE));
   const safePoolPage = Math.min(poolPage, poolTotalPages);
+  const pagedSessions = sessions.slice((safePoolPage - 1) * POOL_PAGE_SIZE, safePoolPage * POOL_PAGE_SIZE);
   const pagedIps = ips.slice((safePoolPage - 1) * POOL_PAGE_SIZE, safePoolPage * POOL_PAGE_SIZE);
 
   // Three states, not two: a warm-up that never reached Cloudflare is neither a
@@ -198,6 +289,7 @@ export function WarpPage() {
             <Badge tone={badgeTone} title={d?.error || undefined}>
               {badgeText}
             </Badge>
+            <CheckWarpButton live={live} />
             <RotateWarpButton live={live} />
           </div>
         }
@@ -208,15 +300,15 @@ export function WarpPage() {
           label="Active sessions"
           value={`${d?.active_sessions ?? '—'} / ${d?.pool_size ?? '—'}`}
         />
+        <KpiCard
+          label="Handshake latency"
+          value={d?.latency_ms ? `${d.latency_ms.toFixed(1)} ms` : '—'}
+          tone={d?.latency_ms && d.latency_ms > 300 ? 'warn' : 'plain'}
+        />
         <KpiCard label="Primary egress" value={d?.public_ip || '—'} />
         <KpiCard
           label="Active connections"
           value={d?.active_connections != null ? String(d.active_connections) : '—'}
-        />
-        <KpiCard
-          label="Draining slots"
-          value={d?.draining_sessions != null ? String(d.draining_sessions) : '—'}
-          tone={d?.draining_sessions ? 'warn' : 'plain'}
         />
       </KpiGrid>
 
@@ -226,7 +318,7 @@ export function WarpPage() {
             <div className="card-header">
               <h2>Session pool</h2>
               <span className="hint">
-                {ips.length} slot{ips.length === 1 ? '' : 's'} resolving egress
+                {totalItems} slot{totalItems === 1 ? '' : 's'} in egress pool
               </span>
             </div>
             <div className="card-body tight table-wrap">
@@ -235,16 +327,50 @@ export function WarpPage() {
                   <tr>
                     <th className="num">Slot</th>
                     <th>Egress IP</th>
+                    <th>Colo</th>
+                    <th>Status</th>
+                    <th className="num">Response Time</th>
+                    <th className="num">Conns</th>
                     <th />
                   </tr>
                 </thead>
                 <tbody>
-                  {pagedIps.length === 0 ? (
+                  {totalItems === 0 ? (
                     <tr>
-                      <td colSpan={3} className="faint">
+                      <td colSpan={7} className="faint">
                         No active sessions. The pool dials on first use.
                       </td>
                     </tr>
+                  ) : sessions.length > 0 ? (
+                    pagedSessions.map((s) => (
+                      <tr key={`sess-${s.id}`}>
+                        <td className="num">#{s.id}</td>
+                        <td>
+                          <span
+                            className="inline-flex items-center gap-2"
+                            style={{ fontFamily: 'var(--font-mono, monospace)' }}
+                          >
+                            {s.public_ip || '—'}
+                            {s.primary || s.public_ip === d?.public_ip ? <Badge tone="ok">primary</Badge> : null}
+                          </span>
+                        </td>
+                        <td>
+                          <span className="mono">{s.colo || '—'}</span>
+                        </td>
+                        <td>
+                          <WarpSessionStatusBadge status={s.status} />
+                        </td>
+                        <td className="num">
+                          <WarpLatencyDisplay latencyMs={s.latency_ms} lastCheckAt={s.last_check_at} />
+                        </td>
+                        <td className="num">
+                          <span className="hint">{s.active_conns}</span>
+                        </td>
+                        <td className="num">
+                          {s.public_ip ? <CopyIp ip={s.public_ip} /> : null}
+                        </td>
+                      </tr>
+                    ))
                   ) : (
                     pagedIps.map((ip, i) => (
                       <tr key={`${ip}-${safePoolPage}`}>
@@ -258,6 +384,18 @@ export function WarpPage() {
                             {ip === d?.public_ip ? <Badge tone="ok">primary</Badge> : null}
                           </span>
                         </td>
+                        <td>
+                          <span className="mono">{d?.colo || '—'}</span>
+                        </td>
+                        <td>
+                          <Badge tone="ok">active</Badge>
+                        </td>
+                        <td className="num">
+                          <WarpLatencyDisplay latencyMs={d?.latency_ms} />
+                        </td>
+                        <td className="num">
+                          <span className="hint">—</span>
+                        </td>
                         <td className="num">
                           <CopyIp ip={ip} />
                         </td>
@@ -269,7 +407,7 @@ export function WarpPage() {
             </div>
             <div className="card-body tight" style={{ paddingTop: 0 }}>
               <Pagination
-                total={ips.length}
+                total={totalItems}
                 page={safePoolPage}
                 pageSize={POOL_PAGE_SIZE}
                 totalPages={poolTotalPages}

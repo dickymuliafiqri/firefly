@@ -6,14 +6,51 @@ import { KpiCard, KpiGrid, PageHeader } from '@/components/ui/PageHeader';
 import { Pagination } from '@/components/ui/Pagination';
 import { QueryGate } from '@/components/ui/QueryGate';
 import {
+  useCheckSingboxMutation,
   useRefreshSingboxMutation,
   useSingboxStatusQuery,
   useUpdateSingboxDefaultTagMutation,
   useUpdateSingboxStrategyMutation,
   useUpdateSingboxSubscriptionMutation,
 } from '@/services/api';
-import type { SingboxStatusDTO } from '@/services/schema';
+import type { SingboxNodeDTO, SingboxStatusDTO } from '@/services/schema';
 import { useUiStore } from '@/state/store';
+
+/** Trigger on-demand health check across all registered nodes. */
+function CheckSingboxButton({ live }: { live: boolean }) {
+  const check = useCheckSingboxMutation();
+  const pushToast = useUiStore((s) => s.pushToast);
+
+  return (
+    <button
+      className="btn btn-secondary"
+      disabled={check.isPending || !live}
+      onClick={() =>
+        check.mutate(undefined, {
+          onSuccess: (next) => {
+            const nodes = next.nodes ?? [];
+            const active = nodes.filter((n) => n.status === 'active').length;
+            pushToast({
+              type: 'success',
+              title: 'Health check completed',
+              message: nodes.length
+                ? `${active} of ${nodes.length} nodes are active and responsive.`
+                : 'Health check finished.',
+            });
+          },
+          onError: (e) =>
+            pushToast({
+              type: 'error',
+              title: 'Health check failed',
+              message: e instanceof Error ? e.message : 'Unknown',
+            }),
+        })
+      }
+    >
+      {check.isPending ? 'Checking…' : 'Check health'}
+    </button>
+  );
+}
 
 /** Refresh Now. The manager keeps the previous Box when a refresh fails, so a
  * failed refresh is reported without tearing down working egress. */
@@ -46,6 +83,89 @@ function RefreshSingboxButton({ live }: { live: boolean }) {
     >
       {refresh.isPending ? 'Refreshing…' : 'Refresh now'}
     </button>
+  );
+}
+
+/** Renders a colored node health status badge with contextual tooltip. */
+function NodeStatusBadge({ node }: { node: SingboxNodeDTO }) {
+  if (node.cooling) {
+    return (
+      <Badge
+        tone="warn"
+        title={
+          node.cooldown_until
+            ? `Cooling until ${new Date(node.cooldown_until).toLocaleTimeString()}`
+            : 'Failing; temporarily skipped by rotation'
+        }
+      >
+        cooling
+      </Badge>
+    );
+  }
+  if (node.status === 'unreachable') {
+    return (
+      <Badge tone="danger" title={node.last_error || 'Probe failed'}>
+        unreachable
+      </Badge>
+    );
+  }
+  if (node.status === 'active') {
+    return (
+      <Badge
+        tone="ok"
+        title={
+          node.last_check_at
+            ? `Active · Checked ${new Date(node.last_check_at).toLocaleTimeString()}`
+            : 'Active'
+        }
+      >
+        active
+      </Badge>
+    );
+  }
+  return <Badge tone="neutral">idle</Badge>;
+}
+
+/** Formats latency with speed-appropriate coloring and check timestamp tooltip. */
+function LatencyDisplay({
+  latencyMs,
+  lastCheckAt,
+  status,
+  lastError,
+}: {
+  latencyMs?: number | null;
+  lastCheckAt?: string | null;
+  status?: string;
+  lastError?: string;
+}) {
+  if (status === 'unreachable') {
+    return (
+      <span className="hint" style={{ color: 'var(--danger, #ef4444)' }} title={lastError || 'Probe failed'}>
+        timeout
+      </span>
+    );
+  }
+  if (latencyMs == null || latencyMs <= 0) {
+    return <span className="hint">—</span>;
+  }
+
+  let color = 'var(--text-color, currentColor)';
+  if (latencyMs < 150) {
+    color = 'var(--success, #10b981)';
+  } else if (latencyMs < 350) {
+    color = 'var(--warning, #f59e0b)';
+  } else {
+    color = 'var(--danger, #ef4444)';
+  }
+
+  const title = lastCheckAt
+    ? `Latency: ${latencyMs} ms · Checked at ${new Date(lastCheckAt).toLocaleTimeString()}`
+    : `Latency: ${latencyMs} ms`;
+
+  return (
+    <span className="mono font-semibold" style={{ color }} title={title}>
+      {latencyMs} ms
+    </span>
   );
 }
 
@@ -380,6 +500,7 @@ export function SingboxPage() {
             <Badge tone={badgeTone} title={d?.last_refresh_error || undefined}>
               {badgeText}
             </Badge>
+            <CheckSingboxButton live={ready} />
             <RefreshSingboxButton live={ready} />
           </div>
         }
@@ -387,9 +508,13 @@ export function SingboxPage() {
 
       <KpiGrid>
         <KpiCard label="Nodes" value={d?.node_count != null ? String(d.node_count) : '—'} />
+        <KpiCard
+          label="Active nodes"
+          value={nodes.length ? `${nodes.filter((n) => n.status === 'active').length} / ${nodes.length}` : '—'}
+          tone={nodes.some((n) => n.status === 'unreachable') ? 'warn' : 'plain'}
+        />
         <KpiCard label="Default outbound" value={d?.default_tag || 'auto'} />
         <KpiCard label="Strategy" value={d?.strategy === 'round_robin' ? 'round-robin' : 'urltest'} />
-        <KpiCard label="Refresh interval" value={formatDurationNs(d?.refresh_interval)} />
         <KpiCard
           label="Last refresh"
           value={d?.last_refresh_at ? new Date(d.last_refresh_at).toLocaleTimeString() : '—'}
@@ -414,13 +539,15 @@ export function SingboxPage() {
                     <th>Type</th>
                     <th>Server</th>
                     <th className="num">Port</th>
+                    <th>Status</th>
+                    <th className="num">Response Time</th>
                     <th className="num">Fails</th>
                   </tr>
                 </thead>
                 <tbody>
                   {pagedNodes.length === 0 ? (
                     <tr>
-                      <td colSpan={5} className="faint">
+                      <td colSpan={7} className="faint">
                         No nodes loaded. Configure a subscription above, then refresh.
                       </td>
                     </tr>
@@ -432,22 +559,21 @@ export function SingboxPage() {
                           {n.tag === (d?.default_tag || 'auto') ? (
                             <Badge tone="ok">default</Badge>
                           ) : null}
-                          {n.cooling ? (
-                            <Badge
-                              tone="warn"
-                              title={
-                                n.cooldown_until
-                                  ? `Cooling until ${new Date(n.cooldown_until).toLocaleTimeString()}`
-                                  : 'Failing; skipped by the rotation'
-                              }
-                            >
-                              cooling
-                            </Badge>
-                          ) : null}
                         </td>
                         <td>{n.type}</td>
                         <td className="mono">{n.server}</td>
                         <td className="num">{n.port}</td>
+                        <td>
+                          <NodeStatusBadge node={n} />
+                        </td>
+                        <td className="num">
+                          <LatencyDisplay
+                            latencyMs={n.latency_ms}
+                            lastCheckAt={n.last_check_at}
+                            status={n.status}
+                            lastError={n.last_error}
+                          />
+                        </td>
                         <td className="num">
                           {n.failures ? (
                             <span className="hint">{n.failures}×</span>

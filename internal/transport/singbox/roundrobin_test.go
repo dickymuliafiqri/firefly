@@ -2,6 +2,7 @@ package singbox
 
 import (
 	"context"
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -168,6 +169,84 @@ func TestStatus_ExposesStrategyAndCooling(t *testing.T) {
 	if st := m.Status(); st.Nodes[0].Cooling || st.Nodes[0].Failures != 0 {
 		t.Errorf("after success: cooling=%v failures=%d, want false/0",
 			st.Nodes[0].Cooling, st.Nodes[0].Failures)
+	}
+}
+
+func TestRecordNodeProbe_UpdatesStatusAndLatency(t *testing.T) {
+	t.Parallel()
+
+	m := NewManager(nil)
+	m.mu.Lock()
+	m.nodes = []Node{
+		{Tag: "node-ok", Type: "vless", Server: "ok.example.com", Port: 443},
+		{Tag: "node-fail", Type: "shadowsocks", Server: "fail.example.com", Port: 8388},
+	}
+	m.mu.Unlock()
+
+	// 1) Successful probe
+	m.recordNodeProbe("node-ok", 75*time.Millisecond, nil)
+	st := m.Status()
+	var nodeOk *NodeStatus
+	for i := range st.Nodes {
+		if st.Nodes[i].Tag == "node-ok" {
+			nodeOk = &st.Nodes[i]
+		}
+	}
+	if nodeOk == nil {
+		t.Fatal("expected node-ok in status")
+	}
+	if nodeOk.Status != "active" {
+		t.Errorf("expected status 'active', got %q", nodeOk.Status)
+	}
+	if nodeOk.LatencyMs == nil || *nodeOk.LatencyMs != 75 {
+		t.Errorf("expected latency 75ms, got %v", nodeOk.LatencyMs)
+	}
+	if nodeOk.LastCheckAt == nil || nodeOk.LastCheckAt.IsZero() {
+		t.Error("expected valid LastCheckAt timestamp")
+	}
+
+	// 2) Failed probe
+	m.recordNodeProbe("node-fail", 0, errors.New("connection timeout"))
+	st = m.Status()
+	var nodeFail *NodeStatus
+	for i := range st.Nodes {
+		if st.Nodes[i].Tag == "node-fail" {
+			nodeFail = &st.Nodes[i]
+		}
+	}
+	if nodeFail == nil {
+		t.Fatal("expected node-fail in status")
+	}
+	if !nodeFail.Cooling || nodeFail.Status != "cooling" {
+		t.Errorf("expected node-fail cooling, got status %q cooling=%v", nodeFail.Status, nodeFail.Cooling)
+	}
+	if nodeFail.Failures != 1 {
+		t.Errorf("expected 1 failure, got %d", nodeFail.Failures)
+	}
+	if nodeFail.LastError != "connection timeout" {
+		t.Errorf("expected error 'connection timeout', got %q", nodeFail.LastError)
+	}
+
+	// 3) ProbeNodes mock test
+	m.ready.Store(true)
+	m.SetNodeProbeForTest(func(ctx context.Context, tag string) (time.Duration, error) {
+		if tag == "node-ok" {
+			return 42 * time.Millisecond, nil
+		}
+		return 0, errors.New("mock dial error")
+	})
+	m.CheckHealth(context.Background())
+
+	st = m.Status()
+	for _, n := range st.Nodes {
+		if n.Tag == "node-ok" {
+			if n.LatencyMs == nil || *n.LatencyMs != 42 {
+				t.Errorf("node-ok latency = %v, want 42", n.LatencyMs)
+			}
+			if n.Status != "active" {
+				t.Errorf("node-ok status = %q, want active", n.Status)
+			}
+		}
 	}
 }
 

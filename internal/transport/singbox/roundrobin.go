@@ -34,12 +34,17 @@ const (
 	nodeCooldownMax  = 5 * time.Minute
 )
 
-// nodeHealthState is one node's failure bookkeeping. An expired or zero until
-// means the node is selectable again; fails keeps growing on consecutive
-// failures so the backoff lengthens, and a success deletes the entry entirely.
+// nodeHealthState is one node's failure and health check bookkeeping.
+// An expired or zero until means the node is selectable again; fails keeps
+// growing on consecutive failures so the backoff lengthens. When checked is true,
+// latencyMs and lastCheck track the most recent probe response time and timestamp.
 type nodeHealthState struct {
-	fails int
-	until time.Time
+	fails     int
+	until     time.Time
+	latencyMs int64
+	lastCheck time.Time
+	lastErr   string
+	checked   bool
 }
 
 // cooling reports whether the node is still inside its cooldown at now.
@@ -81,11 +86,45 @@ func (m *Manager) SetStrategy(s string) {
 }
 
 // markNodeSuccess clears a node's cooldown after a successful dial or probe.
+// If the node has not been explicitly probed, the entry is removed; if it has
+// been probed, its failure counters are cleared while retaining the latency.
 func (m *Manager) markNodeSuccess(tag string) {
 	m.healthMu.Lock()
-	if _, ok := m.health[tag]; ok {
-		delete(m.health, tag)
+	if h, ok := m.health[tag]; ok {
+		if !h.checked {
+			delete(m.health, tag)
+		} else {
+			h.fails = 0
+			h.until = time.Time{}
+			h.lastErr = ""
+			m.health[tag] = h
+		}
 	}
+	m.healthMu.Unlock()
+}
+
+// recordNodeProbe records the result of an explicit health check probe.
+func (m *Manager) recordNodeProbe(tag string, latency time.Duration, err error) {
+	m.healthMu.Lock()
+	h := m.health[tag]
+	h.checked = true
+	h.lastCheck = time.Now()
+	if err == nil {
+		ms := latency.Milliseconds()
+		if ms <= 0 {
+			ms = 1
+		}
+		h.latencyMs = ms
+		h.fails = 0
+		h.until = time.Time{}
+		h.lastErr = ""
+	} else {
+		h.fails++
+		h.until = time.Now().Add(cooldownFor(h.fails))
+		h.latencyMs = 0
+		h.lastErr = err.Error()
+	}
+	m.health[tag] = h
 	m.healthMu.Unlock()
 }
 
@@ -97,6 +136,9 @@ func (m *Manager) markNodeFailure(tag string, err error) {
 	h := m.health[tag]
 	h.fails++
 	h.until = time.Now().Add(cooldownFor(h.fails))
+	if err != nil {
+		h.lastErr = err.Error()
+	}
 	m.health[tag] = h
 	fails, until := h.fails, h.until
 	m.healthMu.Unlock()

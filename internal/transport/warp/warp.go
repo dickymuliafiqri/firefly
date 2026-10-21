@@ -34,6 +34,8 @@ type Status struct {
 	ActiveSessions int `json:"active_sessions,omitempty"`
 	// EgressIPs lists the public egress address of each active slot.
 	EgressIPs []string `json:"egress_ips,omitempty"`
+	// Sessions describes the status and metrics of each active slot in the pool.
+	Sessions []SessionStatus `json:"sessions,omitempty"`
 	// omitzero, not omitempty: a time.Time is a struct and omitempty never
 	// fires, which used to publish 0001-01-01 as the last rotation date.
 	RotatedAt time.Time `json:"last_rotated_at,omitzero"`
@@ -46,6 +48,22 @@ type Status struct {
 	NextRotationAt time.Time `json:"next_rotation_at,omitzero"`
 
 	Error string `json:"error,omitempty"`
+}
+
+// SessionStatus describes the real-time operational status and latency of an
+// individual session in the WARP egress pool.
+type SessionStatus struct {
+	ID           int       `json:"id"`
+	PublicIP     string    `json:"public_ip"`
+	InternalIPv4 string    `json:"internal_ip,omitempty"`
+	Colo         string    `json:"colo,omitempty"`
+	Endpoint     string    `json:"endpoint,omitempty"`
+	LatencyMs    int64     `json:"latency_ms"`
+	ActiveConns  int64     `json:"active_conns"`
+	Status       string    `json:"status"` // "active", "cooling", "unreachable", "primary"
+	CreatedAt    time.Time `json:"created_at,omitzero"`
+	LastCheckAt  time.Time `json:"last_check_at,omitzero"`
+	Primary      bool      `json:"primary,omitempty"`
 }
 
 // Dialer defines a context-aware network connection dialer interface.

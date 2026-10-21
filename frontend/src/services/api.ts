@@ -380,6 +380,10 @@ export async function rotateWarp() {
   return request<{ status: string }>("/api/warp/rotate", { method: "POST" });
 }
 
+export async function checkWarp(): Promise<WarpStatusDTO> {
+  return request<WarpStatusDTO>("/api/warp/check", { method: "POST" });
+}
+
 /**
  * Sets the steady-state size of the WARP egress pool. Nothing is dialled here:
  * rotation adds one slot per tick, so a larger pool fills gradually.
@@ -397,6 +401,12 @@ export async function fetchSingboxStatus(): Promise<SingboxStatusDTO> {
 
 export async function refreshSingbox(): Promise<SingboxStatusDTO> {
   return request<SingboxStatusDTO>("/api/singbox/refresh", {
+    method: "POST",
+  });
+}
+
+export async function checkSingbox(): Promise<SingboxStatusDTO> {
+  return request<SingboxStatusDTO>("/api/singbox/check", {
     method: "POST",
   });
 }
@@ -1026,6 +1036,16 @@ export function useRotateWarpMutation() {
   });
 }
 
+export function useCheckWarpMutation() {
+  return useMutation({
+    mutationFn: checkWarp,
+    onSuccess: (data) => {
+      queryClient.setQueryData(["warp"], data);
+      queryClient.invalidateQueries({ queryKey: ["warp"] });
+    },
+  });
+}
+
 export function useSetWarpPoolSizeMutation() {
   return useMutation({
     mutationFn: setWarpPoolSize,
@@ -1039,6 +1059,16 @@ export function useSetWarpPoolSizeMutation() {
 export function useRefreshSingboxMutation() {
   return useMutation({
     mutationFn: refreshSingbox,
+    onSuccess: (data) => {
+      queryClient.setQueryData(["singbox"], data);
+      queryClient.invalidateQueries({ queryKey: ["singbox"] });
+    },
+  });
+}
+
+export function useCheckSingboxMutation() {
+  return useMutation({
+    mutationFn: checkSingbox,
     onSuccess: (data) => {
       queryClient.setQueryData(["singbox"], data);
       queryClient.invalidateQueries({ queryKey: ["singbox"] });

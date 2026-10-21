@@ -234,3 +234,34 @@ func TestHandleGetSingboxStatus_RedactsRefreshErrorForUnauthenticated(t *testing
 		t.Fatalf("unauthenticated status leaked the subscription URL through an error: %s", body)
 	}
 }
+
+func TestHandleCheckSingbox(t *testing.T) {
+	t.Parallel()
+
+	mgr := singbox.NewManager(nil)
+	deps := RouterDeps{
+		AdminToken:     "secret-admin-token",
+		SingboxManager: mgr,
+	}
+
+	// 1. Unauthorized
+	req := httptest.NewRequest(http.MethodPost, "/api/singbox/check", nil)
+	rr := httptest.NewRecorder()
+	deps.handleCheckSingbox(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized, got %d", rr.Code)
+	}
+
+	// 2. Authorized check
+	req = httptest.NewRequest(http.MethodPost, "/api/singbox/check", nil)
+	req.Header.Set("Authorization", "Bearer secret-admin-token")
+	rr = httptest.NewRecorder()
+	deps.handleCheckSingbox(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", rr.Code)
+	}
+	var st singbox.Status
+	if err := json.Unmarshal(rr.Body.Bytes(), &st); err != nil {
+		t.Fatalf("unmarshal singbox status: %v", err)
+	}
+}
