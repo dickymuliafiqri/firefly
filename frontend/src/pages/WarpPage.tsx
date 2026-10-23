@@ -9,6 +9,8 @@ import {
   useCheckWarpMutation,
   useDeleteWarpLicenseMutation,
   useRotateWarpMutation,
+  useScanWarpEndpointsMutation,
+  useSetWarpColoMutation,
   useSetWarpLicenseMutation,
   useSetWarpPoolSizeMutation,
   useWarpStatusQuery,
@@ -281,6 +283,190 @@ function WarpLicenseCard({ status }: { status?: WarpStatusDTO }) {
   );
 }
 
+function WarpColoCard({ status }: { status?: WarpStatusDTO }) {
+  const setColo = useSetWarpColoMutation();
+  const scanEndpoints = useScanWarpEndpointsMutation();
+  const pushToast = useUiStore((s) => s.pushToast);
+
+  const current = status?.preferred_colo ? status.preferred_colo.toUpperCase() : '';
+  const [selectedColo, setSelectedColo] = useState<string | null>(null);
+  const shown = selectedColo ?? current;
+
+  // Gather distinct available colos from status.available_colos and active sessions
+  const availableColos = Array.from(
+    new Set([
+      ...(status?.available_colos ?? []),
+      ...((status?.sessions?.map((s) => s.colo).filter(Boolean) as string[]) ?? []),
+      ...(status?.colo ? [status.colo] : []),
+    ]),
+  ).sort();
+
+  const dirty = shown !== current;
+
+  function handleSave(e: FormEvent) {
+    e.preventDefault();
+    if (setColo.isPending) return;
+
+    setColo.mutate(shown.trim().toUpperCase(), {
+      onSuccess: (next) => {
+        setSelectedColo(null);
+        pushToast({
+          type: 'success',
+          title: 'Preferred COLO saved',
+          message: next.preferred_colo
+            ? `Egress will prioritize Cloudflare data center ${next.preferred_colo}.`
+            : 'Reverted to automatic COLO selection (any available data center).',
+        });
+      },
+      onError: (err) => {
+        pushToast({
+          type: 'error',
+          title: 'Could not set preferred COLO',
+          message: err instanceof Error ? err.message : 'Unknown error',
+        });
+      },
+    });
+  }
+
+  function handleReset() {
+    if (setColo.isPending) return;
+    setColo.mutate('', {
+      onSuccess: () => {
+        setSelectedColo(null);
+        pushToast({
+          type: 'success',
+          title: 'COLO preference reset',
+          message: 'Egress will route to any available data center.',
+        });
+      },
+      onError: (err) => {
+        pushToast({
+          type: 'error',
+          title: 'Could not reset COLO',
+          message: err instanceof Error ? err.message : 'Unknown error',
+        });
+      },
+    });
+  }
+
+  function handleScan() {
+    if (scanEndpoints.isPending) return;
+    scanEndpoints.mutate(undefined, {
+      onSuccess: (res) => {
+        const found = res.available_colos.join(', ');
+        pushToast({
+          type: 'success',
+          title: 'Endpoint scan complete',
+          message: `Discovered ${res.available_colos.length} data centers: ${found || 'none'}`,
+        });
+      },
+      onError: (err) => {
+        pushToast({
+          type: 'error',
+          title: 'Scan failed',
+          message: err instanceof Error ? err.message : 'Unknown error',
+        });
+      },
+    });
+  }
+
+  return (
+    <div className="card">
+      <div className="card-header">
+        <div className="flex items-center gap-2">
+          <h2>Cloudflare COLO</h2>
+          {current ? (
+            <Badge tone="ok">{current}</Badge>
+          ) : (
+            <Badge tone="neutral">auto / any</Badge>
+          )}
+        </div>
+        <span className="hint">
+          Prioritize egress through a specific Cloudflare edge data center location
+        </span>
+      </div>
+      <div className="card-body">
+        <form onSubmit={handleSave}>
+          <Field
+            label="Preferred location"
+            htmlFor="warp-preferred-colo"
+            hint={
+              current
+                ? `Currently prioritizing ${current}. Egress connections will select matching sessions or endpoints when available.`
+                : 'Select an available Cloudflare data center (e.g. SIN for Singapore, CGK for Jakarta, NRT for Tokyo) or leave empty for auto.'
+            }
+          >
+            <div className="flex items-center gap-2" style={{ flexWrap: 'wrap' }}>
+              <select
+                id="warp-preferred-colo-select"
+                value={availableColos.includes(shown) ? shown : shown ? 'CUSTOM' : ''}
+                disabled={setColo.isPending}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val === 'CUSTOM') return;
+                  setSelectedColo(val);
+                }}
+                style={{ minWidth: 160 }}
+              >
+                <option value="">Auto / Any (No preference)</option>
+                {availableColos.map((c) => (
+                  <option key={c} value={c}>
+                    {c} {c === status?.colo ? '(Active)' : ''}
+                  </option>
+                ))}
+                {shown && !availableColos.includes(shown) ? (
+                  <option value="CUSTOM">Custom: {shown}</option>
+                ) : null}
+              </select>
+
+              <input
+                id="warp-preferred-colo"
+                type="text"
+                maxLength={4}
+                placeholder="Custom (e.g. SIN)"
+                value={shown}
+                disabled={setColo.isPending}
+                onChange={(e) => setSelectedColo(e.target.value.toUpperCase())}
+                style={{ width: 140, textTransform: 'uppercase', fontFamily: 'var(--font-mono, monospace)' }}
+              />
+
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={scanEndpoints.isPending}
+                onClick={handleScan}
+                title="Scan candidate Cloudflare Anycast endpoints to discover available data centers and latencies"
+              >
+                {scanEndpoints.isPending ? 'Scanning…' : 'Scan Endpoints'}
+              </button>
+            </div>
+          </Field>
+
+          <div className="form-row form-row-end" style={{ marginTop: 14 }}>
+            {current ? (
+              <button
+                type="button"
+                className="btn btn-ghost"
+                disabled={setColo.isPending}
+                onClick={handleReset}
+              >
+                Reset to Auto
+              </button>
+            ) : null}
+            <button
+              type="submit"
+              className="btn btn-secondary"
+              disabled={!dirty || setColo.isPending}
+            >
+              {setColo.isPending ? 'Saving…' : 'Save COLO'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function WarpPoolSizeCard({ status }: { status?: WarpStatusDTO }) {
   const save = useSetWarpPoolSizeMutation();
   const pushToast = useUiStore((s) => s.pushToast);
@@ -538,6 +724,7 @@ export function WarpPage() {
             </div>
           </div>
           <WarpPoolSizeCard status={d} />
+          <WarpColoCard status={d} />
           <WarpLicenseCard status={d} />
           <div className="card">
             <div className="card-header">

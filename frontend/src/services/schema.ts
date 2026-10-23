@@ -382,6 +382,10 @@ export interface WarpStatusDTO {
   sessions?: WarpSessionDTO[];
   /** Whether a Cloudflare WARP+ / Zero Trust license key is configured. */
   license_configured?: boolean;
+  /** Preferred Cloudflare data center (COLO) code (e.g. "SIN", "CGK") or empty for Any/Auto. */
+  preferred_colo?: string;
+  /** Available COLO codes detected across the active and cached session pool. */
+  available_colos?: string[];
   error?: string;
 }
 

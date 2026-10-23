@@ -51,6 +51,13 @@ type Status struct {
 	// key is configured. The raw license key is never exposed in the API.
 	LicenseConfigured bool `json:"license_configured"`
 
+	// PreferredColo reports the Cloudflare data center (COLO) preferred for egress traffic.
+	PreferredColo string `json:"preferred_colo,omitempty"`
+
+	// AvailableColos lists the distinct Cloudflare data centers (COLOs) detected
+	// across the active and cached WARP sessions.
+	AvailableColos []string `json:"available_colos,omitempty"`
+
 	Error string `json:"error,omitempty"`
 }
 

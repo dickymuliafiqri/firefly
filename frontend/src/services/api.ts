@@ -408,6 +408,29 @@ export async function deleteWarpLicense(): Promise<WarpStatusDTO> {
   });
 }
 
+export async function setWarpColo(colo: string): Promise<WarpStatusDTO> {
+  return request<WarpStatusDTO>("/api/warp/colo", {
+    method: "POST",
+    body: JSON.stringify({ colo }),
+  });
+}
+
+export interface WarpScanResponse {
+  endpoints: Array<{
+    endpoint: string;
+    colo: string;
+    latency_ms: number;
+    error?: string;
+  }>;
+  available_colos: string[];
+}
+
+export async function scanWarpEndpoints(): Promise<WarpScanResponse> {
+  return request<WarpScanResponse>("/api/warp/scan", {
+    method: "POST",
+  });
+}
+
 export async function fetchSingboxStatus(): Promise<SingboxStatusDTO> {
   return request<SingboxStatusDTO>("/api/singbox/status");
 }
@@ -1086,6 +1109,25 @@ export function useDeleteWarpLicenseMutation() {
     mutationFn: deleteWarpLicense,
     onSuccess: (data) => {
       queryClient.setQueryData(["warp"], data);
+      queryClient.invalidateQueries({ queryKey: ["warp"] });
+    },
+  });
+}
+
+export function useSetWarpColoMutation() {
+  return useMutation({
+    mutationFn: setWarpColo,
+    onSuccess: (data) => {
+      queryClient.setQueryData(["warp"], data);
+      queryClient.invalidateQueries({ queryKey: ["warp"] });
+    },
+  });
+}
+
+export function useScanWarpEndpointsMutation() {
+  return useMutation({
+    mutationFn: scanWarpEndpoints,
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["warp"] });
     },
   });

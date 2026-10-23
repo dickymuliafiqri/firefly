@@ -105,8 +105,13 @@ func (deps RouterDeps) makeCheckClient(timeout time.Duration, egressMode, proxyU
 		DialTimeout:   timeout,
 	})
 
+	var rt http.RoundTripper = tr
+	if warp.IsWarpEgress(egressMode) && !httpx.IsNil(deps.WarpManager) {
+		rt = upstream.NewWarpRetryTransport(tr, deps.WarpManager)
+	}
+
 	return &http.Client{
-		Transport: tr,
+		Transport: rt,
 		Timeout:   timeout,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse

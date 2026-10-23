@@ -461,3 +461,112 @@ func TestWarpRetryTransport_EndToEndAgainstLiveServer(t *testing.T) {
 		t.Fatalf("replayed body = %q, want the original payload", body)
 	}
 }
+
+// poolStubRotator implements both EgressRotator and poolSizer.
+type poolStubRotator struct {
+	rotations atomic.Int64
+	poolSize  int
+	alternate func(rotation int64) bool
+}
+
+func (p *poolStubRotator) RotateEgress() bool {
+	n := p.rotations.Add(1)
+	if p.alternate != nil {
+		return p.alternate(n)
+	}
+	return true
+}
+
+func (p *poolStubRotator) PoolSize() int {
+	return p.poolSize
+}
+
+// When a WARP egress IP hits a rate limit like OpenCode's FreeUsageLimitError,
+// the transport must not give up after a hardcoded 3 attempts; it must scale
+// dynamically across the pool size so it tries alternate tunnel IPs until finding
+// a healthy one.
+func TestWarpRetryTransport_DynamicPoolBudgetRetriesFullPool(t *testing.T) {
+	var baseCalls atomic.Int64
+	rot := &poolStubRotator{
+		poolSize: 10,
+	}
+
+	freeUsageLimitJSON := `{"type":"FreeUsageLimitError","message":"Free usage limit reached. Subscribe to OpenCode Go to keep going: https://opencode.ai/go"}`
+	base := rtFunc(func(*http.Request) (*http.Response, error) {
+		call := baseCalls.Add(1)
+		// First 4 IPs are rate-limited on OpenCode
+		if call <= 4 {
+			return textResponse(http.StatusTooManyRequests, freeUsageLimitJSON), nil
+		}
+		// 5th IP succeeds
+		return textResponse(http.StatusOK, `{"ok":true,"ip_attempt":5}`), nil
+	})
+
+	client := &http.Client{Transport: NewWarpRetryTransport(base, rot)}
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		"https://opencode.ai/zen/v1/chat/completions", strings.NewReader(`{"model":"glm-5"}`))
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 after retrying across pool", resp.StatusCode)
+	}
+	if got := baseCalls.Load(); got != 5 {
+		t.Fatalf("base transport called %d times, want 5 (1 initial + 4 retries)", got)
+	}
+	if got := rot.rotations.Load(); got != 4 {
+		t.Fatalf("RotateEgress called %d times, want 4", got)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), `"ip_attempt":5`) {
+		t.Fatalf("unexpected response body: %s", string(body))
+	}
+}
+
+// When every IP in the pool is rate-limited and the pool is exhausted (RotateEgress reports false),
+// the transport must surface the 429 response rather than looping forever.
+func TestWarpRetryTransport_PoolExhaustedStopsAndReturns429(t *testing.T) {
+	var baseCalls atomic.Int64
+	rot := &poolStubRotator{
+		poolSize: 5,
+		alternate: func(n int64) bool {
+			// Pool has 4 slots to retry on; on the 4th rotation, pool is exhausted
+			return n < 4
+		},
+	}
+
+	freeUsageLimitJSON := `{"type":"FreeUsageLimitError","message":"Free usage limit reached. Subscribe to OpenCode Go to keep going: https://opencode.ai/go"}`
+	base := rtFunc(func(*http.Request) (*http.Response, error) {
+		baseCalls.Add(1)
+		return textResponse(http.StatusTooManyRequests, freeUsageLimitJSON), nil
+	})
+
+	client := &http.Client{Transport: NewWarpRetryTransport(base, rot)}
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		"https://opencode.ai/zen/v1/chat/completions", strings.NewReader(`{"model":"glm-5"}`))
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429 after pool exhaustion", resp.StatusCode)
+	}
+	// Initial + 3 retries, then 4th RotateEgress returned false
+	if got := baseCalls.Load(); got != 4 {
+		t.Fatalf("base transport called %d times, want 4", got)
+	}
+	if got := rot.rotations.Load(); got != 4 {
+		t.Fatalf("RotateEgress called %d times, want 4", got)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "FreeUsageLimitError") {
+		t.Fatalf("expected FreeUsageLimitError body, got: %s", string(body))
+	}
+}

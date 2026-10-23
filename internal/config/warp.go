@@ -29,6 +29,11 @@ type WarpDTO struct {
 	// configured by the operator via the dashboard. When set, it is used
 	// during device registration to attach WARP+ privileges.
 	LicenseKey string `json:"license_key,omitempty"`
+
+	// PreferredColo is the optional Cloudflare data center (COLO) code
+	// (e.g. "SIN", "CGK", "NRT") the operator prefers for egress traffic.
+	// Empty means "any/auto".
+	PreferredColo string `json:"preferred_colo,omitempty"`
 }
 
 // LoadWarp loads warp.json. A missing file means the operator never tuned the

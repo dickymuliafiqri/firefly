@@ -259,3 +259,91 @@ func (deps RouterDeps) handleCheckWarp(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(status)
 }
+
+// handleSetWarpColo updates the preferred Cloudflare data center (COLO) for egress traffic.
+func (deps RouterDeps) handleSetWarpColo(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", corsWildcard)
+	w.Header().Set("Content-Type", "application/json")
+
+	if !deps.authorizeAdmin(r) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "Unauthorized: admin session or valid bearer token required",
+		})
+		return
+	}
+
+	var req struct {
+		Colo string `json:"colo"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxWarpPoolBodyBytes)).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "invalid JSON body: " + err.Error(),
+		})
+		return
+	}
+
+	if deps.WarpManager == nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "WARP engine is not initialized",
+		})
+		return
+	}
+
+	colo := strings.ToUpper(strings.TrimSpace(req.Colo))
+	existingCfg, _ := config.LoadWarp(deps.ConfigDir)
+	existingCfg.PreferredColo = colo
+	if err := config.SaveWarp(deps.ConfigDir, existingCfg); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "could not persist the WARP preferred COLO: " + err.Error(),
+		})
+		return
+	}
+
+	deps.WarpManager.SetPreferredColo(colo)
+
+	status := deps.WarpManager.Status()
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(status)
+}
+
+// handleScanWarpEndpoints scans candidate Cloudflare Anycast endpoints to discover
+// available COLOs and their routing.
+func (deps RouterDeps) handleScanWarpEndpoints(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", corsWildcard)
+	w.Header().Set("Content-Type", "application/json")
+
+	if !deps.authorizeAdmin(r) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "Unauthorized: admin session or valid bearer token required",
+		})
+		return
+	}
+
+	if deps.WarpManager == nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "WARP engine is not initialized",
+		})
+		return
+	}
+
+	results, err := deps.WarpManager.ScanEndpoints(r.Context())
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "failed to scan endpoints: " + err.Error(),
+		})
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"endpoints":       results,
+		"available_colos": deps.WarpManager.AvailableColos(),
+	})
+}

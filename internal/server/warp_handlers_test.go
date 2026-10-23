@@ -305,3 +305,57 @@ func TestHandleSetWarpLicense_PersistsAndApplies(t *testing.T) {
 		t.Errorf("expected empty LicenseKey after delete, got %q", loadedAfterDel.LicenseKey)
 	}
 }
+
+func TestHandleSetWarpColo_PersistsAndApplies(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	mgr := warp.NewManager(nil, "")
+	deps := RouterDeps{
+		AdminToken:  "secret-admin-token",
+		ConfigDir:   dir,
+		WarpManager: mgr,
+	}
+
+	// 1. Unauthorized
+	req := httptest.NewRequest(http.MethodPost, "/api/warp/colo", strings.NewReader(`{"colo":"SIN"}`))
+	rr := httptest.NewRecorder()
+	deps.handleSetWarpColo(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status 401, got %d", rr.Code)
+	}
+
+	// 2. Authorized - Set COLO
+	req = httptest.NewRequest(http.MethodPost, "/api/warp/colo", strings.NewReader(`{"colo":"SIN"}`))
+	req.Header.Set("Authorization", "Bearer secret-admin-token")
+	rr = httptest.NewRecorder()
+	deps.handleSetWarpColo(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d (%s)", rr.Code, rr.Body.String())
+	}
+
+	if mgr.PreferredColo() != "SIN" {
+		t.Errorf("mgr.PreferredColo() = %q, want SIN", mgr.PreferredColo())
+	}
+
+	loaded, err := config.LoadWarp(dir)
+	if err != nil {
+		t.Fatalf("LoadWarp failed: %v", err)
+	}
+	if loaded.PreferredColo != "SIN" {
+		t.Errorf("loaded.PreferredColo = %q, want SIN", loaded.PreferredColo)
+	}
+
+	// 3. Reset to empty / auto
+	req = httptest.NewRequest(http.MethodPost, "/api/warp/colo", strings.NewReader(`{"colo":""}`))
+	req.Header.Set("Authorization", "Bearer secret-admin-token")
+	rr = httptest.NewRecorder()
+	deps.handleSetWarpColo(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200 on reset, got %d", rr.Code)
+	}
+
+	if mgr.PreferredColo() != "" {
+		t.Errorf("mgr.PreferredColo() after reset = %q, want empty", mgr.PreferredColo())
+	}
+}

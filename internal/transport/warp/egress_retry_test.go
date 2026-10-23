@@ -230,3 +230,80 @@ func TestRotateEgress_EvictsPenalizedSessionFromActivePool(t *testing.T) {
 		t.Error("evicted session must be quiesced")
 	}
 }
+
+func TestManager_PoolSize(t *testing.T) {
+	mgr := NewManager(quietLogger(), "")
+	defer mgr.Close()
+
+	if mgr.PoolSize() != DefaultPoolSize {
+		t.Fatalf("PoolSize() = %d, want DefaultPoolSize %d", mgr.PoolSize(), DefaultPoolSize)
+	}
+
+	mgr.SetPoolSize(15)
+	if mgr.PoolSize() != 15 {
+		t.Fatalf("PoolSize() after SetPoolSize(15) = %d, want 15", mgr.PoolSize())
+	}
+}
+
+func TestPick_PrioritizesPreferredColo(t *testing.T) {
+	mgr := NewManager(quietLogger(), "")
+	defer mgr.Close()
+
+	a := &Session{PublicIP: "203.0.113.1", Colo: "FRA", CreatedAt: time.Now()}
+	b := &Session{PublicIP: "203.0.113.2", Colo: "SIN", CreatedAt: time.Now().Add(time.Second)}
+	c := &Session{PublicIP: "203.0.113.3", Colo: "NRT", CreatedAt: time.Now().Add(2 * time.Second)}
+	seedActive(mgr, a, b, c)
+
+	mgr.SetPreferredColo("SIN")
+	if mgr.PreferredColo() != "SIN" {
+		t.Fatalf("PreferredColo() = %q, want SIN", mgr.PreferredColo())
+	}
+
+	for i := 0; i < 20; i++ {
+		got := mgr.pick()
+		if got != b {
+			t.Fatalf("pick() on iteration %d returned %v (colo=%s), want b (colo=SIN)", i, got, got.Colo)
+		}
+	}
+}
+
+func TestPick_PreferredColoFallbackWhenLimited(t *testing.T) {
+	mgr := NewManager(quietLogger(), "")
+	defer mgr.Close()
+
+	a := &Session{PublicIP: "203.0.113.1", Colo: "FRA", CreatedAt: time.Now()}
+	b := &Session{PublicIP: "203.0.113.2", Colo: "SIN", CreatedAt: time.Now().Add(time.Second)}
+	seedActive(mgr, a, b)
+
+	mgr.SetPreferredColo("SIN")
+	limitFor(b, time.Minute)
+
+	for i := 0; i < 10; i++ {
+		got := mgr.pick()
+		if got != a {
+			t.Fatalf("pick() when preferred colo is limited returned %v, want fallback to a (FRA)", got)
+		}
+	}
+}
+
+func TestAvailableColos(t *testing.T) {
+	mgr := NewManager(quietLogger(), "")
+	defer mgr.Close()
+
+	a := &Session{PublicIP: "203.0.113.1", Colo: "SIN", CreatedAt: time.Now()}
+	b := &Session{PublicIP: "203.0.113.2", Colo: "CGK", CreatedAt: time.Now().Add(time.Second)}
+	seedActive(mgr, a, b)
+
+	mgr.recordEndpointColo("162.159.192.1:2408", "NRT")
+
+	colos := mgr.AvailableColos()
+	expected := []string{"CGK", "NRT", "SIN"}
+	if len(colos) != len(expected) {
+		t.Fatalf("AvailableColos() = %v, want %v", colos, expected)
+	}
+	for i, c := range expected {
+		if colos[i] != c {
+			t.Fatalf("AvailableColos()[%d] = %s, want %s", i, colos[i], c)
+		}
+	}
+}

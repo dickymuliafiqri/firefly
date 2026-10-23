@@ -498,9 +498,13 @@ func run() error {
 	if warpLicense == "" {
 		warpLicense = os.Getenv("WARP_LICENSE_KEY")
 	}
-	if warpLicense == "" {
-		if wCfg, err := config.LoadWarp(*configDir); err == nil && wCfg.LicenseKey != "" {
+	warpPreferredColo := os.Getenv("FIREFLY_WARP_COLO")
+	if wCfg, err := config.LoadWarp(*configDir); err == nil {
+		if warpLicense == "" && wCfg.LicenseKey != "" {
 			warpLicense = wCfg.LicenseKey
+		}
+		if warpPreferredColo == "" && wCfg.PreferredColo != "" {
+			warpPreferredColo = wCfg.PreferredColo
 		}
 	}
 	warpManager := warp.NewManager(logger, warpLicense, filepath.Join(*configDir, "data", "warp_identity.json"))
@@ -510,6 +514,9 @@ func run() error {
 	// — neither the scheduler nor the cold-start warm-up below runs.
 	warpManager.SetAutoRotateInterval(*warpRotateInterval)
 	warpManager.SetPoolSize(*warpPoolSize)
+	if warpPreferredColo != "" {
+		warpManager.SetPreferredColo(warpPreferredColo)
+	}
 	if *warpRotateInterval > 0 {
 		warpManager.StartAutoRotation()
 		supervisor.Go(ctx, "warp.health", supervisor.Policy{MaxRestarts: 3}, warpManager.HealthLoop)
