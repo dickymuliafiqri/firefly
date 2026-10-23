@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/dickymuliafiqri/firefly/internal/config"
 	"github.com/dickymuliafiqri/firefly/internal/transport/warp"
@@ -84,7 +85,9 @@ func (deps RouterDeps) handleSetWarpPoolSize(w http.ResponseWriter, r *http.Requ
 	// was saved. The in-memory value is applied only after warp.json is durable,
 	// so a failed save leaves the running engine on its previous size rather than
 	// on a size that would silently revert at the next restart.
-	if err := config.SaveWarp(deps.ConfigDir, config.WarpDTO{PoolSize: req.PoolSize}); err != nil {
+	existingCfg, _ := config.LoadWarp(deps.ConfigDir)
+	existingCfg.PoolSize = req.PoolSize
+	if err := config.SaveWarp(deps.ConfigDir, existingCfg); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(w).Encode(map[string]string{
 			"error": "could not persist the WARP pool size: " + err.Error(),
@@ -93,6 +96,102 @@ func (deps RouterDeps) handleSetWarpPoolSize(w http.ResponseWriter, r *http.Requ
 	}
 
 	deps.WarpManager.SetPoolSize(req.PoolSize)
+
+	status := deps.WarpManager.Status()
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(status)
+}
+
+// handleSetWarpLicense updates or sets the WARP+ / Zero Trust license key.
+func (deps RouterDeps) handleSetWarpLicense(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", corsWildcard)
+	w.Header().Set("Content-Type", "application/json")
+
+	if !deps.authorizeAdmin(r) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "Unauthorized: admin session or valid bearer token required",
+		})
+		return
+	}
+
+	var req struct {
+		LicenseKey string `json:"license_key"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxWarpPoolBodyBytes)).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "invalid JSON body: " + err.Error(),
+		})
+		return
+	}
+
+	key := strings.TrimSpace(req.LicenseKey)
+	if key == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "license_key cannot be empty",
+		})
+		return
+	}
+
+	if deps.WarpManager == nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "WARP engine is not initialized",
+		})
+		return
+	}
+
+	existingCfg, _ := config.LoadWarp(deps.ConfigDir)
+	existingCfg.LicenseKey = key
+	if err := config.SaveWarp(deps.ConfigDir, existingCfg); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "could not persist the WARP license: " + err.Error(),
+		})
+		return
+	}
+
+	deps.WarpManager.SetLicenseKey(key)
+
+	status := deps.WarpManager.Status()
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(status)
+}
+
+// handleDeleteWarpLicense removes the configured WARP+ license key.
+func (deps RouterDeps) handleDeleteWarpLicense(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", corsWildcard)
+	w.Header().Set("Content-Type", "application/json")
+
+	if !deps.authorizeAdmin(r) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "Unauthorized: admin session or valid bearer token required",
+		})
+		return
+	}
+
+	if deps.WarpManager == nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "WARP engine is not initialized",
+		})
+		return
+	}
+
+	existingCfg, _ := config.LoadWarp(deps.ConfigDir)
+	existingCfg.LicenseKey = ""
+	if err := config.SaveWarp(deps.ConfigDir, existingCfg); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "could not remove the WARP license from config: " + err.Error(),
+		})
+		return
+	}
+
+	deps.WarpManager.SetLicenseKey("")
 
 	status := deps.WarpManager.Status()
 	w.WriteHeader(http.StatusOK)

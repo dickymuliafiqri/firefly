@@ -380,6 +380,8 @@ export interface WarpStatusDTO {
   egress_ips?: string[];
   /** Detailed real-time status and latency for each session in the pool. */
   sessions?: WarpSessionDTO[];
+  /** Whether a Cloudflare WARP+ / Zero Trust license key is configured. */
+  license_configured?: boolean;
   error?: string;
 }
 

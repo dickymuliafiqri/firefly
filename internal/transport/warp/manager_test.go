@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -551,6 +552,71 @@ func TestManager_SaveIdentityRoundTrips(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("identity file missing: %v", err)
+	}
+}
+
+func TestManager_PoolPersistenceRoundTripAndWarmUp(t *testing.T) {
+	h := newHarness(t)
+	dir := t.TempDir()
+	idPath := filepath.Join(dir, "warp_identity.json")
+	h.mgr.identityPath = idPath
+	h.mgr.SetPoolSize(3)
+
+	var registeredIDs []SavedIdentity
+	for i := 0; i < 3; i++ {
+		keys, err := GenerateKeyPair()
+		if err != nil {
+			t.Fatalf("GenerateKeyPair: %v", err)
+		}
+		reg := registrationResponse(t)
+		reg.ID = fmt.Sprintf("dev_test_%d", i+1)
+		reg.Config.Interface.Addresses.V4 = fmt.Sprintf("172.16.0.%d/32", i+2)
+		registeredIDs = append(registeredIDs, SavedIdentity{
+			Keys:         keys,
+			Registration: reg,
+			SavedAt:      time.Now(),
+		})
+	}
+
+	// Save all 3 identities to pool.
+	h.mgr.savePool(registeredIDs...)
+
+	loaded, err := h.mgr.loadSavedIdentities()
+	if err != nil {
+		t.Fatalf("loadSavedIdentities: %v", err)
+	}
+	if len(loaded) != 3 {
+		t.Fatalf("expected 3 loaded identities, got %d", len(loaded))
+	}
+
+	// Reset registration counter.
+	h.regCalls.Store(0)
+
+	// Now construct a brand new Manager simulating Firefly restart with the same identityPath.
+	mgr2 := NewManager(quietLogger(), "", idPath)
+	defer mgr2.Close()
+	mgr2.SetPoolSize(3)
+	mgr2.httpClient = h.server.Client()
+	mgr2.registrationURL = h.server.URL + "/reg"
+	mgr2.edgeProbe = func(tnet *Net) (string, string) {
+		return testPublicIP, testColo
+	}
+
+	// WarmUp on the new manager should restore all 3 identities without any /reg call.
+	if err := mgr2.WarmUp(t.Context()); err != nil {
+		t.Fatalf("WarmUp on mgr2 failed: %v", err)
+	}
+
+	if got := h.regCalls.Load(); got != 0 {
+		t.Errorf("expected 0 registration calls on WarmUp with saved pool, got %d", got)
+	}
+
+	st := mgr2.Status()
+	if !st.Enabled {
+		t.Errorf("expected manager2 to be enabled")
+	}
+	if st.ActiveSessions != 3 {
+		t.Errorf("expected 3 active sessions in pool, got %d", st.ActiveSessions)
 	}
 }
 

@@ -395,6 +395,19 @@ export async function setWarpPoolSize(poolSize: number): Promise<WarpStatusDTO> 
   });
 }
 
+export async function setWarpLicense(licenseKey: string): Promise<WarpStatusDTO> {
+  return request<WarpStatusDTO>("/api/warp/license", {
+    method: "POST",
+    body: JSON.stringify({ license_key: licenseKey }),
+  });
+}
+
+export async function deleteWarpLicense(): Promise<WarpStatusDTO> {
+  return request<WarpStatusDTO>("/api/warp/license", {
+    method: "DELETE",
+  });
+}
+
 export async function fetchSingboxStatus(): Promise<SingboxStatusDTO> {
   return request<SingboxStatusDTO>("/api/singbox/status");
 }
@@ -747,6 +760,7 @@ export interface UpstreamCheckRequest {
   model?: string;
   egress_mode?: string;
   proxy_url?: string;
+  singbox_outbound_tag?: string;
 }
 
 export interface UpstreamCheckResponse {
@@ -768,6 +782,7 @@ export interface UpstreamModelsRequest {
   timeout_ms?: number;
   egress_mode?: string;
   proxy_url?: string;
+  singbox_outbound_tag?: string;
 }
 
 export interface UpstreamModelsResponse {
@@ -1049,6 +1064,26 @@ export function useCheckWarpMutation() {
 export function useSetWarpPoolSizeMutation() {
   return useMutation({
     mutationFn: setWarpPoolSize,
+    onSuccess: (data) => {
+      queryClient.setQueryData(["warp"], data);
+      queryClient.invalidateQueries({ queryKey: ["warp"] });
+    },
+  });
+}
+
+export function useSetWarpLicenseMutation() {
+  return useMutation({
+    mutationFn: setWarpLicense,
+    onSuccess: (data) => {
+      queryClient.setQueryData(["warp"], data);
+      queryClient.invalidateQueries({ queryKey: ["warp"] });
+    },
+  });
+}
+
+export function useDeleteWarpLicenseMutation() {
+  return useMutation({
+    mutationFn: deleteWarpLicense,
     onSuccess: (data) => {
       queryClient.setQueryData(["warp"], data);
       queryClient.invalidateQueries({ queryKey: ["warp"] });

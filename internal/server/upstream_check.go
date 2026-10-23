@@ -20,20 +20,22 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/adapter/qoder"
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/textx"
+	"github.com/dickymuliafiqri/firefly/internal/transport/httpx"
 	"github.com/dickymuliafiqri/firefly/internal/transport/upstream"
 	"github.com/dickymuliafiqri/firefly/internal/transport/warp"
 )
 
 type UpstreamCheckRequest struct {
-	Name       string `json:"name,omitempty"`
-	KeyRef     string `json:"key_ref,omitempty"`
-	Protocol   string `json:"protocol"` // "openai" or "anthropic"
-	BaseURL    string `json:"base_url"`
-	APIKey     string `json:"api_key,omitempty"`
-	TimeoutMs  int    `json:"timeout_ms,omitempty"`
-	Model      string `json:"model,omitempty"`
-	EgressMode string `json:"egress_mode,omitempty"`
-	ProxyURL   string `json:"proxy_url,omitempty"`
+	Name               string `json:"name,omitempty"`
+	KeyRef             string `json:"key_ref,omitempty"`
+	Protocol           string `json:"protocol"` // "openai" or "anthropic"
+	BaseURL            string `json:"base_url"`
+	APIKey             string `json:"api_key,omitempty"`
+	TimeoutMs          int    `json:"timeout_ms,omitempty"`
+	Model              string `json:"model,omitempty"`
+	EgressMode         string `json:"egress_mode,omitempty"`
+	ProxyURL           string `json:"proxy_url,omitempty"`
+	SingboxOutboundTag string `json:"singbox_outbound_tag,omitempty"`
 }
 
 type UpstreamCheckResponse struct {
@@ -47,14 +49,15 @@ type UpstreamCheckResponse struct {
 }
 
 type UpstreamModelsRequest struct {
-	Name       string `json:"name,omitempty"`
-	KeyRef     string `json:"key_ref,omitempty"`
-	Protocol   string `json:"protocol"`
-	BaseURL    string `json:"base_url"`
-	APIKey     string `json:"api_key,omitempty"`
-	TimeoutMs  int    `json:"timeout_ms,omitempty"`
-	EgressMode string `json:"egress_mode,omitempty"`
-	ProxyURL   string `json:"proxy_url,omitempty"`
+	Name               string `json:"name,omitempty"`
+	KeyRef             string `json:"key_ref,omitempty"`
+	Protocol           string `json:"protocol"`
+	BaseURL            string `json:"base_url"`
+	APIKey             string `json:"api_key,omitempty"`
+	TimeoutMs          int    `json:"timeout_ms,omitempty"`
+	EgressMode         string `json:"egress_mode,omitempty"`
+	ProxyURL           string `json:"proxy_url,omitempty"`
+	SingboxOutboundTag string `json:"singbox_outbound_tag,omitempty"`
 }
 
 type UpstreamModelsResponse struct {
@@ -70,8 +73,8 @@ type UpstreamModelsResponse struct {
 	Unavailable []string `json:"unavailable,omitempty"`
 }
 
-// makeCheckClient builds an http.Client bound to the configured egress mode (warp, proxy, or direct).
-func (deps RouterDeps) makeCheckClient(timeout time.Duration, egressMode, proxyURL string) *http.Client {
+// makeCheckClient builds an http.Client bound to the configured egress mode (warp, proxy, singbox, or direct).
+func (deps RouterDeps) makeCheckClient(timeout time.Duration, egressMode, proxyURL string, singboxOutboundTag ...string) *http.Client {
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
@@ -82,11 +85,24 @@ func (deps RouterDeps) makeCheckClient(timeout time.Duration, egressMode, proxyU
 		ExpectContinueTimeout: time.Second,
 		ForceAttemptHTTP2:     true,
 	}
+	var singboxDialer warp.Dialer
+	if !httpx.IsNil(deps.SingboxManager) && warp.IsSingboxEgress(egressMode) {
+		var tag string
+		if len(singboxOutboundTag) > 0 {
+			tag = singboxOutboundTag[0]
+		}
+		if tag != "" {
+			singboxDialer = deps.SingboxManager.TaggedDialer(tag)
+		} else {
+			singboxDialer = deps.SingboxManager
+		}
+	}
 	warp.ConfigureTransportEgress(tr, warp.EgressConfig{
-		Mode:        egressMode,
-		ProxyURL:    proxyURL,
-		WarpDialer:  deps.WarpManager,
-		DialTimeout: timeout,
+		Mode:          egressMode,
+		ProxyURL:      proxyURL,
+		WarpDialer:    deps.WarpManager,
+		SingboxDialer: singboxDialer,
+		DialTimeout:   timeout,
 	})
 
 	return &http.Client{
@@ -100,7 +116,7 @@ func (deps RouterDeps) makeCheckClient(timeout time.Duration, egressMode, proxyU
 
 // handleOptionsUpstreamCheck serves CORS preflight requests for upstream health check.
 func (deps RouterDeps) handleOptionsUpstreamCheck(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Origin", corsWildcard)
 	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
 	w.WriteHeader(http.StatusNoContent)
@@ -127,7 +143,7 @@ func canonicalProbeProtocol(protocol string) string {
 
 // handleCheckUpstream actively tests connectivity and authentication against an upstream endpoint.
 func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Origin", corsWildcard)
 	w.Header().Set("Content-Type", "application/json")
 
 	if !deps.authorizeAdmin(r) {
@@ -156,6 +172,7 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 
 	egressMode := strings.TrimSpace(req.EgressMode)
 	proxyURL := strings.TrimSpace(req.ProxyURL)
+	singboxTag := strings.TrimSpace(req.SingboxOutboundTag)
 
 	var existingUp *domain.Upstream
 	var targetSlot *domain.KeySlot
@@ -178,6 +195,9 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 				}
 				if proxyURL == "" && existingUp.ProxyURL != "" {
 					proxyURL = existingUp.ProxyURL
+				}
+				if singboxTag == "" && existingUp.SingboxOutboundTag != "" {
+					singboxTag = existingUp.SingboxOutboundTag
 				}
 				if existingUp.KeyRing != nil {
 					if req.KeyRef != "" {
@@ -277,7 +297,7 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 		deps.handleAntigravityCheck(
 			w, ctx, existingUp, targetSlot,
 			baseURL, apiKey, resolvedKeyRef, req.Model,
-			timeout, egressMode, proxyURL,
+			timeout, egressMode, proxyURL, singboxTag,
 		)
 		return
 	}
@@ -286,7 +306,7 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 		// When an apiKey is provided (e.g. testing an individual key or keyring check in Upstream Modal),
 		// actively probe the live Grok CLI /models endpoint to verify credentials.
 		if strings.TrimSpace(apiKey) != "" {
-			client := deps.makeCheckClient(timeout, egressMode, proxyURL)
+			client := deps.makeCheckClient(timeout, egressMode, proxyURL, singboxTag)
 			start := time.Now()
 			live, err := grok.FetchModels(ctx, client, baseURL, apiKey)
 			latencyMs := time.Since(start).Milliseconds()
@@ -441,7 +461,7 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 			})
 			return
 		}
-		client := deps.makeCheckClient(timeout, egressMode, proxyURL)
+		client := deps.makeCheckClient(timeout, egressMode, proxyURL, singboxTag)
 		start := time.Now()
 		live, err := qoder.FetchModels(ctx, client, baseURL, apiKey)
 		latencyMs := time.Since(start).Milliseconds()
@@ -749,7 +769,7 @@ func (deps RouterDeps) handleCheckUpstream(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	client := deps.makeCheckClient(timeout, egressMode, proxyURL)
+	client := deps.makeCheckClient(timeout, egressMode, proxyURL, singboxTag)
 
 	start := time.Now()
 	resp, err := client.Do(httpReq)
@@ -1014,7 +1034,7 @@ func parseModelIDsFromBody(bodyBytes []byte) []string {
 // handleFetchUpstreamModels queries an upstream provider exclusively for its available models list (GET /models).
 // It NEVER executes inference or consumes LLM generation tokens.
 func (deps RouterDeps) handleFetchUpstreamModels(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Origin", corsWildcard)
 	w.Header().Set("Content-Type", "application/json")
 
 	if !deps.authorizeAdmin(r) {
@@ -1041,6 +1061,7 @@ func (deps RouterDeps) handleFetchUpstreamModels(w http.ResponseWriter, r *http.
 
 	egressMode := strings.TrimSpace(req.EgressMode)
 	proxyURL := strings.TrimSpace(req.ProxyURL)
+	singboxTag := strings.TrimSpace(req.SingboxOutboundTag)
 
 	var existingUp *domain.Upstream
 	var targetSlot *domain.KeySlot
@@ -1062,6 +1083,9 @@ func (deps RouterDeps) handleFetchUpstreamModels(w http.ResponseWriter, r *http.
 				}
 				if proxyURL == "" && existingUp.ProxyURL != "" {
 					proxyURL = existingUp.ProxyURL
+				}
+				if singboxTag == "" && existingUp.SingboxOutboundTag != "" {
+					singboxTag = existingUp.SingboxOutboundTag
 				}
 				if existingUp.KeyRing != nil {
 					if req.KeyRef != "" {
@@ -1163,7 +1187,7 @@ func (deps RouterDeps) handleFetchUpstreamModels(w http.ResponseWriter, r *http.
 
 	if protocol == "grok-cli" {
 		if strings.TrimSpace(apiKey) != "" {
-			client := deps.makeCheckClient(timeout, egressMode, proxyURL)
+			client := deps.makeCheckClient(timeout, egressMode, proxyURL, singboxTag)
 			start := time.Now()
 			live, err := grok.FetchModels(ctx, client, baseURL, apiKey)
 			latencyMs := time.Since(start).Milliseconds()
@@ -1200,7 +1224,7 @@ func (deps RouterDeps) handleFetchUpstreamModels(w http.ResponseWriter, r *http.
 			})
 			return
 		}
-		client := deps.makeCheckClient(timeout, egressMode, proxyURL)
+		client := deps.makeCheckClient(timeout, egressMode, proxyURL, singboxTag)
 		start := time.Now()
 		live, err := qoder.FetchModels(ctx, client, baseURL, apiKey)
 		latencyMs := time.Since(start).Milliseconds()
@@ -1310,7 +1334,7 @@ func (deps RouterDeps) handleFetchUpstreamModels(w http.ResponseWriter, r *http.
 		}
 	}
 
-	client := deps.makeCheckClient(timeout, egressMode, proxyURL)
+	client := deps.makeCheckClient(timeout, egressMode, proxyURL, singboxTag)
 
 	start := time.Now()
 	resp, err := client.Do(httpReq)

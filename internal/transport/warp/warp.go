@@ -47,6 +47,10 @@ type Status struct {
 	// NextRotationAt reports when the next automated rotation is expected.
 	NextRotationAt time.Time `json:"next_rotation_at,omitzero"`
 
+	// LicenseConfigured reports whether a Cloudflare WARP+ / Zero Trust license
+	// key is configured. The raw license key is never exposed in the API.
+	LicenseConfigured bool `json:"license_configured"`
+
 	Error string `json:"error,omitempty"`
 }
 

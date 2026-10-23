@@ -498,6 +498,11 @@ func run() error {
 	if warpLicense == "" {
 		warpLicense = os.Getenv("WARP_LICENSE_KEY")
 	}
+	if warpLicense == "" {
+		if wCfg, err := config.LoadWarp(*configDir); err == nil && wCfg.LicenseKey != "" {
+			warpLicense = wCfg.LicenseKey
+		}
+	}
 	warpManager := warp.NewManager(logger, warpLicense, filepath.Join(*configDir, "data", "warp_identity.json"))
 	// The interval is applied even when it is zero: Status() mirrors the schedule,
 	// so leaving the constructor default in place made the dashboard advertise a

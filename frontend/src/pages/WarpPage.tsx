@@ -5,7 +5,14 @@ import { Field } from '@/components/ui/Controls';
 import { KpiCard, KpiGrid, PageHeader } from '@/components/ui/PageHeader';
 import { Pagination } from '@/components/ui/Pagination';
 import { QueryGate } from '@/components/ui/QueryGate';
-import { useCheckWarpMutation, useRotateWarpMutation, useSetWarpPoolSizeMutation, useWarpStatusQuery } from '@/services/api';
+import {
+  useCheckWarpMutation,
+  useDeleteWarpLicenseMutation,
+  useRotateWarpMutation,
+  useSetWarpLicenseMutation,
+  useSetWarpPoolSizeMutation,
+  useWarpStatusQuery,
+} from '@/services/api';
 import type { WarpStatusDTO } from '@/services/schema';
 import { useUiStore } from '@/state/store';
 
@@ -160,6 +167,120 @@ const POOL_MAX_FALLBACK = 64;
  * per tick, so raising it empty-fills over the following intervals instead of
  * registering a burst of sessions that would trip Cloudflare 429s.
  */
+function WarpLicenseCard({ status }: { status?: WarpStatusDTO }) {
+  const setLicense = useSetWarpLicenseMutation();
+  const deleteLicense = useDeleteWarpLicenseMutation();
+  const pushToast = useUiStore((s) => s.pushToast);
+
+  const [licenseKey, setLicenseKey] = useState('');
+  const configured = Boolean(status?.license_configured);
+
+  function handleSave(e: FormEvent) {
+    e.preventDefault();
+    const key = licenseKey.trim();
+    if (!key || setLicense.isPending) return;
+
+    setLicense.mutate(key, {
+      onSuccess: () => {
+        setLicenseKey('');
+        pushToast({
+          type: 'success',
+          title: 'WARP+ license saved',
+          message: 'License key attached. Future registrations will use this license.',
+        });
+      },
+      onError: (err) => {
+        pushToast({
+          type: 'error',
+          title: 'Could not save license',
+          message: err instanceof Error ? err.message : 'Unknown error',
+        });
+      },
+    });
+  }
+
+  function handleRemove() {
+    if (deleteLicense.isPending) return;
+    deleteLicense.mutate(undefined, {
+      onSuccess: () => {
+        pushToast({
+          type: 'success',
+          title: 'WARP+ license removed',
+          message: 'Reverted to free tier device registration.',
+        });
+      },
+      onError: (err) => {
+        pushToast({
+          type: 'error',
+          title: 'Could not remove license',
+          message: err instanceof Error ? err.message : 'Unknown error',
+        });
+      },
+    });
+  }
+
+  return (
+    <div className="card">
+      <div className="card-header">
+        <div className="flex items-center gap-2">
+          <h2>WARP+ License</h2>
+          {configured ? (
+            <Badge tone="ok">configured</Badge>
+          ) : (
+            <Badge tone="neutral">free tier</Badge>
+          )}
+        </div>
+        <span className="hint">
+          Attach a Cloudflare WARP+ or Zero Trust license key for higher quota and priority routing
+        </span>
+      </div>
+      <div className="card-body">
+        <form onSubmit={handleSave}>
+          <Field
+            label="License key"
+            htmlFor="warp-license-key"
+            hint={
+              configured
+                ? 'A license key is currently active. Enter a new key to replace it, or remove it to revert to free tier.'
+                : 'Enter your 26-character WARP+ or Cloudflare Zero Trust license key.'
+            }
+          >
+            <input
+              id="warp-license-key"
+              type="password"
+              placeholder={configured ? '••••••••••••••••••••••••' : 'e.g. xxxxxxxx-xxxxxxxx-xxxxxxxx'}
+              value={licenseKey}
+              disabled={setLicense.isPending || deleteLicense.isPending}
+              onChange={(e) => setLicenseKey(e.target.value)}
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </Field>
+          <div className="form-row form-row-end" style={{ marginTop: 14 }}>
+            {configured ? (
+              <button
+                type="button"
+                className="btn btn-ghost"
+                disabled={deleteLicense.isPending || setLicense.isPending}
+                onClick={handleRemove}
+              >
+                {deleteLicense.isPending ? 'Removing…' : 'Remove license'}
+              </button>
+            ) : null}
+            <button
+              type="submit"
+              className="btn btn-secondary"
+              disabled={!licenseKey.trim() || setLicense.isPending || deleteLicense.isPending}
+            >
+              {setLicense.isPending ? 'Saving…' : 'Save license'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function WarpPoolSizeCard({ status }: { status?: WarpStatusDTO }) {
   const save = useSetWarpPoolSizeMutation();
   const pushToast = useUiStore((s) => s.pushToast);
@@ -417,6 +538,7 @@ export function WarpPage() {
             </div>
           </div>
           <WarpPoolSizeCard status={d} />
+          <WarpLicenseCard status={d} />
           <div className="card">
             <div className="card-header">
               <h2>Connection &amp; rotation</h2>

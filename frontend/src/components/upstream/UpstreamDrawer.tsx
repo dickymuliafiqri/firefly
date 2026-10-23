@@ -63,6 +63,7 @@ export function UpstreamDrawer({
         base_url: selected.base_url,
         egress_mode: entry?.egress_mode,
         proxy_url: entry?.proxy_url,
+        singbox_outbound_tag: entry?.singbox_outbound_tag,
       });
       setPingResult({
         healthy: res.healthy,

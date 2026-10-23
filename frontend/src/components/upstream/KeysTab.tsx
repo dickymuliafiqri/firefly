@@ -54,6 +54,7 @@ interface KeysTabProps {
   baseUrl: string;
   egressMode: string;
   proxyUrl?: string;
+  singboxOutboundTag?: string;
   probeModel?: string;
   onProviderChange: (id: number | null) => void;
   onStrategyChange: (strat: 'round_robin' | 'least_inflight') => void;
@@ -69,6 +70,7 @@ export function KeysTab({
   baseUrl,
   egressMode,
   proxyUrl,
+  singboxOutboundTag,
   probeModel,
   onProviderChange,
   onStrategyChange,
@@ -148,6 +150,7 @@ export function KeysTab({
         api_key: secret || undefined,
         egress_mode: egressMode,
         proxy_url: proxyUrl || undefined,
+        singbox_outbound_tag: singboxOutboundTag || undefined,
         model: probeModel || undefined,
       };
       const res = await checkMutation.mutateAsync(payload);
