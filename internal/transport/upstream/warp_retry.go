@@ -27,14 +27,43 @@ const warpEgressErrorBodyLimit = 64 << 10
 // is declared as an interface so a wrapped transport still satisfies it.
 type idleConnCloser interface{ CloseIdleConnections() }
 
-// egressRotator is the seam the retry transport uses to move egress off a
+// EgressRotator is the seam the retry transport uses to move egress off a
 // rate-limited IP. Declaring it here (rather than taking *warp.Manager
 // directly) keeps the retry logic testable without standing up a real WARP
 // pool, and keeps this package free of any Cloudflare lifecycle knowledge.
-type egressRotator interface {
+type EgressRotator interface {
 	// RotateEgress penalizes the IP that just answered 429 and reports
 	// whether a different, currently-healthy egress is available to retry on.
 	RotateEgress() bool
+}
+
+// poolSizer is an optional interface an EgressRotator can satisfy to advertise
+// its pool capacity so retries can dynamically scale across the entire pool.
+type poolSizer interface {
+	PoolSize() int
+}
+
+func retryBudget(rot EgressRotator) int {
+	if ps, ok := rot.(poolSizer); ok {
+		if size := ps.PoolSize(); size > 0 {
+			if size < warpEgressRetryBudget {
+				return warpEgressRetryBudget
+			}
+			if size > warp.MaxPoolSize {
+				return warp.MaxPoolSize
+			}
+			return size
+		}
+	}
+	return warpEgressRetryBudget
+}
+
+// NewWarpRetryTransport wraps base with WARP rate-limit retry logic.
+func NewWarpRetryTransport(base http.RoundTripper, rotator EgressRotator) http.RoundTripper {
+	if rotator == nil {
+		return base
+	}
+	return &warpRetryTransport{base: base, warp: rotator}
 }
 
 // warpRetryTransport wraps the real *http.Transport for an upstream whose
@@ -56,7 +85,7 @@ type egressRotator interface {
 // is preserved with no regression for single-session pools.
 type warpRetryTransport struct {
 	base http.RoundTripper
-	warp egressRotator
+	warp EgressRotator
 }
 
 // isWarpRetryableStatus reports whether an upstream response indicates an
@@ -90,7 +119,8 @@ func (t *warpRetryTransport) RoundTrip(req *http.Request) (*http.Response, error
 		return resp, nil
 	}
 
-	for attempt := 0; attempt < warpEgressRetryBudget; attempt++ {
+	budget := retryBudget(t.warp)
+	for attempt := 0; attempt < budget; attempt++ {
 		// The client may have walked away while the first attempt was in
 		// flight; retrying would burn upstream quota for nobody.
 		if req.Context().Err() != nil {
@@ -106,6 +136,12 @@ func (t *warpRetryTransport) RoundTrip(req *http.Request) (*http.Response, error
 		// buffered (not discarded) because it may still have to be handed
 		// back to the caller if no alternate exists.
 		resp.Body = bufferAndClose(resp.Body)
+
+		// Directly drop idle keep-alive sockets on the underlying transport
+		// so the retry is guaranteed to dial a fresh connection on the new IP.
+		if ic, ok := t.base.(idleConnCloser); ok {
+			ic.CloseIdleConnections()
+		}
 
 		if !t.warp.RotateEgress() {
 			// No healthy alternate session: surface the response verbatim so the
@@ -177,5 +213,5 @@ func bufferAndClose(body io.ReadCloser) io.ReadCloser {
 var (
 	_ http.RoundTripper = (*warpRetryTransport)(nil)
 	_ idleConnCloser    = (*warpRetryTransport)(nil)
-	_ egressRotator     = (*warp.Manager)(nil)
+	_ EgressRotator     = (*warp.Manager)(nil)
 )

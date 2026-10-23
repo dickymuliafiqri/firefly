@@ -5,6 +5,32 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.48.0] - 2026-10-24
+
+### Added
+
+- **Full-Pool WARP Rate-Limit Retry Mechanism (`internal/transport/upstream/warp_retry.go`, `internal/transport/warp/manager.go`, `internal/server/upstream_check.go`)**:
+  - Dynamically scaled retry budget across the configured pool capacity (up to `warp.MaxPoolSize = 64`), replacing the static 3-attempt limit so every WARP egress IP is tried when hitting provider-level IP rate limits (such as OpenCode `FreeUsageLimitError` 429).
+  - Fast-path restoration of unpenalized sessions from cached identities (`restoreOneAvailableSession`) when the active pool is running low on unpenalized slots, avoiding premature failure before the pool is exhausted.
+  - Active idle socket cleanup (`CloseIdleConnections`) on the base transport upon rate limit detection to force fresh socket dials over the rotated IP.
+  - Integration into manual upstream health check requests (`makeCheckClient`) for WARP egress upstreams.
+
+- **Cloudflare WARP COLO Selection and Endpoint Discovery (`internal/transport/warp/`, `internal/server/`, `internal/config/`, `frontend/src/`)**:
+  - **Preferred COLO Selection**: Allows prioritizing Cloudflare edge data centers (e.g., `SIN`, `CGK`, `NRT`, `FRA`) for WARP egress connections with seamless fallback when preferred slots are limited or cooling.
+  - **Endpoint Scanner (`ScanEndpoints`)**: Probes candidate Cloudflare Anycast edge IP endpoints, measuring latency and discovering reachable edge data centers.
+  - **Fast Cache Restoration by COLO (`restoreOneSessionForColo`)**: Restores cached identities matching the preferred COLO immediately into the active pool.
+  - **API Endpoints**: Added `POST /api/warp/colo` to update preferred COLO and `POST /api/warp/scan` to scan candidate Anycast endpoints.
+  - **Dashboard Controls**: Added Cloudflare COLO management card on the WARP page with auto-detected dropdown list, custom input, endpoint scanner action, and save/reset buttons.
+
+## [1.47.0] - 2026-10-23
+
+### Added
+
+- **Multi-Identity WARP Pool Persistence and License Key Management (`internal/transport/warp/`, `internal/config/`, `frontend/src/`)**:
+  - Persistent cache of multiple Cloudflare WARP identities in `warp_identity.json`.
+  - WARP+ / Zero Trust license key attachment and removal (`POST /api/warp/license`, `DELETE /api/warp/license`).
+  - Warm-up and eager pool restoration on startup from cached identities.
+
 ## [1.46.0] - 2026-10-21
 
 ### Added

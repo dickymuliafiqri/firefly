@@ -92,3 +92,20 @@ func TestWarpOutOfRangeIsLoadedNotRejected(t *testing.T) {
 		t.Fatalf("pool_size = %d, want 900", cfg.PoolSize)
 	}
 }
+
+func TestWarpPreferredColoRoundTrip(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	if err := SaveWarp(dir, WarpDTO{PoolSize: 10, PreferredColo: "SIN"}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	got, err := LoadWarp(dir)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got.PreferredColo != "SIN" {
+		t.Fatalf("preferred_colo = %q, want SIN", got.PreferredColo)
+	}
+}

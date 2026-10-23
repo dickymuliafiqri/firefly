@@ -16,6 +16,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -48,6 +49,31 @@ const (
 
 	// DefaultMinRotateInterval throttles asynchronous manual/fallback background rotations.
 	DefaultMinRotateInterval = 60 * time.Second
+
+	// DefaultEndpointCandidates lists candidate Cloudflare WARP Anycast WireGuard
+	// edge endpoints across multiple address blocks used for endpoint scanning and
+	// COLO targeting.
+)
+
+var DefaultEndpointCandidates = []string{
+	"162.159.192.1:2408",
+	"162.159.192.2:2408",
+	"162.159.192.3:2408",
+	"162.159.192.5:2408",
+	"162.159.193.1:2408",
+	"162.159.193.2:2408",
+	"162.159.193.5:2408",
+	"162.159.195.1:2408",
+	"162.159.195.2:2408",
+	"188.114.96.1:2408",
+	"188.114.96.2:2408",
+	"188.114.97.1:2408",
+	"188.114.97.2:2408",
+	"188.114.98.1:2408",
+	"188.114.99.1:2408",
+}
+
+const (
 
 	// DefaultEgressLimit bounds how long pick() skips a session whose egress IP
 	// answered 429, so the next WARP-egress request lands on a different live
@@ -300,6 +326,10 @@ type Manager struct {
 	// replaced, so the caller releases the key cooldowns charged against it.
 	onAutoRotate atomic.Pointer[func(string)]
 
+	preferredColo atomic.Pointer[string]
+	coloMu        sync.RWMutex
+	endpointColos map[string]string
+
 	closeOnce   sync.Once
 	closed      atomic.Bool
 	bgCtx       context.Context
@@ -334,6 +364,7 @@ func NewManager(logger *slog.Logger, licenseKey string, identityPath ...string) 
 		drainedEntries:     make(map[string]time.Time),
 		rotateTimeout:      defaultRotateTimeout,
 		probeTimeout:       defaultProbeTimeout,
+		endpointColos:      make(map[string]string),
 		bgCtx:              ctx,
 		bgCancel:           cancel,
 		drainDone:          make(chan struct{}),
@@ -499,6 +530,164 @@ func (m *Manager) SetPoolSize(n int) {
 		n = MinPoolSize
 	}
 	m.poolSize.Store(int64(n))
+}
+
+// PoolSize returns the configured ceiling on concurrent active WARP slots.
+func (m *Manager) PoolSize() int {
+	if m == nil {
+		return 0
+	}
+	return int(m.poolSize.Load())
+}
+
+// SetPreferredColo sets the Cloudflare data center (COLO) code (e.g. "SIN", "CGK")
+// preferred for WARP egress. An empty string resets preference to any/auto.
+func (m *Manager) SetPreferredColo(colo string) {
+	if m == nil {
+		return
+	}
+	colo = strings.ToUpper(strings.TrimSpace(colo))
+	m.preferredColo.Store(&colo)
+
+	if colo == "" {
+		return
+	}
+
+	// If no active session currently matches the preferred COLO, try restoring
+	// a matching session from cache or triggering a rotation to acquire one.
+	hasMatch := false
+	for _, s := range m.activeSessions() {
+		if s != nil && strings.EqualFold(s.Colo, colo) {
+			hasMatch = true
+			break
+		}
+	}
+	if !hasMatch && !m.closed.Load() {
+		if restored := m.restoreOneSessionForColo(colo); restored != nil {
+			return
+		}
+		m.replenishSlot()
+	}
+}
+
+// PreferredColo returns the preferred Cloudflare data center (COLO) code, or empty string.
+func (m *Manager) PreferredColo() string {
+	if m == nil {
+		return ""
+	}
+	if p := m.preferredColo.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+// AvailableColos returns a sorted, deduplicated slice of COLO codes observed across
+// active sessions, cached pool identities, and probed endpoints.
+func (m *Manager) AvailableColos() []string {
+	if m == nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	for _, s := range m.activeSessions() {
+		if s != nil && s.Colo != "" {
+			seen[strings.ToUpper(s.Colo)] = true
+		}
+	}
+
+	m.coloMu.RLock()
+	for _, colo := range m.endpointColos {
+		if colo != "" {
+			seen[strings.ToUpper(colo)] = true
+		}
+	}
+	m.coloMu.RUnlock()
+
+	var colos []string
+	for c := range seen {
+		colos = append(colos, c)
+	}
+	sort.Strings(colos)
+	return colos
+}
+
+func (m *Manager) recordEndpointColo(endpoint, colo string) {
+	if endpoint == "" || colo == "" {
+		return
+	}
+	m.coloMu.Lock()
+	m.endpointColos[endpoint] = strings.ToUpper(colo)
+	m.coloMu.Unlock()
+}
+
+func (m *Manager) endpointColo(endpoint string) string {
+	m.coloMu.RLock()
+	defer m.coloMu.RUnlock()
+	return m.endpointColos[endpoint]
+}
+
+func (m *Manager) findEndpointForColo(targetColo string) string {
+	if targetColo == "" {
+		return ""
+	}
+	m.coloMu.RLock()
+	defer m.coloMu.RUnlock()
+	for ep, c := range m.endpointColos {
+		if strings.EqualFold(c, targetColo) {
+			return ep
+		}
+	}
+	return ""
+}
+
+// ScanEndpoints scans candidate Cloudflare Anycast endpoints to discover available
+// COLOs and their routing. It returns a mapping of endpoint -> COLO.
+func (m *Manager) ScanEndpoints(ctx context.Context) (map[string]string, error) {
+	if m == nil || m.closed.Load() {
+		return nil, errClosed
+	}
+
+	session := newestSession(m.activeSessions())
+	if session == nil {
+		var err error
+		session, err = m.ensureSession(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("ensure session for endpoint scan: %w", err)
+		}
+	}
+
+	originalEndpoint := session.Endpoint
+	discovered := make(map[string]string)
+
+	peerPubBytes, err := base64.StdEncoding.DecodeString(DefaultPeerPublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("decode default peer public key: %w", err)
+	}
+	peerPubHex := hex.EncodeToString(peerPubBytes)
+
+	for _, ep := range DefaultEndpointCandidates {
+		if ctx.Err() != nil {
+			break
+		}
+		uapi := fmt.Sprintf("public_key=%s\nendpoint=%s\n", peerPubHex, ep)
+		if err := session.Dev.IpcSet(uapi); err != nil {
+			continue
+		}
+
+		probeCtx, probeCancel := context.WithTimeout(ctx, 2*time.Second)
+		ip, colo := m.probeEdgeTraceWithContext(probeCtx, session.TNet)
+		probeCancel()
+
+		if ip != "" && colo != "" {
+			discovered[ep] = colo
+			m.recordEndpointColo(ep, colo)
+		}
+	}
+
+	if originalEndpoint != "" {
+		_ = session.Dev.IpcSet(fmt.Sprintf("public_key=%s\nendpoint=%s\n", peerPubHex, originalEndpoint))
+	}
+
+	return discovered, nil
 }
 
 // StartAutoRotation launches a background goroutine that periodically rotates
@@ -840,6 +1029,14 @@ func (m *Manager) buildSession(keys *KeyPair, reg *RegistrationResponse, start t
 		peerEndpoint = udpAddr.String()
 	}
 
+	// If a preferred COLO is configured, check if we already know an endpoint that routes to it.
+	targetColo := m.PreferredColo()
+	if targetColo != "" {
+		if knownEp := m.findEndpointForColo(targetColo); knownEp != "" {
+			peerEndpoint = knownEp
+		}
+	}
+
 	uapiConfig := fmt.Sprintf(
 		"private_key=%s\npublic_key=%s\nendpoint=%s\nallowed_ip=0.0.0.0/0\nallowed_ip=::/0\npersistent_keepalive_interval=25\n",
 		keys.PrivateKeyHex,
@@ -881,6 +1078,42 @@ func (m *Manager) buildSession(keys *KeyPair, reg *RegistrationResponse, start t
 	} else {
 		session.PublicIP, session.Colo = m.probeEdgeTrace(tnet)
 	}
+
+	m.recordEndpointColo(session.Endpoint, session.Colo)
+
+	// If preferred COLO is requested and does not match the initial probe,
+	// try candidate endpoints to direct this session to the desired COLO.
+	if targetColo != "" && session.Colo != "" && !strings.EqualFold(session.Colo, targetColo) && m.edgeProbe == nil {
+		peerPubBytes, err := base64.StdEncoding.DecodeString(peerPubKeyB64)
+		if err == nil {
+			peerPubHex := hex.EncodeToString(peerPubBytes)
+			for _, candidate := range DefaultEndpointCandidates {
+				if candidate == session.Endpoint {
+					continue
+				}
+				if known := m.endpointColo(candidate); known != "" && !strings.EqualFold(known, targetColo) {
+					continue
+				}
+
+				uapi := fmt.Sprintf("public_key=%s\nendpoint=%s\n", peerPubHex, candidate)
+				if err := dev.IpcSet(uapi); err != nil {
+					continue
+				}
+
+				ip, colo := m.probeEdgeTrace(tnet)
+				if ip != "" && colo != "" {
+					m.recordEndpointColo(candidate, colo)
+					if strings.EqualFold(colo, targetColo) {
+						session.Endpoint = candidate
+						session.PublicIP = ip
+						session.Colo = colo
+						break
+					}
+				}
+			}
+		}
+	}
+
 	session.latencyMs.Store(session.LatencyMs)
 	session.lastCheckAt.Store(time.Now().UnixNano())
 	session.lastSuccess.Store(session.PublicIP != "")
@@ -1270,6 +1503,21 @@ func (m *Manager) pick() *Session {
 	}
 	start := int(m.rr.Add(1) % uint64(n))
 	now := time.Now().UnixNano()
+	preferred := m.PreferredColo()
+
+	// If preferred COLO is specified, prioritize matching unpenalized sessions.
+	if preferred != "" {
+		for i := 0; i < n; i++ {
+			s := cur[(start+i)%n]
+			if s == nil || !strings.EqualFold(s.Colo, preferred) {
+				continue
+			}
+			if !s.limited(now) {
+				m.lastPicked.Store(s)
+				return s
+			}
+		}
+	}
 
 	var fallback *Session
 	for i := 0; i < n; i++ {
@@ -1519,7 +1767,14 @@ func (m *Manager) RotateEgress() bool {
 	// takes effect on some IP rather than being lost.
 	target := m.lastPicked.Load()
 	cur := m.activeSessions()
-	if target == nil && len(cur) > 0 {
+	inCur := false
+	for _, s := range cur {
+		if s == target {
+			inCur = true
+			break
+		}
+	}
+	if !inCur && len(cur) > 0 {
 		target = cur[int(m.rr.Load()%uint64(len(cur)))]
 	}
 	if target != nil {
@@ -1543,6 +1798,15 @@ func (m *Manager) RotateEgress() bool {
 		m.evictSession(target)
 	}
 
+	// If no alternate is available in the currently active sessions, check if
+	// there is an available un-drained saved identity in the pool cache that can be
+	// restored immediately to provide a fresh egress IP without waiting for registration.
+	if !alternate {
+		if restored := m.restoreOneAvailableSession(); restored != nil {
+			alternate = true
+		}
+	}
+
 	// Drop idle sockets pooled on the penalized IP so the next dial is fresh.
 	m.notifyRotation()
 
@@ -1556,6 +1820,129 @@ func (m *Manager) RotateEgress() bool {
 			"alternate_available", alternate)
 	}
 	return alternate
+}
+
+// restoreOneAvailableSession checks if there is any saved identity in the local
+// cache that is not currently active and not in drained cooldown, and restores
+// it into the active pool to provide an immediate alternate egress IP.
+func (m *Manager) restoreOneAvailableSession() *Session {
+	if m == nil || m.closed.Load() || m.identityPath == "" {
+		return nil
+	}
+	idents, err := m.loadSavedIdentities()
+	if err != nil || len(idents) == 0 {
+		return nil
+	}
+
+	active := m.activeSessions()
+	activeIDs := make(map[string]bool, len(active)*2)
+	for _, s := range active {
+		if s != nil {
+			if s.DeviceID != "" {
+				activeIDs[s.DeviceID] = true
+			}
+			if s.PublicKey != "" {
+				activeIDs[s.PublicKey] = true
+			}
+		}
+	}
+
+	for _, ident := range idents {
+		var devID, pubKey string
+		if ident.Registration != nil {
+			devID = ident.Registration.ID
+		}
+		if ident.Keys != nil {
+			pubKey = ident.Keys.PublicKeyB64
+		}
+		if (devID != "" && activeIDs[devID]) || (pubKey != "" && activeIDs[pubKey]) {
+			continue
+		}
+		if m.isIdentityDrained(devID, pubKey) {
+			continue
+		}
+
+		session, err := m.buildSession(ident.Keys, ident.Registration, time.Now())
+		if err != nil || session == nil {
+			continue
+		}
+		if session.PublicIP == "" {
+			session.Close()
+			continue
+		}
+
+		if installed := m.installSession(session); installed != nil {
+			m.logger.Info("restored alternate warp session from pool cache for rate-limit retry",
+				"public_ip", session.PublicIP,
+				"colo", session.Colo,
+				"device_id", session.DeviceID)
+			return installed
+		}
+	}
+	return nil
+}
+
+// restoreOneSessionForColo searches the saved identities cache for a session that
+// routes to the specified COLO, and installs it into the active pool.
+func (m *Manager) restoreOneSessionForColo(colo string) *Session {
+	if m == nil || m.closed.Load() || m.identityPath == "" || colo == "" {
+		return nil
+	}
+	idents, err := m.loadSavedIdentities()
+	if err != nil || len(idents) == 0 {
+		return nil
+	}
+
+	active := m.activeSessions()
+	activeIDs := make(map[string]bool, len(active)*2)
+	for _, s := range active {
+		if s != nil {
+			if s.DeviceID != "" {
+				activeIDs[s.DeviceID] = true
+			}
+			if s.PublicKey != "" {
+				activeIDs[s.PublicKey] = true
+			}
+		}
+	}
+
+	for _, ident := range idents {
+		var devID, pubKey string
+		if ident.Registration != nil {
+			devID = ident.Registration.ID
+		}
+		if ident.Keys != nil {
+			pubKey = ident.Keys.PublicKeyB64
+		}
+		if (devID != "" && activeIDs[devID]) || (pubKey != "" && activeIDs[pubKey]) {
+			continue
+		}
+		if m.isIdentityDrained(devID, pubKey) {
+			continue
+		}
+
+		session, err := m.buildSession(ident.Keys, ident.Registration, time.Now())
+		if err != nil || session == nil {
+			continue
+		}
+		if session.PublicIP == "" {
+			session.Close()
+			continue
+		}
+
+		if strings.EqualFold(session.Colo, colo) {
+			if installed := m.installSession(session); installed != nil {
+				m.logger.Info("restored warp session matching preferred colo from cache",
+					"public_ip", session.PublicIP,
+					"colo", session.Colo,
+					"device_id", session.DeviceID)
+				return installed
+			}
+		} else {
+			session.Close()
+		}
+	}
+	return nil
 }
 
 // evictSession removes target from the active pool and moves it to drainSession
@@ -1635,12 +2022,15 @@ func (m *Manager) rotationAllowed(now time.Time) bool {
 // userspace stack to learn the tunnel's public egress address and the edge
 // cologne that served it.
 func (m *Manager) probeEdgeTrace(tnet *Net) (string, string) {
+	ctx, cancel := context.WithTimeout(m.bgCtx, m.probeTimeout)
+	defer cancel()
+	return m.probeEdgeTraceWithContext(ctx, tnet)
+}
+
+func (m *Manager) probeEdgeTraceWithContext(ctx context.Context, tnet *Net) (string, string) {
 	if tnet == nil {
 		return "", ""
 	}
-
-	ctx, cancel := context.WithTimeout(m.bgCtx, m.probeTimeout)
-	defer cancel()
 
 	tr := &http.Transport{
 		DialContext:     tnet.DialContext,
@@ -1723,6 +2113,8 @@ func (m *Manager) Status() Status {
 		AutoRotateIntervalSeconds: autoRotateSec,
 		NextRotationAt:            nextRotationTime,
 		LicenseConfigured:         m.LicenseConfigured(),
+		PreferredColo:             m.PreferredColo(),
+		AvailableColos:            m.AvailableColos(),
 		Error:                     errMsg,
 	}
 
