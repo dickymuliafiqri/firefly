@@ -20,11 +20,38 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/transport/warp"
 )
 
+// transportConfig captures the subset of Upstream configuration that defines
+// the network transport. If any of these fields change during hot reload, the
+// cached *http.Client is evicted and recreated.
+type transportConfig struct {
+	egressMode          string
+	proxyURL            string
+	singboxOutboundTag  string
+	idleTimeoutMs       int
+	timeoutMs           int
+	maxIdleConnsPerHost int
+	maxConnsPerHost     int
+}
+
+func upstreamTransportConfig(u *domain.Upstream) transportConfig {
+	return transportConfig{
+		egressMode:          u.EgressMode,
+		proxyURL:            u.ProxyURL,
+		singboxOutboundTag:  u.SingboxOutboundTag,
+		idleTimeoutMs:       u.IdleTimeoutMs,
+		timeoutMs:           u.TimeoutMs,
+		maxIdleConnsPerHost: u.MaxIdleConnsPerHost,
+		maxConnsPerHost:     u.MaxConnsPerHost,
+	}
+}
+
 // pooledClient records how a client dials, so WARP rotations can drop only the
-// keep-alive sockets that actually go through the tunnel.
+// keep-alive sockets that actually go through the tunnel, and tracks the config
+// used to create the client to detect hot-reload changes.
 type pooledClient struct {
 	client     *http.Client
 	warpEgress bool
+	cfg        transportConfig
 }
 
 // Pool caches one *http.Client per upstream name. It is safe for concurrent use.
@@ -77,30 +104,57 @@ func (p *Pool) CloseIdleWarpConnections() {
 }
 
 // Client returns the pooled client for the upstream, building it on first use.
+// If the upstream's transport configuration has changed since the client was cached
+// (e.g. egress mode or proxy URL modified during hot reload), the old client's
+// idle connections are closed and a new client is built transparently.
 func (p *Pool) Client(u *domain.Upstream) *http.Client {
 	if u == nil {
 		return http.DefaultClient
 	}
+	cfg := upstreamTransportConfig(u)
 	p.mu.RLock()
 	entry, ok := p.clients[u.Name]
 	wm := p.warpMgr
 	sm := p.singboxMgr
 	p.mu.RUnlock()
-	if ok {
+	if ok && entry.cfg == cfg {
 		return entry.client
 	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if entry, ok := p.clients[u.Name]; ok { // lost the race; reuse
+	if entry, ok := p.clients[u.Name]; ok && entry.cfg == cfg { // lost the race; reuse
 		return entry.client
+	}
+	if oldEntry, ok := p.clients[u.Name]; ok {
+		if ic, ok := oldEntry.client.Transport.(idleConnCloser); ok {
+			ic.CloseIdleConnections()
+		}
 	}
 	c := buildClient(u, wm, sm)
 	p.clients[u.Name] = pooledClient{
 		client:     c,
 		warpEgress: warp.IsWarpEgress(u.EgressMode) && wm != nil,
+		cfg:        cfg,
 	}
 	return c
+}
+
+// Invalidate evicts the cached client for upstreamName and drops any idle
+// keep-alive connections it holds. The next call to Client for this
+// upstream will build a fresh client.
+func (p *Pool) Invalidate(upstreamName string) {
+	p.mu.Lock()
+	entry, ok := p.clients[upstreamName]
+	if ok {
+		delete(p.clients, upstreamName)
+	}
+	p.mu.Unlock()
+	if ok {
+		if ic, ok := entry.client.Transport.(idleConnCloser); ok {
+			ic.CloseIdleConnections()
+		}
+	}
 }
 
 // buildClient constructs an *http.Client tuned from the Upstream definition.

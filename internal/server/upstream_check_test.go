@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/adapter/opencode"
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/security/oauth"
+	"github.com/dickymuliafiqri/firefly/internal/transport/singbox"
 )
 
 func TestUpstreamCheck_CORS(t *testing.T) {
@@ -32,8 +34,8 @@ func TestUpstreamCheck_CORS(t *testing.T) {
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("OPTIONS status = %d, want 204", w.Code)
 	}
-	if origin := w.Header().Get("Access-Control-Allow-Origin"); origin != "*" {
-		t.Errorf("CORS origin = %q, want *", origin)
+	if origin := w.Header().Get("Access-Control-Allow-Origin"); origin != corsWildcard {
+		t.Errorf("CORS origin = %q, want %s", origin, corsWildcard)
 	}
 }
 
@@ -971,8 +973,8 @@ func TestUpstreamModels_CORS(t *testing.T) {
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("OPTIONS status = %d, want 204", w.Code)
 	}
-	if origin := w.Header().Get("Access-Control-Allow-Origin"); origin != "*" {
-		t.Errorf("CORS origin = %q, want *", origin)
+	if origin := w.Header().Get("Access-Control-Allow-Origin"); origin != corsWildcard {
+		t.Errorf("CORS origin = %q, want %s", origin, corsWildcard)
 	}
 }
 
@@ -1481,5 +1483,25 @@ func TestUpstreamCheck_OpenCodeLive(t *testing.T) {
 			}
 			t.Logf("OpenCode Free live probe passed for %s: %s (latency: %dms)", model, res.Message, res.LatencyMs)
 		})
+	}
+}
+
+func TestMakeCheckClient_SingboxEgress(t *testing.T) {
+	mgr := singbox.NewManager(slog.Default())
+
+	deps := RouterDeps{
+		SingboxManager: mgr,
+	}
+
+	client := deps.makeCheckClient(5*time.Second, "singbox", "", "outbound-1")
+	if client == nil {
+		t.Fatal("expected non-nil client")
+	}
+	tr, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("expected *http.Transport, got %T", client.Transport)
+	}
+	if tr.DialContext == nil {
+		t.Fatal("expected tr.DialContext to be configured for singbox egress")
 	}
 }

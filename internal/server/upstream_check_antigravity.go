@@ -32,6 +32,7 @@ func (deps RouterDeps) handleAntigravityCheck(
 	baseURL, accessToken, keyRef, model string,
 	timeout time.Duration,
 	egressMode, proxyURL string,
+	singboxOutboundTag ...string,
 ) {
 	respond := func(res UpstreamCheckResponse) {
 		res.KeyRef = keyRef
@@ -54,7 +55,11 @@ func (deps RouterDeps) handleAntigravityCheck(
 	}
 
 	projectID := deps.antigravityProjectID(ctx, accessToken, keyRef)
-	client := deps.makeCheckClient(timeout, egressMode, proxyURL)
+	var tag string
+	if len(singboxOutboundTag) > 0 {
+		tag = singboxOutboundTag[0]
+	}
+	client := deps.makeCheckClient(timeout, egressMode, proxyURL, tag)
 
 	var result antigravity.ProbeResult
 	tried := []string{}

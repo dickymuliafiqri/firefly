@@ -221,6 +221,13 @@ type SavedIdentity struct {
 	SavedAt      time.Time             `json:"saved_at"`
 }
 
+// SavedPool stores multiple WireGuard identities to restore the pool across process restarts.
+type SavedPool struct {
+	Version    int             `json:"version"`
+	Identities []SavedIdentity `json:"identities"`
+	SavedAt    time.Time       `json:"saved_at"`
+}
+
 // Manager coordinates userspace WireGuard sessions, dynamic IP rotation, and status telemetry.
 type Manager struct {
 	// active holds the current pool of usable sessions. It is an immutable
@@ -243,8 +250,12 @@ type Manager struct {
 	sfg          singleflightx.Group[*Session]
 	logger       *slog.Logger
 	httpClient   *http.Client
+	licenseMu    sync.RWMutex
 	licenseKey   string
 	identityPath string
+
+	identMu   sync.RWMutex
+	savedPool []SavedIdentity
 
 	// egressLimit bounds how long pick() skips a session whose egress IP
 	// returned a 429. It is the on-demand counterpart to time-based rotation:
@@ -330,6 +341,37 @@ func NewManager(logger *slog.Logger, licenseKey string, identityPath ...string) 
 	m.poolSize.Store(DefaultPoolSize)
 	m.edgeProbe = m.probeEdgeTrace
 	return m
+}
+
+// SetLicenseKey updates the WARP+ / Zero Trust license key dynamically.
+// Future registrations will attach this license key.
+func (m *Manager) SetLicenseKey(key string) {
+	if m == nil {
+		return
+	}
+	m.licenseMu.Lock()
+	m.licenseKey = strings.TrimSpace(key)
+	m.licenseMu.Unlock()
+}
+
+// LicenseKey returns the configured license key.
+func (m *Manager) LicenseKey() string {
+	if m == nil {
+		return ""
+	}
+	m.licenseMu.RLock()
+	defer m.licenseMu.RUnlock()
+	return m.licenseKey
+}
+
+// LicenseConfigured reports whether a non-empty license key is configured.
+func (m *Manager) LicenseConfigured() bool {
+	if m == nil {
+		return false
+	}
+	m.licenseMu.RLock()
+	defer m.licenseMu.RUnlock()
+	return m.licenseKey != ""
 }
 
 // SetAutoRotateInterval configures the background periodic rotation period.
@@ -558,6 +600,19 @@ func (m *Manager) Close() {
 }
 
 func (m *Manager) loadSavedIdentity() (*SavedIdentity, error) {
+	idents, err := m.loadSavedIdentities()
+	if err != nil {
+		return nil, err
+	}
+	if len(idents) == 0 {
+		return nil, errors.New("saved identity file has no identities")
+	}
+	return &idents[0], nil
+}
+
+// loadSavedIdentities reads identities from disk, supporting both the newer
+// SavedPool schema and the legacy single SavedIdentity format.
+func (m *Manager) loadSavedIdentities() ([]SavedIdentity, error) {
 	if m.identityPath == "" {
 		return nil, errors.New("no identity path configured")
 	}
@@ -565,29 +620,113 @@ func (m *Manager) loadSavedIdentity() (*SavedIdentity, error) {
 	if err != nil {
 		return nil, err
 	}
-	var id SavedIdentity
-	if err := json.Unmarshal(b, &id); err != nil {
-		return nil, err
+
+	isValid := func(id *SavedIdentity) bool {
+		return id != nil &&
+			id.Keys != nil && len(id.Keys.PrivateKeyHex) == 64 &&
+			id.Registration != nil && len(id.Registration.Config.Peers) > 0
 	}
-	if id.Keys == nil || len(id.Keys.PrivateKeyHex) != 64 {
-		return nil, errors.New("saved identity has no usable private key")
+
+	// First try decoding as SavedPool.
+	var pool SavedPool
+	if err := json.Unmarshal(b, &pool); err == nil && len(pool.Identities) > 0 {
+		var valid []SavedIdentity
+		for _, id := range pool.Identities {
+			if isValid(&id) {
+				valid = append(valid, id)
+			}
+		}
+		if len(valid) > 0 {
+			return valid, nil
+		}
 	}
-	if id.Registration == nil || len(id.Registration.Config.Peers) == 0 {
-		return nil, errors.New("saved identity has no peer")
+
+	// Try decoding as raw []SavedIdentity.
+	var rawList []SavedIdentity
+	if err := json.Unmarshal(b, &rawList); err == nil && len(rawList) > 0 {
+		var valid []SavedIdentity
+		for _, id := range rawList {
+			if isValid(&id) {
+				valid = append(valid, id)
+			}
+		}
+		if len(valid) > 0 {
+			return valid, nil
+		}
 	}
-	return &id, nil
+
+	// Fallback to legacy single SavedIdentity.
+	var single SavedIdentity
+	if err := json.Unmarshal(b, &single); err == nil {
+		if !isValid(&single) {
+			return nil, errors.New("saved identity has invalid private key or peer")
+		}
+		return []SavedIdentity{single}, nil
+	}
+
+	return nil, errors.New("could not parse saved identity file")
 }
 
-// saveIdentity persists the tunnel identity atomically. The file holds a
-// WireGuard private key, so a torn write is worse than a lost write: it is
-// staged in a sibling temp file and renamed, and the directory is 0700.
+// saveIdentity persists a single tunnel identity atomically for backward compatibility.
 func (m *Manager) saveIdentity(keys *KeyPair, reg *RegistrationResponse) {
+	m.savePool(SavedIdentity{Keys: keys, Registration: reg, SavedAt: time.Now()})
+}
+
+// savePool writes the given identities atomically to m.identityPath.
+// If extra is provided, it is merged or prepended to the persisted pool.
+func (m *Manager) savePool(extra ...SavedIdentity) {
 	if m.identityPath == "" {
 		return
 	}
-	b, err := json.MarshalIndent(SavedIdentity{Keys: keys, Registration: reg, SavedAt: time.Now()}, "", "  ")
+
+	m.identMu.Lock()
+	defer m.identMu.Unlock()
+
+	merged := make([]SavedIdentity, 0, len(m.savedPool)+len(extra))
+	seen := make(map[string]bool)
+
+	add := func(id SavedIdentity) {
+		if id.Keys == nil || id.Registration == nil {
+			return
+		}
+		key := id.Registration.ID
+		if key == "" {
+			key = id.Keys.PublicKeyB64
+		}
+		if key == "" || seen[key] {
+			return
+		}
+		seen[key] = true
+		merged = append(merged, id)
+	}
+
+	// Extra (newest) identities come first.
+	for _, id := range extra {
+		add(id)
+	}
+	for _, id := range m.savedPool {
+		add(id)
+	}
+
+	// Keep up to MaxPoolSize identities.
+	limit := int(m.poolSize.Load())
+	if limit < MaxPoolSize {
+		limit = MaxPoolSize
+	}
+	if len(merged) > limit {
+		merged = merged[:limit]
+	}
+	m.savedPool = merged
+
+	pool := SavedPool{
+		Version:    1,
+		Identities: merged,
+		SavedAt:    time.Now(),
+	}
+
+	b, err := json.MarshalIndent(pool, "", "  ")
 	if err != nil {
-		m.logger.Error("could not encode warp identity", "error", err)
+		m.logger.Error("could not encode warp pool", "error", err)
 		return
 	}
 	if err := os.MkdirAll(filepath.Dir(m.identityPath), 0700); err != nil {
@@ -622,7 +761,7 @@ func (m *Manager) saveIdentity(keys *KeyPair, reg *RegistrationResponse) {
 		m.logger.Warn("could not persist warp identity", "error", err)
 		return
 	}
-	m.logger.Debug("warp identity persisted", "path", m.identityPath)
+	m.logger.Debug("warp pool identities persisted", "path", m.identityPath, "count", len(merged))
 }
 
 // buildSession constructs and starts a userspace WireGuard session for given credentials.
@@ -838,6 +977,19 @@ func (m *Manager) WarmUp(ctx context.Context) error {
 		return nil
 	}
 
+	// Try restoring the whole pool from saved identities first.
+	if count := m.restorePool(ctx); count > 0 {
+		pool := m.activeSessions()
+		session := newestSession(pool)
+		if session != nil {
+			m.logger.Info("cloudflare warp pool restored on cold start from local cache",
+				"restored_sessions", count,
+				"primary_public_ip", session.PublicIP,
+				"colo", session.Colo)
+			return nil
+		}
+	}
+
 	session, err := m.ensureSession(ctx)
 	if err != nil {
 		if errors.Is(err, errClosed) {
@@ -904,6 +1056,65 @@ func (m *Manager) runFlight(ctx context.Context, key string, fn func() (*Session
 		return nil, errors.New("warp tunnel unavailable")
 	}
 	return session, nil
+}
+
+// restorePool attempts to rebuild active sessions for all persisted identities,
+// bounded by poolSize. It returns the number of successfully restored sessions.
+func (m *Manager) restorePool(ctx context.Context) int {
+	idents, err := m.loadSavedIdentities()
+	if err != nil || len(idents) == 0 {
+		return 0
+	}
+
+	target := int(m.poolSize.Load())
+	if target <= 0 {
+		target = DefaultPoolSize
+	}
+	if len(idents) > target {
+		idents = idents[:target]
+	}
+
+	restoredCount := 0
+	for _, ident := range idents {
+		if ctx.Err() != nil || m.closed.Load() {
+			break
+		}
+		var devID, pubKey string
+		if ident.Registration != nil {
+			devID = ident.Registration.ID
+		}
+		if ident.Keys != nil {
+			pubKey = ident.Keys.PublicKeyB64
+		}
+		if m.isIdentityDrained(devID, pubKey) {
+			continue
+		}
+
+		session, err := m.buildSession(ident.Keys, ident.Registration, time.Now())
+		if err != nil {
+			m.logger.Debug("could not build session from saved pool identity", "err", err)
+			continue
+		}
+		if session.PublicIP == "" {
+			session.Close()
+			continue
+		}
+
+		if active := m.installSession(session); active != nil {
+			restoredCount++
+			m.logger.Info("restored warp pool session from local cache",
+				"public_ip", session.PublicIP,
+				"internal_ip", session.InternalIPv4,
+				"colo", session.Colo,
+				"device_id", session.DeviceID)
+		}
+	}
+
+	if restoredCount > 0 {
+		m.lastRotated.Store(time.Now().UnixNano())
+		m.lastError.Store(nil)
+	}
+	return restoredCount
 }
 
 // restoreSession rebuilds a tunnel from the persisted identity. The session is
@@ -1191,7 +1402,8 @@ func (m *Manager) rotate() (*Session, error) {
 		return nil, fmt.Errorf("generate wireguard keypair: %w", err)
 	}
 
-	reg, err := RegisterDevice(ctx, m.httpClient, keys, m.licenseKey, m.registrationURL)
+	license := m.LicenseKey()
+	reg, err := RegisterDevice(ctx, m.httpClient, keys, license, m.registrationURL)
 	if err != nil {
 		m.recordError(err)
 		return nil, fmt.Errorf("register warp device: %w", err)
@@ -1510,6 +1722,7 @@ func (m *Manager) Status() Status {
 		RotatedAt:                 rotatedTime,
 		AutoRotateIntervalSeconds: autoRotateSec,
 		NextRotationAt:            nextRotationTime,
+		LicenseConfigured:         m.LicenseConfigured(),
 		Error:                     errMsg,
 	}
 
@@ -1566,7 +1779,7 @@ func (m *Manager) Status() Status {
 }
 
 // probeSession tests an active session's egress connectivity and measures response time.
-func (m *Manager) probeSession(ctx context.Context, s *Session) error {
+func (m *Manager) probeSession(_ context.Context, s *Session) error {
 	if s == nil || s.TNet == nil || s.closed.Load() {
 		return errors.New("warp session closed")
 	}

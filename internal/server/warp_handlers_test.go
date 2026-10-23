@@ -233,3 +233,75 @@ func TestHandleCheckWarp(t *testing.T) {
 		t.Fatalf("unmarshal warp status: %v", err)
 	}
 }
+
+func TestHandleSetWarpLicense_PersistsAndApplies(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	mgr := warp.NewManager(nil, "")
+	deps := RouterDeps{
+		AdminToken:  "secret-admin-token",
+		ConfigDir:   dir,
+		WarpManager: mgr,
+	}
+
+	// 1. Unauthorized
+	req := httptest.NewRequest(http.MethodPost, "/api/warp/license", strings.NewReader(`{"license_key":"lic-12345"}`))
+	rr := httptest.NewRecorder()
+	deps.handleSetWarpLicense(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status 401, got %d", rr.Code)
+	}
+
+	// 2. Authorized - Set license
+	req = httptest.NewRequest(http.MethodPost, "/api/warp/license", strings.NewReader(`{"license_key":"lic-12345"}`))
+	req.Header.Set("Authorization", "Bearer secret-admin-token")
+	rr = httptest.NewRecorder()
+	deps.handleSetWarpLicense(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rr.Code)
+	}
+
+	if mgr.LicenseKey() != "lic-12345" {
+		t.Errorf("mgr.LicenseKey() = %q, want %q", mgr.LicenseKey(), "lic-12345")
+	}
+	if !mgr.LicenseConfigured() {
+		t.Errorf("expected mgr.LicenseConfigured() to be true")
+	}
+
+	// Check saved config & permission (SecretFileMode 0600)
+	loaded, err := config.LoadWarp(dir)
+	if err != nil {
+		t.Fatalf("LoadWarp failed: %v", err)
+	}
+	if loaded.LicenseKey != "lic-12345" {
+		t.Errorf("loaded.LicenseKey = %q, want %q", loaded.LicenseKey, "lic-12345")
+	}
+	info, err := os.Stat(filepath.Join(dir, config.FileNameWarp))
+	if err != nil {
+		t.Fatalf("stat warp.json: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != config.SecretFileMode {
+		t.Errorf("warp.json mode = %o, want %o", perm, config.SecretFileMode)
+	}
+
+	// 3. Delete license
+	reqDel := httptest.NewRequest(http.MethodDelete, "/api/warp/license", nil)
+	reqDel.Header.Set("Authorization", "Bearer secret-admin-token")
+	rrDel := httptest.NewRecorder()
+	deps.handleDeleteWarpLicense(rrDel, reqDel)
+	if rrDel.Code != http.StatusOK {
+		t.Fatalf("expected status 200 on delete, got %d", rrDel.Code)
+	}
+
+	if mgr.LicenseConfigured() {
+		t.Errorf("expected mgr.LicenseConfigured() to be false after delete")
+	}
+	loadedAfterDel, err := config.LoadWarp(dir)
+	if err != nil {
+		t.Fatalf("LoadWarp after del failed: %v", err)
+	}
+	if loadedAfterDel.LicenseKey != "" {
+		t.Errorf("expected empty LicenseKey after delete, got %q", loadedAfterDel.LicenseKey)
+	}
+}

@@ -14,10 +14,9 @@ import (
 // compiled-in default.
 const FileNameWarp = "warp.json"
 
-// WarpDTO is the persisted WARP tuning. It carries no credential (the WARP
-// license, when one is supplied, stays in the environment and the registered
-// identity lives in data/warp_identity.json), so it is written with the normal
-// configuration permissions.
+// WarpDTO is the persisted WARP tuning. It can also persist an optional
+// WARP+ license key configured via the dashboard. When a license key is
+// present, warp.json is written with owner-only permissions (SecretFileMode).
 type WarpDTO struct {
 	// PoolSize is the number of concurrent WARP slots kept active for
 	// round-robin egress. Zero means "unset": the engine's built-in default
@@ -25,6 +24,11 @@ type WarpDTO struct {
 	// warp package — see warp.ValidPoolSize — so this loader stays a plain
 	// strict decoder and does not duplicate the bound.
 	PoolSize int `json:"pool_size,omitempty"`
+
+	// LicenseKey is an optional Cloudflare WARP+ / Zero Trust license key
+	// configured by the operator via the dashboard. When set, it is used
+	// during device registration to attach WARP+ privileges.
+	LicenseKey string `json:"license_key,omitempty"`
 }
 
 // LoadWarp loads warp.json. A missing file means the operator never tuned the
@@ -54,7 +58,9 @@ func LoadWarp(dir string) (WarpDTO, error) {
 }
 
 // SaveWarp writes warp.json atomically so a crash cannot leave a partial
-// configuration behind. The file holds tuning only, never a secret.
+// configuration behind. When a license key is configured, the file is written
+// owner-only (SecretFileMode); a license-free configuration uses the shared
+// read mode (0644).
 func SaveWarp(dir string, cfg WarpDTO) error {
 	if dir == "" {
 		return nil
@@ -76,7 +82,11 @@ func SaveWarp(dir string, cfg WarpDTO) error {
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName)
 
-	if err := tmp.Chmod(0o644); err != nil {
+	perm := os.FileMode(0o644)
+	if cfg.LicenseKey != "" {
+		perm = SecretFileMode
+	}
+	if err := tmp.Chmod(perm); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("set warp temp file mode: %w", err)
 	}

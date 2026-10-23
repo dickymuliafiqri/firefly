@@ -513,6 +513,7 @@ export function UpstreamEditorPage() {
           baseUrl={general.baseUrl}
           egressMode={general.egressMode}
           proxyUrl={general.proxyUrl}
+          singboxOutboundTag={general.singboxOutboundTag}
           probeModel={probeModel}
           onProviderChange={setProviderId}
           onStrategyChange={setKeyStrategy}
@@ -527,6 +528,7 @@ export function UpstreamEditorPage() {
           baseUrl={general.baseUrl}
           egressMode={general.egressMode}
           proxyUrl={general.proxyUrl}
+          singboxOutboundTag={general.singboxOutboundTag}
           firstKey={keys[0]?.secret}
           probeModel={probeModel}
           discoveredModels={discoveredModels}

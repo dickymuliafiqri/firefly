@@ -28,6 +28,7 @@ interface ModelsTabProps {
   baseUrl: string;
   egressMode: string;
   proxyUrl?: string;
+  singboxOutboundTag?: string;
   firstKey?: string;
   probeModel: string;
   discoveredModels: string[];
@@ -57,6 +58,7 @@ export function ModelsTab({
   baseUrl,
   egressMode,
   proxyUrl,
+  singboxOutboundTag,
   firstKey,
   probeModel,
   discoveredModels,
@@ -160,6 +162,7 @@ export function ModelsTab({
         api_key: firstKey || undefined,
         egress_mode: egressMode,
         proxy_url: proxyUrl || undefined,
+        singbox_outbound_tag: singboxOutboundTag || undefined,
       };
       const res = await modelsMutation.mutateAsync(payload);
       const fetched = res.models || [];
@@ -250,6 +253,7 @@ export function ModelsTab({
       model,
       egress_mode: egressMode,
       proxy_url: proxyUrl || undefined,
+      singbox_outbound_tag: singboxOutboundTag || undefined,
     };
   }
 
