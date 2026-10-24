@@ -24,6 +24,8 @@ func TestMain(m *testing.M) {
 		goleak.IgnoreTopFunction("net/http.(*persistConn).readLoop"),
 		goleak.IgnoreTopFunction("net/http.(*persistConn).writeLoop"),
 		goleak.IgnoreTopFunction("internal/poll.runtime_pollWait"),
+		goleak.IgnoreTopFunction("github.com/metacubex/mihomo/tunnel/statistic.(*Manager).handle"),
+		goleak.IgnoreTopFunction("github.com/metacubex/mihomo/common/observable.(*Observable[...]).process"),
 	)
 }
 

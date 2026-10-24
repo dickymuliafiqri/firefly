@@ -644,6 +644,8 @@ const (
 	EgressModeProxy = "proxy"
 	// EgressModeSingbox routes through a node from the embedded sing-box pool.
 	EgressModeSingbox = "singbox"
+	// EgressModeMihomo routes through a node from the embedded mihomo pool.
+	EgressModeMihomo = "mihomo"
 )
 
 // RoutingStrategy dictates how requests for a model are distributed across candidate upstreams.

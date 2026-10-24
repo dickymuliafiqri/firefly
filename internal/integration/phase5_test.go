@@ -352,7 +352,10 @@ func TestPhase5_SecretMaskingAndSecurityAudit(t *testing.T) {
 }
 
 func TestMain(m *testing.M) {
-	goleak.VerifyTestMain(m)
+	goleak.VerifyTestMain(m,
+		goleak.IgnoreTopFunction("github.com/metacubex/mihomo/tunnel/statistic.(*Manager).handle"),
+		goleak.IgnoreTopFunction("github.com/metacubex/mihomo/common/observable.(*Observable[...]).process"),
+	)
 }
 
 // httpRequest builds a GET request for the admin handler.

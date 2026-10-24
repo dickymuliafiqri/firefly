@@ -45,8 +45,15 @@ func (m *mockBreakerReporter) getReports(name string) []bool {
 	return out
 }
 
+func verifyNoLeaks(t *testing.T) {
+	goleak.VerifyNone(t,
+		goleak.IgnoreTopFunction("github.com/metacubex/mihomo/tunnel/statistic.(*Manager).handle"),
+		goleak.IgnoreTopFunction("github.com/metacubex/mihomo/common/observable.(*Observable[...]).process"),
+	)
+}
+
 func TestHealthChecker_ProbeOnce(t *testing.T) {
-	defer goleak.VerifyNone(t)
+	defer verifyNoLeaks(t)
 
 	// Healthy server
 	srv1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -117,7 +124,7 @@ func TestHealthChecker_ProbeOnce(t *testing.T) {
 // reported as a host failure and open the breaker for a healthy upstream. The
 // real check is the dashboard's live probe against the generation verb.
 func TestHealthChecker_SkipsAntigravity(t *testing.T) {
-	defer goleak.VerifyNone(t)
+	defer verifyNoLeaks(t)
 
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -154,7 +161,7 @@ func TestHealthChecker_SkipsAntigravity(t *testing.T) {
 }
 
 func TestHealthChecker_ConcurrencyLimit(t *testing.T) {
-	defer goleak.VerifyNone(t)
+	defer verifyNoLeaks(t)
 
 	var currentInflight atomic.Int32
 	var maxInflightObserved atomic.Int32
@@ -209,7 +216,7 @@ func TestHealthChecker_ConcurrencyLimit(t *testing.T) {
 }
 
 func TestHealthChecker_BreakerTrippingAndRecovery(t *testing.T) {
-	defer goleak.VerifyNone(t)
+	defer verifyNoLeaks(t)
 
 	var return500 atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -276,7 +283,7 @@ func TestHealthChecker_BreakerTrippingAndRecovery(t *testing.T) {
 }
 
 func TestHealthChecker_RunLifecycleAndCleanShutdown(t *testing.T) {
-	defer goleak.VerifyNone(t)
+	defer verifyNoLeaks(t)
 
 	var probeCount atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -326,7 +333,7 @@ func TestHealthChecker_RunLifecycleAndCleanShutdown(t *testing.T) {
 }
 
 func TestHealthChecker_ProbeModel_RevokesKeyOn401(t *testing.T) {
-	defer goleak.VerifyNone(t)
+	defer verifyNoLeaks(t)
 
 	var receivedPath string
 	var receivedAuth string
@@ -395,7 +402,7 @@ func TestHealthChecker_ProbeModel_RevokesKeyOn401(t *testing.T) {
 }
 
 func TestHealthChecker_ProbeModel_CooldownOn429(t *testing.T) {
-	defer goleak.VerifyNone(t)
+	defer verifyNoLeaks(t)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "60")
@@ -450,7 +457,7 @@ func TestHealthChecker_ProbeModel_CooldownOn429(t *testing.T) {
 }
 
 func TestHealthChecker_ProbeModel_AnthropicProtocol(t *testing.T) {
-	defer goleak.VerifyNone(t)
+	defer verifyNoLeaks(t)
 
 	var receivedPath string
 	var receivedKey string
@@ -523,7 +530,7 @@ func TestHealthChecker_ProbeModel_AnthropicProtocol(t *testing.T) {
 }
 
 func TestHealthChecker_RotatesKeySlotsAcrossIntervals(t *testing.T) {
-	defer goleak.VerifyNone(t)
+	defer verifyNoLeaks(t)
 
 	var mu sync.Mutex
 	var receivedAuths []string
@@ -596,7 +603,7 @@ func TestHealthChecker_RotatesKeySlotsAcrossIntervals(t *testing.T) {
 }
 
 func TestHealthChecker_OpenCode_FreeResponsesProbe(t *testing.T) {
-	defer goleak.VerifyNone(t)
+	defer verifyNoLeaks(t)
 
 	var receivedPath string
 	var receivedAuth string
@@ -669,7 +676,7 @@ func TestHealthChecker_OpenCode_FreeResponsesProbe(t *testing.T) {
 }
 
 func TestHealthChecker_OpenCode_DoesNotRevokePublicKeyOn401(t *testing.T) {
-	defer goleak.VerifyNone(t)
+	defer verifyNoLeaks(t)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -707,7 +714,7 @@ func TestHealthChecker_OpenCode_DoesNotRevokePublicKeyOn401(t *testing.T) {
 }
 
 func TestHealthChecker_OpenCode_HostFallbackOnModelFailure(t *testing.T) {
-	defer goleak.VerifyNone(t)
+	defer verifyNoLeaks(t)
 
 	var hitCount atomic.Int32
 
@@ -766,7 +773,7 @@ func TestHealthChecker_OpenCode_HostFallbackOnModelFailure(t *testing.T) {
 }
 
 func TestHealthChecker_OpenCode_HostProbeWithoutModel(t *testing.T) {
-	defer goleak.VerifyNone(t)
+	defer verifyNoLeaks(t)
 
 	var receivedPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -811,7 +818,7 @@ func TestHealthChecker_OpenCode_HostProbeWithoutModel(t *testing.T) {
 // configured deactivate action plus a ports.KeyActionNotifier notification
 // (which in production persists the DB row via the usage flusher).
 func TestHealthChecker_ThresholdActionOnProbeFailure(t *testing.T) {
-	defer goleak.VerifyNone(t)
+	defer verifyNoLeaks(t)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -884,7 +891,7 @@ func TestHealthChecker_ThresholdActionOnProbeFailure(t *testing.T) {
 // when a key is deleted by the threshold policy during background probes, it is
 // removed from the KeyRing so subsequent probes cleanly select the remaining key.
 func TestHealthChecker_ThresholdDeleteRemovesKeyAndProbesRemainingKey(t *testing.T) {
-	defer goleak.VerifyNone(t)
+	defer verifyNoLeaks(t)
 
 	var probedKeys []string
 	var mu sync.Mutex
@@ -978,7 +985,7 @@ func TestHealthChecker_ThresholdDeleteRemovesKeyAndProbesRemainingKey(t *testing
 // invariant: a successful probe zeroes any accumulated consecutive errors and
 // never fires a key action notification.
 func TestHealthChecker_ProbeSuccessResetsCounter(t *testing.T) {
-	defer goleak.VerifyNone(t)
+	defer verifyNoLeaks(t)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

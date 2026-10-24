@@ -41,11 +41,12 @@ func IsWarpEgress(mode string) bool {
 	return strings.EqualFold(strings.TrimSpace(mode), EgressModeWarp)
 }
 
-// IsSingboxEgress reports whether mode routes through the embedded sing-box pool.
+// IsSingboxEgress reports whether mode routes through the embedded proxy pool (sing-box or mihomo).
 // It mirrors IsWarpEgress and lives beside the router that consumes it so the two
 // cannot disagree.
 func IsSingboxEgress(mode string) bool {
-	return strings.EqualFold(strings.TrimSpace(mode), domain.EgressModeSingbox)
+	m := strings.TrimSpace(mode)
+	return strings.EqualFold(m, domain.EgressModeSingbox) || strings.EqualFold(m, domain.EgressModeMihomo)
 }
 
 // ConfigureTransportEgress configures the outbound dialer and proxy function on the provided http.Transport

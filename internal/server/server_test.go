@@ -359,7 +359,10 @@ func TestDisabledUpstreamMapsTo503(t *testing.T) {
 }
 
 func TestGracefulShutdown(t *testing.T) {
-	defer goleak.VerifyNone(t)
+	defer goleak.VerifyNone(t,
+		goleak.IgnoreTopFunction("github.com/metacubex/mihomo/tunnel/statistic.(*Manager).handle"),
+		goleak.IgnoreTopFunction("github.com/metacubex/mihomo/common/observable.(*Observable[...]).process"),
+	)
 
 	deps, _ := testDeps()
 	ctx, cancel := context.WithCancel(context.Background())

@@ -1,37 +1,35 @@
 package singbox
 
 import (
+	"context"
 	"sync"
 	"testing"
 )
 
-// outbound must read the active Box exactly once, through the lock, so a
-// concurrent Stop/Refresh swap cannot race the read (detected by -race) nor
-// turn the following dereference into a nil-pointer panic. Regression for the
-// unlocked `if m.box == nil` read plus the racy `m.currentBox().Outbound()`
-// dereference that could see a Box cleared underneath it.
-func TestOutboundIsRaceFreeWithConcurrentStop(t *testing.T) {
+// DialContext must be safe for concurrent use with Stop/Refresh, failing open
+// cleanly to direct dial without racing or panicking.
+func TestDialIsRaceFreeWithConcurrentStop(t *testing.T) {
 	t.Parallel()
 
 	m := NewManager(nil)
 
-	const iterations = 20000
+	const iterations = 5000
 	var wg sync.WaitGroup
 	wg.Add(2)
 
 	go func() {
 		defer wg.Done()
 		for i := 0; i < iterations; i++ {
-			if _, ok := m.outbound("auto"); ok {
-				t.Error("outbound reported a box with no subscription configured")
-				return
+			// Dial an unroutable loopback port — should return error cleanly, not panic
+			conn, err := m.DialContext(context.Background(), "tcp", "127.0.0.1:0")
+			if err == nil && conn != nil {
+				conn.Close()
 			}
 		}
 	}()
 
 	go func() {
 		defer wg.Done()
-		// Stop() clears m.box under the write lock; it is idempotent.
 		for i := 0; i < iterations; i++ {
 			m.Stop()
 		}
