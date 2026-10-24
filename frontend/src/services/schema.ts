@@ -333,7 +333,7 @@ export interface SingboxStatusDTO {
   last_refresh_at?: string;
   last_refresh_error?: string;
   nodes?: SingboxNodeDTO[];
-  /** Node-selection mode: "urltest" (fastest) or "round_robin" (rotating). */
+  /** Node-selection mode: "fallback", "round_robin", "urltest", or "consistent_hashing". */
   strategy?: string;
   error?: string;
 }

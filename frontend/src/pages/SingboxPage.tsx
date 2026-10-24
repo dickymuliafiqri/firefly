@@ -418,8 +418,12 @@ function SingboxStrategyCard({ status }: { status?: SingboxStatusDTO }) {
           type: 'success',
           title: 'Strategy saved',
           message:
-            next.strategy === 'round_robin'
-              ? 'Dials now rotate across healthy nodes.'
+            next.strategy === 'fallback'
+              ? 'Dials now use auto-failover (tries nodes until finding an active tunnel).'
+              : next.strategy === 'round_robin'
+              ? 'Dials now load-balance across nodes via round-robin.'
+              : next.strategy === 'consistent_hashing'
+              ? 'Dials now route by consistent hashing.'
               : 'Dials now follow the URL-test group (fastest node).',
         }),
       onError: (err) =>
@@ -442,7 +446,7 @@ function SingboxStrategyCard({ status }: { status?: SingboxStatusDTO }) {
           <Field
             label="Strategy"
             htmlFor="singbox-strategy"
-            hint="URL-test follows the fastest node; round-robin spreads load across every healthy node."
+            hint="Fallback tries tunnels in order until active (WARP-like); round-robin distributes load; URL-test picks lowest latency."
           >
             <select
               id="singbox-strategy"
@@ -450,8 +454,10 @@ function SingboxStrategyCard({ status }: { status?: SingboxStatusDTO }) {
               disabled={save.isPending}
               onChange={(e) => setStrategy(e.target.value)}
             >
+              <option value="fallback">Fallback (WARP-like auto-failover tunnel)</option>
+              <option value="round_robin">Round-robin (load-balance pool)</option>
               <option value="urltest">URL-test (fastest node)</option>
-              <option value="round_robin">Round-robin (healthy pool)</option>
+              <option value="consistent_hashing">Consistent Hashing</option>
             </select>
           </Field>
           <div className="form-row form-row-end" style={{ marginTop: 14 }}>
@@ -493,8 +499,8 @@ export function SingboxPage() {
   return (
     <div className="page-col">
       <PageHeader
-        title="Singbox"
-        description="sing-box egress pool: subscription nodes, URL-test selection, and per-upstream outbound tags."
+        title="Proxy Tunnel (Mihomo / sing-box)"
+        description="Mihomo egress pool: subscription nodes, WARP-like auto-failover fallback, round-robin load balancing, and per-upstream outbound tags."
         actions={
           <div className="flex items-center gap-2">
             <Badge tone={badgeTone} title={d?.last_refresh_error || undefined}>
@@ -514,7 +520,18 @@ export function SingboxPage() {
           tone={nodes.some((n) => n.status === 'unreachable') ? 'warn' : 'plain'}
         />
         <KpiCard label="Default outbound" value={d?.default_tag || 'auto'} />
-        <KpiCard label="Strategy" value={d?.strategy === 'round_robin' ? 'round-robin' : 'urltest'} />
+        <KpiCard
+          label="Strategy"
+          value={
+            d?.strategy === 'fallback'
+              ? 'fallback'
+              : d?.strategy === 'round_robin'
+              ? 'round-robin'
+              : d?.strategy === 'consistent_hashing'
+              ? 'consistent-hash'
+              : 'urltest'
+          }
+        />
         <KpiCard
           label="Last refresh"
           value={d?.last_refresh_at ? new Date(d.last_refresh_at).toLocaleTimeString() : '—'}

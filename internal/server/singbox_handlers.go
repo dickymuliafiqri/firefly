@@ -211,7 +211,7 @@ func (deps RouterDeps) handleSetSingboxStrategy(w http.ResponseWriter, r *http.R
 	}
 	if !domain.ValidSingboxStrategy(req.Strategy) {
 		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid strategy (must be 'urltest' or 'round_robin')"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid strategy (must be 'fallback', 'round_robin', 'urltest', or 'consistent_hashing')"})
 		return
 	}
 	if deps.SingboxManager == nil {

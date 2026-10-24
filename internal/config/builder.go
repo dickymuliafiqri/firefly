@@ -691,11 +691,11 @@ func translateUpstream(i int, d UpstreamDTO, envLookup func(string) (string, boo
 		egressMode = domain.EgressModeDirect
 	}
 	switch egressMode {
-	case domain.EgressModeDirect, domain.EgressModeWarp, domain.EgressModeProxy, domain.EgressModeSingbox:
+	case domain.EgressModeDirect, domain.EgressModeWarp, domain.EgressModeProxy, domain.EgressModeSingbox, domain.EgressModeMihomo:
 	default:
 		return nil, &ValidationError{
 			Field: fmt.Sprintf("upstreams[%d].egress_mode", i),
-			Msg:   "invalid egress_mode (must be 'direct', 'warp', 'proxy', or 'singbox')",
+			Msg:   "invalid egress_mode (must be 'direct', 'warp', 'proxy', 'singbox', or 'mihomo')",
 		}
 	}
 	proxyURL := strings.TrimSpace(d.ProxyURL)
@@ -720,7 +720,7 @@ func translateUpstream(i int, d UpstreamDTO, envLookup func(string) (string, boo
 	// (domain.ValidSingboxTag). Validating here, not at dial time, is what keeps a
 	// typo from silently sending traffic out of the wrong node — or direct.
 	singboxOutboundTag := strings.TrimSpace(d.SingboxOutboundTag)
-	if egressMode == domain.EgressModeSingbox && singboxOutboundTag != "" && !domain.ValidSingboxTag(singboxOutboundTag) {
+	if (egressMode == domain.EgressModeSingbox || egressMode == domain.EgressModeMihomo) && singboxOutboundTag != "" && !domain.ValidSingboxTag(singboxOutboundTag) {
 		return nil, &ValidationError{
 			Field: fmt.Sprintf("upstreams[%d].singbox_outbound_tag", i),
 			Msg:   "invalid singbox_outbound_tag (letters, digits, '.', '_', '-' only; must start alphanumeric; max 64 chars)",

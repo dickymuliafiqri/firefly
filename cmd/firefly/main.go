@@ -115,10 +115,10 @@ func run() error {
 		tunnelToken          = flag.String("tunnel-token", "", "Cloudflare Tunnel token for named tunnels (defaults to $FIREFLY_TUNNEL_TOKEN)")
 		tunnelBinDir         = flag.String("tunnel-bin-dir", "", "directory to store or find cloudflared binary (defaults to ~/.firefly/bin or $FIREFLY_TUNNEL_BIN_DIR)")
 
-		singboxSubscription = flag.String("singbox-subscription", "", "sing-box subscription URL for the singbox egress mode (empty disables; defaults to $FIREFLY_SINGBOX_SUBSCRIPTION_URL or singbox.json)")
-		singboxRefresh      = flag.Duration("singbox-refresh-interval", time.Duration(domain.DefaultSingboxRefreshIntervalS)*time.Second, "interval between sing-box subscription refreshes (defaults to $FIREFLY_SINGBOX_REFRESH_INTERVAL or singbox.json)")
-		singboxDefaultTag   = flag.String("singbox-default-tag", domain.SingboxDefaultOutboundTag, "default sing-box outbound tag for upstreams without an explicit tag (defaults to $FIREFLY_SINGBOX_DEFAULT_TAG or singbox.json)")
-		singboxStrategy     = flag.String("singbox-strategy", domain.SingboxStrategyURLTest, "node-selection strategy for sing-box egress: urltest (fastest node) or round_robin (rotate across healthy nodes; defaults to $FIREFLY_SINGBOX_STRATEGY or singbox.json)")
+		singboxSubscription = flag.String("singbox-subscription", "", "mihomo/sing-box subscription URL for the singbox/mihomo egress mode (empty disables; defaults to $FIREFLY_MIHOMO_SUBSCRIPTION_URL, $FIREFLY_SINGBOX_SUBSCRIPTION_URL or singbox.json)")
+		singboxRefresh      = flag.Duration("singbox-refresh-interval", time.Duration(domain.DefaultSingboxRefreshIntervalS)*time.Second, "interval between subscription refreshes (defaults to $FIREFLY_MIHOMO_REFRESH_INTERVAL, $FIREFLY_SINGBOX_REFRESH_INTERVAL or singbox.json)")
+		singboxDefaultTag   = flag.String("singbox-default-tag", domain.SingboxDefaultOutboundTag, "default outbound tag for upstreams without an explicit tag (defaults to $FIREFLY_MIHOMO_DEFAULT_TAG, $FIREFLY_SINGBOX_DEFAULT_TAG or singbox.json)")
+		singboxStrategy     = flag.String("singbox-strategy", domain.SingboxStrategyURLTest, "node-selection strategy for proxy egress: fallback (auto-failover WARP-like tunnel), round_robin (rotate across healthy nodes), urltest (fastest node), or consistent_hashing (defaults to $FIREFLY_MIHOMO_STRATEGY, $FIREFLY_SINGBOX_STRATEGY or singbox.json)")
 
 		openaiDefaultMax = flag.Int64("openai-default-max-tokens", 0, "default max_tokens injected into OpenAI-protocol requests that omit an output-token limit (0 disables; defaults to $FIREFLY_OPENAI_DEFAULT_MAX_TOKENS)")
 		openaiMinMax     = flag.Int64("openai-min-max-tokens", 0, "minimum max_tokens floor for OpenAI-protocol requests; smaller client values are raised to this (0 disables; defaults to $FIREFLY_OPENAI_MIN_MAX_TOKENS)")
@@ -286,7 +286,16 @@ func run() error {
 		}
 	}
 
-	// singbox.json persists the sing-box subscription URL and refresh interval
+	getEnvOr := func(keys ...string) string {
+		for _, k := range keys {
+			if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+				return v
+			}
+		}
+		return ""
+	}
+
+	// singbox.json persists the subscription URL, refresh interval, and strategy
 	// chosen from the dashboard, so a restart reloads them instead of requiring
 	// the flag on every boot. Flag and environment win; the file is only a
 	// fallback for what the dashboard last saved.
@@ -294,50 +303,52 @@ func run() error {
 	if sCfg, err := config.LoadSingbox(*configDir); err != nil {
 		logger.Warn("could not read singbox config", "err", err)
 	} else {
-		if *singboxSubscription == "" && os.Getenv("FIREFLY_SINGBOX_SUBSCRIPTION_URL") == "" {
+		if *singboxSubscription == "" && getEnvOr("FIREFLY_MIHOMO_SUBSCRIPTION_URL", "FIREFLY_SINGBOX_SUBSCRIPTION_URL") == "" {
 			*singboxSubscription = sCfg.SubscriptionURL
 		}
 		if *singboxRefresh == defaultSingboxRefresh &&
-			os.Getenv("FIREFLY_SINGBOX_REFRESH_INTERVAL") == "" && sCfg.RefreshIntervalS > 0 {
+			getEnvOr("FIREFLY_MIHOMO_REFRESH_INTERVAL", "FIREFLY_SINGBOX_REFRESH_INTERVAL") == "" && sCfg.RefreshIntervalS > 0 {
 			*singboxRefresh = time.Duration(sCfg.RefreshIntervalS) * time.Second
 		}
 		if *singboxDefaultTag == domain.SingboxDefaultOutboundTag &&
-			os.Getenv("FIREFLY_SINGBOX_DEFAULT_TAG") == "" && sCfg.DefaultOutboundTag != "" {
+			getEnvOr("FIREFLY_MIHOMO_DEFAULT_TAG", "FIREFLY_SINGBOX_DEFAULT_TAG") == "" && sCfg.DefaultOutboundTag != "" {
 			*singboxDefaultTag = sCfg.NormalizeDefaultTag()
 		}
 		// Same precedence for the strategy: the file only supplies it when
 		// neither the flag nor the environment already decided.
 		if *singboxStrategy == domain.SingboxStrategyURLTest &&
-			os.Getenv("FIREFLY_SINGBOX_STRATEGY") == "" && sCfg.Strategy != "" {
+			getEnvOr("FIREFLY_MIHOMO_STRATEGY", "FIREFLY_SINGBOX_STRATEGY") == "" && sCfg.Strategy != "" {
 			*singboxStrategy = domain.NormalizeSingboxStrategy(sCfg.Strategy)
 		}
 	}
 	// Env fallback for the subscription URL, same precedence as the tunnel token.
 	if *singboxSubscription == "" {
-		*singboxSubscription = os.Getenv("FIREFLY_SINGBOX_SUBSCRIPTION_URL")
+		*singboxSubscription = getEnvOr("FIREFLY_MIHOMO_SUBSCRIPTION_URL", "FIREFLY_SINGBOX_SUBSCRIPTION_URL")
 	}
 	// Env fallback for the refresh interval, accepted as a Go duration (e.g.
 	// "30m", "2h"). A malformed value is logged and ignored rather than
 	// aborting boot, mirroring how the tunnel config tolerates bad input.
 	if *singboxRefresh == defaultSingboxRefresh {
-		if v := strings.TrimSpace(os.Getenv("FIREFLY_SINGBOX_REFRESH_INTERVAL")); v != "" {
+		if v := getEnvOr("FIREFLY_MIHOMO_REFRESH_INTERVAL", "FIREFLY_SINGBOX_REFRESH_INTERVAL"); v != "" {
 			if d, perr := time.ParseDuration(v); perr == nil && d > 0 {
 				*singboxRefresh = d
 			} else {
-				logger.Warn("ignoring invalid FIREFLY_SINGBOX_REFRESH_INTERVAL", "value", v, "err", perr)
+				logger.Warn("ignoring invalid refresh interval env", "value", v, "err", perr)
 			}
 		}
 	}
 	// Env fallback for the default tag; the manager validates it and falls back
 	// to the built-in tag when it is not a legal tag name.
 	if *singboxDefaultTag == domain.SingboxDefaultOutboundTag {
-		if v := strings.TrimSpace(os.Getenv("FIREFLY_SINGBOX_DEFAULT_TAG")); v != "" {
+		if v := getEnvOr("FIREFLY_MIHOMO_DEFAULT_TAG", "FIREFLY_SINGBOX_DEFAULT_TAG"); v != "" {
 			*singboxDefaultTag = v
 		}
 	}
 	// Env fallback for the strategy, mirroring the subscription env.
 	if *singboxStrategy == domain.SingboxStrategyURLTest {
-		*singboxStrategy = domain.NormalizeSingboxStrategy(os.Getenv("FIREFLY_SINGBOX_STRATEGY"))
+		if v := getEnvOr("FIREFLY_MIHOMO_STRATEGY", "FIREFLY_SINGBOX_STRATEGY"); v != "" {
+			*singboxStrategy = domain.NormalizeSingboxStrategy(v)
+		}
 	}
 
 	// Root context cancelled on SIGINT/SIGTERM; drives server + watcher shutdown.

@@ -68,8 +68,8 @@ func (c SingboxDTO) Validate() error {
 		return fmt.Errorf("singbox config: default_outbound_tag is not a valid outbound tag")
 	}
 	if s := strings.TrimSpace(c.Strategy); s != "" && !domain.ValidSingboxStrategy(s) {
-		return fmt.Errorf("singbox config: strategy must be %q or %q (got %q)",
-			domain.SingboxStrategyURLTest, domain.SingboxStrategyRoundRobin, s)
+		return fmt.Errorf("singbox config: strategy must be one of %q, %q, %q, %q (got %q)",
+			domain.SingboxStrategyFallback, domain.SingboxStrategyRoundRobin, domain.SingboxStrategyURLTest, domain.SingboxStrategyConsistentHash, s)
 	}
 	if c.RefreshIntervalS < 0 {
 		return fmt.Errorf("singbox config: refresh_interval_s must not be negative (got %d)", c.RefreshIntervalS)

@@ -125,7 +125,7 @@ func TestSingboxStrategyRoundTrip(t *testing.T) {
 }
 
 func TestSingboxValidateStrategy(t *testing.T) {
-	for _, valid := range []string{"", "urltest", "round_robin", " URLTEST ", "Round_Robin"} {
+	for _, valid := range []string{"", "urltest", "round_robin", " URLTEST ", "Round_Robin", "fallback", "Fallback", "consistent_hashing"} {
 		d := SingboxDTO{Strategy: valid}
 		if err := d.Validate(); err != nil {
 			t.Errorf("Strategy %q should validate: %v", valid, err)

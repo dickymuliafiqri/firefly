@@ -8,8 +8,8 @@ import "strings"
 // subscription parser (which synthesizes node tags), and the dashboard, so they
 // live here rather than in either consumer.
 const (
-	// SingboxDefaultOutboundTag is the URLTest group dialed when an upstream
-	// names no tag: it measures every node and picks the fastest live one.
+	// SingboxDefaultOutboundTag is the default group dialed when an upstream
+	// names no tag.
 	SingboxDefaultOutboundTag = "auto"
 
 	// SingboxSelectorOutboundTag is the manual-override selector group, so an
@@ -18,35 +18,62 @@ const (
 	SingboxSelectorOutboundTag = "select"
 
 	// SingboxDirectOutboundTag is the built-in direct outbound. The manager
-	// dials it when its Box is not ready, which is what makes egress fail open
+	// dials it when its Box/Tunnel is not ready, which is what makes egress fail open
 	// instead of failing the request.
 	SingboxDirectOutboundTag = "direct"
+
+	// SingboxFallbackOutboundTag is the auto-failover group tag that tries nodes
+	// in sequence until finding an active one.
+	SingboxFallbackOutboundTag = "fallback"
+
+	// SingboxRoundRobinOutboundTag is the load-balance group tag that rotates
+	// dials across healthy nodes.
+	SingboxRoundRobinOutboundTag = "round-robin"
+)
+
+// Aliases for Mihomo domain concepts
+const (
+	MihomoDefaultOutboundTag    = SingboxDefaultOutboundTag
+	MihomoSelectorOutboundTag   = SingboxSelectorOutboundTag
+	MihomoDirectOutboundTag     = SingboxDirectOutboundTag
+	MihomoFallbackOutboundTag   = SingboxFallbackOutboundTag
+	MihomoRoundRobinOutboundTag = SingboxRoundRobinOutboundTag
 )
 
 // MaxSingboxTagLen is the maximum length of a sing-box outbound tag.
 const MaxSingboxTagLen = 64
 
-// The node-selection strategies the Manager supports. sing-box itself only
-// ships a manual `selector` and a latency-based `urltest` group — there is no
-// round-robin outbound in the protocol — so round_robin is implemented by the
-// Manager's own dial path (rotate a cursor across nodes, skip cooling ones)
-// instead of by a box outbound group.
+// The node-selection strategies the Manager supports.
 const (
-	// SingboxStrategyURLTest dials the built-in URLTest group, which picks the
-	// fastest live node. Traffic concentrates on the winner until it fails.
+	// SingboxStrategyURLTest dials the URLTest group, which picks the
+	// fastest live node.
 	SingboxStrategyURLTest = "urltest"
 
-	// SingboxStrategyRoundRobin rotates every dial across the healthy node set
-	// so load spreads over all nodes instead of piling on the fastest one,
-	// which is what keeps a per-node provider limit from taking the whole pool.
+	// SingboxStrategyRoundRobin distributes dials across healthy nodes
+	// so load spreads over all nodes instead of piling on one.
 	SingboxStrategyRoundRobin = "round_robin"
+
+	// SingboxStrategyFallback dials the first healthy node in order,
+	// automatically falling over to subsequent nodes if earlier ones fail.
+	SingboxStrategyFallback = "fallback"
+
+	// SingboxStrategyConsistentHash distributes dials based on consistent hashing.
+	SingboxStrategyConsistentHash = "consistent_hashing"
+)
+
+// Mihomo strategy aliases
+const (
+	MihomoStrategyURLTest        = SingboxStrategyURLTest
+	MihomoStrategyRoundRobin     = SingboxStrategyRoundRobin
+	MihomoStrategyFallback       = SingboxStrategyFallback
+	MihomoStrategyConsistentHash = SingboxStrategyConsistentHash
 )
 
 // ValidSingboxStrategy reports whether s names a supported strategy (case
 // insensitive, trimmed by the caller or not).
 func ValidSingboxStrategy(s string) bool {
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case SingboxStrategyURLTest, SingboxStrategyRoundRobin:
+	case SingboxStrategyURLTest, SingboxStrategyRoundRobin, SingboxStrategyFallback, SingboxStrategyConsistentHash:
 		return true
 	default:
 		return false
