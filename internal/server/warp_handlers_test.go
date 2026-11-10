@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -281,7 +282,7 @@ func TestHandleSetWarpLicense_PersistsAndApplies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat warp.json: %v", err)
 	}
-	if perm := info.Mode().Perm(); perm != config.SecretFileMode {
+	if perm := info.Mode().Perm(); runtime.GOOS != "windows" && perm != config.SecretFileMode {
 		t.Errorf("warp.json mode = %o, want %o", perm, config.SecretFileMode)
 	}
 

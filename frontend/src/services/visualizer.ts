@@ -45,6 +45,7 @@ export interface RoutingTrace {
   method?: string;
   path?: string;
   model?: string;
+  resolved_model?: string;
   tenant?: string;
   stream: boolean;
   upstream?: string;

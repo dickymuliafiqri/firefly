@@ -106,7 +106,18 @@ export function OverviewPage() {
                           <span className="dim" style={{ marginRight: 8 }}>{row.method}</span>
                           {row.path}
                         </td>
-                        <td>{row.model}</td>
+                        <td>
+                          {row.resolvedModel && row.resolvedModel !== row.model ? (
+                            <>
+                              <span>{row.model}</span>
+                              <span className="dim" style={{ marginLeft: 6, fontSize: '0.85em' }}>
+                                → {row.resolvedModel}
+                              </span>
+                            </>
+                          ) : (
+                            row.model ?? '—'
+                          )}
+                        </td>
                         <td className="dim">{row.upstream}</td>
                         <td className="dim">{row.tenant}</td>
                         <td>

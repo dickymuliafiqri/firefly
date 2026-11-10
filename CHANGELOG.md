@@ -5,6 +5,26 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.50.0] - 2026-11-10
+
+### Added
+
+- **Resolved Concrete Model Tracking and Display for Virtual Combos (`internal/domain/`, `internal/observability/trace/`, `internal/storage/analytics/`, `internal/server/`, `frontend/src/`)**:
+  - `domain.Target`: Added `ResolvedModel` string storing the selected catalog model's public name when resolving virtual combo members.
+  - `analytics.RequestLog`: Added `ResolvedModel` field (`json:"resolvedModel,omitempty"`), recorded in LiveLogs and persistent request records.
+  - `trace.Trace`: Added `ResolvedModel` field (`json:"resolved_model,omitempty"`), and `trace.Capture` receives `SetResolvedModel(model)` for live visualizer pipeline streaming.
+  - Accurate Request Cost Estimation: `estimateRequestCost` prioritizes `target.ResolvedModel` over combo alias to guarantee accurate cost calculations based on actual model pricing.
+  - Dashboard UI Enhancements:
+    - **Console & Overview**: Displays `combo → resolved_model` (e.g. `my-combo → gpt-4o`) and supports filtering/searching by both combo and resolved model name.
+    - **Visualizer Table, Line View & Town View**: Trace tables, canvas upstream nodes, and office worker status bubbles display `combo → resolved_model`.
+
+## [1.49.0] - 2026-10-24
+
+### Added
+
+- **Migrate Sing-box to Mihomo Alpha with Fallback and Load Balancing (`internal/transport/mihomo/`, `cmd/firefly/main.go`, `frontend/src/pages/SingboxPage.tsx`)**:
+  - Embedded Mihomo Alpha egress with fallback (WARP-like auto-failover), round-robin load balancing, urltest, and consistent hashing proxy groups.
+
 ## [1.48.0] - 2026-10-24
 
 ### Added

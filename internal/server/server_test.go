@@ -18,6 +18,7 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
 	"github.com/dickymuliafiqri/firefly/internal/domain"
 	"github.com/dickymuliafiqri/firefly/internal/limits"
+	"github.com/dickymuliafiqri/firefly/internal/observability/trace"
 	"github.com/dickymuliafiqri/firefly/internal/observability/usage"
 	"github.com/dickymuliafiqri/firefly/internal/ports"
 	"github.com/dickymuliafiqri/firefly/internal/registry"
@@ -877,5 +878,88 @@ func TestForwardEndpointForwardsFullSizePerModelSystemPrompt(t *testing.T) {
 		!strings.HasPrefix(forwarded.Messages[0].Content, bigPrompt) {
 		t.Fatalf("system message content (role=%q, len=%d) does not start with the verbatim %d-char prompt",
 			forwarded.Messages[0].Role, len(forwarded.Messages[0].Content), len(bigPrompt))
+	}
+}
+
+func TestForwardEndpoint_ComboRecordsResolvedModel(t *testing.T) {
+	hash := auth.HashKey(testKey)
+	snap := domain.NewCatalogSnapshot(
+		1,
+		map[string]*domain.Upstream{"u": {Name: "u", Protocol: domain.ProtocolOpenAI, BaseURL: "https://x/v1", CredentialRef: "UP_KEY"}},
+		[]string{"u"},
+		map[string]*domain.ModelEntry{
+			"gpt-4o": {PublicName: "gpt-4o", Upstream: "u", UpstreamModel: "gpt-4o-upstream", Enabled: true},
+		},
+		[]string{"gpt-4o"},
+		map[string]*domain.Tenant{hash: {
+			KeyHash: hash, Name: "alpha", Status: domain.TenantStatusActive,
+			AllowedModels: []string{"*"},
+			RateLimit:     domain.RateLimit{RPS: 1000, Burst: 1000, MaxConcurrent: 100},
+		}},
+		[]string{hash},
+		domain.WithCombos(
+			map[string]*domain.Combo{
+				"my-combo": {
+					Name:     "my-combo",
+					Strategy: domain.RoutingStrategyFailover,
+					Models:   []string{"gpt-4o"},
+					Enabled:  true,
+				},
+			},
+			[]string{"my-combo"},
+		),
+	)
+
+	fakeAd := &fakeAdapter{body: `{"id":"test","object":"chat.completion"}`}
+	liveLogs := NewLiveLogHub()
+	traces := trace.New(trace.Config{})
+	_, unsub := traces.Subscribe(8)
+	defer unsub()
+	deps := RouterDeps{
+		Snapshots:   fakeProvider{snap},
+		TenantStore: auth.NewStore(fakeProvider{snap}),
+		Limiter:     limits.New(),
+		Adapter:     fakeAd,
+		Usage:       usage.NewCounters(),
+		Logger:      discardLogger(),
+		LiveLogs:    liveLogs,
+		Traces:      traces,
+	}
+	s := newTestServer(t, deps)
+
+	reqBody := `{"model":"my-combo","messages":[{"role":"user","content":"halo"}]}`
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(reqBody))
+	req.Header.Set("Authorization", "Bearer "+testKey)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Verify LiveLogs records both the combo and the resolved concrete model
+	logs := liveLogs.Snapshot()
+	if len(logs) == 0 {
+		t.Fatalf("expected LiveLogs to have entries, got none")
+	}
+	lastLog := logs[len(logs)-1]
+	if lastLog.Model != "my-combo" {
+		t.Errorf("lastLog.Model = %q, want %q", lastLog.Model, "my-combo")
+	}
+	if lastLog.ResolvedModel != "gpt-4o" {
+		t.Errorf("lastLog.ResolvedModel = %q, want %q", lastLog.ResolvedModel, "gpt-4o")
+	}
+
+	// Verify Traces records both the combo and the resolved concrete model
+	traceSnap := traces.Snapshot()
+	if len(traceSnap) == 0 {
+		t.Fatalf("expected Traces to have entries, got none")
+	}
+	lastTrace := traceSnap[len(traceSnap)-1]
+	if lastTrace.Model != "my-combo" {
+		t.Errorf("lastTrace.Model = %q, want %q", lastTrace.Model, "my-combo")
+	}
+	if lastTrace.ResolvedModel != "gpt-4o" {
+		t.Errorf("lastTrace.ResolvedModel = %q, want %q", lastTrace.ResolvedModel, "gpt-4o")
 	}
 }

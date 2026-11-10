@@ -452,7 +452,7 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string, ing ingress) http.Ha
 					TokensIn:      tokensIn,
 					TokensOut:     0,
 					Tokens:        tokensIn,
-					EstimatedCost: microsToUSD(estimateRequestCost(snap, model, "", tokensIn, 0, 0, 0)),
+					EstimatedCost: microsToUSD(estimateRequestCost(snap, model, "", "", tokensIn, 0, 0, 0)),
 					Error:         "provider quota exhausted for every candidate",
 				})
 				capture.Fail(http.StatusTooManyRequests, nil)
@@ -492,17 +492,23 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string, ing ingress) http.Ha
 				TokensIn:      tokensIn,
 				TokensOut:     0,
 				Tokens:        tokensIn,
-				EstimatedCost: microsToUSD(estimateRequestCost(snap, model, "", tokensIn, 0, 0, 0)),
+				EstimatedCost: microsToUSD(estimateRequestCost(snap, model, "", "", tokensIn, 0, 0, 0)),
 				Error:         err.Error(),
 			})
 			ing.WriteResolveError(w, err)
 			return
 		}
 		capture.Stage(trace.StageResolve, model)
+		if target.ResolvedModel != "" {
+			capture.SetResolvedModel(target.ResolvedModel)
+		}
 		if target.Upstream != nil {
 			note := "primary"
 			if fallbackUsed {
 				note = "breaker fallback"
+			}
+			if target.ResolvedModel != "" && target.ResolvedModel != model {
+				note += " (" + target.ResolvedModel + ")"
 			}
 			capture.Candidate(target.Upstream.Name, "", trace.CandidateChosen, note)
 		}
@@ -577,6 +583,7 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string, ing ingress) http.Ha
 					Status:        http.StatusTooManyRequests,
 					DurationMs:    0,
 					Model:         model,
+					ResolvedModel: target.ResolvedModel,
 					Upstream:      target.Upstream.Name,
 					KeyRef:        keyRef,
 					Tenant:        tenant.Name,
@@ -584,7 +591,7 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string, ing ingress) http.Ha
 					TokensIn:      tokensIn,
 					TokensOut:     0,
 					Tokens:        tokensIn,
-					EstimatedCost: microsToUSD(estimateRequestCost(snap, model, target.UpstreamModel, tokensIn, 0, 0, 0)),
+					EstimatedCost: microsToUSD(estimateRequestCost(snap, model, target.ResolvedModel, target.UpstreamModel, tokensIn, 0, 0, 0)),
 					Error:         "upstream credential capacity exhausted",
 				})
 				capture.Fail(http.StatusTooManyRequests, nil)
@@ -690,6 +697,7 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string, ing ingress) http.Ha
 			Status:        0, // In-flight / Active
 			DurationMs:    0,
 			Model:         model,
+			ResolvedModel: target.ResolvedModel,
 			Upstream:      upstreamName,
 			KeyRef:        keyRef,
 			Tenant:        tenant.Name,
@@ -697,7 +705,7 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string, ing ingress) http.Ha
 			TokensIn:      tokensIn,
 			TokensOut:     0,
 			Tokens:        tokensIn,
-			EstimatedCost: microsToUSD(estimateRequestCost(snap, model, target.UpstreamModel, tokensIn, 0, 0, 0)),
+			EstimatedCost: microsToUSD(estimateRequestCost(snap, model, target.ResolvedModel, target.UpstreamModel, tokensIn, 0, 0, 0)),
 		})
 
 		tracker := &responseTracker{ResponseWriter: ing.WrapWriter(w, model, stream)}
@@ -712,7 +720,11 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string, ing ingress) http.Ha
 		deps.Usage.Record(target.CredentialRef, tenant.Name, model, 1)
 
 		// 6b. Record upstream outcome/latency for operators.
-		deps.Metrics.ObserveUpstream(target.Upstream.Name, model, upstreamOutcome(fwdErr), elapsed)
+		observedModel := model
+		if target.ResolvedModel != "" {
+			observedModel = target.ResolvedModel
+		}
+		deps.Metrics.ObserveUpstream(target.Upstream.Name, observedModel, upstreamOutcome(fwdErr), elapsed)
 
 		// 6c. Record key-level requests and status for operator visibility.
 		keyStatus := http.StatusOK
@@ -767,7 +779,7 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string, ing ingress) http.Ha
 		}
 		totTokens := tokensIn + tokensOut
 		billableIn := billableInputTokens(tokensIn, cachedRead, cacheWrite, cachedInPrompt)
-		costMicros := estimateRequestCost(snap, model, target.UpstreamModel, billableIn, tokensOut, cachedRead, cacheWrite)
+		costMicros := estimateRequestCost(snap, model, target.ResolvedModel, target.UpstreamModel, billableIn, tokensOut, cachedRead, cacheWrite)
 		totCost := microsToUSD(costMicros)
 
 		if totTokens > 0 && tenant != nil && tenant.UsedTokens != nil {
@@ -798,6 +810,7 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string, ing ingress) http.Ha
 			Status:           keyStatus,
 			DurationMs:       elapsed.Milliseconds(),
 			Model:            model,
+			ResolvedModel:    target.ResolvedModel,
 			Upstream:         upstreamName,
 			KeyRef:           keyRef,
 			Tenant:           tenant.Name,
@@ -1001,9 +1014,14 @@ func (deps RouterDeps) logForwardFailure(ctx context.Context, t *domain.Target, 
 	attrs := []any{
 		"upstream", t.Upstream.Name,
 		"upstream_model", t.UpstreamModel,
+	}
+	if t.ResolvedModel != "" {
+		attrs = append(attrs, "resolved_model", t.ResolvedModel)
+	}
+	attrs = append(attrs,
 		"duration_ms", elapsed.Milliseconds(),
 		"err", sanitizeUpstreamError(err),
-	}
+	)
 	if errors.Is(err, context.Canceled) {
 		deps.Logger.Debug("client disconnected during forward", attrs...)
 		return
@@ -1013,7 +1031,7 @@ func (deps RouterDeps) logForwardFailure(ctx context.Context, t *domain.Target, 
 
 // handleOptionsCompress handles preflight CORS for the compression endpoint.
 func (deps RouterDeps) handleOptionsCompress(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Origin", corsWildcard)
 	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
 	w.WriteHeader(http.StatusNoContent)
@@ -1021,7 +1039,7 @@ func (deps RouterDeps) handleOptionsCompress(w http.ResponseWriter, r *http.Requ
 
 // handleCompress provides a standalone API for compressing prompts and tool outputs.
 func (deps RouterDeps) handleCompress(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Origin", corsWildcard)
 	w.Header().Set("Content-Type", "application/json")
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)

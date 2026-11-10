@@ -763,6 +763,7 @@ export interface LiveConnectionLog {
   status: number;
   durationMs: number;
   model: string;
+  resolvedModel?: string;
   upstream: string;
   keyRef?: string;
   tenant: string;

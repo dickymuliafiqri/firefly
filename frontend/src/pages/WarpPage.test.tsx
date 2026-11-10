@@ -47,6 +47,10 @@ vi.mock("@/services/api", async (importOriginal) => {
     useRotateWarpMutation: () => ({ mutate: vi.fn(), isPending: false }),
     useCheckWarpMutation: () => ({ mutate: vi.fn(), isPending: false }),
     useSetWarpPoolSizeMutation: () => ({ mutate: setPoolSize, isPending: false }),
+    useSetWarpColoMutation: () => ({ mutate: vi.fn(), isPending: false }),
+    useScanWarpEndpointsMutation: () => ({ mutate: vi.fn(), isPending: false }),
+    useSetWarpLicenseMutation: () => ({ mutate: vi.fn(), isPending: false }),
+    useDeleteWarpLicenseMutation: () => ({ mutate: vi.fn(), isPending: false }),
   };
 });
 

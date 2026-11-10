@@ -107,8 +107,19 @@ func TestEstimateRequestCost_PricingTable(t *testing.T) {
 	snap := deps.Snapshots.Current()
 
 	// 600k uncached @ $3 + 400k cached @ $0.30 + 200k out @ $15 = $4.92.
-	got := estimateRequestCost(snap, "gpt-4o", "gpt-4o-2024", 600_000, 200_000, 400_000, 0)
+	got := estimateRequestCost(snap, "gpt-4o", "", "gpt-4o-2024", 600_000, 200_000, 400_000, 0)
 	if want := int64(4_920_000); got != want {
+		t.Fatalf("estimateRequestCost = %d, want %d", got, want)
+	}
+}
+
+func TestEstimateRequestCost_ComboResolvedModelKey(t *testing.T) {
+	// The combo name misses; the combo member's public name carries the price.
+	entries := []domain.PricingEntry{{Model: "gpt-4o", InputMicrosPerM: 3_000_000}}
+	deps, _ := pricedDeps(t, &fakeAdapter{}, entries)
+	snap := deps.Snapshots.Current()
+	got := estimateRequestCost(snap, "combo-fast", "gpt-4o", "gpt-4o-2024", 1_000_000, 0, 0, 0)
+	if want := int64(3_000_000); got != want {
 		t.Fatalf("estimateRequestCost = %d, want %d", got, want)
 	}
 }
@@ -118,7 +129,7 @@ func TestEstimateRequestCost_UpstreamModelKey(t *testing.T) {
 	entries := []domain.PricingEntry{{Model: "gpt-4o-2024", InputMicrosPerM: 3_000_000}}
 	deps, _ := pricedDeps(t, &fakeAdapter{}, entries)
 	snap := deps.Snapshots.Current()
-	got := estimateRequestCost(snap, "gpt-4o", "gpt-4o-2024", 1_000_000, 0, 0, 0)
+	got := estimateRequestCost(snap, "gpt-4o", "", "gpt-4o-2024", 1_000_000, 0, 0, 0)
 	if want := int64(3_000_000); got != want {
 		t.Fatalf("estimateRequestCost = %d, want %d", got, want)
 	}
@@ -129,7 +140,7 @@ func TestEstimateRequestCost_FlatRateFallback(t *testing.T) {
 	snap := deps.Snapshots.Current()
 	// Legacy flat rate: $0.0000025 in / $0.0000100 out per token.
 	// 1M in == $2.50; 500k out == $5.00; total == 7_500_000 micro-USD.
-	got := estimateRequestCost(snap, "gpt-4o", "gpt-4o-2024", 1_000_000, 500_000, 0, 0)
+	got := estimateRequestCost(snap, "gpt-4o", "", "gpt-4o-2024", 1_000_000, 500_000, 0, 0)
 	if want := int64(7_500_000); got != want {
 		t.Fatalf("estimateRequestCost = %d, want %d", got, want)
 	}
