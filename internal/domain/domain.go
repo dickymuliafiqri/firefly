@@ -918,6 +918,7 @@ func (t *Tenant) RemainingTokens() int64 {
 type Target struct {
 	Upstream      *Upstream
 	UpstreamModel string
+	ResolvedModel string // public model name in the catalog (e.g. member model when resolved from a combo)
 	CredentialRef string
 	KeySlot       *KeySlot
 	// SystemPrompt is the resolved model's per-model system directive, carried

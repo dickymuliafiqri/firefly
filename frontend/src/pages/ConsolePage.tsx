@@ -34,7 +34,7 @@ export function ConsolePage() {
         (l: LiveConnectionLog) =>
           inBucket(l.status, bucket) &&
           (search === '' ||
-            `${l.method} ${l.path} ${l.model ?? ''} ${l.upstream ?? ''} ${l.tenant ?? ''}`
+            `${l.method} ${l.path} ${l.model ?? ''} ${l.resolvedModel ?? ''} ${l.upstream ?? ''} ${l.tenant ?? ''}`
               .toLowerCase()
               .includes(search.toLowerCase())),
       ),
@@ -100,7 +100,18 @@ export function ConsolePage() {
                     <td className="faint">{new Date(l.timestamp).toLocaleTimeString()}</td>
                     <td className="dim">{l.method}</td>
                     <td className="mono" style={{ fontSize: 12 }}>{l.path}</td>
-                    <td>{l.model ?? '—'}</td>
+                    <td>
+                      {l.resolvedModel && l.resolvedModel !== l.model ? (
+                        <>
+                          <span>{l.model}</span>
+                          <span className="dim" style={{ marginLeft: 6, fontSize: '0.85em' }}>
+                            → {l.resolvedModel}
+                          </span>
+                        </>
+                      ) : (
+                        l.model ?? '—'
+                      )}
+                    </td>
                     <td className="dim">{l.upstream ?? '—'}</td>
                     <td className="dim">{l.tenant ?? '—'}</td>
                     <td>

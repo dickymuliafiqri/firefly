@@ -9,6 +9,7 @@ type RequestLog struct {
 	Status        int     `json:"status"`
 	DurationMs    int64   `json:"durationMs"`
 	Model         string  `json:"model"`
+	ResolvedModel string  `json:"resolvedModel,omitempty"`
 	Upstream      string  `json:"upstream"`
 	KeyRef        string  `json:"keyRef,omitempty"`
 	Tenant        string  `json:"tenant"`

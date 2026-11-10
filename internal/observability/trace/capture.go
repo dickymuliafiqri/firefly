@@ -84,6 +84,16 @@ func (c *Capture) SetTarget(upstream, protocol, keyRef string) {
 	c.mu.Unlock()
 }
 
+// SetResolvedModel records the concrete model selected to serve the request.
+func (c *Capture) SetResolvedModel(model string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.t.ResolvedModel = model
+	c.mu.Unlock()
+}
+
 // SetUsage records the billed token counts once they are known.
 func (c *Capture) SetUsage(in, out int) {
 	if c == nil {

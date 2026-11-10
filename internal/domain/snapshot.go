@@ -383,9 +383,14 @@ func (s *CatalogSnapshot) ResolveTargetWithCandidates(
 				return nil, false, false
 			}
 
+			resolvedModel := entry.PublicName
+			if resolvedModel == "" {
+				resolvedModel = modelName
+			}
 			target := &Target{
 				Upstream:      up,
 				UpstreamModel: entry.UpstreamModel,
+				ResolvedModel: resolvedModel,
 				CredentialRef: cred,
 				KeySlot:       slot,
 				SystemPrompt:  entry.SystemPrompt,
@@ -511,9 +516,14 @@ func (s *CatalogSnapshot) ResolveTargetWithCandidates(
 		return nil, false, ErrProviderQuotaExhausted
 	}
 
+	resolvedModel := entry.PublicName
+	if resolvedModel == "" {
+		resolvedModel = publicName
+	}
 	target := &Target{
 		Upstream:      up,
 		UpstreamModel: entry.UpstreamModel,
+		ResolvedModel: resolvedModel,
 		CredentialRef: cred,
 		KeySlot:       slot,
 		SystemPrompt:  entry.SystemPrompt,

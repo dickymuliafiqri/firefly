@@ -101,7 +101,7 @@ export function VisualizerPage() {
     if (!search) return traces;
     const needle = search.toLowerCase();
     return traces.filter((t) =>
-      `${t.model ?? ''} ${t.upstream ?? ''} ${t.tenant ?? ''} ${t.path ?? ''} ${t.key_ref ?? ''}`
+      `${t.model ?? ''} ${t.resolved_model ?? ''} ${t.upstream ?? ''} ${t.tenant ?? ''} ${t.path ?? ''} ${t.key_ref ?? ''}`
         .toLowerCase()
         .includes(needle),
     );
@@ -225,7 +225,18 @@ export function VisualizerPage() {
                       }}
                     >
                       <td className="viz-sub">{new Date(t.started_at).toLocaleTimeString()}</td>
-                      <td>{t.model ?? '—'}</td>
+                      <td>
+                        {t.resolved_model && t.resolved_model !== t.model ? (
+                          <>
+                            <span>{t.model}</span>
+                            <span className="dim" style={{ marginLeft: 6, fontSize: '0.85em' }}>
+                              → {t.resolved_model}
+                            </span>
+                          </>
+                        ) : (
+                          t.model ?? '—'
+                        )}
+                      </td>
                       <td>{t.upstream ?? '—'}</td>
                       <td>
                         <Badge tone={tone(t.state)}>{t.error ? `HTTP ${t.status}` : t.state}</Badge>

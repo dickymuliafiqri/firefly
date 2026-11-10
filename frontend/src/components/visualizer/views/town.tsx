@@ -145,7 +145,9 @@ export function statusOf(t: RoutingTrace): AgentStatus {
 export function messageOf(t: RoutingTrace | null): string | null {
   if (!t) return null;
   if (t.error) return t.error.length > 80 ? `${t.error.slice(0, 77)}...` : t.error;
-  const model = t.model ?? 'model';
+  const model = t.resolved_model && t.resolved_model !== t.model
+    ? `${t.model} → ${t.resolved_model}`
+    : (t.model ?? 'model');
   const who = t.tenant ?? 'gateway';
   const live = t.state === 'stream' || t.state === 'request' ? ` · ${t.deltas}Δ` : '';
   return `${model} @ ${who}${live}`;

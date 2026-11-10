@@ -492,8 +492,11 @@ export const lineView: VisualizerView = {
           {/* ---------- upstream nodes: name plus the model it is serving ---------- */}
           {upstreams.map((c, i) => {
             const chosen = c.state === 'chosen';
+            const modelLabel = trace?.resolved_model && trace.resolved_model !== trace.model
+              ? `${trace.model} → ${trace.resolved_model}`
+              : (trace?.model ?? 'model');
             const sub = chosen
-              ? clip(trace?.model ?? 'model')
+              ? clip(modelLabel)
               : c.state === 'skipped'
                 ? clip(c.note ?? 'skipped')
                 : 'idle';

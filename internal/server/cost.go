@@ -14,15 +14,22 @@ func microsToUSD(micros int64) float64 {
 }
 
 // estimateRequestCost prices one request in integer micro-USD. The pricing
-// table is consulted with the public model name first, then the upstream's
-// private model name; a miss -- or an entry that carries no price -- falls
-// back to the legacy flat rate so historical dashboards stay comparable.
+// table is consulted with the public model name first, then the resolved
+// model name (if from a combo), then the upstream's private model name;
+// a miss -- or an entry that carries no price -- falls back to the legacy flat
+// rate so historical dashboards stay comparable.
 //
 // tokensIn must be the billable (uncached) input count: callers subtract the
 // cached reads only for wire shapes that fold them into the prompt figure.
-func estimateRequestCost(snap *domain.CatalogSnapshot, model, upstreamModel string, tokensIn, tokensOut, cachedRead, cacheWrite int) int64 {
-	keys := []string{model}
-	if upstreamModel != "" && upstreamModel != model {
+func estimateRequestCost(snap *domain.CatalogSnapshot, model, resolvedModel, upstreamModel string, tokensIn, tokensOut, cachedRead, cacheWrite int) int64 {
+	keys := make([]string, 0, 3)
+	if model != "" {
+		keys = append(keys, model)
+	}
+	if resolvedModel != "" && resolvedModel != model {
+		keys = append(keys, resolvedModel)
+	}
+	if upstreamModel != "" && upstreamModel != model && upstreamModel != resolvedModel {
 		keys = append(keys, upstreamModel)
 	}
 	cost, _ := snap.Pricing().PricedCostMicros(keys, tokensIn, tokensOut, cachedRead, cacheWrite)

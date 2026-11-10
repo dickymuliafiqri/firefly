@@ -103,31 +103,32 @@ type Meta struct {
 
 // Trace is the snapshot handed to the dashboard. KeyRef is always masked.
 type Trace struct {
-	ID         string      `json:"id"`
-	State      string      `json:"state"`
-	StartedAt  int64       `json:"started_at"`
-	EndedAt    int64       `json:"ended_at,omitempty"`
-	Method     string      `json:"method,omitempty"`
-	Path       string      `json:"path,omitempty"`
-	Model      string      `json:"model,omitempty"`
-	Tenant     string      `json:"tenant,omitempty"`
-	Stream     bool        `json:"stream"`
-	Upstream   string      `json:"upstream,omitempty"`
-	Protocol   string      `json:"protocol,omitempty"`
-	KeyRef     string      `json:"key_ref,omitempty"`
-	Status     int         `json:"status"`
-	TokensIn   int         `json:"tokens_in,omitempty"`
-	TokensOut  int         `json:"tokens_out,omitempty"`
-	Bytes      int         `json:"bytes"`
-	Deltas     int         `json:"deltas"`
-	DurationMs int64       `json:"duration_ms,omitempty"`
-	TTFBMs     int64       `json:"ttfb_ms,omitempty"`
-	Error      string      `json:"error,omitempty"`
-	Stages     []Stage     `json:"stages"`
-	Candidates []Candidate `json:"candidates,omitempty"`
-	Events     []Event     `json:"events,omitempty"`
-	Phases     []string    `json:"phases,omitempty"`
-	Activity   Activity    `json:"activity"`
+	ID            string      `json:"id"`
+	State         string      `json:"state"`
+	StartedAt     int64       `json:"started_at"`
+	EndedAt       int64       `json:"ended_at,omitempty"`
+	Method        string      `json:"method,omitempty"`
+	Path          string      `json:"path,omitempty"`
+	Model         string      `json:"model,omitempty"`
+	ResolvedModel string      `json:"resolved_model,omitempty"`
+	Tenant        string      `json:"tenant,omitempty"`
+	Stream        bool        `json:"stream"`
+	Upstream      string      `json:"upstream,omitempty"`
+	Protocol      string      `json:"protocol,omitempty"`
+	KeyRef        string      `json:"key_ref,omitempty"`
+	Status        int         `json:"status"`
+	TokensIn      int         `json:"tokens_in,omitempty"`
+	TokensOut     int         `json:"tokens_out,omitempty"`
+	Bytes         int         `json:"bytes"`
+	Deltas        int         `json:"deltas"`
+	DurationMs    int64       `json:"duration_ms,omitempty"`
+	TTFBMs        int64       `json:"ttfb_ms,omitempty"`
+	Error         string      `json:"error,omitempty"`
+	Stages        []Stage     `json:"stages"`
+	Candidates    []Candidate `json:"candidates,omitempty"`
+	Events        []Event     `json:"events,omitempty"`
+	Phases        []string    `json:"phases,omitempty"`
+	Activity      Activity    `json:"activity"`
 }
 
 // Frame is what subscribers receive: a live snapshot ("trace") or the final

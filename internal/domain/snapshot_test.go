@@ -35,7 +35,7 @@ func TestResolveTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if tgt.UpstreamModel != "gpt-4o-mini" || tgt.CredentialRef != "OPENAI_KEY" {
+	if tgt.UpstreamModel != "gpt-4o-mini" || tgt.CredentialRef != "OPENAI_KEY" || tgt.ResolvedModel != "gpt-4o-mini" {
 		t.Fatalf("bad target: %+v", tgt)
 	}
 }
@@ -567,6 +567,10 @@ func TestResolveTarget_RoundRobin(t *testing.T) {
 		expectedModel := expectedUpstream + "-model"
 		if tgt.UpstreamModel != expectedModel {
 			t.Fatalf("call %d: got upstreamModel %q, want %q", i, tgt.UpstreamModel, expectedModel)
+		}
+		expectedResolvedModel := "m" + expectedUpstream[1:]
+		if tgt.ResolvedModel != expectedResolvedModel {
+			t.Fatalf("call %d: got resolvedModel %q, want %q", i, tgt.ResolvedModel, expectedResolvedModel)
 		}
 		expectedFB := (expectedUpstream != "u1")
 		if fb != expectedFB {
