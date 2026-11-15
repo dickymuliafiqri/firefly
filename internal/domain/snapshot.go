@@ -306,6 +306,212 @@ func slotAvailableFor(up *Upstream, slot *KeySlot, nowNano int64) bool {
 	return slot.IsAvailable(nowNano)
 }
 
+// resolveState carries the per-request resolution context down the combo graph
+// so every nested level sees the same clock, the same filters, and can report
+// the same failure classification the top level returns.
+type resolveState struct {
+	tenant          *Tenant
+	nowNano         int64
+	canUseUpstream  func(upstreamName string) bool
+	canUseCandidate func(TargetCandidate) bool
+
+	// hadExhaustedKey and quotaVetoed accumulate across every level: a nested
+	// combo that could not route for a key/quota reason must not be reported as
+	// "no upstream available" just because an outer level saw nothing else.
+	hadExhaustedKey bool
+	quotaVetoed     bool
+}
+
+// resolveMember resolves one combo member, which is either a nested combo or a
+// concrete model. depth counts nested combo levels; path carries the combo
+// names currently being expanded so an (already build-rejected) cycle cannot
+// recurse forever on a hand-built snapshot.
+func (s *CatalogSnapshot) resolveMember(
+	st *resolveState,
+	name string,
+	depth int,
+	path map[string]bool,
+) (*Target, bool, bool) {
+	if nested, isCombo := s.combos[name]; isCombo {
+		if depth >= MaxComboDepth {
+			return nil, false, false
+		}
+		if !nested.Enabled || len(nested.Models) == 0 {
+			return nil, false, false
+		}
+		if path[name] {
+			return nil, false, false
+		}
+		path[name] = true
+		defer delete(path, name)
+		return s.resolveComboMembers(st, nested, depth+1, path)
+	}
+	return s.resolveLeaf(st, name)
+}
+
+// resolveComboMembers applies combo's strategy across its members. fallbackUsed
+// reports that the chosen member was not the first one, exactly as the flat
+// (pre-nesting) implementation did.
+func (s *CatalogSnapshot) resolveComboMembers(
+	st *resolveState,
+	combo *Combo,
+	depth int,
+	path map[string]bool,
+) (*Target, bool, bool) {
+	try := func(name string) (*Target, bool, bool) {
+		target, fallbackUsed, ok := s.resolveMember(st, name, depth, path)
+		return target, fallbackUsed, ok
+	}
+
+	switch combo.Strategy {
+	case RoutingStrategyLeastInflight:
+		var bestTarget *Target
+		bestInflight := int64(math.MaxInt64)
+		var bestIdx int
+
+		for idx, mName := range combo.Models {
+			tgt, _, ok := try(mName)
+			if !ok {
+				continue
+			}
+			inflight := tgt.Upstream.Inflight.Load()
+			if inflight < bestInflight {
+				bestInflight = inflight
+				bestTarget = tgt
+				bestIdx = idx
+				if inflight == 0 {
+					break
+				}
+			}
+		}
+
+		if bestTarget != nil {
+			return bestTarget, bestIdx != 0, true
+		}
+
+	case RoutingStrategyRoundRobin:
+		n := len(combo.Models)
+		start := combo.NextCursor()
+		for i := 0; i < n; i++ {
+			idx := int((start + uint64(i)) % uint64(n))
+			tgt, _, ok := try(combo.Models[idx])
+			if ok {
+				return tgt, idx != 0, true
+			}
+		}
+
+	default: // RoutingStrategyFailover
+		for idx, mName := range combo.Models {
+			tgt, _, ok := try(mName)
+			if ok {
+				return tgt, idx != 0, true
+			}
+		}
+	}
+
+	return nil, false, false
+}
+
+// resolveLeaf resolves a concrete model to a fully-populated Target, recording
+// key exhaustion and quota vetoes on the shared resolution state.
+func (s *CatalogSnapshot) resolveLeaf(st *resolveState, modelName string) (*Target, bool, bool) {
+	entry, ok := s.models[modelName]
+	if !ok || !entry.Enabled {
+		return nil, false, false
+	}
+	up, ok := s.upstreams[entry.Upstream]
+	if !ok || up.Disabled {
+		return nil, false, false
+	}
+	if st.canUseUpstream != nil && !up.AlwaysAvailable && !st.canUseUpstream(up.Name) {
+		return nil, false, false
+	}
+
+	cred := st.tenant.CredentialRef
+	var slot *KeySlot
+	if cred == "" {
+		if up.KeyRing != nil && up.KeyRing.SlotCount() > 0 {
+			selectedSlot, err := selectSlotFor(up, st.nowNano)
+			if err != nil {
+				st.hadExhaustedKey = true
+				return nil, false, false
+			}
+			slot = selectedSlot
+			cred = slot.Ref
+		} else {
+			cred = up.CredentialRef
+		}
+	} else if up.KeyRing != nil {
+		slot = up.KeyRing.SlotByRef(cred)
+		if slot != nil && !slotAvailableFor(up, slot, st.nowNano) {
+			st.hadExhaustedKey = true
+			return nil, false, false
+		}
+	}
+
+	// The account-level veto runs last, on the fully resolved credential, so it
+	// sees the same triple the request would use.
+	if st.canUseCandidate != nil && !up.AlwaysAvailable && !st.canUseCandidate(TargetCandidate{
+		Upstream:      up.Name,
+		UpstreamModel: entry.UpstreamModel,
+		CredentialRef: cred,
+	}) {
+		st.quotaVetoed = true
+		return nil, false, false
+	}
+
+	resolvedModel := entry.PublicName
+	if resolvedModel == "" {
+		resolvedModel = modelName
+	}
+	return &Target{
+		Upstream:      up,
+		UpstreamModel: entry.UpstreamModel,
+		ResolvedModel: resolvedModel,
+		CredentialRef: cred,
+		KeySlot:       slot,
+		SystemPrompt:  entry.SystemPrompt,
+	}, false, true
+}
+
+// ResolveMemberCandidates expands a combo graph into the concrete model names
+// it can reach, depth-first and deduplicated, in declaration order. Nested
+// combos contribute their own members, so a caller that used to read
+// Combo.Models directly (context length, trace candidates) still sees only
+// real models. Disabled combos and already-visited combos contribute nothing,
+// and expansion stops at MaxComboDepth, so this is safe on any snapshot.
+func (s *CatalogSnapshot) ResolveMemberCandidates(name string) []string {
+	seenModels := make(map[string]bool, 4)
+	out := make([]string, 0, 4)
+	s.expandMembers(name, 0, make(map[string]bool, 4), seenModels, &out)
+	return out
+}
+
+func (s *CatalogSnapshot) expandMembers(
+	name string,
+	depth int,
+	path map[string]bool,
+	seenModels map[string]bool,
+	out *[]string,
+) {
+	combo, isCombo := s.combos[name]
+	if !isCombo {
+		if !seenModels[name] {
+			seenModels[name] = true
+			*out = append(*out, name)
+		}
+		return
+	}
+	if depth >= MaxComboDepth || !combo.Enabled || path[name] {
+		return
+	}
+	path[name] = true
+	defer delete(path, name)
+	for _, member := range combo.Models {
+		s.expandMembers(member, depth+1, path, seenModels, out)
+	}
+}
+
 // ResolveTargetWithCandidates is ResolveTargetWithBreaker plus a candidate-level
 // veto. The two filters are kept separate on purpose: canUseUpstream is about
 // host reachability (breaker) and decides the failure kind, while
@@ -322,7 +528,11 @@ func (s *CatalogSnapshot) ResolveTargetWithCandidates(
 		return nil, false, &ResolveError{Kind: ResolveTenantInvalid}
 	}
 
-	// 1. Check if publicName is a Combo.
+	// 1. Combo resolution. Members may themselves be combos, so the graph is
+	// walked recursively and every level applies its own strategy. Tenant
+	// access is checked once, on the public name the caller asked for: a member
+	// is reachable exactly because the operator placed it inside a combo this
+	// tenant may use, which is how member models have always been treated.
 	if combo, isCombo := s.combos[publicName]; isCombo {
 		if !combo.Enabled {
 			return nil, false, &ResolveError{Kind: ResolveModelNotFound, Model: publicName}
@@ -334,135 +544,22 @@ func (s *CatalogSnapshot) ResolveTargetWithCandidates(
 			return nil, false, &ResolveError{Kind: ResolveModelNotFound, Model: publicName}
 		}
 
-		nowNano := time.Now().UnixNano()
-		var hadExhaustedKey bool
-		var quotaVetoed bool
-
-		// tryModel evaluates a concrete model candidate within the combo.
-		tryModel := func(modelName string) (*Target, bool, bool) {
-			entry, ok := s.models[modelName]
-			if !ok || !entry.Enabled {
-				return nil, false, false
-			}
-			up, ok := s.upstreams[entry.Upstream]
-			if !ok || up.Disabled {
-				return nil, false, false
-			}
-			if canUseUpstream != nil && !up.AlwaysAvailable && !canUseUpstream(up.Name) {
-				return nil, false, false
-			}
-
-			cred := tenant.CredentialRef
-			var slot *KeySlot
-			if cred == "" {
-				if up.KeyRing != nil && up.KeyRing.SlotCount() > 0 {
-					selectedSlot, err := selectSlotFor(up, nowNano)
-					if err != nil {
-						return nil, true, false
-					}
-					slot = selectedSlot
-					cred = slot.Ref
-				} else {
-					cred = up.CredentialRef
-				}
-			} else if up.KeyRing != nil {
-				slot = up.KeyRing.SlotByRef(cred)
-				if slot != nil && !slotAvailableFor(up, slot, nowNano) {
-					return nil, true, false
-				}
-			}
-
-			// The account-level veto runs last, on the fully resolved
-			// credential, so it sees the same triple the request would use.
-			if canUseCandidate != nil && !up.AlwaysAvailable && !canUseCandidate(TargetCandidate{
-				Upstream:      up.Name,
-				UpstreamModel: entry.UpstreamModel,
-				CredentialRef: cred,
-			}) {
-				quotaVetoed = true
-				return nil, false, false
-			}
-
-			resolvedModel := entry.PublicName
-			if resolvedModel == "" {
-				resolvedModel = modelName
-			}
-			target := &Target{
-				Upstream:      up,
-				UpstreamModel: entry.UpstreamModel,
-				ResolvedModel: resolvedModel,
-				CredentialRef: cred,
-				KeySlot:       slot,
-				SystemPrompt:  entry.SystemPrompt,
-			}
-			return target, false, true
+		st := &resolveState{
+			tenant:          tenant,
+			nowNano:         time.Now().UnixNano(),
+			canUseUpstream:  canUseUpstream,
+			canUseCandidate: canUseCandidate,
 		}
-
-		switch combo.Strategy {
-		case RoutingStrategyLeastInflight:
-			var bestTarget *Target
-			bestInflight := int64(math.MaxInt64)
-			var bestIdx int
-
-			for idx, mName := range combo.Models {
-				tgt, keyExhausted, ok := tryModel(mName)
-				if keyExhausted {
-					hadExhaustedKey = true
-				}
-				if !ok {
-					continue
-				}
-				inflight := tgt.Upstream.Inflight.Load()
-				if inflight < bestInflight {
-					bestInflight = inflight
-					bestTarget = tgt
-					bestIdx = idx
-					if inflight == 0 {
-						break
-					}
-				}
-			}
-
-			if bestTarget != nil {
-				fallbackUsed := (bestIdx != 0)
-				return bestTarget, fallbackUsed, nil
-			}
-
-		case RoutingStrategyRoundRobin:
-			n := len(combo.Models)
-			start := combo.NextCursor()
-			for i := 0; i < n; i++ {
-				idx := int((start + uint64(i)) % uint64(n))
-				mName := combo.Models[idx]
-				tgt, keyExhausted, ok := tryModel(mName)
-				if keyExhausted {
-					hadExhaustedKey = true
-				}
-				if ok {
-					fallbackUsed := (idx != 0)
-					return tgt, fallbackUsed, nil
-				}
-			}
-
-		default: // RoutingStrategyFailover
-			for idx, mName := range combo.Models {
-				tgt, keyExhausted, ok := tryModel(mName)
-				if keyExhausted {
-					hadExhaustedKey = true
-				}
-				if ok {
-					fallbackUsed := (idx != 0)
-					return tgt, fallbackUsed, nil
-				}
-			}
+		target, fallbackUsed, ok := s.resolveMember(st, publicName, 0, make(map[string]bool, 4))
+		if ok {
+			return target, fallbackUsed, nil
 		}
-
-		if hadExhaustedKey {
+		if st.hadExhaustedKey {
 			return nil, false, ErrAllKeysExhausted
 		}
 		// Quota was the only thing standing in the way: say so, so the client
 		// gets an honest 429 with a reset time instead of "no upstream".
-		if quotaVetoed {
+		if st.quotaVetoed {
 			return nil, false, ErrProviderQuotaExhausted
 		}
 		return nil, false, &ResolveError{Kind: ResolveUpstreamUnavailable, Model: publicName}

@@ -183,6 +183,70 @@ export function findInvalidCatalogName(
   if (badCombo) return { kind: 'combo', name: badCombo.name };
   return undefined;
 }
+/**
+ * Combo members may be concrete models or other combos (nested combos), so the
+ * dashboard cannot assume every member resolves to an upstream. A member that
+ * names a combo is reported as such; anything else is treated as a model.
+ */
+export type ComboMemberKind = 'model' | 'combo';
+export function comboMemberKind(
+  name: string,
+  combos: Array<{ name: string }> = [],
+): ComboMemberKind {
+  return combos.some((c) => c.name === name) ? 'combo' : 'model';
+}
+/**
+ * Mirrors the backend's combo-graph validation so the dashboard refuses a cycle
+ * (or a member that is neither a model nor a combo) before saving. The backend
+ * stays the final validator; this only spares the operator a round trip and
+ * names the offending combo instead of an index.
+ */
+export function findInvalidComboMember(
+  combo: { name: string; models: string[] },
+  models: Array<{ public_name: string }> = [],
+  combos: Array<{ name: string }> = [],
+): { kind: 'unknown' | 'self'; member: string } | undefined {
+  const modelNames = new Set(models.map((m) => m.public_name));
+  const comboNames = new Set(combos.map((c) => c.name));
+  for (const member of combo.models) {
+    if (member === combo.name) return { kind: 'self', member };
+    if (!modelNames.has(member) && !comboNames.has(member)) {
+      return { kind: 'unknown', member };
+    }
+  }
+  return undefined;
+}
+/**
+ * Detects a cycle reachable from `start` through nested combos. Returns the
+ * member that closes the loop, or undefined when the graph is acyclic.
+ */
+export function findComboCycle(
+  start: string,
+  combos: Array<{ name: string; models: string[] }> = [],
+): string | undefined {
+  const byName = new Map(combos.map((c) => [c.name, c]));
+  const path = new Set<string>();
+  const done = new Set<string>();
+  let closing: string | undefined;
+  const walk = (name: string): boolean => {
+    if (done.has(name)) return false;
+    if (path.has(name)) {
+      closing = name;
+      return true;
+    }
+    const combo = byName.get(name);
+    if (!combo) return false;
+    path.add(name);
+    for (const member of combo.models) {
+      if (byName.has(member) && walk(member)) return true;
+    }
+    path.delete(name);
+    done.add(name);
+    return false;
+  };
+  walk(start);
+  return closing;
+}
 
 export type KeyStrategy = 'round_robin' | 'least_inflight';
 export type BreakerState = 'CLOSED' | 'OPEN' | 'HALF-OPEN';

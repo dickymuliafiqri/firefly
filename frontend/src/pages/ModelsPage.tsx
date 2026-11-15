@@ -16,6 +16,9 @@ import {
   isValidModelName,
   sanitizeModelName,
   findInvalidCatalogName,
+  findComboCycle,
+  findInvalidComboMember,
+  comboMemberKind,
   uniquePublicName,
   MODEL_NAME_HINT,
 } from "@/services/schema";
@@ -599,8 +602,16 @@ function ComboForm({
   const [enabled, setEnabled] = useState(editing?.enabled !== false);
 
   const allCatalogModels = settings.data?.models ?? [];
-  const availableToPick = allCatalogModels.filter(
+  // Other combos are legal members (nested combos). The combo being edited is
+  // excluded: naming itself is a self-reference the backend rejects.
+  const allCatalogCombos = (settings.data?.combos ?? []).filter(
+    (c) => c.name !== editing?.name,
+  );
+  const availableModelsToPick = allCatalogModels.filter(
     (m) => !selectedModels.includes(m.public_name),
+  );
+  const availableCombosToPick = allCatalogCombos.filter(
+    (c) => !selectedModels.includes(c.name),
   );
 
   function toggleModel(publicName: string) {
@@ -644,6 +655,36 @@ function ComboForm({
     const others = (settings.data.combos ?? []).filter(
       (c) => c.name !== entry.name,
     );
+    // Members may be models or other combos. Name the offender here so the
+    // operator sees which member is wrong instead of a backend index.
+    const badMember = findInvalidComboMember(
+      entry,
+      settings.data.models ?? [],
+      [...others, entry],
+    );
+    if (badMember) {
+      pushToast({
+        type: "error",
+        title:
+          badMember.kind === "self"
+            ? "Combo cannot include itself"
+            : "Unknown combo member",
+        message:
+          badMember.kind === "self"
+            ? `"${badMember.member}" is this combo. Pick a model or a different combo.`
+            : `"${badMember.member}" is neither a catalog model nor a combo. Remove it and save again.`,
+      });
+      return;
+    }
+    const cycle = findComboCycle(entry.name, [...others, entry]);
+    if (cycle) {
+      pushToast({
+        type: "error",
+        title: "Nested combo cycle",
+        message: `Adding this member closes a loop back to "${cycle}". Nested combos must stay acyclic.`,
+      });
+      return;
+    }
     const nextModels = settings.data.models ?? [];
     const nextCombos = [...others, entry];
     // The payload also carries the untouched models and combos, so name the
@@ -688,8 +729,8 @@ function ComboForm({
       </Field>
       <div className="field">
         <label>
-          Member models ({selectedModels.length} selected)
-          {strategy === "failover" ? " (first model is primary)" : ""}
+          Combo members ({selectedModels.length} selected)
+          {strategy === "failover" ? " (first member is primary)" : ""}
         </label>
 
         {/* Selected ordered chips */}
@@ -709,6 +750,7 @@ function ComboForm({
               const target = allCatalogModels.find(
                 (cm) => cm.public_name === m,
               );
+              const nestedCombo = allCatalogCombos.find((c) => c.name === m);
               return (
                 <div
                   key={m}
@@ -738,9 +780,15 @@ function ComboForm({
                       {idx + 1}.
                     </span>
                     <span className="mono truncate">{m}</span>
-                    <span className="faint" style={{ fontSize: 11 }}>
-                      → {target?.upstream || "unknown"}
-                    </span>
+                    {comboMemberKind(m, allCatalogCombos) === "combo" ? (
+                      <Badge tone="info">
+                        {`combo → ${nestedCombo?.models.length ?? 0} members`}
+                      </Badge>
+                    ) : (
+                      <span className="faint" style={{ fontSize: 11 }}>
+                        → {target?.upstream || "unknown"}
+                      </span>
+                    )}
                   </div>
                   <div
                     style={{
@@ -794,13 +842,13 @@ function ComboForm({
             }}
             className="faint"
           >
-            No member models selected. Pick from the catalog below.
+            No members selected. Pick catalog models or other combos below.
           </div>
         )}
-        {/* Available catalog models as toggle chips */}
-        {availableToPick.length > 0 ? (
+        {/* Available catalog models and combos as toggle chips */}
+        {availableModelsToPick.length > 0 ? (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {availableToPick.map((m) => (
+            {availableModelsToPick.map((m) => (
               <button
                 key={m.public_name}
                 type="button"
@@ -824,8 +872,31 @@ function ComboForm({
               : "All catalog models are already in this combo."}
           </span>
         )}
+        {availableCombosToPick.length > 0 ? (
+          <div
+            style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}
+          >
+            {availableCombosToPick.map((c) => (
+              <button
+                key={c.name}
+                type="button"
+                className="btn btn-secondary"
+                style={{ fontSize: 11, padding: "3px 8px" }}
+                title={`Nest combo ${c.name} (${(c.strategy ?? "round_robin").toUpperCase()})`}
+                onClick={() => toggleModel(c.name)}
+              >
+                <Plus style={{ width: 11, height: 11 }} />
+                {c.name}
+                <span className="faint" style={{ fontSize: 10 }}>
+                  (combo)
+                </span>
+              </button>
+            ))}
+          </div>
+        ) : null}
         <span className="hint">
-          Click catalog models to add them; order defines priority.
+          Click catalog models or other combos to add them; order defines
+          priority. A nested combo resolves through its own strategy.
         </span>
       </div>
       <Field label="Enabled" htmlFor="c-en">
@@ -1137,29 +1208,41 @@ export function ModelsPage() {
                 </div>
                 <div className="card-body">
                   <ul className="chain">
-                    {combo.models.map((name, i) => (
-                      <li key={name}>
-                        <span className="step">
-                          {String(i + 1).padStart(2, "0")}
-                        </span>
-                        {name}
-                        {models.find((m) => m.public_name === name) ? (
-                          <>
-                            {" "}
-                            <span className="arrow">&rarr;</span>{" "}
-                            {
-                              models.find((m) => m.public_name === name)!
-                                .upstream
-                            }
-                          </>
-                        ) : null}
-                        <span className="weight">
-                          {combo.strategy === "failover"
-                            ? `priority ${i + 1}`
-                            : "equal"}
-                        </span>
-                      </li>
-                    ))}
+                    {combo.models.map((name, i) => {
+                      // A member may be a nested combo, in which case it has no
+                      // upstream of its own — show the nesting instead of a
+                      // dangling "unknown".
+                      const asModel = models.find(
+                        (m) => m.public_name === name,
+                      );
+                      const asCombo = allCombos.find((c) => c.name === name);
+                      return (
+                        <li key={name}>
+                          <span className="step">
+                            {String(i + 1).padStart(2, "0")}
+                          </span>
+                          {name}
+                          {asModel ? (
+                            <>
+                              {" "}
+                              <span className="arrow">&rarr;</span>{" "}
+                              {asModel.upstream}
+                            </>
+                          ) : null}
+                          {asCombo ? (
+                            <>
+                              {" "}
+                              <Badge tone="info">nested combo</Badge>
+                            </>
+                          ) : null}
+                          <span className="weight">
+                            {combo.strategy === "failover"
+                              ? `priority ${i + 1}`
+                              : "equal"}
+                          </span>
+                        </li>
+                      );
+                    })}
                   </ul>
                 </div>
               </div>

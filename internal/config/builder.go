@@ -52,6 +52,82 @@ func suggestNamespacedPublicName(upstream, publicName string) string {
 	return s
 }
 
+// validateComboGraph rejects a combo graph that cannot be resolved: a member
+// that is neither a concrete model nor a combo, a self-reference, a cycle of
+// any length, or nesting deeper than domain.MaxComboDepth. It runs after every
+// combo has been translated, and owns member validation entirely, because a
+// member may reference a combo declared later in the file — checking during
+// translation would reject legitimate forward references.
+func validateComboGraph(
+	combos map[string]*domain.Combo,
+	comboOrder []string,
+	models map[string]*domain.ModelEntry,
+) error {
+	// path is the current expansion stack (cycle detection); done memoizes
+	// combos already proven acyclic so a wide graph is not re-walked.
+	path := make(map[string]bool, len(combos))
+	done := make(map[string]bool, len(combos))
+
+	var walk func(name string, depth int) error
+	walk = func(name string, depth int) error {
+		if done[name] {
+			return nil
+		}
+		if path[name] {
+			return &ValidationError{
+				Field: "combos[" + name + "].models",
+				Msg:   "combo cycle detected: " + name + " references itself through its members",
+			}
+		}
+		if depth > domain.MaxComboDepth {
+			return &ValidationError{
+				Field: "combos[" + name + "].models",
+				Msg: fmt.Sprintf("combo nesting exceeds the maximum depth of %d",
+					domain.MaxComboDepth),
+			}
+		}
+		combo := combos[name]
+		path[name] = true
+		defer delete(path, name)
+		for j, member := range combo.Models {
+			nested, isCombo := combos[member]
+			if !isCombo {
+				if _, isModel := models[member]; !isModel {
+					return &ValidationError{
+						Field: fmt.Sprintf("combos[%s].models[%d]", name, j),
+						Msg:   "references unknown model or combo: " + member,
+					}
+				}
+				continue
+			}
+			if member == name {
+				return &ValidationError{
+					Field: fmt.Sprintf("combos[%s].models[%d]", name, j),
+					Msg:   "combo cannot include itself: " + member,
+				}
+			}
+			if nested == nil {
+				return &ValidationError{
+					Field: fmt.Sprintf("combos[%s].models[%d]", name, j),
+					Msg:   "references unknown model or combo: " + member,
+				}
+			}
+			if err := walk(member, depth+1); err != nil {
+				return err
+			}
+		}
+		done[name] = true
+		return nil
+	}
+
+	for _, name := range comboOrder {
+		if err := walk(name, 1); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // BuildResult is the fully-resolved, validated content ready to become a
 // snapshot. Maps are owned by the caller.
 type BuildResult struct {
@@ -201,7 +277,7 @@ func Build(fs FileSet, envLookup func(string) (string, bool)) (*BuildResult, err
 	res.EnabledModelIDs = enabled
 
 	for i, d := range comboFile.Combos {
-		c, err := translateCombo(i, d, res.Models, res.Combos)
+		c, err := translateCombo(i, d)
 		if err != nil {
 			return nil, err
 		}
@@ -215,6 +291,11 @@ func Build(fs FileSet, envLookup func(string) (string, bool)) (*BuildResult, err
 		res.ComboOrder = append(res.ComboOrder, c.Name)
 	}
 	sort.Strings(res.ComboOrder)
+	// Members may name another combo (nested combos), including one declared
+	// later in the file, so the graph is validated only once every combo exists.
+	if err := validateComboGraph(res.Combos, res.ComboOrder, res.Models); err != nil {
+		return nil, err
+	}
 
 	for i, d := range tenantFile.Tenants {
 		t, warns, err := translateTenant(i, d, res.Models, res.Combos, envLookup)
@@ -634,8 +715,9 @@ func translateUpstream(i int, d UpstreamDTO, envLookup func(string) (string, boo
 		})
 	}
 
-	// Keyless Free tier auto-provisioning: automatically injects a "opencode-free-public"
-	// key slot (KeySlot.Secret = "public") for OpenCode protocol when no credentials are provided.
+	// Keyless Free tier auto-provisioning: automatically injects an "opencode-free-public"
+	// key slot for the OpenCode protocol when no credentials are provided. Its value is
+	// the provider's public-tier marker, not a secret — the free tier meters the egress IP.
 	//
 	// The keyless tier is also the case where AlwaysAvailable must default to ON:
 	// the credential is the literal string "public" and the provider meters the
@@ -848,18 +930,21 @@ func translateModel(i int, d ModelDTO, ups map[string]*domain.Upstream) (*domain
 	}, nil
 }
 
-func translateCombo(i int, d ComboDTO, models map[string]*domain.ModelEntry, combos map[string]*domain.Combo) (*domain.Combo, error) {
+func translateCombo(i int, d ComboDTO) (*domain.Combo, error) {
 	if !modelNameRe.MatchString(d.Name) {
 		return nil, &ValidationError{Field: fmt.Sprintf("combos[%d].name", i), Msg: "invalid or empty name"}
 	}
 	if len(d.Models) == 0 {
 		return nil, &ValidationError{Field: fmt.Sprintf("combos[%d].models", i), Msg: "must contain at least one model"}
 	}
+	// Member references are validated by validateComboGraph, which sees the
+	// whole graph and therefore accepts forward references to a combo declared
+	// later in the file. Only the shape of each entry is checked here.
 	for j, m := range d.Models {
-		if _, ok := models[m]; !ok {
+		if m == "" {
 			return nil, &ValidationError{
 				Field: fmt.Sprintf("combos[%d].models[%d]", i, j),
-				Msg:   "references unknown model: " + m,
+				Msg:   "must not be empty",
 			}
 		}
 	}

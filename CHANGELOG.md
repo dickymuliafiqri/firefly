@@ -5,6 +5,15 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.51.0] - 2026-11-15
+### Added
+- **Nested Virtual Combos (`internal/config/`, `internal/domain/`, `internal/server/`, `frontend/src/`)**:
+  - A combo's `models` array now accepts another combo's name, so a routing policy can be composed instead of duplicated (e.g. an `outer` failover chain whose first member is a `round_robin` combo). The JSON schema is unchanged — members are simply resolved as model-or-combo.
+  - `domain.MaxComboDepth` (16) bounds nesting. `config.Build` validates the whole graph after every combo is translated, so a member may reference a combo declared later in the file; it rejects unknown members, self-references, cycles of any length, and over-deep nesting with a `combos[<name>].models[<i>]` field path. Member validation moved out of `translateCombo` into `validateComboGraph` for exactly that forward-reference reason.
+  - `CatalogSnapshot.ResolveTargetWithCandidates` resolves the graph recursively: each level keeps its own strategy (`failover`, `round_robin`, `least_inflight`), a disabled nested combo is skipped rather than fatal, and the resolver carries an independent cycle/depth guard (`resolveMember` + `path` stack) so a hand-built snapshot cannot recurse forever. The `always_available` exemption, the account-level candidate veto, and key selection all still apply at the leaf.
+  - `CatalogSnapshot.ResolveMemberCandidates(name)` flattens a graph to concrete model names (depth-first, deduplicated). `comboContextLength`, the fallback log's `from_upstream`, and the trace's skipped-candidate capture now use it, so a nested combo reports the real smallest window and names real upstreams instead of a combo that never reaches a host.
+  - Dashboard (`frontend/src/pages/ModelsPage.tsx`, `frontend/src/services/schema.ts`): the combo editor lists other combos as pickable members, badges a nested member with its member count, shows `nested combo` in the chain view, and refuses a self-reference, an unknown member, or a cycle client-side (`findInvalidComboMember`, `findComboCycle`) so the operator sees the offending name instead of a backend index.
+
 ## [1.50.0] - 2026-11-10
 
 ### Added

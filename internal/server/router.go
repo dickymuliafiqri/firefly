@@ -168,17 +168,22 @@ func modelContextLength(snap *domain.CatalogSnapshot, id string) *int {
 }
 
 // comboContextLength returns the context window a virtual combo may safely
-// advertise: the smallest configured window among its members, and only when
-// every member has one. A combo distributes requests across models with
-// different windows, so promising the largest would overflow the smallest
-// member, and one member without a configured value means the combo has no
-// safe bound at all.
+// advertise: the smallest configured window among the concrete models it can
+// reach, and only when every one of them has a window. A combo distributes
+// requests across models with different windows, so promising the largest
+// would overflow the smallest member, and one member without a configured
+// value means the combo has no safe bound at all. Members are expanded through
+// ResolveMemberCandidates because a member may be a nested combo.
 func comboContextLength(snap *domain.CatalogSnapshot, combo *domain.Combo) *int {
-	if combo == nil || len(combo.Models) == 0 {
+	if combo == nil {
+		return nil
+	}
+	members := snap.ResolveMemberCandidates(combo.Name)
+	if len(members) == 0 {
 		return nil
 	}
 	smallest := 0
-	for _, name := range combo.Models {
+	for _, name := range members {
 		n := modelContextLength(snap, name)
 		if n == nil {
 			return nil
