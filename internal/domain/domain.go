@@ -692,11 +692,24 @@ type ModelEntry struct {
 	SystemPrompt string
 }
 
-// Combo is a virtual model that distributes requests across a group of concrete models.
+// MaxComboDepth bounds how many nested combo levels a single resolution may
+// traverse. config.Build rejects a deeper graph, so this is a defence for
+// snapshots constructed directly (tests, future config sources): resolution
+// must never recurse without a ceiling.
+const MaxComboDepth = 16
+
+// Combo is a virtual model that distributes requests across a group of members.
+//
+// A member is either a concrete model public name or the name of another combo,
+// which lets an operator compose small combos into larger ones ("fast" plus
+// "cheap" behind one public name) instead of duplicating member lists. Nested
+// combos are evaluated recursively, each level applying its own Strategy, and
+// resolution always bottoms out at a concrete model. Cycles are rejected by
+// config.Build and additionally guarded at resolve time (see MaxComboDepth).
 type Combo struct {
 	Name     string
 	Strategy RoutingStrategy
-	Models   []string // concrete model public names
+	Models   []string // member public names: concrete models and/or other combos
 	Enabled  bool
 
 	cursorInit atomic.Bool

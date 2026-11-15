@@ -349,6 +349,21 @@ Group multiple models from different providers into one virtual model name. For 
 - **Round Robin**: Cycles evenly through candidate models one by one.
 - **Failover**: Uses the primary model first, and switches to the next only if the primary fails.
 
+#### Nested combos
+
+A member may be another combo's name, so routing policies compose instead of being duplicated. The example below puts a `round_robin` pair behind the first slot of a `failover` chain:
+
+```json
+{
+  "combos": [
+    { "name": "cheap-pair", "models": ["gpt-4o-mini", "deepseek-chat"], "strategy": "round_robin" },
+    { "name": "smart-router", "models": ["cheap-pair", "claude-3-5-sonnet"], "strategy": "failover" }
+  ]
+}
+```
+
+Each level applies its own strategy, and resolution always ends at a concrete model. A disabled nested combo is skipped. The graph must stay acyclic and at most 16 levels deep — `config.Build` rejects a self-reference, a cycle, an unknown member, or a deeper chain with a `combos[<name>].models[<i>]` error, and the dashboard names the offending member before saving.
+
 ### 2. Token Saver Suite (Reduce API Costs)
 
 Firefly includes built-in tools to shrink token usage without losing answer quality:

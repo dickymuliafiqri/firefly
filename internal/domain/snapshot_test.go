@@ -703,3 +703,224 @@ func TestTenant_IsExpired(t *testing.T) {
 		t.Errorf("expected tenant with past milliseconds ExpiresAt to be expired")
 	}
 }
+
+// nestedComboSnapshot builds a two-level combo graph:
+//
+//	outer (failover) -> [inner-a, m3]
+//	inner-a (failover) -> [m1, inner-b]
+//	inner-b (failover) -> [m2]
+//
+// so resolution must descend two nested levels before reaching a concrete model.
+func nestedComboSnapshot() (*CatalogSnapshot, *Tenant) {
+	upstreams := map[string]*Upstream{
+		"u1": {Name: "u1", Protocol: ProtocolOpenAI, BaseURL: "https://u1/v1", CredentialRef: "K1"},
+		"u2": {Name: "u2", Protocol: ProtocolOpenAI, BaseURL: "https://u2/v1", CredentialRef: "K2"},
+		"u3": {Name: "u3", Protocol: ProtocolOpenAI, BaseURL: "https://u3/v1", CredentialRef: "K3"},
+	}
+	models := map[string]*ModelEntry{
+		"m1": {PublicName: "m1", Upstream: "u1", UpstreamModel: "m1-real", Enabled: true},
+		"m2": {PublicName: "m2", Upstream: "u2", UpstreamModel: "m2-real", Enabled: true},
+		"m3": {PublicName: "m3", Upstream: "u3", UpstreamModel: "m3-real", Enabled: true},
+	}
+	snap := NewCatalogSnapshot(
+		1,
+		upstreams,
+		[]string{"u1", "u2", "u3"},
+		models,
+		[]string{"m1", "m2", "m3"},
+		map[string]*Tenant{
+			"h": {KeyHash: "h", Name: "t1", Status: TenantStatusActive, AllowedModels: []string{"*"}},
+		},
+		[]string{"h"},
+		WithCombos(
+			map[string]*Combo{
+				"inner-b": {Name: "inner-b", Strategy: RoutingStrategyFailover, Models: []string{"m2"}, Enabled: true},
+				"inner-a": {Name: "inner-a", Strategy: RoutingStrategyFailover, Models: []string{"m1", "inner-b"}, Enabled: true},
+				"outer":   {Name: "outer", Strategy: RoutingStrategyFailover, Models: []string{"inner-a", "m3"}, Enabled: true},
+			},
+			[]string{"inner-a", "inner-b", "outer"},
+		),
+	)
+	tenant, _ := snap.TenantByHash("h")
+	return snap, tenant
+}
+
+// TestResolveTarget_NestedComboFallsThroughLevels pins that a nested combo is
+// expanded recursively: an unavailable m1 makes the inner combo fail over to
+// m2, and only when the whole inner combo is exhausted does the outer combo
+// reach its own second member.
+func TestResolveTarget_NestedComboFallsThroughLevels(t *testing.T) {
+	snap, tenant := nestedComboSnapshot()
+
+	// Case 1: everything healthy -> deepest-first primary is m1.
+	tgt, fb, err := snap.ResolveTargetWithBreaker(tenant, "outer", func(string) bool { return true })
+	if err != nil || fb || tgt.UpstreamModel != "m1-real" {
+		t.Fatalf("healthy graph: got fb=%v tgt=%+v err=%v, want m1-real", fb, tgt, err)
+	}
+
+	// Case 2: u1 open -> inner-a falls over to inner-b -> m2.
+	tgt, fb, err = snap.ResolveTargetWithBreaker(tenant, "outer", func(name string) bool {
+		return name != "u1"
+	})
+	if err != nil || tgt.UpstreamModel != "m2-real" {
+		t.Fatalf("u1 open: got fb=%v tgt=%+v err=%v, want m2-real", fb, tgt, err)
+	}
+
+	// Case 3: inner combo entirely unavailable -> outer falls over to m3.
+	tgt, fb, err = snap.ResolveTargetWithBreaker(tenant, "outer", func(name string) bool {
+		return name == "u3"
+	})
+	if err != nil || tgt.UpstreamModel != "m3-real" {
+		t.Fatalf("inner unavailable: got fb=%v tgt=%+v err=%v, want m3-real", fb, tgt, err)
+	}
+
+	// Case 4: nothing reachable -> resolver error, not a nil target.
+	if _, _, err = snap.ResolveTargetWithBreaker(tenant, "outer", func(string) bool { return false }); err == nil {
+		t.Fatal("expected error when every leaf is unavailable")
+	}
+}
+
+// TestResolveTarget_NestedComboRoundRobin pins that the nested level keeps its
+// own strategy: the outer failover always picks inner-a, whose round_robin
+// cursor alternates between its two members across calls.
+func TestResolveTarget_NestedComboRoundRobin(t *testing.T) {
+	upstreams := map[string]*Upstream{
+		"u1": {Name: "u1", Protocol: ProtocolOpenAI, BaseURL: "https://u1/v1", CredentialRef: "K1"},
+		"u2": {Name: "u2", Protocol: ProtocolOpenAI, BaseURL: "https://u2/v1", CredentialRef: "K2"},
+	}
+	snap := NewCatalogSnapshot(
+		1,
+		upstreams,
+		[]string{"u1", "u2"},
+		map[string]*ModelEntry{
+			"m1": {PublicName: "m1", Upstream: "u1", UpstreamModel: "m1-real", Enabled: true},
+			"m2": {PublicName: "m2", Upstream: "u2", UpstreamModel: "m2-real", Enabled: true},
+		},
+		[]string{"m1", "m2"},
+		map[string]*Tenant{
+			"h": {KeyHash: "h", Name: "t1", Status: TenantStatusActive, AllowedModels: []string{"*"}},
+		},
+		[]string{"h"},
+		WithCombos(
+			map[string]*Combo{
+				"rr":    {Name: "rr", Strategy: RoutingStrategyRoundRobin, Models: []string{"m1", "m2"}, Enabled: true},
+				"outer": {Name: "outer", Strategy: RoutingStrategyFailover, Models: []string{"rr"}, Enabled: true},
+			},
+			[]string{"outer", "rr"},
+		),
+	)
+	tenant, _ := snap.TenantByHash("h")
+
+	seen := map[string]int{}
+	for i := 0; i < 10; i++ {
+		tgt, _, err := snap.ResolveTargetWithBreaker(tenant, "outer", func(string) bool { return true })
+		if err != nil {
+			t.Fatalf("iteration %d: unexpected error: %v", i, err)
+		}
+		seen[tgt.UpstreamModel]++
+	}
+	if seen["m1-real"] == 0 || seen["m2-real"] == 0 {
+		t.Fatalf("nested round_robin did not alternate: %v", seen)
+	}
+}
+
+// TestResolveTarget_NestedComboDisabledMember pins that a disabled nested combo
+// is skipped instead of being treated as an unknown model.
+func TestResolveTarget_NestedComboDisabledMember(t *testing.T) {
+	upstreams := map[string]*Upstream{
+		"u1": {Name: "u1", Protocol: ProtocolOpenAI, BaseURL: "https://u1/v1", CredentialRef: "K1"},
+		"u2": {Name: "u2", Protocol: ProtocolOpenAI, BaseURL: "https://u2/v1", CredentialRef: "K2"},
+	}
+	snap := NewCatalogSnapshot(
+		1,
+		upstreams,
+		[]string{"u1", "u2"},
+		map[string]*ModelEntry{
+			"m1": {PublicName: "m1", Upstream: "u1", UpstreamModel: "m1-real", Enabled: true},
+			"m2": {PublicName: "m2", Upstream: "u2", UpstreamModel: "m2-real", Enabled: true},
+		},
+		[]string{"m1", "m2"},
+		map[string]*Tenant{
+			"h": {KeyHash: "h", Name: "t1", Status: TenantStatusActive, AllowedModels: []string{"*"}},
+		},
+		[]string{"h"},
+		WithCombos(
+			map[string]*Combo{
+				"off":   {Name: "off", Strategy: RoutingStrategyFailover, Models: []string{"m1"}, Enabled: false},
+				"outer": {Name: "outer", Strategy: RoutingStrategyFailover, Models: []string{"off", "m2"}, Enabled: true},
+			},
+			[]string{"off", "outer"},
+		),
+	)
+	tenant, _ := snap.TenantByHash("h")
+
+	tgt, _, err := snap.ResolveTargetWithBreaker(tenant, "outer", func(string) bool { return true })
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tgt.UpstreamModel != "m2-real" {
+		t.Fatalf("disabled nested combo must be skipped, got %q", tgt.UpstreamModel)
+	}
+}
+
+// TestResolveTarget_NestedComboCycleIsGuarded pins the runtime guard: a cycle
+// that bypasses config validation (hand-built snapshot) must terminate with an
+// error instead of recursing until the stack dies.
+func TestResolveTarget_NestedComboCycleIsGuarded(t *testing.T) {
+	up := &Upstream{Name: "u1", Protocol: ProtocolOpenAI, BaseURL: "https://u1/v1", CredentialRef: "K1"}
+	snap := NewCatalogSnapshot(
+		1,
+		map[string]*Upstream{"u1": up},
+		[]string{"u1"},
+		map[string]*ModelEntry{
+			"m1": {PublicName: "m1", Upstream: "u1", UpstreamModel: "m1-real", Enabled: true},
+		},
+		[]string{"m1"},
+		map[string]*Tenant{
+			"h": {KeyHash: "h", Name: "t1", Status: TenantStatusActive, AllowedModels: []string{"*"}},
+		},
+		[]string{"h"},
+		WithCombos(
+			map[string]*Combo{
+				"a": {Name: "a", Strategy: RoutingStrategyFailover, Models: []string{"b"}, Enabled: true},
+				"b": {Name: "b", Strategy: RoutingStrategyFailover, Models: []string{"a"}, Enabled: true},
+			},
+			[]string{"a", "b"},
+		),
+	)
+	tenant, _ := snap.TenantByHash("h")
+
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := snap.ResolveTargetWithBreaker(tenant, "a", func(string) bool { return true })
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("cyclic combo graph must fail resolution")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("cyclic combo graph did not terminate: recursion guard is missing")
+	}
+}
+
+// TestResolveMemberCandidates pins the flattening helper used by context-length
+// reporting and trace candidate capture: nested combos are expanded to concrete
+// models, duplicates collapse, and a cycle cannot loop.
+func TestResolveMemberCandidates(t *testing.T) {
+	snap, _ := nestedComboSnapshot()
+	got := snap.ResolveMemberCandidates("outer")
+	want := []string{"m1", "m2", "m3"}
+	if len(got) != len(want) {
+		t.Fatalf("ResolveMemberCandidates(outer) = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ResolveMemberCandidates(outer) = %v, want %v", got, want)
+		}
+	}
+	if members := snap.ResolveMemberCandidates("m1"); len(members) != 1 || members[0] != "m1" {
+		t.Fatalf("concrete model must expand to itself, got %v", members)
+	}
+}

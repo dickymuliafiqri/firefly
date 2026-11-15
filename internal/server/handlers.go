@@ -518,9 +518,13 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string, ing ingress) http.Ha
 		}
 		if fallbackUsed && deps.Logger != nil {
 			fromUpstream := ""
-			if combo, isCombo := snap.Combo(model); isCombo && len(combo.Models) > 0 {
-				if firstModel, ok := snap.Model(combo.Models[0]); ok {
-					fromUpstream = firstModel.Upstream
+			// The skipped primary is the first concrete model the combo graph
+			// reaches, which may sit one or more nested combos deep.
+			if combo, isCombo := snap.Combo(model); isCombo {
+				if members := snap.ResolveMemberCandidates(combo.Name); len(members) > 0 {
+					if firstModel, ok := snap.Model(members[0]); ok {
+						fromUpstream = firstModel.Upstream
+					}
 				}
 			}
 			deps.Logger.Warn("upstream fallback triggered",
@@ -534,7 +538,9 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string, ing ingress) http.Ha
 			capture.Stage(trace.StageRoute, target.Upstream.Name)
 		}
 		if combo, isCombo := snap.Combo(model); isCombo {
-			for _, member := range combo.Models {
+			// Expand nested combos so the trace names real skipped upstreams
+			// instead of a combo that never reaches a host by itself.
+			for _, member := range snap.ResolveMemberCandidates(combo.Name) {
 				me, ok := snap.Model(member)
 				if !ok || me.Upstream == "" {
 					continue
