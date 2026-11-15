@@ -10,18 +10,14 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
-
 	"sync"
 	"time"
 
 	"github.com/dickymuliafiqri/firefly/internal/adapter/openai"
 	"github.com/dickymuliafiqri/firefly/internal/domain"
-	"github.com/dickymuliafiqri/firefly/internal/limits"
 	"github.com/dickymuliafiqri/firefly/internal/observability/trace"
 
 	"github.com/dickymuliafiqri/firefly/internal/observability/metrics"
-	"github.com/dickymuliafiqri/firefly/internal/ports"
-	"github.com/dickymuliafiqri/firefly/internal/storage/turso"
 	"github.com/dickymuliafiqri/firefly/internal/tokensaver"
 	"github.com/dickymuliafiqri/firefly/internal/transport/httpx"
 	"github.com/dickymuliafiqri/firefly/internal/transport/upstream"
@@ -408,26 +404,62 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string, ing ingress) http.Ha
 		}
 
 		// 3. Resolve the routing target (model -> upstream + credential).
+		//
+		// Everything from here to the settle step runs once per combo member
+		// attempt. A direct model gets a budget of 1, so the non-combo path is
+		// exactly the single pass it always was; a combo may spend a second
+		// member when the first one failed before the client saw a byte.
+		attemptBudget := comboAttemptBudget(snap, model)
+		origBody := body
+		if attemptBudget > 1 {
+			// The prompt guard rewrites the body per member, so the original
+			// shape has to survive the first rewrite exactly.
+			origBody = append([]byte(nil), body...)
+		}
+		baseTokensIn := tokensIn
+		excluded := make(map[string]bool, attemptBudget)
+		actx := &comboAttemptContext{
+			deps:         deps,
+			ing:          ing,
+			r:            r,
+			snap:         snap,
+			tenant:       tenant,
+			capture:      capture,
+			model:        model,
+			upstreamPath: upstreamPath,
+			stream:       stream,
+		}
+
 		var canUseUpstream func(string) bool
 		if deps.Breakers != nil {
 			canUseUpstream = func(name string) bool {
 				return deps.Breakers.Allow(name) == nil
 			}
 		}
-		var quotaResetAt time.Time
-		quotaNow := time.Now()
-		canUseCandidate := func(c domain.TargetCandidate) bool {
-			reset, blocked := deps.quotaBlockedCandidate(c, quotaNow)
-			if blocked {
-				if quotaResetAt.IsZero() {
-					quotaResetAt = reset
+
+		// resolve picks the next member of the requested combo, skipping the ones
+		// an earlier attempt already contacted and failed on. quotaResetAt is the
+		// earliest reset reported by a quota-vetoed candidate, used only when
+		// nothing at all could be resolved.
+		resolve := func() (*domain.Target, bool, time.Time, error) {
+			var quotaResetAt time.Time
+			quotaNow := time.Now()
+			canUseCandidate := func(c domain.TargetCandidate) bool {
+				reset, blocked := deps.quotaBlockedCandidate(c, quotaNow)
+				if blocked {
+					if quotaResetAt.IsZero() {
+						quotaResetAt = reset
+					}
+					return false
 				}
-				return false
+				return true
 			}
-			return true
+			target, fallbackUsed, err := snap.ResolveTargetExcluding(tenant, model, excluded, canUseUpstream, canUseCandidate)
+			return target, fallbackUsed, quotaResetAt, err
 		}
-		target, fallbackUsed, err := snap.ResolveTargetWithCandidates(tenant, model, canUseUpstream, canUseCandidate)
-		if err != nil {
+
+		// writeResolveFailure answers a request that never found a member to dial.
+		writeResolveFailure := func(err error, quotaResetAt time.Time) {
 			if errors.Is(err, domain.ErrProviderQuotaExhausted) {
 				// Every candidate was vetoed for quota and nothing else: answer
 				// with the provider's own reset time, not a misleading 503.
@@ -496,352 +528,110 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string, ing ingress) http.Ha
 				Error:         err.Error(),
 			})
 			ing.WriteResolveError(w, err)
-			return
-		}
-		capture.Stage(trace.StageResolve, model)
-		if target.ResolvedModel != "" {
-			capture.SetResolvedModel(target.ResolvedModel)
-		}
-		if target.Upstream != nil {
-			note := "primary"
-			if fallbackUsed {
-				note = "breaker fallback"
-			}
-			if target.ResolvedModel != "" && target.ResolvedModel != model {
-				note += " (" + target.ResolvedModel + ")"
-			}
-			capture.Candidate(target.Upstream.Name, "", trace.CandidateChosen, note)
-		}
-		if target.Upstream != nil {
-			target.Upstream.Inflight.Add(1)
-			defer target.Upstream.Inflight.Add(-1)
-		}
-		if fallbackUsed && deps.Logger != nil {
-			fromUpstream := ""
-			// The skipped primary is the first concrete model the combo graph
-			// reaches, which may sit one or more nested combos deep.
-			if combo, isCombo := snap.Combo(model); isCombo {
-				if members := snap.ResolveMemberCandidates(combo.Name); len(members) > 0 {
-					if firstModel, ok := snap.Model(members[0]); ok {
-						fromUpstream = firstModel.Upstream
-					}
-				}
-			}
-			deps.Logger.Warn("upstream fallback triggered",
-				"request_id", httpx.RequestIDFrom(r.Context()),
-				"from_upstream", fromUpstream,
-				"to_upstream", target.Upstream.Name,
-				"model", model,
-			)
-		}
-		if target.Upstream != nil {
-			capture.Stage(trace.StageRoute, target.Upstream.Name)
-		}
-		if combo, isCombo := snap.Combo(model); isCombo {
-			// Expand nested combos so the trace names real skipped upstreams
-			// instead of a combo that never reaches a host by itself.
-			for _, member := range snap.ResolveMemberCandidates(combo.Name) {
-				me, ok := snap.Model(member)
-				if !ok || me.Upstream == "" {
-					continue
-				}
-				if target.Upstream == nil || me.Upstream != target.Upstream.Name {
-					capture.Candidate(me.Upstream, "", trace.CandidateSkipped, "combo member "+member)
-				}
-			}
 		}
 
-		// 4. Per-credential aggregate limit. AdmissionMiddleware already took
-		//    the tenant slot; here we bound the shared upstream key. This runs
-		//    AFTER routing precisely so the credential ref is exact.
-		var releaseCred limits.ReleaseFunc
-		keyRef := target.CredentialRef
-		if target.KeySlot != nil && target.KeySlot.Ref != "" {
-			keyRef = target.KeySlot.Ref
-			// An AlwaysAvailable upstream is exempt from the slot's revocation and
-			// cooldown state (see domain.Upstream.AlwaysAvailable): reserving
-			// capacity must not re-introduce the rejection the resolver just
-			// bypassed, or the request dies here with a 429 that no upstream ever
-			// saw. RPS and concurrency still apply.
-			if target.Upstream.AlwaysAvailable {
-				releaseCred, err = deps.Limiter.AcquireKeySlotLenient(target.KeySlot)
+		// next is a member an earlier iteration already resolved but has not
+		// attempted yet; fallbackFrom names the member whose attempt was discarded
+		// before the one about to be tried.
+		var next *resolvedMember
+		var fallbackFrom string
+
+		for attempt := 1; attempt <= attemptBudget; attempt++ {
+			if attempt > 1 {
+				// Reset to the client's original body and token estimate: the
+				// member about to be tried carries its own system directive, not
+				// the failed one's.
+				body = append(body[:0], origBody...)
+				tokensIn = baseTokensIn
+			}
+
+			var target *domain.Target
+			var fallbackUsed bool
+			if next != nil {
+				target, fallbackUsed = next.target, next.fallbackUsed
+				next = nil
 			} else {
-				releaseCred, err = deps.Limiter.AcquireKeySlot(target.KeySlot)
+				resolved, fb, quotaResetAt, rerr := resolve()
+				if rerr != nil {
+					writeResolveFailure(rerr, quotaResetAt)
+					return
+				}
+				target, fallbackUsed = resolved, fb
 			}
-		} else {
-			releaseCred, err = deps.Limiter.AcquireCredential(
-				target.CredentialRef,
-				target.Upstream.CredentialRPS,
-				target.Upstream.CredentialMaxConcurrent,
-			)
-		}
-		capture.SetTarget(target.Upstream.Name, string(target.Upstream.Protocol), keyRef)
-		capture.Stage(trace.StageKey, trace.MaskRef(keyRef))
+			deps.traceRoute(capture, snap, model, target, fallbackUsed)
 
-		if err != nil {
-			if errors.Is(err, limits.ErrRateLimited) {
-				deps.Metrics.ObserveKeyCooldown(target.Upstream.Name, keyRef)
-				deps.recordLog(LiveLog{
-					ID:            httpx.RequestIDFrom(r.Context()),
-					Timestamp:     time.Now().UnixMilli(),
-					Method:        r.Method,
-					Path:          r.URL.Path,
-					Status:        http.StatusTooManyRequests,
-					DurationMs:    0,
-					Model:         model,
-					ResolvedModel: target.ResolvedModel,
-					Upstream:      target.Upstream.Name,
-					KeyRef:        keyRef,
-					Tenant:        tenant.Name,
-					Stream:        stream,
-					TokensIn:      tokensIn,
-					TokensOut:     0,
-					Tokens:        tokensIn,
-					EstimatedCost: microsToUSD(estimateRequestCost(snap, model, target.ResolvedModel, target.UpstreamModel, tokensIn, 0, 0, 0)),
-					Error:         "upstream credential capacity exhausted",
-				})
-				capture.Fail(http.StatusTooManyRequests, nil)
-				w.Header().Set("Retry-After", "1")
-				ing.WriteError(w, http.StatusTooManyRequests,
-					"upstream credential capacity exhausted; retry shortly")
+			// 4. One attempt: credential reservation, prompt guard, adapter call.
+			//    Everything it acquires is released when it returns, so a retry can
+			//    take the next member's credential instead of deadlocking on a
+			//    ticket held by the attempt that just failed.
+			aw := newComboAttemptWriter(w)
+			actx.body, actx.tokensIn, actx.attempt = body, tokensIn, attempt
+			out := actx.forward(aw, target)
+			status := aw.Status()
+
+			// 5. Decide whether another combo member may be tried. The decision
+			//    reads the status the attempt recorded, not out.err alone: an adapter
+			//    relays an upstream error body to the writer and returns nil, so a
+			//    gate keyed only on the error would never fire for the most common
+			//    failure. A committed response is never retried — that would splice
+			//    two responses together.
+			retry := !aw.Committed() && target.ComboMember != "" && attempt < attemptBudget &&
+				(out.ttfbTimeout || retryableAcrossMembers(out.err, status, aw.Header(), r.Context()))
+			if !retry {
+				actx.settle(w, aw, target, out, fallbackFrom)
 				return
 			}
-			capture.Fail(http.StatusInternalServerError, nil)
 
-			ing.WriteError(w, http.StatusInternalServerError, "admission control error")
-			return
-		}
-		deps.Metrics.IncKeyInflight(target.Upstream.Name, keyRef)
-		defer func() {
-			deps.Metrics.DecKeyInflight(target.Upstream.Name, keyRef)
-			releaseCred()
-		}()
-
-		// 4c. Prompt guard + Token Saver. Both rewrite the chat body, so the
-		// input-token estimate is recomputed once after the final shape settles.
-		//
-		// Operator system prompt (Settings -> Token Saver -> System Prompt):
-		// injected independently of the Token Saver master switch so the guard
-		// stays active even when compression is off, and only for endpoints that
-		// actually carry a messages array. It rewrites the OpenAI-shaped body
-		// before adapter.Forward, so every protocol is covered — the anthropic
-		// adapter folds the system block into its own schema the same way it
-		// already does for persona directives.
-		// The rewrite is reported to the visualizer as trace.StageTokenSaver, and
-		// only when a pass actually changed the body: the Line canvas draws a
-		// Token Saver node on the request path and uses that stage to tell a
-		// rewritten request from a pass-through one. Nothing is allocated when no
-		// pass rewrites anything.
-		bodyModified := false
-		if upstreamPath == "/chat/completions" {
-			ts := snap.TokenSaver()
-			bodyLenBefore := len(body)
-			guardApplied := false
-			// Per-model directive first: it specializes behavior for the routed
-			// model (for a combo, the member that was actually selected). The
-			// global operator guard is appended afterwards so it keeps the final
-			// word inside the system block. Both share InjectSystemPrompt, so the
-			// rewrite is idempotent and multimodal-safe.
-			if target.SystemPrompt != "" {
-				if transformed, modified := tokensaver.InjectSystemPrompt(body, target.SystemPrompt); modified {
-					body = transformed
-					bodyModified = true
-					guardApplied = true
-				}
+			if (deps.Draining != nil && deps.Draining()) || deadlineSoon(r.Context(), comboAttemptMinRunway) {
+				// Shutting down, or too little time left to finish another member:
+				// publish what this attempt produced instead of opening a connection
+				// the host may no longer be able to see through.
+				actx.settle(w, aw, target, out, fallbackFrom)
+				return
 			}
-			if ts.SystemPrompt != "" {
-				if transformed, modified := tokensaver.InjectSystemPrompt(body, ts.SystemPrompt); modified {
-					body = transformed
-					bodyModified = true
-					guardApplied = true
-				}
+
+			// The next member is resolved BEFORE this attempt is discarded, so a
+			// request whose remaining members are all unusable still returns this
+			// attempt's real response instead of an empty error envelope.
+			excluded[target.ComboMember] = true
+			nt, nfb, _, nerr := resolve()
+			if nerr != nil {
+				actx.settle(w, aw, target, out, fallbackFrom)
+				return
 			}
-			compressApplied := false
-			if ts.Enabled {
-				if transformed, modified := tokensaver.Process(body, ts); modified {
-					body = transformed
-					bodyModified = true
-					compressApplied = true
-				}
+
+			aw.Discard()
+			deps.recordLog(LiveLog{
+				ID:         out.logID,
+				Timestamp:  out.start.UnixMilli(),
+				Method:     r.Method,
+				Path:       r.URL.Path,
+				Status:     status,
+				DurationMs: out.elapsed.Milliseconds(),
+				Model:      model,
+				Upstream:   target.Upstream.Name,
+				KeyRef:     out.keyRef,
+				Tenant:     tenant.Name,
+				Stream:     stream,
+				TokensIn:   out.tokensIn,
+				Tokens:     out.tokensIn,
+				Attempt:    attempt,
+				Error:      sanitizeUpstreamError(out.err),
+			})
+			if deps.Logger != nil {
+				deps.Logger.Warn("combo member failed; trying next member",
+					"request_id", httpx.RequestIDFrom(r.Context()),
+					"model", model,
+					"attempt", attempt,
+					"from_member", target.ComboMember,
+					"from_upstream", target.Upstream.Name,
+					"status", status,
+				)
 			}
-			if bodyModified {
-				capture.Stage(trace.StageTokenSaver,
-					tokenSaverDetail(guardApplied, compressApplied, bodyLenBefore-len(body)))
-				tokensIn = estimateInputTokens(body)
-			}
-		}
-
-		// 5. Forward. The adapter scrubs headers, injects the secret, rewrites
-		//    the model, relays the response, and drives the breaker/retry.
-		fwdReq := ports.ForwardRequest{
-			Method:    http.MethodPost,
-			Path:      upstreamPath,
-			BodyBytes: body,
-			Headers:   r.Header.Clone(),
-			Stream:    stream,
-		}
-
-		adapter, err := deps.adapterFor(target.Upstream.Protocol)
-		if err != nil {
-			ing.WriteError(w, http.StatusNotImplemented, err.Error())
-			capture.Fail(http.StatusNotImplemented, err)
-
-			return
-		}
-		capture.Stage(trace.StageAttempt, string(target.Upstream.Protocol))
-		start := time.Now()
-		reqID := httpx.RequestIDFrom(r.Context())
-		upstreamName := ""
-		if target.Upstream != nil {
-			upstreamName = target.Upstream.Name
-		}
-		deps.recordLog(LiveLog{
-			ID:            reqID,
-			Timestamp:     start.UnixMilli(),
-			Method:        r.Method,
-			Path:          r.URL.Path,
-			Status:        0, // In-flight / Active
-			DurationMs:    0,
-			Model:         model,
-			ResolvedModel: target.ResolvedModel,
-			Upstream:      upstreamName,
-			KeyRef:        keyRef,
-			Tenant:        tenant.Name,
-			Stream:        stream,
-			TokensIn:      tokensIn,
-			TokensOut:     0,
-			Tokens:        tokensIn,
-			EstimatedCost: microsToUSD(estimateRequestCost(snap, model, target.ResolvedModel, target.UpstreamModel, tokensIn, 0, 0, 0)),
-		})
-
-		tracker := &responseTracker{ResponseWriter: ing.WrapWriter(w, model, stream)}
-		fwdErr := adapter.Forward(trace.WithCapture(r.Context(), capture), target, fwdReq, tracker)
-		if finalizer, ok := tracker.ResponseWriter.(interface{ finalize(error) }); ok {
-			finalizer.finalize(fwdErr)
-		}
-		elapsed := time.Since(start)
-
-		// 6. Record usage regardless of outcome (a failed call still consumed
-		//    a credential slot and upstream capacity).
-		deps.Usage.Record(target.CredentialRef, tenant.Name, model, 1)
-
-		// 6b. Record upstream outcome/latency for operators.
-		observedModel := model
-		if target.ResolvedModel != "" {
-			observedModel = target.ResolvedModel
-		}
-		deps.Metrics.ObserveUpstream(target.Upstream.Name, observedModel, upstreamOutcome(fwdErr), elapsed)
-
-		// 6c. Record key-level requests and status for operator visibility.
-		keyStatus := http.StatusOK
-		var ue *openai.ErrUpstream
-		if fwdErr == nil {
-			keyStatus = http.StatusOK
-		} else if errors.As(fwdErr, &ue) && ue.Status > 0 {
-			keyStatus = ue.Status
-			// An upstream rate limit is the ground truth about the account: when
-			// it contradicts a positive quota reading, the cached picture is
-			// stale and gets dropped so the next read is real. Layer 1 only —
-			// the breaker and key policy already saw this 429.
-			if ue.Status == http.StatusTooManyRequests || ue.Status == http.StatusConflict {
-				deps.noteQuotaRateLimit(keyRefOrTarget(target))
-			}
-		} else if errors.Is(fwdErr, context.Canceled) {
-			keyStatus = 499
-		} else {
-			keyStatus = http.StatusBadGateway
-		}
-		deps.Metrics.ObserveKeyRequest(target.Upstream.Name, keyRef, keyStatus)
-
-		var errStr string
-		if fwdErr != nil {
-			errStr = sanitizeUpstreamError(fwdErr)
-		}
-		tokensOut := 0
-		cachedRead, cacheWrite := 0, 0
-		cachedInPrompt := false
-		if u, ok := tracker.extractUsage(); ok {
-			if u.promptToks > 0 {
-				tokensIn = u.promptToks
-			}
-			if u.compToks > 0 {
-				tokensOut = u.compToks
-			}
-			cachedRead, cacheWrite = u.cachedRead, u.cacheWrite
-			cachedInPrompt = u.cachedInPrompt
-		}
-		if tokensOut <= 0 && keyStatus == http.StatusOK && tracker.bytesWritten > 0 {
-			if stream {
-				tokensOut = int(tracker.linesWritten / 2)
-				if tokensOut <= 0 {
-					tokensOut = int(tracker.bytesWritten / 60)
-				}
-			} else {
-				tokensOut = int(tracker.bytesWritten / 4)
-			}
-			if tokensOut < 1 {
-				tokensOut = 1
-			}
-		}
-		totTokens := tokensIn + tokensOut
-		billableIn := billableInputTokens(tokensIn, cachedRead, cacheWrite, cachedInPrompt)
-		costMicros := estimateRequestCost(snap, model, target.ResolvedModel, target.UpstreamModel, billableIn, tokensOut, cachedRead, cacheWrite)
-		totCost := microsToUSD(costMicros)
-
-		if totTokens > 0 && tenant != nil && tenant.UsedTokens != nil {
-			tenant.UsedTokens.Add(int64(totTokens))
-			if flusher, ok := deps.Usage.(*turso.UsageFlusher); ok && flusher != nil {
-				key := tenant.APIKey
-				if key == "" {
-					key = tenant.KeyHash
-				}
-				flusher.RecordTenantTokens(key, int64(totTokens), int64(cachedRead), int64(cacheWrite))
-			}
-		}
-
-		// Spend is recorded even when the upstream produced no token counts:
-		// a request that returned an error still consumed quota, and dropping it
-		// would let a failing upstream be used to drain a budget for free.
-		if tenant != nil {
-			if crossed := tenant.AddSpend(costMicros); crossed {
-				deps.emitTenantBudgetWarning(tenant)
-			}
-		}
-
-		deps.recordLog(LiveLog{
-			ID:               reqID,
-			Timestamp:        start.UnixMilli(),
-			Method:           r.Method,
-			Path:             r.URL.Path,
-			Status:           keyStatus,
-			DurationMs:       elapsed.Milliseconds(),
-			Model:            model,
-			ResolvedModel:    target.ResolvedModel,
-			Upstream:         upstreamName,
-			KeyRef:           keyRef,
-			Tenant:           tenant.Name,
-			Stream:           stream,
-			TokensIn:         tokensIn,
-			TokensOut:        tokensOut,
-			Tokens:           totTokens,
-			EstimatedCost:    totCost,
-			CostMicros:       costMicros,
-			CachedReadTokens: cachedRead,
-			CacheWriteTokens: cacheWrite,
-			Error:            errStr,
-		})
-
-		capture.SetUsage(tokensIn, tokensOut)
-		capture.Finish(keyStatus, fwdErr)
-
-		if fwdErr != nil {
-			deps.logForwardFailure(r.Context(), target, fwdErr, elapsed)
-			// If nothing was written yet we can still emit an error envelope;
-			// if streaming already started, the only honest action is to stop
-			// (the client sees a truncated stream).
-			if !httpx.HeaderCommitted(w) {
-				writeUpstreamFailure(w, fwdErr)
-			}
+			capture.Stage(trace.StageFallback,
+				target.ComboMember+"→"+nt.ComboMember+" (HTTP "+strconv.Itoa(status)+")")
+			fallbackFrom = target.ComboMember
+			next = &resolvedMember{target: nt, fallbackUsed: nfb}
 		}
 	}
 }

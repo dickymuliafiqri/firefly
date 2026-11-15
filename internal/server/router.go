@@ -71,6 +71,13 @@ type RouterDeps struct {
 	// in New(); sampling happens lazily inside GET /api/telemetry (admin only).
 	ResMon *resmon.Sampler
 
+	// Draining reports whether the server has started graceful shutdown. The
+	// combo attempt loop consults it before opening another upstream
+	// connection: admission already answers 503 to new requests, and this closes
+	// the in-flight window too so a retry cannot start work the host is no
+	// longer prepared to see through. Nil means "never draining".
+	Draining func() bool
+
 	// GlobalLimiter manages server-wide in-flight concurrency with a bounded wait queue.
 	// If nil and DisableGlobalAdmission is false, a default 1500-slot limiter is used.
 	GlobalLimiter          *httpx.GlobalLimiter

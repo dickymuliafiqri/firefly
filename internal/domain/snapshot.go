@@ -320,6 +320,12 @@ type resolveState struct {
 	// "no upstream available" just because an outer level saw nothing else.
 	hadExhaustedKey bool
 	quotaVetoed     bool
+
+	// exclude holds the top-level members of the requested combo that an earlier
+	// attempt already contacted and failed on. It is consulted at depth 0 only:
+	// the failure is attributed to the member, so a nested combo is skipped as a
+	// whole instead of being re-entered to spend its remaining members.
+	exclude map[string]bool
 }
 
 // resolveMember resolves one combo member, which is either a nested combo or a
@@ -333,7 +339,13 @@ func (s *CatalogSnapshot) resolveMember(
 	path map[string]bool,
 ) (*Target, bool, bool) {
 	if nested, isCombo := s.combos[name]; isCombo {
-		if depth >= MaxComboDepth {
+		// depth is the level this member sits at below the requested combo
+		// (0 = a direct member). Entering this combo makes it level depth+2 with
+		// the requested combo counted as level 1 — the same counting
+		// config.validateComboGraph uses when it rejects depth > MaxComboDepth.
+		// The two boundaries must stay identical, otherwise a graph the loader
+		// accepts would fail to resolve at runtime.
+		if depth+1 >= MaxComboDepth {
 			return nil, false, false
 		}
 		if !nested.Enabled || len(nested.Models) == 0 {
@@ -359,7 +371,17 @@ func (s *CatalogSnapshot) resolveComboMembers(
 	path map[string]bool,
 ) (*Target, bool, bool) {
 	try := func(name string) (*Target, bool, bool) {
+		// At the top level, skip a member an earlier attempt already failed on,
+		// and stamp the winner with its member name. The stamp is what lets the
+		// transport layer attribute the failure to this member instead of to
+		// whichever leaf happened to be picked inside it.
+		if depth == 0 && st.exclude[name] {
+			return nil, false, false
+		}
 		target, fallbackUsed, ok := s.resolveMember(st, name, depth, path)
+		if ok && depth == 0 {
+			target.ComboMember = name
+		}
 		return target, fallbackUsed, ok
 	}
 
@@ -524,6 +546,26 @@ func (s *CatalogSnapshot) ResolveTargetWithCandidates(
 	canUseUpstream func(upstreamName string) bool,
 	canUseCandidate func(TargetCandidate) bool,
 ) (*Target, bool, error) {
+	return s.ResolveTargetExcluding(tenant, publicName, nil, canUseUpstream, canUseCandidate)
+}
+
+// ResolveTargetExcluding is ResolveTargetWithCandidates plus a set of combo
+// member names that must not be selected again. The transport layer uses it to
+// retry a failed attempt across the members of the requested combo: it passes
+// the Target.ComboMember values it already contacted so each retry advances to
+// the next member instead of re-picking the one that just failed.
+//
+// exclude is consulted only against the requested combo's direct members, and
+// only when publicName is a combo; a direct model request ignores it. An
+// excluded member is skipped as a whole, so excluding a nested combo never
+// costs that combo any of its own members.
+func (s *CatalogSnapshot) ResolveTargetExcluding(
+	tenant *Tenant,
+	publicName string,
+	exclude map[string]bool,
+	canUseUpstream func(upstreamName string) bool,
+	canUseCandidate func(TargetCandidate) bool,
+) (*Target, bool, error) {
 	if tenant == nil {
 		return nil, false, &ResolveError{Kind: ResolveTenantInvalid}
 	}
@@ -549,8 +591,16 @@ func (s *CatalogSnapshot) ResolveTargetWithCandidates(
 			nowNano:         time.Now().UnixNano(),
 			canUseUpstream:  canUseUpstream,
 			canUseCandidate: canUseCandidate,
+			exclude:         exclude,
 		}
-		target, fallbackUsed, ok := s.resolveMember(st, publicName, 0, make(map[string]bool, 4))
+		// Expand the requested combo directly at depth 0 so that depth 0 means
+		// exactly one thing everywhere: "a direct member of the requested combo".
+		// The path is seeded with publicName first, because a hand-built snapshot
+		// whose combo lists itself must fail here rather than recurse until the
+		// depth ceiling.
+		path := make(map[string]bool, 4)
+		path[publicName] = true
+		target, fallbackUsed, ok := s.resolveComboMembers(st, combo, 0, path)
 		if ok {
 			return target, fallbackUsed, nil
 		}

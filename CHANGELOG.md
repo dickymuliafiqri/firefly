@@ -5,6 +5,18 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.52.0] - 2026-11-15
+### Added
+- **Combo Member Failover at Request Time (`internal/domain/`, `internal/server/`, `frontend/src/`)**:
+  - A `failover` combo now replaces a member that failed **before the client received a byte**. `Target.ComboMember` stamps the top-level member of the requested combo (depth 0), `CatalogSnapshot.ResolveTargetExcluding` skips it on the re-resolve, and `domain.MaxComboFailoverAttempts` (3) bounds the cost. A direct model keeps a budget of exactly 1, so the non-combo path is unchanged.
+  - The unit of failover is deliberately the top-level member, never a nested one: with `a=[a1,a2]`, `b=[b1,b2]`, `c=[a,b]`, one request to `c` contacts `a1` and then `b1`, so a nested combo's remaining members can never silently double the request's provider cost. They are still skipped for free at resolve time (breaker open, upstream disabled, key exhausted).
+  - `internal/server/combo_writer.go` adds `comboAttemptWriter`, which buffers a response until it commits (status `< 400` or the first payload write). A committed response is never retried — retrying would splice two responses into one stream — and SSE latency is unaffected because a `200` commits on the first frame.
+  - `retryableAcrossMembers` reads the attempt writer's status, not the adapter's error: `openai.Adapter.Forward` relays an upstream error body and returns `nil`, so an error-keyed gate would never fire for the most common failure. Retried: transport failures, the 20-second `comboAttemptTTFB` first-byte watchdog, `5xx`, `401`/`402`/`403`/`404`, `ErrCircuitOpen`, and `429` whose `Retry-After` is absent or longer than the client's remaining budget. Never retried: `context.Canceled`, a committed response, and request-shaped `4xx` (`400`/`409`/`413`/`422`).
+  - The first-byte watchdog is a watchdog, not a context deadline, so a healthy long stream is never cut. Its cancellation reaches the adapter as `context.Canceled`, which is why the outcome carries `ttfbTimeout` separately — otherwise a hung member would look like an abandoned client and the combo would give up instead of moving on.
+  - Per-attempt state is released between members (`AcquireKeySlot`/`AcquireKeySlotLenient`, key in-flight counters, the prompt guard, the body reset from the original bytes), so a member retried on a shared credential with `MaxConcurrent: 1` no longer deadlocks on its predecessor's ticket. The next member is resolved before the current attempt is discarded, so a request whose remaining members are all unusable still returns the real upstream response instead of an envelope synthesized from a `nil` error.
+  - Usage, cost and tenant spend are recorded only for the member that actually answered; an attempt refused by admission control no longer counts as inbound usage or as an upstream latency sample. Each discarded attempt gets its own console row (`attemptLogID` appends `#<n>`, since `LiveLogHub.Publish` upserts by ID) carrying `attempt`, and the final row names `fallbackFrom`. The Console renders an Attempt column and dims discarded rows.
+  - No retry is started while the host is draining (`RouterDeps.Draining`, wired to `Server.ShuttingDown`) or when less than `comboAttemptMinRunway` of the client's deadline remains. `trace.StageFallback` records the discarded member hop for the Visualizer.
+
 ## [1.51.0] - 2026-11-15
 ### Added
 - **Nested Virtual Combos (`internal/config/`, `internal/domain/`, `internal/server/`, `frontend/src/`)**:

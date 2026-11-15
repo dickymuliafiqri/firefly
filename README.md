@@ -364,6 +364,26 @@ A member may be another combo's name, so routing policies compose instead of bei
 
 Each level applies its own strategy, and resolution always ends at a concrete model. A disabled nested combo is skipped. The graph must stay acyclic and at most 16 levels deep — `config.Build` rejects a self-reference, a cycle, an unknown member, or a deeper chain with a `combos[<name>].models[<i>]` error, and the dashboard names the offending member before saving.
 
+#### Combo member failover
+
+A `failover` combo now fails over **at request time**, not only at resolve time. With
+
+```json
+{
+  "combos": [
+    { "name": "a", "models": ["a1", "a2"], "strategy": "failover" },
+    { "name": "b", "models": ["b1", "b2"], "strategy": "failover" },
+    { "name": "c", "models": ["a", "b"], "strategy": "failover" }
+  ]
+}
+```
+
+one request to `c` contacts `a1` and then `b1` — never `a2`, never `b2`: the unit of failover is the **top-level member of the requested combo**, and a nested member is still skipped for free at resolve time (breaker open, upstream disabled, key exhausted) without a network call.
+
+A member is replaced only when the client has not yet received a single byte: transport failures, a 20-second first-byte timeout, `5xx`, `401`/`402`/`403`/`404`, and `429` whose `Retry-After` is missing or longer than the remaining request budget. A response that has started streaming is never retried — that would splice two responses together — and neither is a request-shaped `4xx` (`400`/`409`/`413`/`422`), because retrying a malformed payload only bills a second provider for the same mistake.
+
+Cost stays bounded: at most 3 top-level members per request, the failed member's body is discarded, usage and spend are recorded only for the member that actually answered, and the Console shows the discarded attempt next to the one that served the client (dimmed, with an `after <member>` badge).
+
 ### 2. Token Saver Suite (Reduce API Costs)
 
 Firefly includes built-in tools to shrink token usage without losing answer quality:

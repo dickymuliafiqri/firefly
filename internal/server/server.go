@@ -87,6 +87,10 @@ func New(cfg Config, deps RouterDeps, baseCtx context.Context, logger *slog.Logg
 		deps.TursoManager.AttachRegistry(deps.Registry)
 	}
 	s := newServer(cfg, baseCtx, logger)
+	// The combo attempt loop asks the server whether a shutdown has started before
+	// opening another upstream connection; wiring it here keeps the answer
+	// truthful without threading the *Server through every handler.
+	deps.Draining = s.ShuttingDown
 	s.http.Handler = s.buildHandler(deps)
 	return s
 }

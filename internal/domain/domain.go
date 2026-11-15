@@ -698,6 +698,14 @@ type ModelEntry struct {
 // must never recurse without a ceiling.
 const MaxComboDepth = 16
 
+// MaxComboFailoverAttempts bounds how many top-level members of a combo one
+// client request may contact. It is deliberately separate from MaxComboDepth:
+// depth is a structural limit, this is a cost limit. Without it a 12-member
+// combo could turn one client request into 12 upstream calls (each of which may
+// itself use up to three key-rotation attempts), which is a far worse failure
+// mode than the 502 it was trying to avoid.
+const MaxComboFailoverAttempts = 3
+
 // Combo is a virtual model that distributes requests across a group of members.
 //
 // A member is either a concrete model public name or the name of another combo,
@@ -938,4 +946,10 @@ type Target struct {
 	// here so the transport layer can inject it without a second catalog lookup
 	// (and so a combo contributes the directive of the member it selected).
 	SystemPrompt string
+	// ComboMember is the direct member of the requested combo that produced this
+	// target — a model name or a nested combo name. Empty for a direct model
+	// request. The transport layer excludes it when a failed attempt is retried
+	// across members, so failover is attributed to the combo's own member and a
+	// nested combo is never re-entered to burn its remaining members.
+	ComboMember string
 }
