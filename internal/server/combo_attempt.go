@@ -141,13 +141,16 @@ func (c *comboAttemptContext) forward(aw *comboAttemptWriter, target *domain.Tar
 		out.err = acquireErr
 		if errors.Is(acquireErr, limits.ErrRateLimited) {
 			deps.Metrics.ObserveKeyCooldown(target.Upstream.Name, keyRef)
-			c.recordAttemptFailure(http.StatusTooManyRequests, keyRef, "", "upstream credential capacity exhausted")
+			// The resolved model is stamped even though the provider was never
+			// reached: the console row exists to show which combo member the
+			// request had been pointed at when the credential refused it.
+			c.recordAttemptFailure(http.StatusTooManyRequests, keyRef, target.ResolvedModel, "upstream credential capacity exhausted")
 			aw.Header().Set("Retry-After", "1")
 			ing.WriteError(aw, http.StatusTooManyRequests,
 				"upstream credential capacity exhausted; retry shortly")
 			return out
 		}
-		c.recordAttemptFailure(http.StatusInternalServerError, keyRef, "", "admission control error")
+		c.recordAttemptFailure(http.StatusInternalServerError, keyRef, target.ResolvedModel, "admission control error")
 		ing.WriteError(aw, http.StatusInternalServerError, "admission control error")
 		return out
 	}
@@ -309,9 +312,9 @@ func (c *comboAttemptContext) recordAttemptFailure(status int, keyRef, resolvedM
 		KeyRef:        keyRef,
 		Attempt:       c.attempt,
 		Stream:        c.stream,
-		TokensIn:      c.tokensIn,
-		Tokens:        c.tokensIn,
-		Error:         message,
+		// No tokens: this record only describes attempts refused before any
+		// adapter ran (see the callers), so nothing was sent that could be billed.
+		Error: message,
 	})
 }
 
@@ -413,6 +416,13 @@ func (c *comboAttemptContext) settle(
 
 	keyRef, tracker, fwdErr := out.keyRef, out.tracker, out.err
 	tokensIn := out.tokensIn
+	if !out.forwarded {
+		// The attempt never reached a provider — admission control refused it, or
+		// no adapter was registered — so there is no input to bill. Without this
+		// the local pre-flight estimate is charged to the tenant and published on
+		// a row that describes a request no provider ever saw.
+		tokensIn = 0
+	}
 	elapsed := out.elapsed
 	upstreamName := ""
 	if target.Upstream != nil {
