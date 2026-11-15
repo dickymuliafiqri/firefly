@@ -27,9 +27,16 @@ type RequestLog struct {
 	// (or written into) the provider prompt cache. OpenAI reports the read
 	// count inside prompt_tokens, Anthropic excludes both from input_tokens,
 	// so they are metered separately instead of being folded into TokensIn.
-	CachedReadTokens int    `json:"cachedReadTokens,omitempty"`
-	CacheWriteTokens int    `json:"cacheWriteTokens,omitempty"`
-	Error            string `json:"error,omitempty"`
+	CachedReadTokens int `json:"cachedReadTokens,omitempty"`
+	CacheWriteTokens int `json:"cacheWriteTokens,omitempty"`
+	// Attempt is the combo member attempt this record describes (1-based). A
+	// request to a virtual combo can fail over across members, so the console
+	// shows one row per attempted member instead of only the outcome.
+	Attempt int `json:"attempt,omitempty"`
+	// FallbackFrom names the combo member whose attempt was discarded before the
+	// one this record describes. Empty on the first attempt.
+	FallbackFrom string `json:"fallbackFrom,omitempty"`
+	Error        string `json:"error,omitempty"`
 }
 
 // TokenLedger maintains cumulative usage and financial metrics across the gateway.

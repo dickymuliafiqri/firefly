@@ -29,9 +29,13 @@ const (
 	StageKey        = "key"
 	StageTokenSaver = "tokensaver"
 	StageAttempt    = "attempt"
-	StageTTFB       = "ttfb"
-	StageStream     = "stream"
-	StageDone       = "done"
+	// StageFallback marks a combo member attempt that was discarded before the
+	// client saw a byte, followed by the next member. It sits after StageAttempt
+	// because it can only happen once an attempt has failed.
+	StageFallback = "fallback"
+	StageTTFB     = "ttfb"
+	StageStream   = "stream"
+	StageDone     = "done"
 )
 
 // Activity kinds classified from the SSE stream.

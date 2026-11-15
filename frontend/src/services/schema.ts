@@ -837,6 +837,10 @@ export interface LiveConnectionLog {
   tokens?: number;
   estimatedCost?: number;
   error?: string;
+  /** 1-based combo member attempt this row describes; absent for a normal request. */
+  attempt?: number;
+  /** Combo member whose attempt was discarded before this one answered. */
+  fallbackFrom?: string;
 }
 
 export interface GlobalAdmissionDTO {

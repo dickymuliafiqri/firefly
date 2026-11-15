@@ -43,6 +43,21 @@ export function ConsolePage() {
 
   const errCount = logs.filter((l) => l.status >= 400).length;
 
+  // A combo failover leaves more than one console row for one client request:
+  // every discarded member attempt is recorded, then the member that actually
+  // answered. The rows share a base id (the retry appends "#<attempt>"), so the
+  // highest attempt of a base is the one the client received and every earlier
+  // one is dimmed as a discarded step rather than counted as a separate request.
+  const deliveredAttempt = useMemo(() => {
+    const byBase = new Map<string, number>();
+    for (const l of logs) {
+      const base = l.id.split('#')[0];
+      const attempt = l.attempt ?? 1;
+      if ((byBase.get(base) ?? 0) < attempt) byBase.set(base, attempt);
+    }
+    return byBase;
+  }, [logs]);
+
   return (
     <div className="page-col">
       <PageHeader
@@ -88,6 +103,7 @@ export function ConsolePage() {
                   <th>Path</th>
                   <th>Model</th>
                   <th>Upstream</th>
+                  <th>Attempt</th>
                   <th>Tenant</th>
                   <th>Status</th>
                   <th className="num">Duration</th>
@@ -95,38 +111,65 @@ export function ConsolePage() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((l) => (
-                  <tr key={l.id}>
-                    <td className="faint">{new Date(l.timestamp).toLocaleTimeString()}</td>
-                    <td className="dim">{l.method}</td>
-                    <td className="mono" style={{ fontSize: 12 }}>{l.path}</td>
-                    <td>
-                      {l.resolvedModel && l.resolvedModel !== l.model ? (
-                        <>
-                          <span>{l.model}</span>
-                          <span className="dim" style={{ marginLeft: 6, fontSize: '0.85em' }}>
-                            → {l.resolvedModel}
-                          </span>
-                        </>
-                      ) : (
-                        l.model ?? '—'
-                      )}
-                    </td>
-                    <td className="dim">{l.upstream ?? '—'}</td>
-                    <td className="dim">{l.tenant ?? '—'}</td>
-                    <td>
-                      <Badge tone={statusTone(l.status)} title={l.error || undefined}>{l.status}</Badge>
-                    </td>
-                    <td className="num">{Math.round(l.durationMs)}ms</td>
-                    <td className="num">
-                      {l.tokensIn !== undefined ? `${l.tokensIn}/${l.tokensOut ?? 0}` : '—'}
-                      {l.stream ? <span className="sub">stream</span> : null}
-                    </td>
-                  </tr>
-                ))}
+                {filtered.map((l) => {
+                  const attempt = l.attempt ?? 1;
+                  const base = l.id.split('#')[0];
+                  const delivered = attempt === (deliveredAttempt.get(base) ?? 1);
+                  return (
+                    <tr key={l.id} style={delivered ? undefined : { opacity: 0.55 }}>
+                      <td className="faint">{new Date(l.timestamp).toLocaleTimeString()}</td>
+                      <td className="dim">{l.method}</td>
+                      <td className="mono" style={{ fontSize: 12 }}>{l.path}</td>
+                      <td>
+                        {l.resolvedModel && l.resolvedModel !== l.model ? (
+                          <>
+                            <span>{l.model}</span>
+                            <span className="dim" style={{ marginLeft: 6, fontSize: '0.85em' }}>
+                              → {l.resolvedModel}
+                            </span>
+                          </>
+                        ) : (
+                          l.model ?? '—'
+                        )}
+                      </td>
+                      <td className="dim">{l.upstream ?? '—'}</td>
+                      <td className="dim">
+                        {attempt > 1 ? (
+                          <Badge
+                            tone={delivered ? 'ok' : 'warn'}
+                            title={
+                              delivered
+                                ? l.fallbackFrom
+                                  ? `served after ${l.fallbackFrom} failed`
+                                  : 'served on the next combo member'
+                                : 'discarded combo member attempt'
+                            }
+                          >
+                            {delivered
+                              ? l.fallbackFrom
+                                ? `after ${l.fallbackFrom}`
+                                : `#${attempt}`
+                              : `#${attempt} failed`}
+                          </Badge>
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+                      <td className="dim">{l.tenant ?? '—'}</td>
+                      <td>
+                        <Badge tone={statusTone(l.status)} title={l.error || undefined}>{l.status}</Badge>
+                      </td>
+                      <td className="num">{Math.round(l.durationMs)}ms</td>
+                      <td className="num">
+                        {l.tokensIn !== undefined ? `${l.tokensIn}/${l.tokensOut ?? 0}` : '—'}
+                        {l.stream ? <span className="sub">stream</span> : null}
+                      </td>
+                    </tr>
+                  );
+                })}
                 {filtered.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="faint">No log entries match the filter.</td>
+                    <td colSpan={10} className="faint">No log entries match the filter.</td>
                   </tr>
                 ) : null}
               </tbody>

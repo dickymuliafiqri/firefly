@@ -924,3 +924,206 @@ func TestResolveMemberCandidates(t *testing.T) {
 		t.Fatalf("concrete model must expand to itself, got %v", members)
 	}
 }
+
+// excludingSnapshot builds c failover [a, b] where a is round_robin [a1, a2, a3]
+// and b is round_robin [b1, b2]. That is exactly the shape the member-failover
+// rule has to handle: one member per top-level entry, and the remaining members
+// of a must survive for later requests.
+func excludingSnapshot() (*CatalogSnapshot, *Tenant) {
+	upstreams := make(map[string]*Upstream, 5)
+	upstreamOrder := make([]string, 0, 5)
+	models := make(map[string]*ModelEntry, 5)
+	modelOrder := make([]string, 0, 5)
+	for _, name := range []string{"a1", "a2", "a3", "b1", "b2"} {
+		upstreams["u-"+name] = &Upstream{
+			Name:          "u-" + name,
+			Protocol:      ProtocolOpenAI,
+			BaseURL:       "https://" + name + "/v1",
+			CredentialRef: "K-" + name,
+		}
+		upstreamOrder = append(upstreamOrder, "u-"+name)
+		models[name] = &ModelEntry{PublicName: name, Upstream: "u-" + name, UpstreamModel: name + "-real", Enabled: true}
+		modelOrder = append(modelOrder, name)
+	}
+	snap := NewCatalogSnapshot(
+		1,
+		upstreams,
+		upstreamOrder,
+		models,
+		modelOrder,
+		map[string]*Tenant{
+			"h": {KeyHash: "h", Name: "t1", Status: TenantStatusActive, AllowedModels: []string{"*"}},
+		},
+		[]string{"h"},
+		WithCombos(
+			map[string]*Combo{
+				"a": {Name: "a", Strategy: RoutingStrategyRoundRobin, Models: []string{"a1", "a2", "a3"}, Enabled: true},
+				"b": {Name: "b", Strategy: RoutingStrategyRoundRobin, Models: []string{"b1", "b2"}, Enabled: true},
+				"c": {Name: "c", Strategy: RoutingStrategyFailover, Models: []string{"a", "b"}, Enabled: true},
+			},
+			[]string{"a", "b", "c"},
+		),
+	)
+	tenant, _ := snap.TenantByHash("h")
+	return snap, tenant
+}
+
+// TestResolveTargetExcluding_SkipsExcludedTopMember pins that an excluded member
+// is jumped over entirely: excluding a moves the request to b.
+func TestResolveTargetExcluding_SkipsExcludedTopMember(t *testing.T) {
+	snap, tenant := excludingSnapshot()
+
+	tgt, _, err := snap.ResolveTargetExcluding(tenant, "c", map[string]bool{"a": true}, nil, nil)
+	if err != nil {
+		t.Fatalf("exclude a: unexpected error: %v", err)
+	}
+	if tgt.ComboMember != "b" {
+		t.Fatalf("exclude a: got member %q, want b", tgt.ComboMember)
+	}
+	if tgt.ResolvedModel != "b1" && tgt.ResolvedModel != "b2" {
+		t.Fatalf("exclude a: got model %q, want a b member", tgt.ResolvedModel)
+	}
+}
+
+// TestResolveTargetExcluding_DoesNotConsumeNestedMembers is the regression guard
+// for the whole feature: once a is excluded, repeated resolutions must never
+// reach a2 or a3. A failed request is attributed to the combo, not to the leaf
+// that happened to run, so the nested combo keeps its own rotation.
+func TestResolveTargetExcluding_DoesNotConsumeNestedMembers(t *testing.T) {
+	snap, tenant := excludingSnapshot()
+
+	for i := 0; i < 20; i++ {
+		tgt, _, err := snap.ResolveTargetExcluding(tenant, "c", map[string]bool{"a": true}, nil, nil)
+		if err != nil {
+			t.Fatalf("iteration %d: unexpected error: %v", i, err)
+		}
+		if tgt.ResolvedModel == "a1" || tgt.ResolvedModel == "a2" || tgt.ResolvedModel == "a3" {
+			t.Fatalf("iteration %d: excluded combo a still supplied %q", i, tgt.ResolvedModel)
+		}
+	}
+
+	// Without the exclusion the outer failover always prefers a, and a's own
+	// round-robin cursor is what rotates inside it.
+	for i := 0; i < 3; i++ {
+		tgt, _, err := snap.ResolveTargetExcluding(tenant, "c", nil, nil, nil)
+		if err != nil {
+			t.Fatalf("iteration %d: unexpected error: %v", i, err)
+		}
+		if tgt.ComboMember != "a" {
+			t.Fatalf("iteration %d: got member %q, want a", i, tgt.ComboMember)
+		}
+	}
+}
+
+// TestResolveTargetExcluding_DirectModelIgnoresExclude pins that the exclusion
+// set is meaningless for a direct model request: the transport layer passes it
+// on every attempt, including the first one of a non-combo request.
+func TestResolveTargetExcluding_DirectModelIgnoresExclude(t *testing.T) {
+	snap, tenant := excludingSnapshot()
+
+	tgt, _, err := snap.ResolveTargetExcluding(tenant, "a1", map[string]bool{"a1": true}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tgt.ResolvedModel != "a1" {
+		t.Fatalf("got %q, want a1: exclude must not affect a direct model", tgt.ResolvedModel)
+	}
+	if tgt.ComboMember != "" {
+		t.Fatalf("direct model must have an empty ComboMember, got %q", tgt.ComboMember)
+	}
+}
+
+// TestResolveTarget_ComboMemberIsTopLevelName pins the attribution rule: the
+// stamp is the requested combo's own member, not the leaf that was reached
+// inside a nested combo.
+func TestResolveTarget_ComboMemberIsTopLevelName(t *testing.T) {
+	snap, tenant := excludingSnapshot()
+
+	tgt, _, err := snap.ResolveTargetExcluding(tenant, "c", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tgt.ComboMember != "a" {
+		t.Fatalf("got member %q, want a (the outer member, not %q)", tgt.ComboMember, tgt.ResolvedModel)
+	}
+
+	// A direct combo member is its own name; a leaf is not a combo member.
+	tgt, _, err = snap.ResolveTargetExcluding(tenant, "a", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tgt.ComboMember != tgt.ResolvedModel {
+		t.Fatalf("direct member %q must be its own ComboMember, got %q", tgt.ResolvedModel, tgt.ComboMember)
+	}
+}
+
+// TestResolveTargetExcluding_AllMembersExcluded pins that exhausting the budget
+// is reported as an unavailable upstream, not as a not-found model and not as a
+// nil target.
+func TestResolveTargetExcluding_AllMembersExcluded(t *testing.T) {
+	snap, tenant := excludingSnapshot()
+
+	_, _, err := snap.ResolveTargetExcluding(
+		tenant, "c", map[string]bool{"a": true, "b": true}, nil, nil)
+	if err == nil {
+		t.Fatal("expected an error when every member is excluded")
+	}
+	var re *ResolveError
+	if !errors.As(err, &re) || re.Kind != ResolveUpstreamUnavailable {
+		t.Fatalf("got %v, want ResolveUpstreamUnavailable", err)
+	}
+}
+
+// TestResolveTargetExcluding_DeepGraphOnlyTopLevelHonorsExclude pins that the
+// exclusion is scoped to the requested combo's direct members: excluding an
+// inner name of a nested combo changes nothing, while excluding the nested combo
+// itself jumps to the next direct member.
+func TestResolveTargetExcluding_DeepGraphOnlyTopLevelHonorsExclude(t *testing.T) {
+	snap := NewCatalogSnapshot(
+		1,
+		map[string]*Upstream{
+			"ux": {Name: "ux", Protocol: ProtocolOpenAI, BaseURL: "https://x/v1", CredentialRef: "KX"},
+			"uy": {Name: "uy", Protocol: ProtocolOpenAI, BaseURL: "https://y/v1", CredentialRef: "KY"},
+			"uz": {Name: "uz", Protocol: ProtocolOpenAI, BaseURL: "https://z/v1", CredentialRef: "KZ"},
+		},
+		[]string{"ux", "uy", "uz"},
+		map[string]*ModelEntry{
+			"x": {PublicName: "x", Upstream: "ux", UpstreamModel: "x-real", Enabled: true},
+			"y": {PublicName: "y", Upstream: "uy", UpstreamModel: "y-real", Enabled: true},
+			"z": {PublicName: "z", Upstream: "uz", UpstreamModel: "z-real", Enabled: true},
+		},
+		[]string{"x", "y", "z"},
+		map[string]*Tenant{
+			"h": {KeyHash: "h", Name: "t1", Status: TenantStatusActive, AllowedModels: []string{"*"}},
+		},
+		[]string{"h"},
+		WithCombos(
+			map[string]*Combo{
+				"inner": {Name: "inner", Strategy: RoutingStrategyFailover, Models: []string{"x", "y"}, Enabled: true},
+				"mid":   {Name: "mid", Strategy: RoutingStrategyFailover, Models: []string{"inner"}, Enabled: true},
+				"top":   {Name: "top", Strategy: RoutingStrategyFailover, Models: []string{"mid", "z"}, Enabled: true},
+			},
+			[]string{"inner", "mid", "top"},
+		),
+	)
+	tenant, _ := snap.TenantByHash("h")
+
+	// Excluding a leaf name that is not a direct member changes nothing.
+	tgt, _, err := snap.ResolveTargetExcluding(tenant, "top", map[string]bool{"x": true}, nil, nil)
+	if err != nil {
+		t.Fatalf("exclude x: unexpected error: %v", err)
+	}
+	if tgt.ResolvedModel != "x" || tgt.ComboMember != "mid" {
+		t.Fatalf("exclude x: got model %q member %q, want x under mid", tgt.ResolvedModel, tgt.ComboMember)
+	}
+
+	// Excluding the direct member jumps past the whole nested chain, even though
+	// that chain still had y available.
+	tgt, _, err = snap.ResolveTargetExcluding(tenant, "top", map[string]bool{"mid": true}, nil, nil)
+	if err != nil {
+		t.Fatalf("exclude mid: unexpected error: %v", err)
+	}
+	if tgt.ResolvedModel != "z" || tgt.ComboMember != "z" {
+		t.Fatalf("exclude mid: got model %q member %q, want z", tgt.ResolvedModel, tgt.ComboMember)
+	}
+}
