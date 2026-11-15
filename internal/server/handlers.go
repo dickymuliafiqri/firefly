@@ -601,22 +601,30 @@ func (deps RouterDeps) forwardEndpoint(upstreamPath string, ing ingress) http.Ha
 			}
 
 			aw.Discard()
+			// This record REPLACES the in-flight row published for this attempt
+			// (the live-log hub upserts by ID), so every field the operator was
+			// already shown has to be restated here. ResolvedModel in particular:
+			// the console renders "model → resolvedModel" to show which combo
+			// member a request was pointed at, and dropping it here rewrote the
+			// failed row into a bare "combo" — hiding exactly the member that was
+			// skipped, which is the one thing the row exists to reveal.
 			deps.recordLog(LiveLog{
-				ID:         out.logID,
-				Timestamp:  out.start.UnixMilli(),
-				Method:     r.Method,
-				Path:       r.URL.Path,
-				Status:     status,
-				DurationMs: out.elapsed.Milliseconds(),
-				Model:      model,
-				Upstream:   target.Upstream.Name,
-				KeyRef:     out.keyRef,
-				Tenant:     tenant.Name,
-				Stream:     stream,
-				TokensIn:   out.tokensIn,
-				Tokens:     out.tokensIn,
-				Attempt:    attempt,
-				Error:      sanitizeUpstreamError(out.err),
+				ID:            out.logID,
+				Timestamp:     out.start.UnixMilli(),
+				Method:        r.Method,
+				Path:          r.URL.Path,
+				Status:        status,
+				DurationMs:    out.elapsed.Milliseconds(),
+				Model:         model,
+				ResolvedModel: target.ResolvedModel,
+				Upstream:      target.Upstream.Name,
+				KeyRef:        out.keyRef,
+				Tenant:        tenant.Name,
+				Stream:        stream,
+				TokensIn:      out.tokensIn,
+				Tokens:        out.tokensIn,
+				Attempt:       attempt,
+				Error:         sanitizeUpstreamError(out.err),
 			})
 			if deps.Logger != nil {
 				deps.Logger.Warn("combo member failed; trying next member",

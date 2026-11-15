@@ -670,6 +670,19 @@ func TestComboFailover_ConsoleRowsKeepBothAttempts(t *testing.T) {
 	if attempted[0].Attempt != 1 || attempted[0].Upstream != "u1" {
 		t.Fatalf("discarded attempt = %+v, want attempt 1 on u1", attempted[0])
 	}
+	// The console renders "model → resolvedModel" so the operator can see which
+	// combo member a request was pointed at. The discarded row must keep the
+	// pair it started with: replacing the in-flight record wholesale must not
+	// drop the member name, or the row that exists to reveal the skipped model
+	// ends up showing only the combo the client asked for.
+	if attempted[0].Model != "combo" || attempted[0].ResolvedModel != "m-u1" {
+		t.Fatalf("discarded attempt model = %q→%q, want combo→m-u1",
+			attempted[0].Model, attempted[0].ResolvedModel)
+	}
+	if succeeded[0].Model != "combo" || succeeded[0].ResolvedModel != "m-u2" {
+		t.Fatalf("final row model = %q→%q, want combo→m-u2",
+			succeeded[0].Model, succeeded[0].ResolvedModel)
+	}
 	if succeeded[0].FallbackFrom != "m-u2" && succeeded[0].FallbackFrom != "m-u1" {
 		// The stamp is the top-level member name; the fixture's combo members
 		// are concrete models, so the first member's name is expected.
@@ -778,6 +791,75 @@ func TestComboFailover_UsageOnlyCountsDeliveredAttempt(t *testing.T) {
 	var payload map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("bad body: %v", err)
+	}
+}
+
+// TestComboFailover_CredentialRefusalKeepsStatusAndBillsNothing pins the
+// admission-control branch: it must record the status the client actually
+// received (not the generic 502 the accounting falls back to) and must not meter
+// an attempt that never reached a provider.
+func TestComboFailover_CredentialRefusalKeepsStatusAndBillsNothing(t *testing.T) {
+	adapter := &scriptedAdapter{byName: map[string]scriptedReply{
+		"u1": {status: http.StatusOK, body: `{"usage":{"prompt_tokens":11,"completion_tokens":7},"choices":[]}`},
+	}}
+	f := newComboFixture([]string{"u1"}, map[string]*domain.Combo{
+		"combo": {Name: "combo", Strategy: domain.RoutingStrategyFailover, Models: []string{"m-u1"}, Enabled: true},
+	}, []string{"combo"})
+	f.credentialMaxConcurrent = 1
+
+	deps, _, tenant := f.deps(t, adapter)
+	// Saturate the only ticket of the credential this member resolves to, so the
+	// request is refused before any provider is contacted.
+	release, err := deps.Limiter.AcquireCredential("cred-u1", 0, 1)
+	if err != nil {
+		t.Fatalf("pre-acquire credential: %v", err)
+	}
+	defer release()
+
+	before := tenant.UsedTokens.Load()
+	rec := postChat(t, deps, tenant, "combo", false)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429: %s", rec.Code, rec.Body.String())
+	}
+	if got := adapter.callNames(); len(got) != 0 {
+		t.Fatalf("adapter calls = %v, want none: the provider was never reached", got)
+	}
+	if after := tenant.UsedTokens.Load(); after != before {
+		t.Fatalf("tenant tokens = %d, want 0: a refused attempt bills nothing", after-before)
+	}
+
+	rows := deps.LiveLogs.Snapshot()
+	if len(rows) != 1 {
+		t.Fatalf("console rows = %d, want 1: %+v", len(rows), rows)
+	}
+	if rows[0].Status != http.StatusTooManyRequests {
+		t.Fatalf("recorded status = %d, want 429 (the status the client received)", rows[0].Status)
+	}
+	if rows[0].Model != "combo" || rows[0].ResolvedModel != "m-u1" {
+		t.Fatalf("row model = %q→%q, want combo→m-u1", rows[0].Model, rows[0].ResolvedModel)
+	}
+}
+
+// TestComboFailover_ShortRunwayPublishesCurrentAttempt proves a request that is
+// nearly out of time does not open another connection: it publishes what the
+// member it already heard from returned.
+func TestComboFailover_ShortRunwayPublishesCurrentAttempt(t *testing.T) {
+	adapter := &scriptedAdapter{byName: map[string]scriptedReply{
+		"u1": {status: http.StatusInternalServerError, body: `{"first":"u1"}`},
+		"u2": {status: http.StatusOK, body: `{"ok":1}`},
+	}}
+	f := newComboFixture([]string{"u1", "u2"}, map[string]*domain.Combo{
+		"combo": {Name: "combo", Strategy: domain.RoutingStrategyFailover, Models: []string{"m-u1", "m-u2"}, Enabled: true},
+	}, []string{"combo"})
+
+	deps, _, tenant := f.deps(t, adapter)
+	// Less runway left than a second member attempt needs to be worth starting.
+	rec := postChatWithin(t, deps, tenant, "combo", comboAttemptMinRunway/2)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 from the first member: %s", rec.Code, rec.Body.String())
+	}
+	if got := adapter.callNames(); len(got) != 1 {
+		t.Fatalf("adapter calls = %v, want only the first member", got)
 	}
 }
 
