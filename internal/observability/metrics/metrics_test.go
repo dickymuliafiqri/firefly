@@ -150,6 +150,28 @@ func mustScrape(t *testing.T, m *Metrics) string {
 	return b.String()
 }
 
+// TestSnapshot_Excludes499FromErrorRate verifies HTTP 499 (client-side
+// cancellation) does not count toward TotalErrors in the error-rate numerator.
+func TestSnapshot_Excludes499FromErrorRate(t *testing.T) {
+	m := New()
+
+	// 3 successful requests, 1 client cancellation (499), 1 real 500 error — all on AI routes.
+	m.ObserveHTTP("POST", "/v1/chat/completions", 200, 10*time.Millisecond)
+	m.ObserveHTTP("POST", "/v1/chat/completions", 200, 10*time.Millisecond)
+	m.ObserveHTTP("POST", "/v1/chat/completions", 200, 10*time.Millisecond)
+	m.ObserveHTTP("POST", "/v1/chat/completions", 499, 5*time.Millisecond)
+	m.ObserveHTTP("POST", "/v1/chat/completions", 500, 100*time.Millisecond)
+
+	snap := m.Snapshot()
+
+	if snap.TotalRequests != 5 {
+		t.Fatalf("snap.TotalRequests = %d, want 5", snap.TotalRequests)
+	}
+	if snap.TotalErrors != 1 {
+		t.Fatalf("snap.TotalErrors = %d, want 1 (only the 500 counts; 499 is client-side cancellation)", snap.TotalErrors)
+	}
+}
+
 func TestSnapshot_FiltersNonAIModelRoutes(t *testing.T) {
 	m := New()
 

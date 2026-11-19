@@ -421,7 +421,10 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 				val := int64(metric.GetCounter().GetValue())
 				snap.TotalRequests += val
 				status := labels["status"]
-				if strings.HasPrefix(status, "4") || strings.HasPrefix(status, "5") {
+				// 499 is the client-side cancellation code (nginx convention). The
+				// client walked away — it is not a gateway or upstream fault, so it
+				// must not count toward the error rate the Overview card reports.
+				if status != "499" && (strings.HasPrefix(status, "4") || strings.HasPrefix(status, "5")) {
 					snap.TotalErrors += val
 				}
 			case "firefly_http_inflight_requests":

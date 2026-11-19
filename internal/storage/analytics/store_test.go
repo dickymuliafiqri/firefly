@@ -234,3 +234,33 @@ func TestStore_ConcurrentStress(t *testing.T) {
 		t.Fatalf("expected %d requests, got %d", expectedRequests, summary.TotalRequests)
 	}
 }
+// TestStore_499NotError verifies HTTP 499 (client-side cancellation) is counted
+// as a request but never as an error in the cumulative ledger.
+func TestStore_499NotError(t *testing.T) {
+	ctx := context.Background()
+	tmpDir, err := os.MkdirTemp("", "firefly_analytics_499_*")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	_ = store.Record(ctx, RequestLog{ID: "ok-1", Status: 200})
+	_ = store.Record(ctx, RequestLog{ID: "cancel-1", Status: 499})
+	_ = store.Record(ctx, RequestLog{ID: "err-1", Status: 500})
+
+	sum, err := store.Summary(ctx)
+	if err != nil {
+		t.Fatalf("summary: %v", err)
+	}
+	if sum.TotalRequests != 3 {
+		t.Errorf("TotalRequests = %d, want 3", sum.TotalRequests)
+	}
+	if sum.TotalErrors != 1 {
+		t.Errorf("TotalErrors = %d, want 1 (only the 500; 499 is client-side cancellation)", sum.TotalErrors)
+	}
+}
