@@ -349,6 +349,13 @@ func (a *Adapter) attempt(ctx context.Context, u *domain.Upstream, req ports.For
 		}
 	}
 
+	// Some OpenAI-compatible gateways answer a request for an unsupported or
+	// unknown model with HTTP 200 but an error envelope in the JSON body.
+	// Reclassify it before relaying; see reclassifyFalse200 for details.
+	if reclassified, ok := reclassifyFalse200(resp.StatusCode, resp.Header, buf); ok {
+		return reclassified
+	}
+
 	// Pass through Content-Type and any useful headers.
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
 		w.Header().Set("Content-Type", ct)
@@ -362,6 +369,30 @@ func (a *Adapter) attempt(ctx context.Context, u *domain.Upstream, req ports.For
 		body:     buf,
 		err:      werr,
 	}
+}
+
+// reclassifyFalse200 detects the OpenAI-compatible anti-pattern where an error
+// envelope is returned with HTTP 200. When found, it builds an attemptResult
+// carrying the reconstructed status so the central outcome pipeline treats the
+// response as a real upstream error instead of a success. It returns false for
+// any legitimate 2xx body, leaving normal pass-through untouched.
+func reclassifyFalse200(status int, header http.Header, body []byte) (attemptResult, bool) {
+	if status < 200 || status >= 300 || !looksLikeAPIError(body) {
+		return attemptResult{}, false
+	}
+	inferred := inferErrorStatus(body)
+	// A body we cannot confidently map is left alone: inventing a failure from
+	// an unrecognized 2xx payload would be worse than passing it through.
+	if inferred == http.StatusBadGateway {
+		return attemptResult{}, false
+	}
+	cloned := header.Clone()
+	return attemptResult{
+		status:  inferred,
+		headers: cloned,
+		body:    body,
+		err:     &ErrUpstream{Status: inferred, Body: body, Header: cloned},
+	}, true
 }
 
 // buildBody decodes just enough of the request to rewrite "model" to the

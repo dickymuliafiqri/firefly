@@ -5,6 +5,14 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.53.0] - 2026-11-19
+### Fixed
+- **Fake `200 OK` on Upstream Error Envelope (`internal/adapter/openai/`)**: When an upstream answers an invalid request (e.g. an unsupported model) with HTTP 200 and an error body like `{"error":{"message":"Model 'x' is not supported in this gateway catalog","type":"invalid_request_error"}}`, the adapter now classifies the response as the true failure status instead of relaying a success. `reclassifyFalse200` runs in the non-streaming pass-through path before writing the 2xx; message-keyword match ("not supported"+"model", "unknown model", "model not found") → `404`, rate-limit → `429`, auth → `401`, unmatched → `502`. The relayed client response and the console row both carry the real status and the verbatim upstream error body; a 4xx does not trip the circuit breaker.
+- **499 (Client Cancellation) No Longer Counts As Error (`internal/observability/metrics/`, `internal/storage/analytics/`)**: The error-rate numerator on the Overview card and the cumulative ledger both exclude HTTP 499, which is nginx convention for a client that walked away mid-request. A cancelled stream is not a gateway or upstream fault, so it no longer inflates the error rate. Covered by `TestSnapshot_Excludes499FromErrorRate` and `TestStore_499NotError`.
+### Changed
+- **Overview Token KPIs (`frontend/src/pages/OverviewPage.tsx`)**: Added a second KPI row surfacing **Tokens in**, **Tokens out**, **Tokens total** (compacted via `fmtTokens`, e.g. `1.2M`) and **Est. cost**. The dispatcher NotificationsPanel was removed; dispatcher health is available via telemetry.
+- **Visualizer Table Wrapping (`frontend/src/styles/global.css`)**: Grid tracks in `.visualizer-lower` now allow shrink (`min-width: 0`) and table cells use `overflow-wrap: anywhere`, so long unbreakable SSE/JSON/URL payloads constrain to the scroll container instead of pushing the card past the viewport.
+
 ## [1.52.0] - 2026-11-15
 ### Added
 - **Combo Member Failover at Request Time (`internal/domain/`, `internal/server/`, `frontend/src/`)**:

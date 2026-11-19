@@ -180,6 +180,65 @@ func TestForwardWrapsNonOpenAIErrorBody(t *testing.T) {
 	}
 }
 
+// TestForwardReclassifies200ErrorEnvelopeNotFound covers the OpenAI-compatible
+// anti-pattern where an unsupported-model refusal arrives as HTTP 200 with an
+// error envelope in the body (observed on bozzdrop: `Model 'x' is not supported
+// in this gateway catalog`). Firefly must surface the status the upstream
+// should have returned, not relay a fake success.
+func TestForwardReclassifies200ErrorEnvelopeNotFound(t *testing.T) {
+	errBody := `{"error":{"message":"Model 'kunci' is not supported in this gateway catalog","type":"invalid_request_error"}}`
+	a, breaker, base := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		// No WriteHeader: net/http defaults to 200, exactly like the upstream.
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, errBody)
+	}, map[string]string{"UP_KEY": "sk"})
+
+	rec := httptest.NewRecorder()
+	if err := a.Forward(context.Background(), upstreamTarget(base, "kunci"), ports.ForwardRequest{
+		Method: http.MethodPost, Path: "/chat/completions", BodyBytes: []byte(`{"model":"kunci"}`),
+	}, rec); err != nil {
+		t.Fatalf("Forward: %v", err)
+	}
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "not supported") {
+		t.Fatalf("body = %s, want upstream error message preserved", rec.Body.String())
+	}
+	// A model refusal is a request-shaped 4xx: it must NOT feed the host breaker.
+	breaker.mu.Lock()
+	defer breaker.mu.Unlock()
+	for _, ok := range breaker.reports {
+		if !ok {
+			t.Fatalf("breaker reported failure for a 4xx model refusal: %v", breaker.reports)
+		}
+	}
+}
+
+// TestForwardLeavesLegitimate2xxUntouched guards against over-classification:
+// a real completion payload with an unusual shape must pass through with 200.
+func TestForwardLeavesLegitimate2xxUntouched(t *testing.T) {
+	okBody := `{"id":"chatcmpl-1","object":"chat.completion","choices":[]}`
+	// An error envelope here would be misread; this body is not one.
+	a, _, base := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, okBody)
+	}, map[string]string{"UP_KEY": "sk"})
+
+	rec := httptest.NewRecorder()
+	if err := a.Forward(context.Background(), upstreamTarget(base, "m"), ports.ForwardRequest{
+		Method: http.MethodPost, Path: "/chat/completions", BodyBytes: []byte(`{"model":"m"}`),
+	}, rec); err != nil {
+		t.Fatalf("Forward: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 untouched", rec.Code)
+	}
+	if strings.TrimSpace(rec.Body.String()) != okBody {
+		t.Fatalf("body = %s, want verbatim pass-through", rec.Body.String())
+	}
+}
+
 func TestForwardStreamRelaysSSEVerbatim(t *testing.T) {
 	events := "data: {\"delta\":\"He\"}\n\ndata: {\"delta\":\"llo\"}\n\ndata: [DONE]\n\n"
 	a, _, base := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {

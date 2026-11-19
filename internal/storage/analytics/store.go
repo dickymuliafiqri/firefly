@@ -111,7 +111,7 @@ func (s *Store) Record(ctx context.Context, log RequestLog) error {
 	// Update cumulative ledger metrics upon completion (Status > 0) only if not already counted
 	if log.Status > 0 && (!found || prevStatus == 0) {
 		s.summary.TotalRequests++
-		if log.Status >= 400 {
+		if log.Status >= 400 && log.Status != 499 { // 499 = client-side cancellation (nginx convention), not a gateway/upstream fault
 			s.summary.TotalErrors++
 		}
 		if log.TokensIn > 0 {

@@ -1699,6 +1699,13 @@ input:disabled {
   margin-bottom: 16px;
 }
 
+/* Grid tracks default to min-width:auto, so a long unbreakable string in a
+ * trace cell would push the card past the viewport instead of letting the
+ * scroll container below do its job. Let the tracks shrink. */
+.visualizer-lower > .card {
+  min-width: 0;
+}
+
 @media (max-width: 1100px) {
   .visualizer-lower {
     grid-template-columns: 1fr;
@@ -1708,6 +1715,16 @@ input:disabled {
 .viz-scroll {
   max-height: 320px;
   overflow: auto;
+  min-width: 0;
+}
+
+/* Stream frames can carry long, unbreakable payload text (raw SSE, URLs,
+ * serialized JSON). With min-width:0 on the grid child above, the scroll
+ * container now constrains the table; overflow-wrap keeps a single long token
+ * from forcing an unnecessarily wide horizontal scroll. */
+.viz-scroll td,
+.viz-scroll th {
+  overflow-wrap: anywhere;
 }
 
 .visualizer-grid tbody tr {
