@@ -174,3 +174,9 @@ skill*
 *.db
 *.db-*
 *.db.turso-sync-metadata
+
+# ------------------------------------------------------------------------------
+# 10. Local PoC secrets (never commit private keys or generated certificates)
+# ------------------------------------------------------------------------------
+poc/**/cmd/mitm/*.key
+poc/**/cmd/mitm/*.crt

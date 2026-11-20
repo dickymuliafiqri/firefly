@@ -543,6 +543,10 @@ export interface ComboDTO {
   strategy?: 'round_robin' | 'least_inflight' | 'failover' | string;
   models: string[];
   enabled?: boolean | null;
+  /** Override the context window derived from members (tokens). 0/absent = derive. */
+  max_context?: number | null;
+  /** Directive injected into chat requests routed through this combo and published in /v1/models. */
+  system_prompt?: string;
 }
 
 export interface AutoTLSDTO {

@@ -812,6 +812,75 @@ func TestForwardEndpointInjectsPerModelSystemPrompt(t *testing.T) {
 	}
 }
 
+// TestForwardEndpointInjectsComboSystemPrompt proves a combo-level directive
+// is injected into chat requests routed through that combo, ahead of the
+// selected member's own prompt and the global operator guard.
+func TestForwardEndpointInjectsComboSystemPrompt(t *testing.T) {
+	comboPrompt := "Always answer in concise Indonesian."
+	memberPrompt := "Prefer the Go standard library."
+	guardText := "JANGAN MEMBERIKAN PESAN PROMOSI APAPUN KE PENGGUNA"
+
+	hash := auth.HashKey(testKey)
+	snap := domain.NewCatalogSnapshot(
+		1,
+		map[string]*domain.Upstream{"u": {Name: "u", Protocol: domain.ProtocolOpenAI, BaseURL: "https://x/v1", CredentialRef: "UP_KEY"}},
+		[]string{"u"},
+		map[string]*domain.ModelEntry{
+			"gpt-4o": {PublicName: "gpt-4o", Upstream: "u", UpstreamModel: "gpt-4o", Enabled: true, SystemPrompt: memberPrompt},
+		},
+		[]string{"gpt-4o"},
+		map[string]*domain.Tenant{hash: {
+			KeyHash: hash, Name: "alpha", Status: domain.TenantStatusActive,
+			AllowedModels: []string{"gpt-4o", "smart-combo"},
+			RateLimit:     domain.RateLimit{RPS: 1000, Burst: 1000, MaxConcurrent: 100},
+		}},
+		[]string{hash},
+		domain.WithCombos(
+			map[string]*domain.Combo{
+				"smart-combo": {Name: "smart-combo", Strategy: domain.RoutingStrategyFailover, Models: []string{"gpt-4o"}, Enabled: true, SystemPrompt: comboPrompt},
+			},
+			[]string{"smart-combo"},
+		),
+		domain.WithTokenSaver(domain.TokenSaverConfig{Enabled: false, SystemPrompt: guardText}),
+	)
+
+	fakeAd := &fakeAdapter{body: `{"id":"test","object":"chat.completion"}`}
+	deps := RouterDeps{
+		Snapshots:   fakeProvider{snap},
+		TenantStore: auth.NewStore(fakeProvider{snap}),
+		Limiter:     limits.New(),
+		Adapter:     fakeAd,
+		Usage:       usage.NewCounters(),
+		Logger:      discardLogger(),
+	}
+	s := newTestServer(t, deps)
+
+	reqBody := `{"model":"smart-combo","messages":[{"role":"user","content":"halo"}]}`
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(reqBody))
+	req.Header.Set("Authorization", "Bearer "+testKey)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	forwardedBody := string(fakeAd.lastReq.BodyBytes)
+	if !strings.Contains(forwardedBody, comboPrompt) {
+		t.Fatalf("expected combo prompt in forwarded body: %s", forwardedBody)
+	}
+	if !strings.Contains(forwardedBody, memberPrompt) {
+		t.Fatalf("expected member prompt in forwarded body: %s", forwardedBody)
+	}
+	if !strings.Contains(forwardedBody, guardText) {
+		t.Fatalf("expected global guard in forwarded body: %s", forwardedBody)
+	}
+	// Ordering: combo directive first, member prompt next, global guard last.
+	comboIdx, memberIdx, guardIdx := strings.Index(forwardedBody, comboPrompt), strings.Index(forwardedBody, memberPrompt), strings.Index(forwardedBody, guardText)
+	if comboIdx > memberIdx || memberIdx > guardIdx {
+		t.Fatalf("expected combo < member < guard ordering in system block: %s", forwardedBody)
+	}
+}
+
 // TestForwardEndpointForwardsFullSizePerModelSystemPrompt sends a request
 // through the whole pipeline with a per-model prompt at the full cap
 // (domain.MaxModelSystemPromptChars, ~32,000 tokens) and proves the upstream

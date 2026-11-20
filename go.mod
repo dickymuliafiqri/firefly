@@ -3,6 +3,7 @@ module github.com/dickymuliafiqri/firefly
 go 1.26.0
 
 require (
+	github.com/coder/websocket v1.8.14
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/metacubex/mihomo v1.19.34-0.20261024001235-91e85eebf0b6
 	github.com/openai/openai-go v1.12.0
@@ -34,7 +35,6 @@ require (
 	github.com/bodgit/plumbing v1.3.0 // indirect
 	github.com/bodgit/windows v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/coder/websocket v1.8.14 // indirect
 	github.com/coreos/go-iptables v0.8.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/dlclark/regexp2 v1.12.0 // indirect

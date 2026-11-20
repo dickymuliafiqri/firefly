@@ -370,6 +370,15 @@ func (s *CatalogSnapshot) resolveComboMembers(
 	depth int,
 	path map[string]bool,
 ) (*Target, bool, bool) {
+	// A combo carries its own system directive, which must ride every request
+	// routed through it. Applying it here on the way back out means the
+	// outermost combo's prompt comes first and the concrete member's prompt
+	// keeps the final word before the global guard — and a failed branch never
+	// leaks its directive into the branch that actually won.
+	finish := func(t *Target, fallbackUsed bool) (*Target, bool, bool) {
+		return withComboSystemPrompt(t, combo), fallbackUsed, true
+	}
+
 	try := func(name string) (*Target, bool, bool) {
 		// At the top level, skip a member an earlier attempt already failed on,
 		// and stamp the winner with its member name. The stamp is what lets the
@@ -408,7 +417,7 @@ func (s *CatalogSnapshot) resolveComboMembers(
 		}
 
 		if bestTarget != nil {
-			return bestTarget, bestIdx != 0, true
+			return finish(bestTarget, bestIdx != 0)
 		}
 
 	case RoutingStrategyRoundRobin:
@@ -418,7 +427,7 @@ func (s *CatalogSnapshot) resolveComboMembers(
 			idx := int((start + uint64(i)) % uint64(n))
 			tgt, _, ok := try(combo.Models[idx])
 			if ok {
-				return tgt, idx != 0, true
+				return finish(tgt, idx != 0)
 			}
 		}
 
@@ -426,12 +435,28 @@ func (s *CatalogSnapshot) resolveComboMembers(
 		for idx, mName := range combo.Models {
 			tgt, _, ok := try(mName)
 			if ok {
-				return tgt, idx != 0, true
+				return finish(tgt, idx != 0)
 			}
 		}
 	}
 
 	return nil, false, false
+}
+
+// withComboSystemPrompt prepends a combo's directive to the target's
+// system prompt. The concrete member's own prompt stays last so it keeps the
+// final word before the global operator guard. Returns t unchanged when the
+// combo declares no directive or no target was resolved.
+func withComboSystemPrompt(t *Target, combo *Combo) *Target {
+	if t == nil || combo == nil || combo.SystemPrompt == "" {
+		return t
+	}
+	if t.SystemPrompt == "" {
+		t.SystemPrompt = combo.SystemPrompt
+	} else {
+		t.SystemPrompt = combo.SystemPrompt + "\n\n" + t.SystemPrompt
+	}
+	return t
 }
 
 // resolveLeaf resolves a concrete model to a fully-populated Target, recording

@@ -119,14 +119,16 @@ CREATE INDEX IF NOT EXISTS idx_models_public_name ON models(public_name);
 CREATE INDEX IF NOT EXISTS idx_models_upstream_id ON models(upstream_id);
 
 CREATE TABLE IF NOT EXISTS combos (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    name       VARCHAR(128) NOT NULL UNIQUE,
-    strategy   VARCHAR(32) NOT NULL DEFAULT 'least_inflight',
-    models     TEXT NOT NULL,
-    enabled    INTEGER NOT NULL DEFAULT 1,
-    version    INTEGER NOT NULL DEFAULT 1,
-    created_at BIGINT NOT NULL,
-    updated_at BIGINT NOT NULL
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    name          VARCHAR(128) NOT NULL UNIQUE,
+    strategy      VARCHAR(32) NOT NULL DEFAULT 'least_inflight',
+    models        TEXT NOT NULL,
+    enabled       INTEGER NOT NULL DEFAULT 1,
+    max_context   INTEGER DEFAULT 0,
+    system_prompt TEXT DEFAULT '',
+    version       INTEGER NOT NULL DEFAULT 1,
+    created_at    BIGINT NOT NULL,
+    updated_at    BIGINT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_combos_name ON combos(name);
@@ -204,6 +206,11 @@ func MigrateSchema(ctx context.Context, db *sql.DB) error {
 
 	// Upgrade models table if columns are not present
 	_, _ = db.ExecContext(ctx, "ALTER TABLE models ADD COLUMN system_prompt TEXT DEFAULT ''")
+	// Upgrade combos table with the per-combo context override and system
+	// directive. Listed here in addition to the CREATE TABLE above so databases
+	// created before these fields existed still load with them present.
+	_, _ = db.ExecContext(ctx, "ALTER TABLE combos ADD COLUMN max_context INTEGER DEFAULT 0")
+	_, _ = db.ExecContext(ctx, "ALTER TABLE combos ADD COLUMN system_prompt TEXT DEFAULT ''")
 
 	// Upgrade tenants table if columns are not present
 	_, _ = db.ExecContext(ctx, "ALTER TABLE tenants ADD COLUMN api_key VARCHAR(128)")

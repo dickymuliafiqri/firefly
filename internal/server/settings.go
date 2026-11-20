@@ -98,16 +98,19 @@ func sanitizePublicSettings(src config.SettingsDTO) config.SettingsDTO {
 			Capabilities:  m.Capabilities,
 			MaxContext:    m.MaxContext,
 			Enabled:       m.Enabled,
+			SystemPrompt:  m.SystemPrompt,
 		})
 	}
 
 	publicCombos := make([]config.ComboDTO, 0, len(src.Combos))
 	for _, c := range src.Combos {
 		publicCombos = append(publicCombos, config.ComboDTO{
-			Name:     c.Name,
-			Strategy: c.Strategy,
-			Models:   c.Models,
-			Enabled:  c.Enabled,
+			Name:         c.Name,
+			Strategy:     c.Strategy,
+			Models:       c.Models,
+			Enabled:      c.Enabled,
+			MaxContext:   c.MaxContext,
+			SystemPrompt: c.SystemPrompt,
 		})
 	}
 
@@ -417,10 +420,12 @@ func (deps RouterDeps) handleUpdateSettings(w http.ResponseWriter, r *http.Reque
 		for _, c := range snap.AllCombos() {
 			en := c.Enabled
 			payload.Combos = append(payload.Combos, config.ComboDTO{
-				Name:     c.Name,
-				Strategy: string(c.Strategy),
-				Models:   c.Models,
-				Enabled:  &en,
+				Name:         c.Name,
+				Strategy:     string(c.Strategy),
+				Models:       c.Models,
+				Enabled:      &en,
+				MaxContext:   maxContextPtr(c.MaxContext),
+				SystemPrompt: c.SystemPrompt,
 			})
 		}
 	}
@@ -902,6 +907,13 @@ func pricingFromSnapshot(snap *domain.CatalogSnapshot) *config.PricingFile {
 // callers that intend to re-persist the result must run it through
 // restoreMaskedSecrets first, otherwise masked placeholders would be written
 // back as real secrets.
+func maxContextPtr(v int) *int {
+	if v <= 0 {
+		return nil
+	}
+	return &v
+}
+
 func settingsDTOFromSnapshot(snap *domain.CatalogSnapshot) config.SettingsDTO {
 	var settings config.SettingsDTO
 
@@ -1035,10 +1047,12 @@ func settingsDTOFromSnapshot(snap *domain.CatalogSnapshot) config.SettingsDTO {
 	for _, c := range snap.AllCombos() {
 		en := c.Enabled
 		settings.Combos = append(settings.Combos, config.ComboDTO{
-			Name:     c.Name,
-			Strategy: string(c.Strategy),
-			Models:   c.Models,
-			Enabled:  &en,
+			Name:         c.Name,
+			Strategy:     string(c.Strategy),
+			Models:       c.Models,
+			Enabled:      &en,
+			MaxContext:   maxContextPtr(c.MaxContext),
+			SystemPrompt: c.SystemPrompt,
 		})
 	}
 
