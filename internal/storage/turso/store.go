@@ -22,6 +22,17 @@ type Store struct {
 	mu     sync.RWMutex
 }
 
+// comboMaxContext returns the column value for a combo's max_context.
+// The column is nullable so an unset value is stored as NULL ("let the
+// derived behaviour decide") rather than 0, which would be indistinguishable
+// from an operator deliberately turning the derived window off.
+func comboMaxContext(v *int) any {
+	if v == nil || *v <= 0 {
+		return nil
+	}
+	return *v
+}
+
 // NewStore initializes a new Store with the provided Turso Client.
 func NewStore(client *Client) *Store {
 	logger := slog.Default()
@@ -716,7 +727,7 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 
 	// 4. Load Combos
 	comRows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, strategy, models, enabled
+		SELECT id, name, strategy, models, enabled, COALESCE(max_context, 0), COALESCE(system_prompt, '')
 		FROM combos
 		ORDER BY id ASC
 	`)
@@ -732,8 +743,10 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 			name, strategy string
 			modelsJSON     string
 			enabled        int
+			maxCtx         int
+			systemPrompt   sql.NullString
 		)
-		if err := comRows.Scan(&id, &name, &strategy, &modelsJSON, &enabled); err != nil {
+		if err := comRows.Scan(&id, &name, &strategy, &modelsJSON, &enabled, &maxCtx, &systemPrompt); err != nil {
 			return nil, fmt.Errorf("scan combo: %w", err)
 		}
 
@@ -743,11 +756,17 @@ func (s *Store) loadSettingsInternal(ctx context.Context) (*config.SettingsDTO, 
 		}
 
 		isEn := enabled != 0
+		var maxCtxPtr *int
+		if maxCtx > 0 {
+			maxCtxPtr = &maxCtx
+		}
 		combos = append(combos, config.ComboDTO{
-			Name:     name,
-			Strategy: strategy,
-			Models:   comboModels,
-			Enabled:  &isEn,
+			Name:         name,
+			Strategy:     strategy,
+			Models:       comboModels,
+			Enabled:      &isEn,
+			MaxContext:   maxCtxPtr,
+			SystemPrompt: systemPrompt.String,
 		})
 	}
 
@@ -1308,19 +1327,19 @@ func (s *Store) SaveSettings(ctx context.Context, settings config.SettingsDTO) e
 		if existingID, ok := existingCombos[c.Name]; ok {
 			_, err = tx.ExecContext(ctx, `
 				UPDATE combos SET
-					strategy = ?, models = ?, enabled = ?,
+					strategy = ?, models = ?, enabled = ?, max_context = ?, system_prompt = ?,
 					version = version + 1, updated_at = ?
 				WHERE id = ?
-			`, strategy, modelsJSON, enabledInt, now, existingID)
+			`, strategy, modelsJSON, enabledInt, comboMaxContext(c.MaxContext), c.SystemPrompt, now, existingID)
 			if err != nil {
 				return fmt.Errorf("update combo %q: %w", c.Name, err)
 			}
 		} else {
 			_, err = tx.ExecContext(ctx, `
 				INSERT INTO combos (
-					name, strategy, models, enabled, version, created_at, updated_at
-				) VALUES (?, ?, ?, ?, 1, ?, ?)
-			`, c.Name, strategy, modelsJSON, enabledInt, now, now)
+					name, strategy, models, enabled, max_context, system_prompt, version, created_at, updated_at
+				) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+			`, c.Name, strategy, modelsJSON, enabledInt, comboMaxContext(c.MaxContext), c.SystemPrompt, now, now)
 			if err != nil {
 				return fmt.Errorf("insert combo %q: %w", c.Name, err)
 			}

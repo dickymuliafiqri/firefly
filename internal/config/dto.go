@@ -156,6 +156,13 @@ type ComboDTO struct {
 	Strategy string   `json:"strategy,omitempty"` // round_robin, least_inflight, failover
 	Models   []string `json:"models"`
 	Enabled  *bool    `json:"enabled,omitempty"`
+	// MaxContext overrides the context window derived from the combo's members
+	// when published as `context_length` on /v1/models. Absent or 0 derives it.
+	MaxContext *int `json:"max_context,omitempty"`
+	// SystemPrompt is appended to the system block of every chat completion
+	// routed through this combo, ahead of the selected member's own prompt and
+	// the global operator guard. Bounded at MaxModelSystemPromptChars.
+	SystemPrompt string `json:"system_prompt,omitempty"`
 }
 
 // SettingsDTO aggregates the entire system configuration for frontend management.

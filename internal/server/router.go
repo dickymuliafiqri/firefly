@@ -160,6 +160,13 @@ type ModelObj struct {
 	// overflow the upstream. A model with no configured max_context omits the
 	// field entirely instead of advertising a guess.
 	ContextLength *int `json:"context_length,omitempty"`
+	// SystemPrompt is the operator-authored directive published for coding
+	// agents that read model metadata to configure themselves. It mirrors the
+	// combo-level system_prompt actually injected into chat requests. Direct
+	// models do not declare their own prompt here (the agent would have no way
+	// to tell a per-model directive from a client-supplied one); only combos,
+	// which are the operator-authored virtual models, expose it.
+	SystemPrompt string `json:"system_prompt,omitempty"`
 }
 
 // modelContextLength returns the publishable context window for a direct
@@ -184,6 +191,14 @@ func modelContextLength(snap *domain.CatalogSnapshot, id string) *int {
 func comboContextLength(snap *domain.CatalogSnapshot, combo *domain.Combo) *int {
 	if combo == nil {
 		return nil
+	}
+	// An operator-declared window wins over the derived one: the operator may
+	// know a combination safely fits a larger window than its smallest member,
+	// or want to advertise a conservative bound. Only a positive value counts
+	// as an override; 0 keeps the historical derived behaviour.
+	if combo.MaxContext > 0 {
+		n := combo.MaxContext
+		return &n
 	}
 	members := snap.ResolveMemberCandidates(combo.Name)
 	if len(members) == 0 {
@@ -415,6 +430,12 @@ func (s *Server) buildHandler(deps RouterDeps) http.Handler {
 	mux.HandleFunc("OPTIONS /api/singbox/nodes", deps.handleOptionsSettings)
 	mux.HandleFunc("GET /api/singbox/nodes", deps.handleListSingboxNodes)
 
+	// Dashboard Web Terminal (admin-only WebSocket shell session).
+	// Token arrives via query param or Sec-WebSocket-Protocol header because
+	// browsers cannot set Authorization on a WS handshake. Handshake auth runs
+	// before the upgrade, so this endpoint is never reachable anonymously.
+	mux.HandleFunc("GET /api/terminal/ws", deps.handleTerminalWS)
+
 	// Cloudflare Tunnel Ingress API
 	mux.HandleFunc("OPTIONS /api/tunnel/status", deps.handleOptionsSettings)
 	mux.HandleFunc("GET /api/tunnel/status", deps.handleGetTunnelStatus)
@@ -523,6 +544,7 @@ func (deps RouterDeps) handleListModels(w http.ResponseWriter, r *http.Request) 
 			Created:       now,
 			OwnedBy:       "firefly-combo",
 			ContextLength: comboContextLength(snap, combo),
+			SystemPrompt:  combo.SystemPrompt,
 		})
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -551,6 +573,7 @@ func (deps RouterDeps) handleRetrieveModel(w http.ResponseWriter, r *http.Reques
 			Created:       time.Now().Unix(),
 			OwnedBy:       "firefly-combo",
 			ContextLength: comboContextLength(snap, combo),
+			SystemPrompt:  combo.SystemPrompt,
 		})
 		return
 	}

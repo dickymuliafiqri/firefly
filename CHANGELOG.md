@@ -5,6 +5,18 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.54.0] - 2026-11-20
+### Added
+- **Virtual Combo Max Context & System Prompt (`internal/domain/`, `internal/config/`, `internal/server/`, `internal/storage/turso/`, `frontend/`)**:
+  - A virtual combo now carries its own `max_context` (token window override) and `system_prompt` (operator-authored directive). Both are settable from the Models → Virtual Combos editor and persisted through JSON config, the snapshot, and the Turso backing store (`max_context`, `system_prompt` columns, nullable / `COALESCE`'d on read so an unset window still derives from the smallest member).
+  - **Detection by coding agents:** `GET /v1/models` and `GET /v1/models/{id}` now publish `context_length` (override wins when the combo declares one; otherwise the smallest member window) and `system_prompt` for combo rows, so agents (pi, Hermes, Cline, OpenRouter-style clients) can configure themselves from model metadata. Direct models keep their prior behaviour (per-model `max_context` published, no per-model `system_prompt`).
+  - **Request injection:** when a chat completion routes through a combo, the combo directive is prepended to the system block ahead of the selected member's own prompt and the global operator guard — final order: combo → member → guard. A failed combo branch never leaks its directive into the branch that actually won.
+  - Validation: `max_context` must be non-negative; `system_prompt` is trimmed and capped at `MaxModelSystemPromptChars` (same bound as a per-model prompt). Regression coverage: `TestListModelsPublishesComboOverrides`, `TestListModelsOmitsComboSystemPromptFromJSON`, `TestForwardEndpointInjectsComboSystemPrompt`.
+- **Dashboard Web Terminal (`internal/server/terminal*.go`, `frontend/src/pages/TerminalPage.tsx`)**:
+  - New admin-only WebSocket shell (`GET /api/terminal/ws`) with the browser-side xterm.js client wired as a dashboard tab (`TerminalPage`). Token arrives via query param or the `Sec-WebSocket-Protocol: firefly-terminal.<token>` header because browsers cannot set `Authorization` on a WS handshake; the handshake auth runs before the upgrade, so the endpoint is never reachable anonymously.
+  - The shell is spawned via `exec.LookPath` on a FIXED allowlist (Unix `bash → sh`, Windows `pwsh → powershell → cmd`) — user input only ever reaches the child's stdin, never a command line. Fails closed when no admin credential is configured. Output is fanned out through a mutex-protected `terminalWriter`; the read pump runs under `supervisor.Guard` so a panicking copy loop cannot take the process down.
+  - Promoted `github.com/coder/websocket` to a direct dependency; added `@xterm/xterm` + `@xterm/addon-fit` to the SPA.
+
 ## [1.53.0] - 2026-11-19
 ### Fixed
 - **Fake `200 OK` on Upstream Error Envelope (`internal/adapter/openai/`)**: When an upstream answers an invalid request (e.g. an unsupported model) with HTTP 200 and an error body like `{"error":{"message":"Model 'x' is not supported in this gateway catalog","type":"invalid_request_error"}}`, the adapter now classifies the response as the true failure status instead of relaying a success. `reclassifyFalse200` runs in the non-streaming pass-through path before writing the 2xx; message-keyword match ("not supported"+"model", "unknown model", "model not found") → `404`, rate-limit → `429`, auth → `401`, unmatched → `502`. The relayed client response and the console row both carry the real status and the verbatim upstream error body; a 4xx does not trip the circuit breaker.

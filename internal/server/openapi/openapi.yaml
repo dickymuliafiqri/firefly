@@ -425,7 +425,16 @@ components:
             clients) read model metadata to detect the window instead of
             falling back to their own default. Omitted when the operator left
             `max_context` unset. A virtual combo reports the smallest window
-            among its members, and only when every member has one.
+            among its members, and only when every member has one, unless the
+            combo declares its own `max_context`, which then wins.
+        system_prompt:
+          type: string
+          description: >-
+            The operator-authored system directive configured on a virtual
+            combo. Coding agents can read it from model metadata to configure
+            themselves; the same directive is injected into the system block
+            of every chat request routed through the combo. Omitted for direct
+            models and for combos without a directive.
 
     ModelsResponse:
       type: object

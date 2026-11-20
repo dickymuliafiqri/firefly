@@ -73,14 +73,16 @@ type ModelRecord struct {
 
 // ComboRecord represents a row in the combos table.
 type ComboRecord struct {
-	ID        int64    `json:"id"`
-	Name      string   `json:"name"`
-	Strategy  string   `json:"strategy"`
-	Models    []string `json:"models"`
-	Enabled   bool     `json:"enabled"`
-	Version   int      `json:"version"`
-	CreatedAt int64    `json:"created_at"`
-	UpdatedAt int64    `json:"updated_at"`
+	ID           int64    `json:"id"`
+	Name         string   `json:"name"`
+	Strategy     string   `json:"strategy"`
+	Models       []string `json:"models"`
+	Enabled      bool     `json:"enabled"`
+	MaxContext   int      `json:"max_context"`
+	SystemPrompt string   `json:"system_prompt,omitempty"`
+	Version      int      `json:"version"`
+	CreatedAt    int64    `json:"created_at"`
+	UpdatedAt    int64    `json:"updated_at"`
 }
 
 // TenantRecord represents a row in the tenants table.

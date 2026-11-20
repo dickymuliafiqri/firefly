@@ -600,6 +600,16 @@ function ComboForm({
     (editing?.models ?? []).slice(),
   );
   const [enabled, setEnabled] = useState(editing?.enabled !== false);
+  // maxContext and systemPrompt mirror the per-model fields: empty means
+  // "derive the window from members" / "no combo directive" respectively.
+  const [comboMaxContext, setComboMaxContext] = useState(
+    editing?.max_context && editing.max_context > 0
+      ? String(editing.max_context)
+      : "",
+  );
+  const [comboSystemPrompt, setComboSystemPrompt] = useState(
+    editing?.system_prompt ?? "",
+  );
 
   const allCatalogModels = settings.data?.models ?? [];
   // Other combos are legal members (nested combos). The combo being edited is
@@ -651,6 +661,12 @@ function ComboForm({
       strategy,
       models: selectedModels,
       enabled,
+      ...(comboMaxContext.trim() && Number(comboMaxContext) > 0
+        ? { max_context: Number(comboMaxContext) }
+        : {}),
+      ...(comboSystemPrompt.trim()
+        ? { system_prompt: comboSystemPrompt.trim() }
+        : {}),
     };
     const others = (settings.data.combos ?? []).filter(
       (c) => c.name !== entry.name,
@@ -727,6 +743,41 @@ function ComboForm({
           <option value="failover">failover</option>
         </select>
       </Field>
+      <Field
+        label="Max context tokens (optional)"
+        htmlFor="c-ctx"
+        hint="Override the context window advertised to coding agents via /v1/models. Leave empty to derive the smallest window among members."
+      >
+        <input
+          id="c-ctx"
+          type="number"
+          value={comboMaxContext}
+          placeholder="128000"
+          onChange={(e) => setComboMaxContext(e.target.value)}
+        />
+      </Field>
+      <Field
+        label="System prompt (optional)"
+        htmlFor="c-sysprompt"
+        hint="Injected into the system block of every request routed through this combo and published in /v1/models so coding agents can detect it. Capped at ~32,000 tokens (128,000 chars). The selected member's own prompt and the global guard are appended afterwards."
+      >
+        <textarea
+          id="c-sysprompt"
+          rows={6}
+          spellCheck={false}
+          maxLength={128000}
+          placeholder="e.g. You are a senior Go engineer. Prefer the standard library and keep answers terse."
+          value={comboSystemPrompt}
+          onChange={(e) => setComboSystemPrompt(e.target.value)}
+        />
+      </Field>
+      <div style={{ marginTop: -6, textAlign: "right" }}>
+        <span className="hint">
+          {comboSystemPrompt.length.toLocaleString()} / 128,000 chars · ~
+          {Math.ceil(comboSystemPrompt.length / 4).toLocaleString()} / 32,000
+          tokens
+        </span>
+      </div>
       <div className="field">
         <label>
           Combo members ({selectedModels.length} selected)

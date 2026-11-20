@@ -1,0 +1,17 @@
+{
+  "_comment": "Additive entry for configs/models.json. Registers the OpenCode free-tier model that triggered the 403 report. Shape copied verbatim from the existing oc entries; max_context 200000 comes from the live catalog entry at https://models.opencode.ai/api.json (limit.context), output is 32000.",
+  "models": [
+    {
+      "public_name": "deepseek-v4.1-flash",
+      "upstream": "oc",
+      "upstream_model": "deepseek-v4.1-flash-free",
+      "capabilities": {
+        "stream": true,
+        "tools": true,
+        "json_mode": true
+      },
+      "max_context": 200000,
+      "enabled": true
+    }
+  ]
+}

@@ -75,6 +75,7 @@ func (deps RouterDeps) registerFrontendRoutes(mux *http.ServeMux) {
 		"quota",
 		"console",
 		"visualizer",
+		"terminal",
 	}
 	for _, tab := range tabs {
 		mux.HandleFunc("GET /"+tab, serveIndex)

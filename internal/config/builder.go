@@ -961,11 +961,29 @@ func translateCombo(i int, d ComboDTO) (*domain.Combo, error) {
 			Msg:   "must be failover, round_robin, or least_inflight",
 		}
 	}
+	if d.MaxContext != nil && *d.MaxContext < 0 {
+		return nil, &ValidationError{
+			Field: fmt.Sprintf("combos[%d].max_context", i),
+			Msg:   "must not be negative",
+		}
+	}
+	// Same cap as a per-model prompt: a combo prompt rides every request routed
+	// through the combo, so an unbounded value would silently inflate the input
+	// token cost of all traffic the operator aims at it.
+	systemPrompt := strings.TrimSpace(d.SystemPrompt)
+	if len(systemPrompt) > domain.MaxModelSystemPromptChars {
+		return nil, &ValidationError{
+			Field: fmt.Sprintf("combos[%d].system_prompt", i),
+			Msg:   fmt.Sprintf("exceeds %d characters", domain.MaxModelSystemPromptChars),
+		}
+	}
 	return &domain.Combo{
-		Name:     d.Name,
-		Strategy: strategy,
-		Models:   d.Models,
-		Enabled:  pickBool(d.Enabled, true),
+		Name:         d.Name,
+		Strategy:     strategy,
+		Models:       d.Models,
+		Enabled:      pickBool(d.Enabled, true),
+		MaxContext:   pickInt(d.MaxContext, 0),
+		SystemPrompt: systemPrompt,
 	}, nil
 }
 

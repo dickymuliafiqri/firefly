@@ -35,6 +35,7 @@ import { VisualizerPage } from '@/pages/VisualizerPage';
 import { WarpPage } from '@/pages/WarpPage';
 import { SingboxPage } from '@/pages/SingboxPage';
 import { PricingPage } from '@/pages/PricingPage';
+import { TerminalPage } from '@/pages/TerminalPage';
 
 import { LoginPage } from '@/pages/LoginPage';
 import { UpstreamEditorPage } from '@/pages/UpstreamEditorPage';
@@ -57,6 +58,7 @@ export type PageId =
   | 'warp'
   | 'singbox'
   | 'pricing'
+  | 'terminal'
   | 'login'
   | 'upstream-editor';
 
@@ -87,6 +89,7 @@ export const PAGES: Record<PageId, PageDef> = {
   console:    { id: 'console',    title: 'Console',    description: 'Structured request execution log.',               group: 'MONITORING',    icon: Terminal,      element: () => <ConsolePage /> },
   visualizer: { id: 'visualizer', title: 'Visualizer', description: 'Live routing traces as pluggable diagrams.',      group: 'MONITORING',    icon: Radar,         element: () => <VisualizerPage /> },
   pricing:    { id: 'pricing',    title: 'Pricing',    description: 'Model price sheet driving every cost figure.', group: 'CONFIGURATION', icon: Coins,         element: () => <PricingPage /> },
+  terminal:   { id: 'terminal',   title: 'Terminal',   description: 'Pipe-backed web shell over WebSocket.',        group: 'TOOLS',         icon: Terminal,      element: () => <TerminalPage /> },
   login:      { id: 'login',      title: 'Sign in',    description: 'Dashboard master password.',                      group: 'AUTH',          icon: Lock,          element: () => <LoginPage /> },
   'upstream-editor': { id: 'upstream-editor', title: 'Upstream Editor', description: 'Full-page upstream configuration.', group: 'EDITOR', icon: Server, element: () => <UpstreamEditorPage /> },
 };

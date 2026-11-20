@@ -719,6 +719,15 @@ type Combo struct {
 	Strategy RoutingStrategy
 	Models   []string // member public names: concrete models and/or other combos
 	Enabled  bool
+	// MaxContext, when positive, is the operator-declared context window in
+	// tokens published as `context_length` on /v1/models. It overrides the
+	// window derived from members; 0 keeps the derived behaviour.
+	MaxContext int
+	// SystemPrompt is an operator-authored directive appended to the system
+	// block of every chat request routed through this combo, before the
+	// selected member's own prompt and before the global guard. Bounded at
+	// domain.MaxModelSystemPromptChars (same cap as a per-model prompt).
+	SystemPrompt string
 
 	cursorInit atomic.Bool
 	cursor     atomic.Uint64
