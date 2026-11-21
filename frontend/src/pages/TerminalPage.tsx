@@ -7,15 +7,17 @@ import { PageHeader } from '@/components/ui/PageHeader';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { getAdminToken } from '@/state/auth';
+import { parsePromptData, renderPrompt, type PromptState } from './terminalPrompt';
 
 /**
- * Terminal — pipe-backed web shell over WebSocket.
+ * Terminal — interactive web shell over WebSocket.
  *
  * SECURITY CONTRACT (see server/terminal.go): the shell is reached only after
- * the handshake token is validated. There is NO PTY here — the backend bridges
- * WebSocket frames to a pipe-backed `bash`/`sh` (or PowerShell/cmd on Windows),
- * so this is a line-oriented shell: no cursor keys, no full-screen programs,
- * no job control. Good for quick ops; not a desktop terminal.
+ * the handshake token is validated. On Unix the backend attaches `bash`/`sh`
+ * to a real PTY, so password prompts (sudo/su), cursor keys and full-screen
+ * programs work: keystrokes go through verbatim and the shell echoes output.
+ * Windows (and hosts where PTY allocation fails) use a pipe-backed fallback,
+ * where this page buffers a line locally and draws a shell-style prompt.
  */
 
 interface TerminalFrame {
@@ -23,6 +25,11 @@ interface TerminalFrame {
   d?: string;
   code?: number;
   msg?: string;
+  tty?: boolean;
+  shell?: string;
+  home?: string;
+  cwd?: string;
+  nonce?: string;
 }
 
 const MAX_RECONNECT_ATTEMPTS = 5;
@@ -59,7 +66,8 @@ export function TerminalPage() {
   // arrives as a query param because browsers cannot send an Authorization
   // header on a WebSocket handshake; the server validates it before upgrading.
   useEffect(() => {
-    if (!hostRef.current) return;
+    const host = hostRef.current;
+    if (!host) return;
 
     const term = new Terminal({
       cursorBlink: true,
@@ -77,15 +85,23 @@ export function TerminalPage() {
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
-    term.open(hostRef.current);
+    term.open(host);
     fit.fit();
     termRef.current = term;
     fitRef.current = fit;
+
+    // Keep the server-side PTY window in sync with xterm. No-op in pipe mode.
+    const sendTerminalResize = () => {
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ t: 'resize', cols: term.cols, rows: term.rows }));
+    };
 
     // Handle browser window resize while the page is mounted.
     const onResize = () => {
       try {
         fit.fit();
+        sendTerminalResize();
       } catch {
         // container may be hidden mid-layout; harmless
       }
@@ -96,7 +112,80 @@ export function TerminalPage() {
     // panel reflows (sidebar collapse, window resize, etc.). Guarded because
     // ResizeObserver fires once on observe().
     const ro = new ResizeObserver(onResize);
-    ro.observe(hostRef.current);
+    ro.observe(host);
+
+    // A pipe-backed shell has no TTY: the server injects a nonce-tagged
+    // status probe after every command and the browser prints a compact
+    // prompt (cwd + shell + exit code) from that real shell state. Buffer
+    // the current line locally and hand it to the shell on Enter — that
+    // also makes Backspace a real edit instead of a literal DEL byte.
+    let prompt: PromptState = { shell: 'bash', cwd: '~', exitCode: 0 };
+    let home = '~';
+    let nonce = '';
+    let dataTail = '';
+    let interactive = false;
+
+    const printPrompt = () => term.write(renderPrompt(prompt));
+    let pendingLine = '';
+
+    // Registered once, outside connect(): the old code registered a new
+    // onData listener per reconnect, so echo multiplied and stale listeners
+    // kept holding closed sockets. Reading the socket from the ref keeps one
+    // handler pointed at whichever connection is live.
+    const inputSub = term.onData((data) => {
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      if (interactive) {
+        // A PTY owns line editing and echo. Forward every keystroke verbatim:
+        // Enter, Ctrl-C, cursor keys and the secret typed at a password
+        // prompt all have to reach the program in the tty.
+        ws.send(JSON.stringify({ t: 'input', d: data }));
+        return;
+      }
+      // Escape sequences (cursor keys, etc.) carry no meaning without a PTY;
+      // drop the whole chunk instead of echoing fragments like "[A".
+      if (data.indexOf('\x1b') >= 0) return;
+
+      const chars = Array.from(data);
+      for (let i = 0; i < chars.length; i += 1) {
+        const ch = chars[i];
+        const code = ch.charCodeAt(0);
+        if (ch === '\r' || ch === '\n') {
+          const line = pendingLine;
+          pendingLine = '';
+          // convertEol turns '\n' into '\r\n'; write just one '\n' here.
+          term.write('\n');
+          ws.send(JSON.stringify({ t: 'input', d: line + '\n' }));
+          if (ch === '\r' && chars[i + 1] === '\n') i += 1;
+          continue;
+        }
+        if (code === 127 || code === 8) {
+          const current = Array.from(pendingLine);
+          if (current.length > 0) {
+            current.pop();
+            pendingLine = current.join('');
+            term.write('\b \b');
+          }
+          continue;
+        }
+        if (code === 3) {
+          // Ctrl-C: clear the local line and forward the interrupt.
+          pendingLine = '';
+          term.write('^C\n');
+          ws.send(JSON.stringify({ t: 'input', d: '\x03' }));
+          continue;
+        }
+        if (code < 32) continue;
+        pendingLine += ch;
+        term.write(ch);
+      }
+    });
+
+    // xterm types into a hidden textarea. Without an explicit focus the
+    // first keystrokes can land on the page instead of the shell.
+    term.focus();
+    const focusTerminal = () => term.focus();
+    host.addEventListener('mousedown', focusTerminal);
 
     let disposed = false;
 
@@ -105,6 +194,7 @@ export function TerminalPage() {
       setStatus('connecting');
       setLastMsg('');
 
+      dataTail = '';
       const token = getAdminToken();
       if (!token) {
         setStatus('error');
@@ -120,12 +210,13 @@ export function TerminalPage() {
         setStatus('connected');
         setLastExitCode(null);
         reconnectAttempts.current = 0;
-        // Fit on open so the server-side resize handler receives real dims.
+        // Fit on open and send real dims so the PTY starts at the right size.
         try {
           fit.fit();
         } catch {
           // ignore
         }
+        sendTerminalResize();
       };
 
       ws.onmessage = (ev) => {
@@ -134,10 +225,33 @@ export function TerminalPage() {
           switch (frame.t) {
             case 'ready':
               setStatus('connected');
+              interactive = frame.tty === true;
+              if (frame.home) home = frame.home;
+              if (frame.shell) prompt = {
+                shell: frame.shell,
+                cwd: frame.cwd && home && frame.cwd.startsWith(home)
+                  ? '~' + frame.cwd.slice(home.length)
+                  : frame.cwd || '~',
+                exitCode: 0,
+              };
+              nonce = frame.nonce ?? '';
+              term.focus();
+              // The PTY shell draws its own PS1 and echoes input. Only the
+              // pipe fallback needs the browser-drawn prompt.
+              if (!interactive) printPrompt();
+              else sendTerminalResize();
               break;
-            case 'data':
-              term.write(frame.d ?? '');
+            case 'data': {
+              const parsed = parsePromptData(frame.d ?? '', nonce, dataTail);
+              dataTail = parsed.carry;
+              if (parsed.text) term.write(parsed.text);
+              for (const update of parsed.updates) {
+                const cwd = update.cwd && update.cwd === home ? '~' : update.cwd;
+                prompt = { ...prompt, ...update, cwd };
+                printPrompt();
+              }
               break;
+            }
             case 'exit':
               setStatus('closed');
               setLastExitCode(frame.code ?? null);
@@ -165,15 +279,11 @@ export function TerminalPage() {
 
       ws.onclose = () => {
         if (disposed) return;
+        interactive = false;
+        pendingLine = '';
         setStatus((prev) => (prev === 'connected' ? 'closed' : prev));
         scheduleReconnect();
       };
-
-      // Wire xterm input to the socket.
-      term.onData((data) => {
-        if (ws.readyState !== WebSocket.OPEN) return;
-        ws.send(JSON.stringify({ t: 'input', d: data }));
-      });
     };
 
     const scheduleReconnect = () => {
@@ -204,6 +314,8 @@ export function TerminalPage() {
       }
       wsRef.current?.close();
       wsRef.current = null;
+      inputSub.dispose();
+      host.removeEventListener('mousedown', focusTerminal);
       window.removeEventListener('resize', onResize);
       ro.disconnect();
       term.dispose();
@@ -216,6 +328,7 @@ export function TerminalPage() {
     // Force reconnect: reset the bounded counter and close the socket; the
     // normal onclose path then schedules a fresh connection.
     reconnectAttempts.current = 0;
+    termRef.current?.focus();
     wsRef.current?.close();
   };
 
@@ -279,9 +392,13 @@ export function TerminalPage() {
       </div>
 
       <p className="faint" style={{ marginTop: 12, fontSize: 12 }}>
-        Shell type is detected per host: <code>bash → sh</code> on Linux/macOS,
-        PowerShell → cmd on Windows. Output is logged nowhere; input/output travel
-        over a WebSocket gated by your admin session token.
+        On Linux/macOS this is a real PTY: password prompts (sudo/su), cursor
+        keys and full-screen programs work. Windows — or a host where PTY
+        allocation fails — falls back to a line-oriented shell with a prompt
+        showing the live cwd, shell and last exit code. Shell type is detected
+        per host: <code>bash → sh</code> on Linux/macOS,
+        <code> PowerShell → cmd</code> on Windows. Output is logged nowhere;
+        input/output travel over a WebSocket gated by your admin session token.
       </p>
     </>
   );
