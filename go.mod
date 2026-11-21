@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/coder/websocket v1.8.14
+	github.com/creack/pty v1.1.24
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/metacubex/mihomo v1.19.34-0.20261024001235-91e85eebf0b6
 	github.com/openai/openai-go v1.12.0
@@ -18,6 +19,7 @@ require (
 	golang.org/x/net v0.58.0
 	golang.org/x/sync v0.23.0
 	golang.org/x/sys v0.48.0
+	golang.org/x/term v0.46.0
 	golang.org/x/time v0.16.0
 	golang.zx2c4.com/wireguard v0.0.0-20260522210424-ecfc5a8d5446
 	gopkg.in/yaml.v3 v3.0.1
@@ -161,7 +163,6 @@ require (
 	go4.org/netipx v0.0.0-20260823151212-3075585bcbeb // indirect
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
 	golang.org/x/mod v0.41.0 // indirect
-	golang.org/x/term v0.46.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/tools v0.49.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect

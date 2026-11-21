@@ -8,30 +8,30 @@ import (
 	"os/exec"
 )
 
-// shellProcess holds the running shell and the pipes the WebSocket handler
-// bridges. exec.Cmd with CommandContext kills the process when the request
-// context is canceled (browser disconnect or graceful shutdown).
-type shellProcess struct {
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout io.ReadCloser
-	stderr io.ReadCloser
-}
-
-// startShell spawns a pipe-backed shell. Windows has no POSIX PTY and no
-// /bin/sh, so the candidates are PowerShell (Core first, then Windows
-// PowerShell) and finally cmd.exe. There is no PTY on any platform in this
-// feature; see terminal.go.
+// startShell spawns a pipe-backed shell. Windows has no POSIX PTY in this
+// build, so the candidates are PowerShell (Core first, then Windows
+// PowerShell) and finally cmd.exe. The browser falls back to line-oriented
+// mode: no cursor keys or hidden password prompts there.
 func startShell(ctx context.Context) (*shellProcess, error) {
 	var cmd *exec.Cmd
-	for _, name := range []string{"pwsh", "powershell", "cmd"} {
-		if path, err := exec.LookPath(name); err == nil {
+	var name string
+	for _, candidate := range []string{"pwsh", "powershell", "cmd"} {
+		if path, err := exec.LookPath(candidate); err == nil {
 			cmd = exec.CommandContext(ctx, path)
+			name = candidate
 			break
 		}
 	}
 	if cmd == nil {
 		return nil, io.ErrUnexpectedEOF
 	}
-	return wireShell(cmd)
+	sh, err := wireShell(cmd)
+	if err != nil {
+		return nil, err
+	}
+	sh.name = name
+	return sh, nil
 }
+
+// resizeShell is a no-op on Windows' pipe-backed shell.
+func resizeShell(_ *shellProcess, _, _ int) {}

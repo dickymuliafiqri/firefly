@@ -5,6 +5,14 @@ All notable changes to the Firefly project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.55.0] - 2026-11-21
+### Added
+- **Interactive Dashboard Terminal (`internal/server/terminal*.go`, `frontend/src/pages/TerminalPage.tsx`)**:
+  - The dashboard terminal now runs a real PTY on Unix/macOS via `github.com/creack/pty`, so password prompts (`sudo su`, `ssh`, and similar) accept hidden input, cursor keys and full-screen programs work, and the shell sees a genuine terminal. Windows and hosts where PTY allocation fails fall back to the existing line-oriented pipe shell.
+  - The frontend switches modes from the `ready` frame's `tty` flag: PTY sessions forward every keystroke verbatim (no local echo or line buffering) and send xterm's live dimensions to the server; pipe sessions keep the browser-drawn prompt. The prompt shows the live cwd (with `$HOME` shortened to `~`), shell name and last exit code, via a nonce-tagged status marker injected only in pipe mode.
+  - Resize frames now call `pty.Setsize` (clamped to `uint16`), so reflowing programs and long prompts render correctly. The PTY master is closed once through the shared `closeShell` helper, and exec still uses a fixed shell allowlist (`bash → sh`, Windows `pwsh → powershell → cmd`) behind the admin WebSocket gate.
+  - Regression coverage: `TestTerminal_PTYSecretInput` re-execs the test binary under a PTY with terminal echo disabled and proves the secret reaches the child; the frontend suite now covers PTY raw-input/resize mode alongside the pipe-mode prompt and reconnect tests.
+
 ## [1.54.0] - 2026-11-20
 ### Added
 - **Virtual Combo Max Context & System Prompt (`internal/domain/`, `internal/config/`, `internal/server/`, `internal/storage/turso/`, `frontend/`)**:

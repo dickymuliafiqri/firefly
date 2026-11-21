@@ -7,7 +7,9 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
+	"strings"
 	"sync"
 
 	"github.com/coder/websocket"
@@ -16,12 +18,11 @@ import (
 	"github.com/dickymuliafiqri/firefly/internal/supervisor"
 )
 
-// This file implements the dashboard web terminal. It is deliberately a
-// *pipe-backed* shell, not a PTY: the gateway must run on Windows hosts as well
-// as on the Linux container image, and creack/pty has no Windows backend.
-// Consequences are documented on the Terminal dashboard page: no cursor keys,
-// no full-screen programs, no job control — just a persistent shell that reads
-// lines from stdin and writes output to stdout/stderr.
+// This file implements the dashboard web terminal. On Unix the shell runs on
+// a real PTY (creack/pty), so password prompts (sudo/su), cursor keys and
+// full-screen programs work. Windows uses a pipe-backed fallback: the terminal
+// page switches to line-oriented mode there, with a browser-drawn prompt.
+// The "ready" frame reports which mode is active.
 //
 // SECURITY: this endpoint is a remote-code-execution primitive. It is gated by
 // the same admin credential as the rest of the dashboard, and the token MUST be
@@ -50,6 +51,13 @@ type terminalServerMsg struct {
 	Data string `json:"d,omitempty"` // output bytes (UTF-8)
 	Code int    `json:"code,omitempty"`
 	Msg  string `json:"msg,omitempty"`
+	Tty  bool   `json:"tty,omitempty"` // true when a real PTY backs the session
+	// Shell, Home, Cwd and Nonce ride on "ready" so the browser can draw a
+	// real shell-style prompt in the pipe fallback (see terminalProbe).
+	Shell string `json:"shell,omitempty"`
+	Home  string `json:"home,omitempty"`
+	Cwd   string `json:"cwd,omitempty"`
+	Nonce string `json:"nonce,omitempty"`
 }
 
 // terminalRequestToken extracts the admin credential from a WebSocket
@@ -176,6 +184,17 @@ func (deps RouterDeps) handleTerminalWS(w http.ResponseWriter, r *http.Request) 
 
 	tw := &terminalWriter{conn: conn}
 
+	// The pipe fallback prints no prompt. The browser draws one from the
+	// initial cwd on "ready" and from a marker the shell emits after every
+	// command, so `cd` is reflected and the exit code is the last command's.
+	// A PTY session has a real shell prompt and needs no marker injection.
+	home, _ := os.UserHomeDir()
+	cwd, _ := os.Getwd()
+	var prompt terminalPrompt
+	if !sh.tty {
+		prompt = newTerminalPrompt(sh.name)
+	}
+
 	// Wait for the shell so we can report its exit code. Cancel first so the
 	// input pump's blocking Read is released.
 	go func() {
@@ -185,16 +204,21 @@ func (deps RouterDeps) handleTerminalWS(w http.ResponseWriter, r *http.Request) 
 		cancel()
 	}()
 
-	// Two output pumps: stdout and stderr are separate os.Pipes from exec.Cmd.
+	// A PTY merges stdout and stderr into one stream; the pipe fallback has
+	// two separate os.Pipes.
 	go pumpOutput(ctx, sh.stdout, tw)
-	go pumpOutput(ctx, sh.stderr, tw)
+	if sh.stderr != nil {
+		go pumpOutput(ctx, sh.stderr, tw)
+	}
 
-	_ = tw.send(terminalServerMsg{Type: "ready"})
+	_ = tw.send(terminalServerMsg{
+		Type: "ready", Tty: sh.tty, Shell: sh.name, Home: home, Cwd: cwd, Nonce: prompt.nonce,
+	})
 
 	// The request goroutine is the single input pump.
 	defer func() {
 		cancel() // kills the shell (CommandContext) and releases the pumps
-		_ = sh.stdin.Close()
+		closeShell(sh)
 		_ = conn.Close(websocket.StatusNormalClosure, "")
 	}()
 
@@ -215,13 +239,20 @@ func (deps RouterDeps) handleTerminalWS(w http.ResponseWriter, r *http.Request) 
 			if msg.Data == "" {
 				continue
 			}
-			if _, err := sh.stdin.Write([]byte(msg.Data)); err != nil {
+			line := msg.Data
+			// A PTY runs in raw mode: the browser forwards keystrokes verbatim,
+			// including Enter, Ctrl-C and escape sequences. Only the pipe
+			// fallback gets a status probe after each completed line.
+			if !sh.tty && strings.HasSuffix(line, "\n") && prompt.probe != "" {
+				line += prompt.probe
+			}
+			if _, err := sh.stdin.Write([]byte(line)); err != nil {
 				return
 			}
 		case "resize":
-			// No PTY: terminal dimensions are a browser-side concern only.
-			// Accept the frame for forward compatibility without touching the
-			// process (there is no TTY to resize).
+			// Keep the PTY window size in sync with xterm so programs that
+			// reflow (editors, password prompts, progress bars) render right.
+			resizeShell(sh, msg.Cols, msg.Rows)
 		case "ping":
 			if tw.send(terminalServerMsg{Type: "pong"}) != nil {
 				return
